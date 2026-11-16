@@ -46,6 +46,8 @@
       const pos = usable.indexOf(active);
       const next = e.key === "ArrowDown" ? (pos + 1) % usable.length : (pos - 1 + usable.length) % usable.length;
       active = usable[next < 0 ? usable.length - 1 : next];
+      // A menu that scrolls (short window): keep the item reached with the keys in view.
+      tick().then(() => el?.querySelector(".item.active")?.scrollIntoView({ block: "nearest" }));
     } else if (e.key === "Enter" && active >= 0) {
       e.preventDefault();
       e.stopPropagation(); // the window would also open the focused file
@@ -105,6 +107,10 @@
     position: fixed;
     z-index: 61;
     min-width: 232px;
+    /* A long menu in a short window (down to 520 px high): it scrolls, so its last items
+       (Remove) are never cut off below the window. */
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
     padding: 5px;
     border-radius: var(--radius-lg);
     border: 1px solid var(--line-strong);

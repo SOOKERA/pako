@@ -3,8 +3,9 @@
 <script lang="ts">
   // Direct's questions, shown on any tab: "… wants to connect" (the first time only) and
   // "… wants to send you …" (unless that contact may send without asking). One at a time,
-  // oldest first. Accept wakes up a moment after a question appears, so a click meant for
-  // something else can't accept it.
+  // oldest first. The answers wake up a moment after a question appears, so a click or an Esc
+  // meant for something else can't accept it, and can't decline it either (declining a request
+  // turns that person away for 7 days).
   import { open as pick } from "@tauri-apps/plugin-dialog";
   import { app } from "./state.svelte";
   import { api } from "./api";
@@ -29,11 +30,32 @@
   let armed = $state(false);
   const shown = $derived(request ? `r:${request.peer}` : offer ? `o:${offer.id}` : "");
   $effect(() => {
+    // Another question (or none): the last answer is forgotten, so the same person can be
+    // answered again another time.
+    answered = "";
     if (!shown) return;
     armed = false;
     const t = setTimeout(() => (armed = true), 600);
     return () => clearTimeout(t);
   });
+
+  /** One answer per question: the dialog stays for a moment until the engine takes the question
+   *  off the list, and a second click would answer it again (an error, or the next question).
+   *  An answer that didn't go through can be given again. */
+  let answered = "";
+  async function answer(send: () => Promise<unknown>) {
+    const key = shown;
+    if (!armed || !key || answered === key) return;
+    answered = key;
+    try {
+      await send();
+    } catch (e) {
+      app.toast(String(e), "error");
+      if (answered === key) answered = "";
+    }
+  }
+  const answerRequest = (peer: string, accept: boolean) => answer(() => api.directAnswerRequest(peer, accept));
+  const answerOffer = (id: string, accept: boolean) => answer(() => api.directAnswerOffer(id, accept, accept ? folder : null));
 
   async function change() {
     const r = await pick({ directory: true, multiple: false, title: "Where to save these files" });
@@ -43,7 +65,7 @@
 
 {#if request}
   {@const r = request}
-  <Modal title="{r.name} wants to connect" width={480} closeLabel="Decline" onclose={() => app.run(() => api.directAnswerRequest(r.peer, false))}>
+  <Modal title="{r.name} wants to connect" width={480} closeLabel="Decline" onclose={() => answerRequest(r.peer, false)}>
     <div class="body">
       <p class="who dim small"><Icon name="alert" size={13} />Not in your contacts. The name is the one they chose; Pako can't check it.</p>
       {#if r.knownAs}
@@ -58,13 +80,13 @@
       <p class="dim small">If you decline (or close this), Pako turns {r.name} away without asking you for 7 days.</p>
     </div>
     {#snippet actions()}
-      <button class="btn ghost" title="Decline (Esc)" onclick={() => app.run(() => api.directAnswerRequest(r.peer, false))}>Decline</button>
-      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => armed && app.run(() => api.directAnswerRequest(r.peer, true))}>Accept</button>
+      <button class="btn ghost" title="Decline (Esc)" onclick={() => answerRequest(r.peer, false)}>Decline</button>
+      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => answerRequest(r.peer, true)}>Accept</button>
     {/snippet}
   </Modal>
 {:else if offer}
   {@const o = offer}
-  <Modal title="{o.contactName} wants to send you files" width={500} closeLabel="Decline" onclose={() => app.run(() => api.directAnswerOffer(o.id, false))}>
+  <Modal title="{o.contactName} wants to send you files" width={500} closeLabel="Decline" onclose={() => answerOffer(o.id, false)}>
     <div class="body">
       <div class="what">
         <Icon name={o.files > 1 ? "folder" : "file"} size={18} />
@@ -75,7 +97,7 @@
       </div>
       {#if o.files > 1}
         <ul class="sample dim small">
-          {#each o.sample as s (s)}<li>{s}</li>{/each}
+          {#each o.sample as s, i (i)}<li>{s}</li>{/each}
           {#if o.files > o.sample.length}<li>and {plural(o.files - o.sample.length, "more file")}</li>{/if}
         </ul>
       {/if}
@@ -91,8 +113,8 @@
       {/if}
     </div>
     {#snippet actions()}
-      <button class="btn ghost" title="Decline (Esc)" onclick={() => app.run(() => api.directAnswerOffer(o.id, false))}>Decline</button>
-      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => armed && app.run(() => api.directAnswerOffer(o.id, true, folder))}><Icon name="download" size={13} stroke={2.2} />Accept</button>
+      <button class="btn ghost" title="Decline (Esc)" onclick={() => answerOffer(o.id, false)}>Decline</button>
+      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => answerOffer(o.id, true)}><Icon name="download" size={13} stroke={2.2} />Accept</button>
     {/snippet}
   </Modal>
 {/if}

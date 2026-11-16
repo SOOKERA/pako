@@ -46,7 +46,12 @@
 
   onMount(() => {
     reload();
-    api.updateStatus().then((u) => (app.update = u)).catch(() => {});
+    api
+      .updateStatus()
+      .then((u) => {
+        app.update = u;
+      })
+      .catch(() => {});
   });
 
   async function reload() {
@@ -140,7 +145,6 @@
           Pako looks for a new version once a day, also while it stays open in the tray.
         {/if}
       </div>
-      <div class="by"><Credit /></div>
     </div>
     <div class="ctrl">
       {#if u?.ready}
@@ -152,6 +156,8 @@
       {/if}
     </div>
   </div>
+  <!-- Under the whole row, so it stays on one line. -->
+  <div class="by"><Credit /></div>
   <div class="line">
     <div>
       <div class="t">Update Pako and its tools automatically</div>
@@ -243,34 +249,40 @@
 </section>
 
 <style>
+  /* The same raised card as the other sections of Settings (SettingsDialog.svelte). */
   section {
-    padding: 18px 0;
-    border-top: 1px solid var(--line);
+    margin-top: 14px;
+    padding: 16px 18px 18px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
   }
   h3 {
-    margin: 0 0 12px;
-    font-size: 11px;
+    margin: 0 0 4px;
+    font-size: 14px;
     font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--text-3);
+    letter-spacing: 0;
+    color: var(--text);
   }
   .line,
   .fhead {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
-    padding: 10px 0;
-  }
-  .fhead {
-    margin-top: 10px;
+    gap: 24px;
+    padding: 14px 0 0;
+    margin-top: 14px;
+    border-top: 1px solid var(--line-soft);
   }
   .ctrl {
     flex: none;
   }
+  .fhead .btn {
+    flex: none;
+  }
   .t {
     font-weight: 500;
+    margin-bottom: 3px;
   }
   .ver {
     margin-left: 6px;
@@ -278,7 +290,7 @@
     color: var(--text-3);
   }
   .by {
-    margin-top: 6px;
+    margin-top: 8px;
   }
   .kind {
     margin-left: 6px;
@@ -287,7 +299,6 @@
     color: var(--text-3);
   }
   .muted {
-    margin-top: 2px;
     font-size: 12px;
     line-height: 1.45;
     color: var(--text-3);
@@ -298,6 +309,7 @@
     color: var(--st-fail-text);
   }
   .feats {
+    margin-top: 12px;
     display: flex;
     flex-direction: column;
     border: 1px solid var(--line);

@@ -95,15 +95,25 @@
     clearTimeout(timer);
     need = null;
     if (host !== "drive" || !paths.length) return;
+    // An answer for an older basket (it changed while Pako measured) is dropped.
+    let stale = false;
     timer = setTimeout(async () => {
       try {
-        drive = await api.sendDriveStatus();
-        if (drive.configured && drive.signedIn) need = await api.sendMeasure(paths, m);
+        const st = await api.sendDriveStatus();
+        if (stale) return;
+        drive = st;
+        if (st.configured && st.signedIn) {
+          const n = await api.sendMeasure(paths, m);
+          if (!stale) need = n;
+        }
       } catch {
-        drive = null;
+        if (!stale) drive = null;
       }
     }, 400);
-    return () => clearTimeout(timer);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
   });
   const free = $derived(drive?.limit != null && drive.used != null ? Math.max(0, drive.limit - drive.used) : null);
   const fits = $derived(need == null || free == null ? null : need <= free);
@@ -383,6 +393,20 @@
     }
     .opts .input {
       width: 100%;
+    }
+  }
+  /* The smallest window with the details panel open: each label sits above its choices, so
+     the widest row of choices fits inside the card. */
+  @container (max-width: 480px) {
+    .basket {
+      padding: 12px 12px 14px;
+    }
+    .opts {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 6px;
+    }
+    .opts .lbl:not(:first-child) {
+      margin-top: 6px;
     }
   }
 </style>

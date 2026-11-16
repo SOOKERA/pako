@@ -120,6 +120,7 @@ async function init() {
       $("connect").hidden = false;
       $("main").hidden = true;
       $("open").hidden = true;
+      $("get").hidden = true; // Pako is on this PC: nothing to get
       $("connect-title").textContent = "This Pako is too old for this extension";
       $("connect-text").textContent = "Update Pako (Settings › Features & updates), then open this again.";
       if ($("error").textContent === NOT_CONNECTED) showError("");

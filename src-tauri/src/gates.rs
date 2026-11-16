@@ -12,7 +12,8 @@
 //!
 //! The gate window gets no access to Pako's own functions (it isn't listed in the app's
 //! capabilities): it only talks back through navigations to `https://pako.gate/…`, which are
-//! intercepted and never leave the PC.
+//! intercepted and never leave the PC. It also keeps nothing: it runs in WebView2's InPrivate mode,
+//! so the gate's and its ads' cookies and storage are gone when the window closes.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -239,6 +240,11 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
         .min_inner_size(360.0, 420.0)
         .center()
         .visible(false)
+        // Keeps nothing: the page runs in WebView2's InPrivate mode (same environment as Pako's
+        // own windows, a throw-away profile for this window only), so the cookies and storage of
+        // the gate and its ads are gone when the window closes, and Pako's own storage (theme,
+        // window preferences) is never touched. Each link page starts with no cookies.
+        .incognito(true)
         .initialization_script(GATE_SCRIPT)
         .on_navigation(move |u| {
             if !matches!(u.scheme(), "http" | "https") {

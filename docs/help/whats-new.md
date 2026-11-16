@@ -1,6 +1,6 @@
 # What's new
 
-## Next version
+## 1.0.0
 
 ### Light or dark
 
@@ -9,35 +9,58 @@
 
 ### Downloads
 
-- Unfinished downloads now end in .pakopart. Downloads left unfinished by an older Pako carry on.
-- If an unfinished download was left twice, once by this version and once by an older one, it carries on from the file changed last.
+- Unfinished downloads now end in .pakopart. Downloads left unfinished by an older Pako carry on from where they stopped.
+- A link that answers with a web page (a sign-in page, or "link expired") instead of the file now stops and says so, instead of saving the page as the file. A browser download like that stays in the browser.
+- Extracting split archives never writes over a file of the same name: the extracted file gets a new name.
+- **Start over** on a Google Drive file that was replaced on Google now works.
+- Renaming a paused video keeps what was already downloaded.
+- **Pause**, **Start over** and the end of the download hours act at once, even with a low speed limit.
+- Link pages (a page to click through before the file) now open in a private window: its cookies and site data are gone when it closes. A site's check may ask you again for each link.
 
 ### Browser extension
 
 - **Pako Light**: a smaller edition of the extension for the Chrome Web Store, without videos. If the full extension is on in the same browser, Pako Light steps aside, so a download goes to Pako only once.
+- Pako Light's small window now says where to get Pako when Pako isn't on this PC.
+- A browser download keeps its name after the **Download with Pako** window: no more "name (1)", and no unfinished .pakopart file left behind.
+- Right-click › **Download with Pako** now uses the link's own file name instead of "download".
 - The right-click items now follow you when you switch to another browser window.
+- When a file sent from your browser is on another site than its page, that site now gets only the page's main address (like your browser does), never the full address.
 
 ### Upload
 
 - Connecting your Google Drive for uploads now works in every Pako, not only on some PCs.
+- If the box for Google Drive isn't ticked on Google's page, Pako now says so instead of connecting a Drive it can't upload to.
+- When several files go up **As they are**, **Keep** or a new delete date picked before the upload finishes (or before **Try again**) now stays. It used to go back to 7 days.
 - Upload says "upload" everywhere: **Not all uploaded**, **Uploading**, "Pako's uploads" in the Drive bar.
 - New uploads to Google Drive go to a folder called "Pako uploads". If you already have a "Pako sends" folder from an earlier Pako, Pako keeps using it.
 - The same three choices everywhere: **As they are**, **One ZIP** and **Compressed ZIP**, in **New upload**, in **Settings › Upload** and under **Uploaded as** in the details panel.
 
 ### Direct
 
+- Direct now starts the first time you open the **Direct** page, and with Pako from then on. If you never open it, Pako makes no Direct connection. If you already used Direct, nothing changes.
+- A contact who restarts their Pako is back online at once. It could take up to 3 minutes.
+- When their Pako can't save what you send, yours says so ("Their Pako couldn't save it.", or that their drive is full) without showing their folder or free space. Too many sends at once are turned away with "Too many sends in a short time. Try again in a minute."
 - Files still arriving now end in .pakorecv, so they can't mix up with an unfinished download.
 - A contact's progress no longer jumps back when one of several files finishes.
-- Closing a "wants to connect" or "wants to send you files" question with **×** or **Esc** declines it, and now says so.
+- Closing a "wants to connect" or "wants to send you files" question with **×** or **Esc** declines it, and now says so. A question takes an answer only after a short moment, so a stray click can't decline it.
+- **Clear history…** asks first.
 - Declining or removing someone says that Pako turns them away without asking you for 7 days. If someone declines you, Pako says when you can ask again.
-- **Waiting for you** is now coral, like the **!** on a contact: something waits for your answer. Amber stays "waiting for them to accept".
+- **Waiting for you** and the count on the **Direct** tab are now coral, like the **!** on a contact: something waits for your answer. Amber stays "waiting for them to accept".
+- Files you pick to send stay with that person, like a draft: another contact shows their own, and files can't go to someone else when a contact comes online.
 - With an offline contact, Direct says plainly that files go only while you're both online.
+- A received folder with deep sub-folders no longer fails at the very end.
+- Files moving in Direct now count like downloads: the PC stays awake for them (with **Keep the PC awake while downloading** on), **When done** waits for them, and quitting asks first.
 
 ### Help
 
-- **Help › About Pako**: the copyright, the licence and Sookera's additional terms. **Free software (GPL-3.0)** in Help and Settings opens it.
+- **Help › About Pako**: the copyright, the licence and Sookera's additional terms, with a link to Pako's source code. **Free software (GPL-3.0)** in Help and Settings opens it.
 - **Help › Report a problem**: say what happened and send it to Sookera in one click with **Send report** (you get a reference back), or with your own email app, or copy it, or save it as a file. You see everything that goes with it first, including the last problems Pako noted (kept on your PC, without links' addresses, file names or your name). Nothing goes until you click.
-- New guides: **Installing and updating**, **Upload**, **Direct**, **Notifications** and **Dashboard**. Every guide was checked against this version.
+- New guides: **Installing and updating**, **Upload**, **Direct**, **Notifications**, **Dashboard** and **Help and problems**. Every guide was checked against this version.
+
+### Updates and problems
+
+- An update that Windows won't start (an antivirus, for example) is put back: your Pako keeps working, and **Settings › Features & updates** says the new version didn't start properly.
+- If Pako has to close because of a problem, it now says so, and the problem is in **Help › Report a problem**. If its window can't open, it says to install Microsoft Edge WebView2 Runtime.
 
 ### Installer
 

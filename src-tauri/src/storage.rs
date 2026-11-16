@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
-//! Where uploads go, behind one interface (PLAN.md "Storage of the user's choice").
+//! Where uploads go, behind one interface (the storage the user picks).
 //!
 //! Upload, "Delete after", the space bar and, later, Direct's outbox ask a `Store` for what they
 //! need (is it connected, how much room, upload, make a folder, delete, set an expiry) without

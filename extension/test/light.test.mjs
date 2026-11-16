@@ -126,6 +126,28 @@ test("Browser downloads from a video site stay in the browser", async () => {
   assert.equal(ext.sent[0].takeover, true);
 });
 
+test("An embedded frame of a video site, or a download that started on one: nothing is sent", async () => {
+  const ext = await light();
+  const tab = { id: 1, url: "https://news.example/" };
+  await ext.listeners.click({ menuItemId: "pako-media", srcUrl: "https://img.example.net/thumb.jpg", pageUrl: tab.url, frameUrl: "https://www.youtube.com/embed/aaaaaaaaaaa" }, tab);
+  // A browser download that started on such a site and ended on another address.
+  await ext.listeners.download({ id: 8, url: "https://www.youtube.com/get?x=1", finalUrl: "https://cdn.example.net/file.bin", referrer: "" });
+  await settle();
+  assert.deepEqual(ext.sent, []);
+  assert.deepEqual(ext.log, []);
+});
+
+test("Send this page is the toolbar window's: a page in a tab can't ask for it", async () => {
+  const full = loadEdition({ light: false });
+  const reply = await new Promise((r) => full.listeners.message({ type: "send-tab", url: "https://files.example.com/a.zip" }, { tab: { id: 3 } }, (x) => r(plain(x))));
+  assert.equal(reply.ok, false);
+  // The player's button never sends another site's address (nor reads its cookies).
+  const other = await new Promise((r) => full.listeners.message({ type: "video", url: "https://shop.example.co.uk/x", quality: 720 }, { tab: { id: 3 } }, (x) => r(plain(x))));
+  assert.equal(other.ok, false);
+  await settle();
+  assert.deepEqual(full.sent, []);
+});
+
 test("Light never sends a video request, even when asked", async () => {
   const ext = await light();
   const reply = await new Promise((r) => ext.listeners.message({ type: "video", url: "https://www.youtube.com/watch?v=x", quality: 720 }, { tab: { id: 1 } }, r));

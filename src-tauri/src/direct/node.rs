@@ -36,6 +36,18 @@ const STALL: Duration = Duration::from_secs(120);
 const LAST_PIECES_QUIET: Duration = Duration::from_secs(30);
 /// Sends from one contact waiting for your answer at once; more are turned away.
 const MAX_ASKING: usize = 10;
+/// "… wants to connect" questions open at once; more people trying now are turned away (they
+/// try again later by themselves).
+const MAX_REQUESTS: usize = 20;
+/// Sends one contact may offer in a minute. Past it they're turned away with a reason, and past
+/// twice that without an answer: a contact's Pako gone wrong (or hostile) can't fill the screen
+/// with questions, push your history out, or make this Pako queue answers without end.
+const MAX_OFFERS_PER_MINUTE: usize = 20;
+/// A connection kept this long is no longer one of two made at the same moment: when the same
+/// contact connects again, their Pako has lost the old one (restarted, slept, changed network).
+const SETTLED_AFTER: Duration = Duration::from_secs(30);
+/// Longest text kept from the other side's "couldn't take it" answer.
+const MAX_PEER_MESSAGE: usize = 300;
 /// How long someone you declined or removed is turned away without asking you again.
 const BLOCK_FOR_MS: u64 = 7 * 24 * 3600 * 1000;
 
@@ -86,6 +98,39 @@ struct Live {
     tx: mpsc::UnboundedSender<Msg>,
     /// Who opened this connection (the same pair keeps the one opened by the smaller ID).
     initiator: String,
+    /// When it was kept.
+    since: std::time::Instant,
+}
+
+/// A contact is connected and connects again: whether the new connection takes the place of
+/// the one kept. Two made at the same moment (both sides dialled): the one opened by the
+/// smaller ID stays, so both sides keep the same one. Otherwise the new one wins: a Pako only
+/// dials a contact it isn't connected to, so the kept one is dead on their side (their Pako
+/// restarted or lost it) even if this side hasn't noticed yet.
+fn replaces(old_opener: &str, old_age: Duration, new_opener: &str) -> bool {
+    new_opener == old_opener || old_age >= SETTLED_AFTER || new_opener < old_opener
+}
+
+/// What to do with one more offer from a contact.
+#[derive(Debug, PartialEq)]
+enum Flood {
+    Fine,
+    /// Too many in a minute: turned away, with the reason.
+    TurnAway,
+    /// Far too many: not even answered.
+    Ignore,
+}
+
+/// Counts an offer from a contact at `now`; `times` holds their offers of the last minute.
+fn offer_flood(times: &mut VecDeque<std::time::Instant>, now: std::time::Instant) -> Flood {
+    while times.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60)) {
+        times.pop_front();
+    }
+    if times.len() >= MAX_OFFERS_PER_MINUTE * 2 {
+        return Flood::Ignore;
+    }
+    times.push_back(now);
+    if times.len() > MAX_OFFERS_PER_MINUTE { Flood::TurnAway } else { Flood::Fine }
 }
 
 struct Request {
@@ -241,6 +286,8 @@ struct Inner {
     blocked: Vec<Blocked>,
     /// Counter for arrival order.
     seq: u64,
+    /// When each contact's offers of the last minute came in.
+    offer_times: HashMap<String, VecDeque<std::time::Instant>>,
 }
 
 impl Inner {
@@ -659,6 +706,7 @@ impl Node {
             inner.contacts.retain(|c| c.id != id);
             inner.waiting.remove(id);
             inner.notes.remove(id);
+            inner.offer_times.remove(id);
             self.save_contacts(&inner);
             self.block(&mut inner, id);
             inner.live.remove(id)
@@ -855,17 +903,19 @@ impl Node {
         }
         // Keep one connection per contact: the one opened by the smaller ID.
         let opener = if initiator { self.my_id() } else { peer.clone() };
-        {
+        let replaced = {
             let mut inner = self.inner.lock().unwrap();
+            let mut replaced = false;
             if let Some(old) = inner.live.get(&peer) {
-                if old.initiator <= opener {
+                if !replaces(&old.initiator, old.since.elapsed(), &opener) {
                     drop(inner);
                     conn.close(3u32.into(), b"duplicate");
                     return;
                 }
                 old.conn.close(3u32.into(), b"duplicate");
+                replaced = true;
             }
-            inner.live.insert(peer.clone(), Live { conn: conn.clone(), tx: tx.clone(), initiator: opener });
+            inner.live.insert(peer.clone(), Live { conn: conn.clone(), tx: tx.clone(), initiator: opener, since: std::time::Instant::now() });
             inner.waiting.remove(&peer);
             inner.notes.remove(&peer);
             if let Some(c) = inner.contacts.iter_mut().find(|c| c.id == peer) {
@@ -874,6 +924,12 @@ impl Node {
                 c.last_seen = Some(now_ms());
             }
             self.save_contacts(&inner);
+            replaced
+        };
+        // What was moving on the connection this one replaced can't finish: ended now, instead
+        // of waiting on a dead connection.
+        if replaced {
+            self.connection_lost(&peer);
         }
         self.changed();
         // Files arrive on one-way streams.
@@ -990,7 +1046,9 @@ impl Node {
         let (atx, arx) = oneshot::channel();
         {
             let mut inner = self.inner.lock().unwrap();
-            if inner.requests.contains_key(peer) {
+            // Anyone who has your Pako ID can make new keys at will: past a few open questions,
+            // more are turned away without a pop-up each.
+            if inner.requests.contains_key(peer) || inner.requests.len() >= MAX_REQUESTS {
                 return false;
             }
             let at = inner.next_seq();
@@ -1143,7 +1201,9 @@ impl Node {
 
     /// Sends files and folders to a connected contact. `compress`: one compressed ZIP.
     pub async fn send(self: &Arc<Self>, contact: &str, paths: Vec<PathBuf>, compress: bool, name: Option<String>) -> Result<String, String> {
-        let tx = self.inner.lock().unwrap().live.get(contact).map(|l| l.tx.clone()).ok_or("They aren't connected right now.")?;
+        if !self.inner.lock().unwrap().live.contains_key(contact) {
+            return Err("They aren't connected right now.".into());
+        }
         if paths.is_empty() {
             return Err("Add files first.".into());
         }
@@ -1176,8 +1236,16 @@ impl Node {
         let total = files.iter().map(|(_, f)| f.size).sum();
         let (etx, erx) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
-        {
+        // The connection as it is now: listing or zipping may have taken minutes, and they may
+        // have reconnected meanwhile (an offer into the old connection would wait for ever).
+        let tx = {
             let mut inner = self.inner.lock().unwrap();
+            let Some(tx) = inner.live.get(contact).map(|l| l.tx.clone()) else {
+                if let Some(t) = &temp {
+                    let _ = std::fs::remove_file(t);
+                }
+                return Err("They aren't connected right now.".into());
+            };
             inner.outgoing.insert(
                 id.clone(),
                 Outgoing {
@@ -1194,7 +1262,8 @@ impl Node {
                     meter: Arc::new(Meter::default()),
                 },
             );
-        }
+            tx
+        };
         let offer = Msg::Offer { id: id.clone(), name: title, files: files.iter().map(|(_, f)| f.clone()).collect() };
         if tx.send(offer).is_err() {
             self.end_outgoing(&id, "failed", Some("The connection was lost.".into()));
@@ -1259,7 +1328,7 @@ impl Node {
             }
             // Their Pako turned it away without asking (and says why).
             Some(Msg::Result { ok: false, message, .. }) => {
-                self.end_outgoing(id, "failed", message.or(Some("Their Pako couldn't take it.".into())));
+                self.end_outgoing(id, "failed", peer_message(message).or(Some("Their Pako couldn't take it.".into())));
                 return;
             }
             _ => {
@@ -1353,7 +1422,7 @@ impl Node {
         };
         match verdict {
             Some(Msg::Result { ok: true, .. }) => self.end_outgoing(id, "done", None),
-            Some(Msg::Result { message, .. }) => self.end_outgoing(id, "failed", message.or(Some("They couldn't check the files.".into()))),
+            Some(Msg::Result { message, .. }) => self.end_outgoing(id, "failed", peer_message(message).or(Some("They couldn't check the files.".into()))),
             _ => self.end_outgoing(id, "failed", Some("No answer.".into())),
         }
     }
@@ -1475,6 +1544,15 @@ impl Node {
         let turned_away = |why: String| {
             let _ = tx.send(Msg::Result { id: id.clone(), ok: false, message: Some(why) });
         };
+        let flood = offer_flood(self.inner.lock().unwrap().offer_times.entry(peer.to_string()).or_default(), std::time::Instant::now());
+        match flood {
+            Flood::Fine => {}
+            Flood::TurnAway => {
+                turned_away("Too many sends in a short time. Try again in a minute.".into());
+                return;
+            }
+            Flood::Ignore => return,
+        }
         {
             let inner = self.inner.lock().unwrap();
             if inner.incoming.contains_key(&id) || inner.outgoing.contains_key(&id) || inner.history.iter().any(|h| h.id == id) {
@@ -1593,7 +1671,10 @@ impl Node {
         let (targets, parts, handles, saved_to) = match prepared {
             Ok(p) => p,
             Err(e) => {
-                let _ = tx.send(Msg::Result { id: id.to_string(), ok: false, message: Some(format!("Their Pako couldn't save it: {e}")) });
+                // The reason kept here names folders of this PC: the other side only learns
+                // whether it was the room.
+                let why = if e.starts_with(NO_ROOM) { "Their Pako couldn't save it: there isn't enough room on their drive." } else { "Their Pako couldn't save it." };
+                let _ = tx.send(Msg::Result { id: id.to_string(), ok: false, message: Some(why.into()) });
                 self.end_incoming(id, "failed", Some(e.clone()));
                 return Err(e);
             }
@@ -1995,6 +2076,19 @@ fn clean_name(name: &str) -> Option<String> {
     if n.is_empty() { None } else { Some(n) }
 }
 
+/// The other side's reason, as shown and kept in the history: on one line, without hidden
+/// characters, at most 300 characters (their Pako can send any text). None = nothing left.
+fn peer_message(m: Option<String>) -> Option<String> {
+    let m = m?;
+    let one_line: String = m.chars().filter(|c| !proto::is_hidden(*c)).map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let words = one_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut s: String = words.chars().take(MAX_PEER_MESSAGE).collect();
+    if s.len() < words.len() {
+        s.push('…');
+    }
+    (!s.is_empty()).then_some(s)
+}
+
 /// The name is taken: by a file or folder, a file arriving through Direct, or a download's
 /// unfinished file (".pakopart", or ".zdpart" from an older Pako).
 fn taken(p: &Path) -> bool {
@@ -2060,6 +2154,9 @@ fn is_own_leftover(p: &Path) -> bool {
 
 type Prepared = (Vec<PathBuf>, Vec<PathBuf>, Vec<Arc<std::fs::File>>, PathBuf);
 
+/// How `prepare_targets` starts its "the drive is too full" reason.
+const NO_ROOM: &str = "Not enough room";
+
 /// What `prepare_targets` made so far (removed again if it fails half-way).
 #[derive(Default)]
 struct Made {
@@ -2076,7 +2173,7 @@ fn prepare_targets(base: &Path, name: &str, files: &[OfferFile], total: u64) -> 
         let margin = margin_for(size);
         if free < total.saturating_add(margin) {
             return Err(format!(
-                "Not enough room: this needs {}, {} is free there (Pako always leaves {} free).",
+                "{NO_ROOM}: this needs {}, {} is free there (Pako always leaves {} free).",
                 human(total),
                 human(free),
                 human(margin)
@@ -2193,12 +2290,31 @@ fn move_new(from: &Path, to: &Path) -> std::io::Result<PathBuf> {
 fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-    let wide = |p: &Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |p: &Path| long_path(p).as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
     let (a, b) = (wide(from), wide(to));
     // SAFETY: two valid NUL-terminated paths; no flags = fail if `to` exists.
     let ok = unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), 0) };
     if ok != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
+/// `p` in the form Windows takes past 260 characters ("\\?\C:\..." or "\\?\UNC\server\..."):
+/// a folder sent with deep sub-folders often lands that far down. (Rust's own file functions do
+/// this by themselves; a direct Windows call doesn't.)
+#[cfg(windows)]
+fn long_path(p: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let Ok(full) = std::path::absolute(p) else { return p.to_path_buf() };
+    let w: Vec<u16> = full.as_os_str().encode_wide().collect();
+    let utf16 = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    let out: Vec<u16> = if w.starts_with(&utf16(r"\\?\")) || w.starts_with(&utf16(r"\\.\")) {
+        return full;
+    } else if w.starts_with(&utf16(r"\\")) {
+        utf16(r"\\?\UNC\").into_iter().chain(w[2..].iter().copied()).collect()
+    } else {
+        utf16(r"\\?\").into_iter().chain(w).collect()
+    };
+    PathBuf::from(std::ffi::OsString::from_wide(&out))
+}
+
 #[cfg(not(windows))]
 fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
     if to.exists() {
@@ -2302,6 +2418,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A folder with deep sub-folders lands past Windows' old 260-character limit: the finished
+    /// file still gets its name (it used to fail at the very end, and everything was deleted).
+    #[test]
+    fn deep_folders_past_260_characters_finish() {
+        let base = std::env::temp_dir().join(format!("pako-direct-deep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut deep = base.clone();
+        for i in 0..6 {
+            deep.push(format!("{i} a rather long folder name, as people give them sometimes"));
+        }
+        assert!(deep.as_os_str().len() > 300);
+        std::fs::create_dir_all(&deep).unwrap();
+        let (target, part, file) = claim_file(&deep.join("photo.jpg")).unwrap();
+        drop(file);
+        std::fs::write(&part, b"abc").unwrap();
+        let at = move_new(&part, &target).unwrap();
+        assert_eq!(at, target);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abc");
+        // Never replaces there either.
+        let (t2, p2, f2) = claim_file(&deep.join("photo.jpg")).unwrap();
+        drop(f2);
+        assert_eq!(t2, deep.join("photo (2).jpg"));
+        std::fs::write(&p2, b"new").unwrap();
+        assert_eq!(rename_new(&p2, &target).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(move_new(&p2, &t2).unwrap(), t2);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abc");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Direct's unfinished files have their own ending; a download's unfinished file of the
     /// same name is never taken over, and start-up deletes only Direct's own leftovers (Pako
     /// 0.1.2's ".pakopart" ones only with Direct's mark).
@@ -2347,8 +2492,48 @@ mod tests {
     fn names_shown_lose_hidden_characters() {
         assert_eq!(clean_name("  Ra\u{202E}do\u{200B} "), Some("Rado".into()));
         assert_eq!(clean_name("\u{2066}\u{2069}"), None);
+        // Their Pako's "couldn't take it": one line, no hidden characters, not endless.
+        assert_eq!(peer_message(Some("Not enough\nroom\u{202E} here.".into())).as_deref(), Some("Not enough room here."));
+        assert_eq!(peer_message(Some(" \u{200B} ".into())), None);
+        assert_eq!(peer_message(None), None);
+        let long = peer_message(Some("x".repeat(5_000_000))).unwrap();
+        assert_eq!(long.chars().count(), MAX_PEER_MESSAGE + 1);
         assert_eq!(margin_for(10 * 1024 * 1024 * 1024), DISK_MARGIN_MIN);
         assert_eq!(margin_for(2_000_000_000_000), 100_000_000_000);
+    }
+
+    /// A contact's Pako restarted (or lost the connection) and connects again while this side
+    /// still holds the old, dead connection: the new one is kept at once. It used to be turned
+    /// away as a duplicate, and the two showed each other offline for up to three minutes.
+    #[test]
+    fn a_contact_connecting_again_takes_the_place_of_a_dead_connection() {
+        let (a, b) = ("aaa", "bbb");
+        let (fresh, old) = (Duration::from_secs(2), Duration::from_secs(300));
+        // Both dialled at the same moment: the one opened by the smaller ID stays, on both sides.
+        assert!(replaces(b, fresh, a));
+        assert!(!replaces(a, fresh, b));
+        // The same side dials again: it lost its first one.
+        assert!(replaces(a, fresh, a) && replaces(b, fresh, b));
+        // A connection kept for a while, and they connect again: theirs is gone.
+        assert!(replaces(a, old, b) && replaces(b, old, a));
+    }
+
+    #[test]
+    fn a_flood_of_offers_is_turned_away() {
+        let start = std::time::Instant::now();
+        let mut times = VecDeque::new();
+        for i in 0..MAX_OFFERS_PER_MINUTE {
+            assert_eq!(offer_flood(&mut times, start + Duration::from_millis(i as u64)), Flood::Fine);
+        }
+        for _ in 0..MAX_OFFERS_PER_MINUTE {
+            assert_eq!(offer_flood(&mut times, start + Duration::from_secs(1)), Flood::TurnAway, "told why");
+        }
+        for _ in 0..1000 {
+            assert_eq!(offer_flood(&mut times, start + Duration::from_secs(2)), Flood::Ignore, "no answer queued");
+        }
+        assert_eq!(times.len(), MAX_OFFERS_PER_MINUTE * 2, "nothing piles up");
+        // A minute later they can send again.
+        assert_eq!(offer_flood(&mut times, start + Duration::from_secs(63)), Flood::Fine);
     }
 
     #[tokio::test(flavor = "multi_thread")]

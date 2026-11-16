@@ -74,9 +74,16 @@ const RESERVED: &[&str] = &[
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
+/// Characters that flip the direction text is shown in: a server could make "invoice", a
+/// right-to-left mark, then "fdp.exe" look like "invoiceexe.pdf". Left out of file names.
+fn direction_mark(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 pub fn sanitize(name: &str) -> String {
     let mut s: String = name
         .chars()
+        .filter(|c| !direction_mark(*c))
         .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
         .collect();
     s = s.trim().trim_end_matches(['.', ' ']).to_string();
@@ -91,7 +98,12 @@ pub fn sanitize(name: &str) -> String {
     if s.chars().count() > 180 {
         let (base, ext) = split_ext(&s);
         let base: String = base.chars().take(170).collect();
-        s = format!("{base}{ext}");
+        // Cut before a dot or a space: Windows drops those at the end of a name, and the file
+        // would then not be where Pako looks for it.
+        s = format!("{base}{ext}").trim_end_matches(['.', ' ']).to_string();
+        if s.is_empty() {
+            s = "download".into();
+        }
     }
     s
 }
@@ -182,6 +194,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pako-names-{tag}-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Direction marks (which can disguise "x.exe" as "exe.pdf") go; long names cut before a
+    /// dot or a space don't end with one (Windows would drop it).
+    #[test]
+    fn sanitize_drops_direction_marks_and_trailing_dots() {
+        assert_eq!(sanitize("invoice\u{202E}fdp.exe"), "invoicefdp.exe");
+        assert_eq!(sanitize("a\u{2066}b\u{2069}.zip"), "ab.zip");
+        let long = format!("{}. {}", "a".repeat(168), "b".repeat(20));
+        let s = sanitize(&long);
+        assert!(!s.ends_with('.') && !s.ends_with(' '), "{s:?}");
+        assert_eq!(s, "a".repeat(168));
+        assert_eq!(sanitize(&"x".repeat(200)).chars().count(), 170);
     }
 
     /// A name whose unfinished file exists (new or older Pako's) is taken.

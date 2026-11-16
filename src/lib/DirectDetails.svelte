@@ -33,9 +33,16 @@
   } = $props();
 
   let n = $state<ContactNumbers | null>(null);
+  /** Whose numbers `n` are: another contact picked shows none until theirs arrive (never the
+   *  previous person's). */
+  let nFor = "";
   $effect(() => {
     const id = c.id;
     void historyCount;
+    if (id !== nFor) {
+      nFor = id;
+      n = null;
+    }
     api
       .numbersContact(id)
       .then((got) => {
@@ -154,7 +161,7 @@
       <dd>
         <button class="linkish" onclick={ontags}>
           {#if c.tags?.length}
-            {#each c.tags as t (t)}<span class="chip">{t}</span>{/each}
+            {#each c.tags as t, i (i)}<span class="chip">{t}</span>{/each}
           {:else}
             Add tags
           {/if}
@@ -267,8 +274,9 @@
   .sdot.online {
     background: var(--st-done);
   }
+  /* Amber like the dot on their row: waiting for them (coral would mean waiting for you). */
   .sdot.wait {
-    background: var(--st-wait);
+    background: var(--st-retry);
   }
   .totals {
     display: grid;

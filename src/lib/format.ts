@@ -8,11 +8,12 @@ export function bytes(n: number | null | undefined): string {
   if (n == null) return "?";
   let i = 0;
   let v = n;
-  while (v >= 1024 && i < UNITS.length - 1) {
+  // 1023.96 KB would round to "1024 KB": it shows as "1.0 MB" instead.
+  while (Math.round(v) >= 1024 && i < UNITS.length - 1) {
     v /= 1024;
     i++;
   }
-  const digits = i === 0 ? 0 : v >= 100 ? 0 : 1;
+  const digits = i === 0 ? 0 : v >= 99.95 ? 0 : 1;
   return `${v.toFixed(digits)} ${UNITS[i]}`;
 }
 
@@ -20,12 +21,13 @@ export function bytes(n: number | null | undefined): string {
 export function bytesOf(done: number, total: number): string {
   let i = 0;
   let t = total;
-  while (t >= 1024 && i < UNITS.length - 1) {
+  // The same step up as bytes(): 1023.96 KB reads "1.0 MB", never "1024 KB".
+  while (Math.round(t) >= 1024 && i < UNITS.length - 1) {
     t /= 1024;
     i++;
   }
   const d = done / 1024 ** i;
-  const digits = i === 0 ? 0 : t >= 100 ? 0 : 1;
+  const digits = i === 0 ? 0 : t >= 99.95 ? 0 : 1;
   return `${d.toFixed(digits)} of ${t.toFixed(digits)} ${UNITS[i]}`;
 }
 
@@ -208,6 +210,14 @@ export function statusLook(s: Status, message?: string | null): StatusLook {
     case "needsAccount":
       return { label: "Only in the browser", color: "var(--st-limit)", text: "var(--st-limit-text)", tint: true };
   }
+}
+
+/** A status colour used for words (a headline): its "-text" shade, so it stays readable on light
+ *  panels (the plain shades are for dots and bars and are too pale as text there). */
+export function wordColor(look: StatusLook): string {
+  const m = look.color.match(/^var\(--st-(run|check|retry|wait|done|fail|limit)\)$/);
+  if (m) return `var(--st-${m[1]}-text)`;
+  return look.color === "var(--st-pause)" ? "var(--text-3)" : look.color;
 }
 
 /** Most urgent first: what a folder row shows. */

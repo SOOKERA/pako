@@ -65,6 +65,12 @@ pub fn data_dir() -> &'static PathBuf {
     })
 }
 
+/// The data folder if it is already known (never works it out: safe from a panic hook, even
+/// one that fires while `data_dir` is being worked out).
+pub fn data_dir_known() -> Option<&'static PathBuf> {
+    DATA_DIR.get()
+}
+
 /// Test setting: a separate data folder (PAKO_DATA_DIR; ZD_DATA_DIR, its name before the app
 /// was called Pako, still works).
 pub fn data_dir_override() -> Option<PathBuf> {
@@ -344,7 +350,7 @@ pub fn default_download_dir() -> PathBuf {
     data_dir().join("Downloads")
 }
 
-//// Write a file safely: write a temp file, flush it to the disk, keep the previous version
+/// Write a file safely: write a temp file, flush it to the disk, keep the previous version
 /// as `.bak`, then put the new one in place. A power cut can't leave a half-written file.
 /// Two saves of the same file at once take turns, each with its own temp file, so they can't
 /// mix their bytes.

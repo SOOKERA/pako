@@ -285,9 +285,13 @@ impl Drive<'_> {
     /// Sends one piece (or, with no bytes, asks where the upload stands). `sent` counts the bytes
     /// as they go out to the network (what the speed shows), slice by slice.
     async fn put(&self, session: &str, start: u64, piece: &[u8], total: Option<u64>, sent: &[Arc<AtomicU64>]) -> Put {
-        let token = match self.token(false).await {
-            Ok(t) => t,
-            Err(f) => return Put::Fail(f),
+        // Renewing the login can fail on a short network cut too: waited out like the upload
+        // itself, so a big upload doesn't start over from the first byte. (A login Google
+        // refused for good is said again on every try, then the upload stops with it.)
+        let token = match self.google.access_token(false).await {
+            Ok(Some(t)) => t,
+            Ok(None) => return Put::Fail(Fail::msg("Connect your Google Drive first (Upload › Google Drive).")),
+            Err(e) => return Put::Retry(e.to_string()),
         };
         let resp = self
             .http
@@ -538,6 +542,8 @@ impl Sender {
             // "Try again" goes into the same folder: only with the account it is in.
             let owner = job.account.lock().unwrap().clone();
             if let Some(msg) = super::storage::other_account(owner.as_deref(), self.send_google.email().await.as_deref()) {
+                // Still to upload: "Try again" (with the right account) carries on with them.
+                *job.left.lock().unwrap() = entries;
                 return Err(msg);
             }
         } else {

@@ -64,6 +64,9 @@ test("node extension/build.mjs: both zips are right", () => {
     }
   }
   assert.ok(firefox.some((e) => e.name === "player.js"));
+  // Mozilla refuses a new extension that doesn't say what it passes on.
+  const gecko = JSON.parse(firefox.find((e) => e.name === "manifest.json").data.toString("utf8")).browser_specific_settings.gecko;
+  assert.ok(gecko.data_collection_permissions.required.length > 0);
   assert.ok(!light.some((e) => e.name === "player.js"));
   for (const e of light) {
     if (e.name === "LICENSE" || !/\.(js|html|css|json|md)$/.test(e.name)) continue;

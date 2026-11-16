@@ -3,7 +3,7 @@
 <script lang="ts">
   import { app } from "./state.svelte";
   import { api, isActive, type Download, type Part } from "./api";
-  import { bytes, bytesOf, sourceOf, speed, statusLook, timeLeft } from "./format";
+  import { bytes, bytesOf, sourceOf, speed, statusLook, timeLeft, wordColor } from "./format";
   import Icon from "./Icon.svelte";
   import HelpLink from "./help/HelpLink.svelte";
   import ItemSettings from "./ItemSettings.svelte";
@@ -13,6 +13,8 @@
   let { onremove }: { onremove: (ids: string[]) => void } = $props();
 
   let parts = $state<Part[]>([]);
+  /** The download the parts map is for (another one picked: its old map isn't shown meanwhile). */
+  let partsFor = "";
 
   const d = $derived(app.focused);
   const folderFiles = $derived(
@@ -22,9 +24,15 @@
   // Refresh the parts map once a second while a download is shown and running.
   $effect(() => {
     const cur = d;
-    if (!cur || !app.panelOpen) {
+    // Not on screen (panel closed, or Direct / the Dashboard shown): no asking every second.
+    if (!cur || !app.panelOpen || app.view === "direct" || app.view === "dashboard") {
       parts = [];
+      partsFor = "";
       return;
+    }
+    if (cur.id !== partsFor) {
+      partsFor = cur.id;
+      parts = [];
     }
     let stop = false;
     const load = async () => {
@@ -76,7 +84,7 @@
     {@const pr = primary(d)}
     <section class="top">
       <div class="headline">
-        <span class="st" style="color: {look.color}">{look.label}</span>
+        <span class="st" style="color: {wordColor(look)}">{look.label}</span>
         <span class="src">{sourceOf(d).label}</span>
         <button class="icon-btn" aria-label="Close details panel (Ctrl+I)" title="Close (Ctrl+I)" onclick={() => app.togglePanel()}>
           <Icon name="chevronsRight" size={14} stroke={2} />
@@ -85,7 +93,7 @@
       <div class="name">{d.name}</div>
 
       <div class="stats">
-        <div><span class="k">Done</span><span class="v mono">{pct(d).toFixed(1)}<small>%</small></span></div>
+        <div><span class="k">Done</span><span class="v mono">{(Math.floor(pct(d) * 10) / 10).toFixed(1)}<small>%</small></span></div>
         <div>
           <span class="k">Speed</span>
           {#if p && p.speed > 0}
@@ -211,9 +219,9 @@
     {@const look = statusLook(app.folderStatus(files))}
     <section class="top">
       <div class="headline">
-        <span class="st" style="color: {look.color}">Folder</span>
-        <span class="src">{files.length} files</span>
-        <button class="icon-btn" aria-label="Close details panel" onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
+        <span class="st" style="color: {wordColor(look)}">Folder</span>
+        <span class="src">{files.length} {files.length === 1 ? "file" : "files"}</span>
+        <button class="icon-btn" aria-label="Close details panel (Ctrl+I)" title="Close (Ctrl+I)" onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
       </div>
       <div class="name">{folderFiles.name}</div>
       <div class="bar"><div class="fill" style="width: {size ? (done / size) * 100 : 0}%; background: {look.color}"></div></div>

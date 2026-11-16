@@ -48,6 +48,8 @@ Everything you downloaded or received, shared out by source, and the **Top sites
 - **Biggest file**: the biggest single file you downloaded or received, with its name and the day.
 - **Busiest day**: the day the most moved, all kinds together.
 
+**Top sites** and the records look at the last 12 months or so, also under **All time**.
+
 ## Right now
 
 How fast Pako downloads, next to everything your PC receives and sends (**Whole PC · download** and **Whole PC · upload**), over the **Last hour** or the **Last 24 hours**. It fills in while Pako is open.
@@ -56,5 +58,5 @@ How fast Pako downloads, next to everything your PC receives and sends (**Whole 
 
 The gear at the top right has:
 
-- **Save the details as a CSV file…**: one line per transfer, in a file that opens in Excel. The details of the last 12 months or so are kept; older ones only count in the totals.
+- **Save the details as a CSV file…**: one line per transfer (downloads from before the Dashboard existed: one line per day), in a file that opens in Excel. The details of the last 12 months or so are kept; older ones only count in the totals.
 - **Reset statistics…**: every number on the Dashboard starts again from zero, including the speed history. Your files, downloads, uploads and contacts stay as they are. This can't be undone.

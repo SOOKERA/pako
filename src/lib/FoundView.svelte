@@ -47,16 +47,17 @@
   async function download(first: boolean, notify = false, items: FoundItem[] = app.picked, checked = false) {
     const ids = items.filter(canDownload).map((f) => f.id);
     if (!ids.length || busy) return;
-    if (!checked) {
-      const onDisk = new Set(await api.foundExisting(ids, app.foundDest).catch(() => [] as string[]));
-      const dups = app.found.filter((f) => ids.includes(f.id) && (onDisk.has(f.id) || app.downloads.some((d) => sameFile(f, d))));
-      if (dups.length) {
-        dupAsk = { ids, dups, first, notify };
-        return;
-      }
-    }
+    // Busy from the first click: a quick second one doesn't run the check (and the download) twice.
     busy = true;
     try {
+      if (!checked) {
+        const onDisk = new Set(await api.foundExisting(ids, app.foundDest).catch(() => [] as string[]));
+        const dups = app.found.filter((f) => ids.includes(f.id) && (onDisk.has(f.id) || app.downloads.some((d) => sameFile(f, d))));
+        if (dups.length) {
+          dupAsk = { ids, dups, first, notify };
+          return;
+        }
+      }
       const count = await api.foundDownload(ids, first, app.foundDest, notify);
       await app.refresh();
       if (count) app.toast(`${count === 1 ? "1 file" : `${count} files`} moved to Downloads`);
@@ -357,6 +358,7 @@
         {#if r.kind === "folder"}
           {@const t = folderTick(r.items)}
           {@const size = r.items.reduce((s, f) => s + (f.template.size ?? 0), 0)}
+          {@const newest = r.items.reduce((m, x) => Math.max(m, x.template.date || x.template.addedAt), 0)}
           <div
             class="row folder"
             class:open={r.open}
@@ -427,7 +429,7 @@
             {:else}
               <div class="cell link ready"><Icon name="check" size={13} stroke={2.6} />Opened</div>
             {/if}
-            <div class="cell date mono c-date" title={dateTitle(Math.max(...r.items.map((x) => x.template.date || x.template.addedAt)))}>{shortDate(Math.max(...r.items.map((x) => x.template.date || x.template.addedAt)))}</div>
+            <div class="cell date mono c-date" title={dateTitle(newest)}>{shortDate(newest)}</div>
           </div>
         {:else}
           {@const f = r.f}
@@ -1034,6 +1036,10 @@
   .link {
     gap: 7px;
     font-size: 12.5px;
+  }
+  /* The mark keeps its size when a long message has to be cut. */
+  .link :global(svg) {
+    flex: none;
   }
   .link.ready {
     color: var(--st-done-text);

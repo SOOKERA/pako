@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // The tutorials, one per page, plus the quick tour. Steps point at `data-tour="…"` attributes.
-// When a page changes, change its steps in the same commit (see CLAUDE.md › Tutorials).
+// When a page changes, change its steps in the same commit.
 // Keep them short: group what sits together (one step for a whole bar), and order the steps so
 // the spotlight travels around the window in one direction instead of jumping back and forth.
 import { app } from "../state.svelte";

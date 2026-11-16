@@ -61,13 +61,15 @@
   const sentList = $derived(app.sent.filter((s) => !app.sends.some((j) => j.id === s.id)));
   /** Gofile's keep rule only matters when something in the list is on Gofile. */
   const anyGofile = $derived(sentList.some((s) => (s.host ?? "gofile") === "gofile"));
-  const downloaded = $derived(sentList.filter((s) => (s.downloads ?? 0) > 0 && deletable(s)));
+  const downloaded = $derived(sentList.filter((s) => (s.host ?? "gofile") === "gofile" && (s.downloads ?? 0) > 0 && deletable(s)));
 
   /** Starts one send of these paths (the basket's). The basket empties once it has started. */
   async function startSend(paths: string[], m: SendMode | null, name: string | null, days: number) {
     try {
       await api.sendStart(paths, m, name, days);
-      app.clearBasket();
+      // Only what was sent leaves the basket: files added while it started stay for the next one.
+      const sent = new Set(paths);
+      app.basket = app.basket.filter((b) => !sent.has(b.path));
       await app.refreshSends();
     } catch (e) {
       app.toast(String(e), "error");
@@ -306,7 +308,7 @@
     <h1>Upload</h1>
     <TutorialButton id="send" />
     {#if app.uploadingCount}
-      <span class="dim small live-text"><span class="live"></span>{app.uploadingCount} uploading · {speed(app.uploadSpeed)}</span>
+      <span class="dim small live-text"><span class="live"></span><span class="lt">{app.uploadingCount} uploading · {speed(app.uploadSpeed)}</span></span>
     {/if}
     <div class="spacer"></div>
     <button class="btn" title="Add a folder to your upload" onclick={chooseFolder}><Icon name="folder" size={14} /><span class="lbl">Choose folder</span></button>
@@ -577,8 +579,11 @@
     white-space: nowrap;
   }
   .live {
+    /* Keeps its size (and its halo) when the text next to it has to give way. */
+    flex: none;
     width: 6px;
     height: 6px;
+    margin-left: 3px;
     border-radius: 50%;
     background: var(--st-run);
     box-shadow: 0 0 0 3px rgba(77, 163, 255, 0.18);
@@ -590,6 +595,10 @@
     flex: none;
   }
   .live-text {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .live-text .lt {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -675,8 +684,9 @@
   }
   .sub {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
-    gap: 12px;
+    gap: 2px 12px;
     font-size: 11px;
     color: var(--text-3);
     white-space: nowrap;
@@ -695,6 +705,18 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+  /* A narrow page (a small window with the details panel open): the buttons go under the
+     upload, so its name, progress and message keep the width. */
+  @container (max-width: 620px) {
+    .card {
+      grid-template-columns: 28px minmax(0, 1fr);
+      row-gap: 8px;
+    }
+    .card .actions {
+      grid-column: 1 / -1;
+      justify-content: flex-end;
+    }
   }
 
   /* ---------- sent ---------- */
@@ -911,6 +933,18 @@
     }
     .dl,
     .shead > span:nth-child(4) {
+      display: none;
+    }
+  }
+  /* The smallest window with the details panel open: the name keeps the room, where it is and
+     when it's deleted are in the panel next to it. */
+  @container (max-width: 440px) {
+    .shead,
+    .srow {
+      grid-template-columns: 26px minmax(0, 1fr) 76px;
+    }
+    .hostcol,
+    .shead > span:nth-child(3) {
       display: none;
     }
   }

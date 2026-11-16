@@ -5,10 +5,15 @@
   import { app } from "./state.svelte";
   import { fadeIn, toastIn, flipOpts } from "./motion";
   import Icon from "./Icon.svelte";
+
+  /** `plain`: only messages without a button (the small tray window: "Link copied", what went
+   *  wrong; "Show" and "Restart now" belong to Pako's own window). */
+  let { plain = false }: { plain?: boolean } = $props();
+  const list = $derived(plain ? app.toasts.filter((t) => !t.action) : app.toasts);
 </script>
 
 <div class="toasts" aria-live="polite">
-  {#each app.toasts as t (t.id)}
+  {#each list as t (t.id)}
     <div class="toast" class:error={t.kind === "error"} in:toastIn out:fadeIn={{ duration: 140 }} animate:flip={flipOpts}>
       <Icon name={t.kind === "error" ? "alert" : "check"} size={14} stroke={2} />
       <span>{t.text}</span>

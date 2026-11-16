@@ -4,6 +4,7 @@
   // Upload › details panel (Ctrl+I, like Downloads): the picked uploaded item's files, its link
   // as a QR code, when it gets deleted, how the upload went, downloads over time and your note.
   // Only what its row doesn't already say.
+  import { untrack } from "svelte";
   import { fade } from "svelte/transition";
   import { app } from "./state.svelte";
   import { api, type SentItem } from "./api";
@@ -58,6 +59,9 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     if (s && s.id !== noteFor) {
+      // Another upload shown before the last words typed were saved (no blur: picked from a
+      // notification, say): they're saved to the upload they were typed for, then it switches.
+      if (noteFor) untrack(() => saveNote());
       noteFor = s.id;
       note = s.note ?? "";
       saved = false;
@@ -65,8 +69,9 @@
   });
   function saveNote() {
     clearTimeout(timer);
-    if (!s || note.trim() === (s.note ?? "").trim()) return;
-    const id = s.id;
+    const id = noteFor;
+    const was = app.sent.find((x) => x.id === id);
+    if (!was || note.trim() === (was.note ?? "").trim()) return;
     api
       .sentSetNote(id, note)
       .then(() => {
@@ -181,7 +186,7 @@
           <div class="label">Files inside<span class="muted">{s.files.toLocaleString()} · {bytes(s.size)}</span></div>
           {#if listed.length}
             <ul class="files">
-              {#each listed as f (f.name)}
+              {#each listed as f, i (i)}
                 <li>
                   <FileIcon name={f.name} size={14} />
                   <MiddleText text={f.name} class="fn" />

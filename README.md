@@ -28,7 +28,7 @@ You need Node.js, Rust and the Tauri prerequisites for Windows.
 ```
 npm install
 npx tauri dev      # run it while working on it
-npx tauri build    # Pako.exe and Pako Setup in src-tauri/target/release
+npx tauri build    # Pako.exe in src-tauri/target/release, Pako Setup in its bundle/nsis folder
 ```
 
 `npx tauri build` stops with a plain message when Sookera's Google files aren't there (see below). To

@@ -110,7 +110,7 @@
     <button class="view" data-tour="nav-direct" class:on={app.view === "direct"} role="tab" aria-selected={app.view === "direct"} onclick={() => (app.view = "direct")}>
       <span class="lead"><Icon name="send" size={16} stroke={1.9} />Direct</span>
       {#if app.directWaiting}
-        <span class="badge" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.directWaiting}</span>
+        <span class="badge attn" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.directWaiting}</span>
       {:else if app.directMoving}
         <span class="run" title="{app.directMoving} moving"><span class="live"></span>{app.directMoving}</span>
       {/if}
@@ -133,7 +133,7 @@
             {#if f.dot}<span class="dot" style="--c: {f.dot}"></span>{:else}<Icon name={f.icon ?? "list"} size={15} />{/if}
             {f.label}
           </span>
-          <span class="count mono" class:alert={f.key === "waiting" && app.directWaiting > 0}>{directCount(f.key)}</span>
+          <span class="count mono" class:attn={f.key === "waiting" && app.directWaiting > 0}>{directCount(f.key)}</span>
         </button>
       {/each}
     </nav>
@@ -185,7 +185,7 @@
     <nav>
       {#each app.sources as s (s.key)}
         <button class="item" class:on={app.sourceFilter === s.key} onclick={() => pickSource(s.key)}>
-          <span class="lead"><span class="dot" style="background: {s.color}"></span>{s.label}</span>
+          <span class="lead" title={s.label}><span class="dot" style="background: {s.color}"></span><span class="tname">{s.label}</span></span>
           <span class="count mono">{s.count}</span>
         </button>
       {/each}
@@ -414,6 +414,15 @@
   }
   .count.alert {
     color: var(--st-fail-text);
+  }
+  /* Waiting for your answer: coral, Pako's "needs you" colour (red is for problems). */
+  .count.attn {
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+  .badge.attn {
+    background: var(--accent);
+    color: var(--accent-ink);
   }
   .dot {
     width: 7px;

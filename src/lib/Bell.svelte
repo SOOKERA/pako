@@ -34,12 +34,19 @@
     app.bellOpen = false;
     if (refocus) btn?.focus({ preventScroll: true });
   }
+  /** Esc closes the panel wherever the keyboard is (on the window: a button that just went grey,
+   *  like Clear, drops the focus out of the panel). */
   function key(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      close();
-    }
+    if (!app.bellOpen || e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+  }
+  /** Mark all as read and Clear turn grey once pressed: the panel takes the keyboard back, so
+   *  Tab goes on inside it. */
+  function then(run: () => unknown) {
+    run();
+    panel?.focus({ preventScroll: true });
   }
   /** Tabbing out of the panel closes it, like the other menus. */
   function focusOut(e: FocusEvent) {
@@ -121,6 +128,8 @@
   };
 </script>
 
+<svelte:window onkeydowncapture={key} />
+
 <button
   bind:this={btn}
   class="bell"
@@ -149,14 +158,13 @@
     tabindex="-1"
     style="top: {at.top}px; right: {at.right}px"
     transition:pop={{ duration: 200, from: 0.97, y: -6, origin: "top right" }}
-    onkeydown={key}
     onfocusout={focusOut}
   >
     <header>
       <h2>Notifications</h2>
       <span class="grow"></span>
-      <button class="link" disabled={!app.noticesUnread} onclick={() => app.readNotices(null)}>Mark all as read</button>
-      <button class="link" disabled={!app.notices.length} onclick={() => app.clearNotices()}>Clear</button>
+      <button class="link" disabled={!app.noticesUnread} onclick={() => then(() => app.readNotices(null))}>Mark all as read</button>
+      <button class="link" disabled={!app.notices.length} onclick={() => then(() => app.clearNotices())}>Clear</button>
       {#if onsettings}
         <button
           class="icon-btn gear"

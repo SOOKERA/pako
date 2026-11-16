@@ -37,7 +37,9 @@
   const busyElse = $derived((view?.running ?? 0) > 0);
 
   async function load() {
-    const v = await api.askCurrent();
+    // Couldn't ask: what's shown stays (the next change asks again).
+    const v = await api.askCurrent().catch(() => undefined);
+    if (v === undefined) return;
     // Another download joined the line: the one shown stays as you're editing it (name,
     // folder, quality, a click in progress); only its "1 of 3" changes.
     if (v && view && v.id === view.id) {
@@ -317,6 +319,7 @@
   .foot {
     flex: none;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
@@ -332,9 +335,16 @@
     color: var(--text-3);
     cursor: pointer;
   }
+  /* On its own line over the buttons (beside three of them it had room for a word a line); the
+     bar gives up a little padding so the choices above keep their place. */
+  .foot:has(.err) {
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
   .err {
-    flex: 1;
+    flex: 1 0 100%;
     min-width: 0;
+    margin-bottom: -3px;
     font-size: 11.5px;
     line-height: 1.35;
     color: var(--st-fail-text);

@@ -58,7 +58,14 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "pako@sookera.com",
-      "strict_min_version": "115.0"
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "required": [
+          "authenticationInfo",
+          "browsingActivity",
+          "websiteContent"
+        ]
+      }
     }
   }
 }

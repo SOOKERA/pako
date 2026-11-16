@@ -996,6 +996,8 @@ export const api = {
   takePakoLink: () => invoke<PakoLinkResult | null>("take_pako_link"),
   // Direct
   directState: () => invoke<DirectState>("direct_state"),
+  /** The Direct page is open: Direct starts if it hasn't yet (it starts with Pako from then on). */
+  directWake: () => invoke<void>("direct_wake"),
   directSetName: (name: string) => invoke<void>("direct_set_name", { name }),
   directAddContact: (id: string, name: string) => invoke<void>("direct_add_contact", { id, name }),
   directEditContact: (id: string, change: { name?: string; autoAccept?: boolean; folder?: string }) =>

@@ -32,6 +32,13 @@ class Help {
   report = $state(false);
   /** What you wrote there: kept while Pako runs, until the report went to your email app. */
   reportDraft = $state("");
+  /** Send report on its way. Kept here, not in the dialog: closing and opening it again while
+   *  it goes can't send the same report twice, and its answer still shows. */
+  reportSending = $state(false);
+  /** Sent: the report's reference (shown until the dialog closes). */
+  reportSent = $state<string | null>(null);
+  /** Why the last Send report didn't go (shown until the dialog closes or it's tried again). */
+  reportFailed = $state<string | null>(null);
 }
 
 export const help = new Help();

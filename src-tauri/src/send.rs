@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
-//! Send files with a link (PLAN.md Phase 6, first version: Gofile, no account).
+//! Upload: send files with a link (Gofile with no account, or your own Google Drive).
 //!
 //! One file is uploaded as it is. Several files or a folder are, by default, also sent as they
 //! are: the first one makes a Gofile folder, the rest go into it three at a time, and the
@@ -988,6 +988,17 @@ pub fn delete_at(from: u64, days: u32) -> Option<u64> {
     (days > 0).then(|| from + days as u64 * DAY_MS)
 }
 
+/// "Delete after" of a Sent entry being written: (date, the service deletes it itself, why
+/// deleting didn't work, tries). A new entry counts from `now`. One already on the list (a
+/// several-files send goes on it with its first file; "Try again") keeps its own: a date you
+/// changed meanwhile ("Keep", "Keep 7 more days") stays what you chose.
+fn expiry_fields(old: Option<&SentItem>, now: u64, days: u32) -> (Option<u64>, bool, Option<String>, u32) {
+    match old {
+        Some(o) => (o.delete_at, o.expiry_on_host, o.delete_error.clone(), o.delete_tries),
+        None => (delete_at(now, days), false, None, 0),
+    }
+}
+
 /// The files of a send, for its details (names relative to what was sent).
 fn contents_of(payload: &Payload) -> Vec<SentFile> {
     let list: Vec<&Entry> = match payload {
@@ -1664,11 +1675,10 @@ impl Sender {
             return;
         }
         let list = self.inner.lock().unwrap().sent.clone();
+        // On the disk before it replaces the old list: a power cut never leaves it empty (it
+        // holds the keys that delete the uploads).
         if let Ok(s) = serde_json::to_string_pretty(&list) {
-            let tmp = sent_path().with_extension("json.tmp");
-            if std::fs::write(&tmp, s).is_ok() {
-                let _ = std::fs::rename(&tmp, sent_path());
-            }
+            let _ = crate::paths::write_atomic(&sent_path(), s.as_bytes());
         }
     }
 
@@ -1684,7 +1694,7 @@ impl Sender {
         }
         inner.token = Some(token.to_string());
         if let Ok(b) = crate::secure::protect(token.as_bytes()) {
-            let _ = std::fs::write(token_path(), b);
+            let _ = crate::paths::write_atomic(&token_path(), &b);
         }
     }
 
@@ -1953,6 +1963,7 @@ impl Sender {
         {
             let mut inner = self.inner.lock().unwrap();
             let old = inner.sent.iter().position(|s| s.id == job.id).map(|i| inner.sent.remove(i));
+            let (delete_at, expiry_on_host, delete_error, delete_tries) = expiry_fields(old.as_ref(), now, job.delete_days);
             inner.sent.insert(
                 0,
                 SentItem {
@@ -1973,10 +1984,10 @@ impl Sender {
                     downloaded_at: old.as_ref().and_then(|o| o.downloaded_at),
                     gone: false,
                     host: (job.host == Host::Drive).then(|| "drive".to_string()),
-                    delete_at: delete_at(now, job.delete_days),
-                    expiry_on_host: false,
-                    delete_error: None,
-                    delete_tries: 0,
+                    delete_at,
+                    expiry_on_host,
+                    delete_error,
+                    delete_tries,
                     note: old.as_ref().and_then(|o| o.note.clone()),
                     contents: job.contents.clone(),
                     secs: (busy > 0.0).then_some(busy),
@@ -2002,10 +2013,9 @@ impl Sender {
             Ok((link, folder_id, file_id)) => {
                 self.inner.lock().unwrap().jobs.retain(|j| j.id != job.id);
                 self.record(job, &link, folder_id, file_id, compressed, false);
-                if job.delete_days > 0 {
-                    let (me, id) = (self.clone(), job.id.clone());
-                    tauri::async_runtime::spawn(async move { me.push_expiry(&id).await });
-                }
+                // Its date (if it has one: maybe changed while it uploaded) goes to the service.
+                let (me, id) = (self.clone(), job.id.clone());
+                tauri::async_runtime::spawn(async move { me.push_expiry(&id).await });
                 let (busy, peak) = *job.timing.lock().unwrap();
                 let bytes = job.produced.load(Ordering::Relaxed);
                 let mut e = crate::numbers::Event::new(format!("up:{}", job.id), crate::numbers::now_ms(), crate::numbers::UPLOAD).timed(bytes, busy, peak);
@@ -2471,6 +2481,24 @@ mod tests {
         assert_eq!(delete_at(sent, 7), Some(sent + 7 * 86_400_000));
         assert_eq!(delete_at(sent, 30), Some(sent + 30 * DAY_MS));
         assert!(DELETE_CHOICES.contains(&DELETE_DEFAULT) && DELETE_DEFAULT == 7);
+    }
+
+    /// A several-files send is on the list from its first file. "Keep" (or a new date) picked
+    /// while the rest uploads, or before "Try again", stays when it finishes: it used to be
+    /// reset to the usual 7 days, so an upload you chose to keep got deleted.
+    #[test]
+    fn a_date_changed_while_uploading_stays() {
+        let now = 50 * DAY_MS;
+        assert_eq!(expiry_fields(None, now, 7), (Some(now + 7 * DAY_MS), false, None, 0));
+        assert_eq!(expiry_fields(None, now, 0), (None, false, None, 0));
+        let kept = item("a", None);
+        assert_eq!(expiry_fields(Some(&kept), now, 7), (None, false, None, 0), "Keep stays Keep");
+        let mut later = item("b", Some(now + 30 * DAY_MS));
+        later.expiry_on_host = true;
+        assert_eq!(expiry_fields(Some(&later), now, 7), (Some(now + 30 * DAY_MS), true, None, 0));
+        let mut failing = item("c", Some(now - 1));
+        (failing.delete_error, failing.delete_tries) = (Some("Gofile is busy right now.".into()), 2);
+        assert_eq!(expiry_fields(Some(&failing), now, 7).3, 2);
     }
 
     #[test]

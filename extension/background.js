@@ -207,6 +207,8 @@ async function sendLinks(urls, referrer) {
 async function sendVideo(url, quality, { incognito = false, storeId } = {}) {
   if (!isWebLink(url)) return { ok: false, error: "Pako only takes http and https links." };
   if (!VIDEO_QUALITIES.includes(quality)) return { ok: false, error: "Unknown video quality." };
+  // Only a video site's link: no other site's cookies are ever read for this.
+  if (!isVideoSite(url)) return { ok: false, error: "Pako can't download videos from this page." };
   return send({ kind: "video", urls: [url], quality, siteCookies: await siteCookiesFor(url, incognito, storeId) });
 }
 /* full-only:end */
@@ -277,8 +279,14 @@ function makeMenus() {
   });
 }
 
-/** Makes the right-click items, or (Pako Light, next to the full extension) takes them away. */
-async function syncMenus(force = false) {
+/** Makes the right-click items, or (Pako Light, next to the full extension) takes them away.
+ *  One at a time: two at once would make each item twice. */
+let menuWork = Promise.resolve();
+function syncMenus(force = false) {
+  menuWork = menuWork.then(() => syncMenusNow(force)).catch(() => {});
+  return menuWork;
+}
+async function syncMenusNow(force) {
   const show = !(await fullHere());
   if (!force && show === menusShown) return;
   menusShown = show;
@@ -328,7 +336,9 @@ api.runtime.onStartup?.addListener(() => syncMenus(true));
 async function pageLinks(tabId) {
   const [result] = await api.scripting.executeScript({
     target: { tabId },
-    func: () => [...new Set([...document.links].map((a) => a.href).filter((h) => /^https?:\/\//i.test(h)))].slice(0, 2000),
+    // (Not `document.links`: a page can put another element under that name.)
+    func: () =>
+      [...new Set([...document.querySelectorAll("a[href], area[href]")].map((a) => a.href).filter((h) => typeof h === "string" && /^https?:\/\//i.test(h)))].slice(0, 2000),
   });
   return result?.result ?? [];
 }
@@ -339,7 +349,9 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
   // Firefox containers: the tab's own cookies (Chromium browsers have no such field).
   const storeId = tab?.cookieStoreId;
   let reply;
-  if (info.menuItemId === "pako-link") reply = await download(info.linkUrl, referrer, "", { incognito, storeId });
+  // Pako Light: nothing from a frame of a site it leaves alone either (an embedded one).
+  if (LIGHT && onSkippedSite(info.frameUrl)) reply = { ok: false, error: LIGHT_SKIPPED };
+  else if (info.menuItemId === "pako-link") reply = await download(info.linkUrl, referrer, "", { incognito, storeId });
   else if (info.menuItemId === "pako-media") reply = await download(info.srcUrl, referrer, "", { incognito, storeId });
   else if (info.menuItemId === "pako-page") reply = await download(tab?.url, "", "", { incognito, storeId });
   else if (info.menuItemId === "pako-all" && tab?.id != null) {
@@ -376,7 +388,7 @@ api.downloads.onCreated.addListener(async (item) => {
   if (item.incognito || isUnsafe(item)) return;
   // Pako Light: the sites it leaves alone keep their downloads, and when the full extension is
   // on in this browser, that one takes over instead.
-  if (LIGHT && (onSkippedSite(url) || onSkippedSite(item.referrer))) return;
+  if (LIGHT && (onSkippedSite(url) || onSkippedSite(item.url) || onSkippedSite(item.referrer))) return;
   if (LIGHT && (await fullHere())) return;
   // Hold it while Pako is asked; it carries on in the browser if Pako can't take it.
   try {
@@ -417,7 +429,8 @@ api.downloads.onCreated.addListener(async (item) => {
 
 api.runtime.onMessage.addListener((msg, sender, respond) => {
   (async () => {
-    if (msg?.type === "send-tab") respond(await download(msg.url, "", "", { incognito: !!msg.incognito, storeId: msg.storeId }));
+    // "Send this page" comes from the toolbar window only, never from a page in a tab.
+    if (msg?.type === "send-tab" && !sender?.tab) respond(await download(msg.url, "", "", { incognito: !!msg.incognito, storeId: msg.storeId }));
     else if (msg?.type === "ping") respond(await send({ kind: "ping" }));
     // Pako Light's popup: is the full extension on here (then Light stays out of the way), and
     // is this tab on a site Light leaves alone (its Send button is greyed out there)?

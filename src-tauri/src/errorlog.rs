@@ -102,6 +102,41 @@ pub fn note(area: Area, message: &str) {
     let _ = append(&path, &p, MAX_BYTES);
 }
 
+/// Pako is stopping because of an error it can't recover from (called by the panic hook, just
+/// before the process ends): one line, written without any lock (the panic may have come from
+/// inside `note`), trimmed like every other. The next `note` keeps the file small.
+pub fn note_crash(message: &str) {
+    let message = clean(&code_quotes(message));
+    if cfg!(test) || message.is_empty() {
+        return;
+    }
+    let Some(path) = crate::paths::data_dir_known().map(|d| d.join("problems.log")) else { return };
+    let time = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let p = Problem { time, area: Area::Other, message, version: env!("CARGO_PKG_VERSION").to_string() };
+    if let Ok(mut line) = serde_json::to_string(&p) {
+        line.push('\n');
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+}
+
+/// Rust's own panic messages quote text in backticks, which can be a file's name ("… inside 'é'
+/// of `Holiday photos.zip`"): only code names (`Result::unwrap()`) stay, anything else reads `…`.
+fn code_quotes(s: &str) -> String {
+    let code = |q: &str| !q.is_empty() && q.chars().all(|c| c.is_ascii_alphanumeric() || "_:()<>&".contains(c));
+    let mut out = String::with_capacity(s.len());
+    let mut parts = s.split('`');
+    out.push_str(parts.next().unwrap_or_default());
+    let mut inside = true;
+    for p in parts {
+        out.push('`');
+        out.push_str(if inside && !code(p) { "…" } else { p });
+        inside = !inside;
+    }
+    out
+}
+
 /// Not the same problem as one written in the last minute, and not past `BURST` in that minute.
 /// Remembers it when it is worth writing.
 fn worth_writing(recent: &mut Vec<(Area, String, Instant)>, area: Area, message: &str, now: Instant) -> bool {
@@ -869,7 +904,8 @@ pub fn report_mail(app: tauri::AppHandle, url: String) -> Result<(), String> {
 // ---------- Send report: one click, to Sookera's report service ----------
 
 /// Sookera's report service (a Cloudflare Worker on the studio's account): it files each report
-/// as an issue in a private GitHub repository. The contract with it is in PLAN.md (Release 1.0.0).
+/// as an issue in a private GitHub repository. What it takes and answers: `report_body` and
+/// `service_answer` below.
 const REPORT_URL: &str = "https://reports.sookera.com/v1/report";
 /// The service refuses anything bigger.
 const REPORT_MAX: usize = 32 * 1024;
@@ -1022,6 +1058,9 @@ pub async fn report_send(description: String, theme: String, problems: Vec<SentP
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .user_agent(format!("Pako/{version}"))
+        // The report goes to this address only: a redirect (which would carry it elsewhere)
+        // is an unexpected answer.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| SendFail::Offline)?;
     let res = http
@@ -1463,5 +1502,18 @@ mod tests {
         assert_eq!(windows_label("Windows 10 Pro", Some("24H2"), Some("26100")), "Windows 11 Pro 24H2 (build 26100)");
         assert_eq!(windows_label("Windows 10 Home", Some("22H2"), Some("19045")), "Windows 10 Home 22H2 (build 19045)");
         assert_eq!(windows_label("Windows", None, None), "Windows");
+    }
+
+    /// A panic's message keeps the code it names, never the text it quotes.
+    #[test]
+    fn crash_messages_hide_quoted_text() {
+        assert_eq!(
+            code_quotes("byte index 5 is not a char boundary; it is inside 'é' (bytes 4..6) of `Résumé Sam.pdf`"),
+            "byte index 5 is not a char boundary; it is inside 'é' (bytes 4..6) of `…`"
+        );
+        assert_eq!(code_quotes("called `Result::unwrap()` on an `Err` value: x"), "called `Result::unwrap()` on an `Err` value: x");
+        assert_eq!(code_quotes("odd ` count"), "odd `…");
+        assert_eq!(code_quotes("plain"), "plain");
+        assert_eq!(code_quotes(""), "");
     }
 }

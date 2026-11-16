@@ -77,6 +77,12 @@ fn direct_state(d: Dir<'_>) -> direct::View {
     direct::view(&d)
 }
 
+/// The Direct page is open: start Direct if it isn't running yet (and from then on with Pako).
+#[tauri::command]
+fn direct_wake(d: Dir<'_>) {
+    d.wake();
+}
+
 /// Your name, as contacts see it when you connect.
 #[tauri::command]
 fn direct_set_name(d: Dir<'_>, name: String) -> Result<(), String> {
@@ -1216,8 +1222,52 @@ fn second_start(app: &tauri::AppHandle, args: Vec<String>) {
     tray::show_main(app);
 }
 
+/// A release Pako ends at once on a panic (`panic = "abort"`): without this it would vanish
+/// without a word, and Help › Report a problem would know nothing of it. The problem is noted
+/// first, then Pako says so. Its window not opening at all (Tauri's "Failed to setup app",
+/// usually a missing or damaged WebView2) says what to do about that.
+/// Pako is quitting (its exit has started).
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn say_when_pako_stops() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SAID: AtomicBool = AtomicBool::new(false);
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default(info);
+        if SAID.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let payload = info.payload();
+        let what = payload.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_default();
+        let at = info.location().map(|l| format!(" ({}:{})", l.file(), l.line())).unwrap_or_default();
+        errorlog::note_crash(&format!("Pako stopped: {what}{at}"));
+        // A debug build keeps running after a caught panic (and has its console). While Pako is
+        // quitting it is noted only: "has to close" on top of a Pako you just closed says nothing.
+        if cfg!(not(debug_assertions)) && !QUITTING.load(Ordering::SeqCst) {
+            let text = if what.starts_with("Failed to setup app") {
+                "Pako couldn't open its window.\n\nStart Pako again. If its window still doesn't open, install Microsoft Edge WebView2 Runtime (from microsoft.com), then start Pako again."
+            } else {
+                "Pako ran into a problem it couldn't get past and has to close.\n\nStart Pako again: your downloads carry on. If it happens again, use Help › Report a problem (this problem is in its list)."
+            };
+            message_box("Pako", text);
+        }
+    }));
+}
+
+/// A plain Windows message with an OK button, on top of everything (Pako may have no window).
+fn message_box(title: &str, text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST, MessageBoxW};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (t, c) = (wide(text), wide(title));
+    // SAFETY: NUL-terminated strings that outlive the (blocking) call; no owner window.
+    unsafe { MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // From here on, a panic is noted and said (see the function).
+    say_when_pako_stops();
     // A downloaded update goes in place before anything else starts (then it starts instead).
     if updates::apply_at_start() {
         return;
@@ -1298,7 +1348,12 @@ pub fn run() {
             sender.start_sweeper();
             app.manage(sender);
             // Direct (Pako to Pako) starts in the background.
-            direct::start(app.handle());
+            // Only once Direct was used (contacts, or the Direct page opened before): someone who
+            // never uses it makes no Direct connection. The Direct page starts it (direct_wake).
+            direct::start_if_used(app.handle());
+            // Direct transfers count as busy too: keep-awake and "when all downloads finish" wait for them.
+            let h = app.handle().clone();
+            engine::also_busy_when(move || h.try_state::<direct::Direct>().and_then(|d| d.node().ok()).is_some_and(|n| n.busy()));
             gates::init(app.handle());
             tray::setup(app)?;
             // Start with Windows: keep Windows' entry pointing at this Pako (it may have moved).
@@ -1360,7 +1415,7 @@ pub fn run() {
             // Light or dark: Pako's window gets the matching background before it shows.
             theme::paint_start(app.handle());
             tray::restore_place(app.handle());
-            let args: Vec<String> = std::env::args().collect();
+            let args: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
             if let Some(link) = system::pako_link_in(&args) {
                 handle_pako_link(app.handle(), link);
             } else if !args.iter().any(|a| a == system::TRAY_ARG) && !extension::started_for_browser(&args) {
@@ -1400,6 +1455,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             direct_state,
+            direct_wake,
             direct_set_name,
             direct_add_contact,
             direct_edit_contact,
@@ -1518,6 +1574,7 @@ pub fn run() {
 
     app.run(|handle, event| {
         if let tauri::RunEvent::Exit = event {
+            QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
             // Quit normally after its window loaded: a new version on trial worked.
             updates::quit_normally();
             if let Some(engine) = handle.try_state::<Arc<Engine>>() {

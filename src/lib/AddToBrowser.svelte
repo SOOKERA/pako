@@ -198,4 +198,8 @@
     color: var(--accent-hover);
     background: var(--accent-soft);
   }
+  /* Light: the lighter coral on its pale tint is too faint to read; the darker one stays. */
+  :global(:root[data-theme="light"]) .link:hover {
+    color: var(--accent-text);
+  }
 </style>

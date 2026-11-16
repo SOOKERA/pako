@@ -49,13 +49,15 @@ pub fn request_quit(app: &AppHandle) {
     static ASKED: Mutex<Option<Instant>> = Mutex::new(None);
     let running = app.try_state::<Arc<Engine>>().map(|e| (e.running_count(), e.settings().confirm_quit));
     let uploading = crate::engine::UPLOADS_RUNNING.load(Ordering::Relaxed);
+    // Files going to or from a contact in Direct.
+    let direct = app.try_state::<crate::direct::Direct>().and_then(|d| d.node().ok()).is_some_and(|n| n.busy());
     // Quit asked again within 10 s: the question may not have shown (window not answering).
     let again = ASKED.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(10));
     match running {
-        Some((n, true)) if n + uploading > 0 && !again => {
+        Some((n, true)) if (n + uploading > 0 || direct) && !again => {
             *ASKED.lock().unwrap() = Some(Instant::now());
             show_main(app);
-            let _ = app.emit_to("main", "confirm-quit", serde_json::json!({ "running": n, "uploading": uploading }));
+            let _ = app.emit_to("main", "confirm-quit", serde_json::json!({ "running": n, "uploading": uploading, "direct": direct }));
         }
         _ => {
             remember_place(app);

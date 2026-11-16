@@ -6,12 +6,15 @@
   import type { WhatsNew } from "./content";
   import { help } from "./help.svelte";
   import Markdown from "./Markdown.svelte";
+  import { openWeb } from "../web";
 
   let { entry, version, onclose }: { entry: WhatsNew; version: string; onclose: () => void } = $props();
 
   function link(href: string) {
+    // A web page opens in the browser (What's new stays); a guide opens in Help.
+    if (/^https?:\/\//.test(href)) return void openWeb(href);
     onclose();
-    help.show(href.startsWith("http") ? undefined : href);
+    help.show(href);
   }
 </script>
 

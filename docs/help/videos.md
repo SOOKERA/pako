@@ -19,7 +19,7 @@ A playlist link lists every video in it, so you can tick the ones you want.
 - The **Quality** list offers the sizes the video really has (1080p, 720p…), plus **Audio only (M4A)** and **Audio only (MP3)**.
 - **Default** uses **Settings › Downloads › Video quality**.
 - If a video doesn't have the quality you picked, Pako takes the closest lower one.
-- Pick several videos at once to set the same quality for all of them.
+- Click a playlist's header in **Links** to set the same quality for all its videos.
 
 ## The Download button on video players
 

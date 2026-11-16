@@ -10,7 +10,7 @@ You can add links in several ways:
 - Paste them in the search box at the top.
 - Drag links, or a text file full of links, onto the window.
 - Click **Add links**, paste the links, and click **Add link** (or **Add 3 links**, and so on).
-- With **Settings › Downloads › Catch copied links** on, links you copy in any app go to Links by themselves.
+- With **Settings › Downloads › Catch copied links** on, links you copy in another app go to Links by themselves (not while Pako's window is in front, and not links already in Pako).
 
 New links first go to **Links**, where Pako checks them and you pick what to download (see [Links and the tray window](links-and-tray.md)). Click **Download** there and they move to **Downloads**.
 
@@ -23,7 +23,7 @@ The left side filters the list:
 - **All downloads**, **Downloading**, **Waiting**, **Finished** and **Problems**.
 - **Sources**: only Google Drive, only web links, and so on.
 
-Select a download to open its details on the right (or press **Ctrl+I**). You see its parts, where it's saved, whether it can continue after a pause, a **Preview** for an unfinished video file (play a short check before it's all there), and buttons to **Pause**, **Resume** or **Try again** (**Open** once it's finished), open its **Folder**, or **Remove** it.
+Select a download to see its details on the right (**Ctrl+I** shows or hides that panel). You see its parts, where it's saved, whether it can continue after a pause, a **Preview** for an unfinished video file (play a short check before it's all there; types other than MP4 and WebM need **Preview more video types** in **Settings › Features & updates**), and buttons to **Pause**, **Resume** or **Try again** (**Open** once it's finished), open its **Folder**, or **Remove** it.
 
 **Resume** and **Pause** at the top work on the downloads you selected, or on every one shown when nothing is selected. **Remove** works on the selected ones.
 
@@ -36,12 +36,13 @@ Select a download to open its details on the right (or press **Ctrl+I**). You se
 - **Pause** keeps what's done. **Resume** continues from there, even after closing Pako or restarting the PC, when the site allows it. The details panel says so under **After a pause**.
 - If the file on the server was replaced since the download started, Pako doesn't mix the two: it stops and says "The file on the server changed since this download started". Use **Start over**.
 - **Start over** (right-click a download) throws away what's done and starts again from zero.
+- If a link answers with a web page (a sign-in page, or "link expired") instead of the file, Pako stops and says "The server sent a web page instead of the file". Open the link in your browser and download it there: Pako catches the download. A browser download that turns out to be a web page stays in the browser.
 
 ## When everything is done
 
-**When done** (bottom bar) tells Pako what to do once every download has finished: **Do nothing**, **Sleep** or **Shut down**. Before sleeping or shutting down, Pako shows a short countdown you can cancel. The choice goes back to **Do nothing** after it happens, and each time Pako starts.
+**When done** (bottom bar) tells Pako what to do once every download has finished (it also waits for uploads and Direct transfers): **Do nothing**, **Sleep** or **Shut down**. Before sleeping or shutting down, Pako shows a short countdown you can cancel. The choice goes back to **Do nothing** after it happens, and each time Pako starts.
 
-With **Settings › Downloads › Keep the PC awake while downloading** on, Windows doesn't go to sleep in the middle of a download.
+With **Settings › Downloads › Keep the PC awake while downloading** on, Windows doesn't go to sleep in the middle of a download, an upload or a Direct transfer.
 
 Downloads can also be limited to set hours: **Settings › Downloads › Only download at set hours**. Waiting downloads then show **Scheduled · 22:00** (for example), and the bottom bar shows when they start.
 
@@ -99,7 +100,7 @@ Right-click an empty part of the list for **Paste links**, **Add links…**, **S
 - **Space**: select or unselect the row you're on (tick or untick it, in Links).
 - **Ctrl+A**: select all. **Esc**: clear the selection.
 - **Delete**: remove. **F2**: rename. **Enter**: open a finished file.
-- **Ctrl+Z**: undo the last removal, for a few seconds after it (links, or finished downloads taken off the list without deleting the file). The message that shows also has **Undo**.
+- **Ctrl+Z**: undo the last removal, for a few seconds after it and in the same list (links, or finished downloads taken off the list without deleting the file). The message that shows also has **Undo**.
 - **F1**: open Help.
 
 ## Light or dark
@@ -114,5 +115,5 @@ In **Settings › Window › Theme**, pick **Dark**, **Light** or **Match Window
 - A download's folder can be changed until it starts (details panel, **Save to**).
 - While a file downloads, it sits in its folder with `.pakopart` added to its name (`film.mp4.pakopart`), and gets its real name once it's complete. Downloads left unfinished by an older Pako carry on from what they have.
 - Drag finished downloads out of the list into any folder.
-- Split archives (.part1.rar, .7z.001…) are extracted when all parts are done (**Settings › Downloads › Extract split archives**, or **Extract when all parts are done** in the set's details). This needs 7-Zip: install it in **Settings › Features & updates**.
+- Split archives (.part1.rar, .7z.001…) are extracted when all parts are done (**Settings › Downloads › Extract split archives**, or **Extract when all parts are done** in the set's details). This needs 7-Zip: install it in **Settings › Features & updates**. A file of the same name already in the folder is kept: the extracted one gets a new name.
 - Everything Pako knows about your downloads stays on your PC.

@@ -2,7 +2,7 @@
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
   // Help › Report a problem: what happened, and what goes with it (shown in full). Send report
-  // sends exactly that to Sookera's report service (a private list Sookera works through) and
+  // sends it to Sookera's report service (a private list Sookera works through) and
   // shows the report's reference; or the report opens in your email app, or you copy or save it.
   import { onMount } from "svelte";
   import { save as saveFile } from "@tauri-apps/plugin-dialog";
@@ -22,12 +22,11 @@
   let include = $state(true);
   let all = $state(false);
   let busy = $state(false);
-  /** Send report on its way. */
-  let sending = $state(false);
-  /** Sent: the report's reference. */
-  let sentRef = $state<string | null>(null);
-  /** Why the last Send report didn't go. */
-  let failed = $state<string | null>(null);
+  /** Send report on its way, its reference once sent, or why it didn't go (help.svelte.ts:
+   *  they outlive the dialog, so closing it meanwhile neither loses the answer nor sends twice). */
+  const sending = $derived(help.reportSending);
+  const sentRef = $derived(help.reportSent);
+  const failed = $derived(help.reportFailed);
   let field = $state<HTMLTextAreaElement | null>(null);
 
   const list = $derived(info ? attached(info) : []);
@@ -43,6 +42,11 @@
       (i) => (info = i),
       (e) => app.toast(`Couldn't read Pako's details: ${e}`, "error"),
     );
+    // Closed: the next time starts afresh (a report still on its way says how it went).
+    return () => {
+      help.reportSent = null;
+      help.reportFailed = null;
+    };
   });
 
   function close() {
@@ -54,18 +58,28 @@
   }
 
   async function sendReport() {
-    if (!parts || busy || sending) return;
+    if (!parts || busy || help.reportSending) return;
     if (!ready) return nudge();
-    sending = true;
-    failed = null;
+    help.reportSending = true;
+    help.reportFailed = null;
     try {
-      sentRef = await api.reportSend(help.reportDraft.trim(), theme.choice, sentProblems(parts));
+      const ref = await api.reportSend(help.reportDraft.trim(), theme.choice, sentProblems(parts));
       help.reportDraft = "";
+      // Closed meanwhile: a toast says it went.
+      if (help.report) help.reportSent = ref;
+      else app.toast(`Report sent to Sookera. Its reference is #${ref}.`);
     } catch (e) {
-      failed = sendFailText(e);
+      const why = sendFailText(e);
+      if (help.report) help.reportFailed = why;
+      else app.toast(`The report wasn't sent. ${why}`, "error");
     } finally {
-      sending = false;
+      help.reportSending = false;
     }
+  }
+
+  /** The Close button of "Sent to Sookera" takes the keyboard (Enter or Esc closes). */
+  function focusNow(node: HTMLElement) {
+    node.focus({ preventScroll: true });
   }
 
   async function send() {
@@ -123,13 +137,15 @@
   }
 
   function key(e: KeyboardEvent) {
-    // Ctrl+Enter: Send report, like the other dialogs' main button.
-    if (e.key === "Enter" && e.ctrlKey) {
+    // Ctrl+Enter, wherever the keyboard is in the dialog: Send report (its button's tooltip says so).
+    if (e.key === "Enter" && e.ctrlKey && !sentRef) {
       e.preventDefault();
       sendReport();
     }
   }
 </script>
+
+<svelte:window onkeydown={key} />
 
 <Modal title="Report a problem" width={580} onclose={close}>
   {#if sentRef}
@@ -146,7 +162,7 @@
     rows="3"
     bind:this={field}
     bind:value={help.reportDraft}
-    onkeydown={key}
+    readonly={sending}
     placeholder="What you did and what you saw. For example: a Google Drive folder stopped at 80% with “Server error (502)”, and Retry didn't help."
   ></textarea>
 
@@ -176,7 +192,7 @@
           {/if}
         </div>
       </div>
-      <button class="switch" class:on={include} role="switch" aria-checked={include} aria-labelledby="report-incl" onclick={() => (include = !include)}></button>
+      <button class="switch" class:on={include} role="switch" aria-checked={include} aria-labelledby="report-incl" disabled={sending} onclick={() => (include = !include)}></button>
     </div>
 
     {#if include && list.length}
@@ -201,13 +217,13 @@
   {#if failed}
     <p class="failed" role="alert" in:fadeIn>{failed}</p>
   {:else}
-    <p class="quiet">Send report sends exactly what's shown here to Sookera, kept private and used only to fix Pako. Nothing goes until you click it.</p>
+    <p class="quiet">Send report sends what's shown here to Sookera, kept private and used only to fix Pako. Nothing goes until you click it.</p>
   {/if}
   {/if}
 
   {#snippet actions()}
     {#if sentRef}
-      <button class="btn primary" onclick={close}>Close</button>
+      <button class="btn primary" use:focusNow onclick={close}>Close</button>
     {:else}
       <button class="btn ghost left" disabled={!ready} title={ready ? undefined : "Say what happened first"} onclick={saveAs}>Save as a file…</button>
       <button class="btn ghost" disabled={!ready} title={ready ? undefined : "Say what happened first"} onclick={copy}><Icon name="copy" size={13} stroke={2} />Copy details</button>

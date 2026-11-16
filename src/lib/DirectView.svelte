@@ -5,6 +5,7 @@
   // contacts under that filter (searchable, scrolling, your name and ID at the bottom), and the
   // picked contact's conversation: both directions, history kept only on this PC, with a send
   // area at the bottom that sends straight to them while they're online.
+  import { untrack } from "svelte";
   import { open as pick } from "@tauri-apps/plugin-dialog";
   import { app } from "./state.svelte";
   import { api, listen, type DirectContact, type DirectHistory, type DirectTransfer } from "./api";
@@ -23,6 +24,14 @@
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
 
   const d = $derived(app.directView);
+  // Direct starts the first time this page is open (until then Pako makes no Direct connection).
+  let woken = false;
+  $effect(() => {
+    if (d && !d.ready && !d.error && !woken) {
+      woken = true;
+      api.directWake().catch(() => (woken = false));
+    }
+  });
   /** Everyone, for "do you have contacts at all". */
   const everyone = $derived(app.directContacts);
   // Search inside the current filter (shown once the list gets long, or while typing).
@@ -34,6 +43,11 @@
     return app.directShown.filter((c) => c.name.toLowerCase().includes(q) || (c.theirName ?? "").toLowerCase().includes(q) || (c.tags ?? []).some((t) => t.toLowerCase().includes(q)));
   });
   const current = $derived(contacts.find((c) => c.id === app.directPicked) ?? contacts[0] ?? null);
+  // Nobody picked yet (or the picked one was removed): the first shown is picked for real, so a
+  // contact coming online (online sorts first) doesn't swap the conversation under you.
+  $effect(() => {
+    if (current && (!app.directPicked || !everyone.some((c) => c.id === app.directPicked))) app.directPicked = current.id;
+  });
   const FILTER_TITLES: Record<string, string> = { all: "All contacts", online: "Online", waiting: "Waiting for you", favourites: "Favourites" };
   const filterTitle = $derived(FILTER_TITLES[app.directFilter] ?? app.directFilter.replace(/^tag:/, ""));
 
@@ -56,10 +70,13 @@
   /** Whose conversation was last scrolled: a new item glides into view, a new contact opens at the end. */
   let scrolledFor: string | null = null;
   const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  /** Changes only when the conversation or its number of items changes (a progress update of a
+   *  transfer must not pull the conversation back down while you read further up). */
+  const scrollKey = $derived(`${current?.id ?? ""}|${rows.length}`);
   $effect(() => {
     // Newest at the bottom, kept in view.
-    void rows.length;
-    const id = current?.id ?? null;
+    void scrollKey;
+    const id = untrack(() => current?.id ?? null);
     const glide = id === scrolledFor && !reducedMotion();
     scrolledFor = id;
     queueMicrotask(() => timeline?.scrollTo({ top: timeline.scrollHeight, behavior: glide ? "smooth" : "auto" }));
@@ -209,6 +226,8 @@
     await app.run(() => api.directEditContact(c.id, { name: renameTo }));
   }
   let removing = $state<DirectContact | null>(null);
+  /** "Clear history…" asks first: the list of what went between you can't be brought back. */
+  let clearing = $state<DirectContact | null>(null);
 
   function contactMenu(e: MouseEvent, c: DirectContact, atMouse = false) {
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -221,7 +240,7 @@
       { label: "Can send to me without asking", hint: c.autoAccept ? "✓" : "", action: () => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept })) },
       { label: "Save their files in…", action: () => chooseFolder(c) },
       { separator: true },
-      { label: "Clear history", action: () => app.run(() => api.directClearHistory(c.id)) },
+      { label: "Clear history…", action: () => (clearing = c) },
       { label: "Remove contact", danger: true, action: () => (removing = c) },
     ]);
   }
@@ -258,14 +277,45 @@
   }
 
   // ---------- the send area ----------
-  let basket = $state<string[]>([]);
+  /** Files waiting to be sent, kept per contact (like a draft): files picked for one person never
+   *  end up sent to another one shown later. */
+  let baskets = $state<Record<string, string[]>>({});
+  const basket = $derived(current ? (baskets[current.id] ?? []) : []);
+  function setBasket(list: string[], id = current?.id) {
+    if (id) baskets = { ...baskets, [id]: list };
+  }
   let compress = $state(false);
   let sendName = $state("");
   let sending = $state(false);
+  /** The name and the compression choice belong to one person's files too: another conversation
+   *  shows its own (a name typed for Alex's files never goes out with Jo's). */
+  const drafts = new Map<string, { name: string; compress: boolean }>();
+  let draftFor: string | null = null;
+  $effect(() => {
+    const id = current?.id ?? null;
+    if (id === draftFor) return;
+    untrack(() => {
+      if (draftFor) drafts.set(draftFor, { name: sendName, compress });
+      const mine = id ? drafts.get(id) : undefined;
+      sendName = mine?.name ?? "";
+      compress = mine?.compress ?? false;
+      draftFor = id;
+    });
+  });
   const nameOf = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+  /** A long name in a basket chip: the start gives way, the end (with the extension) stays. */
+  const tailOf = (n: string) => (n.length > 22 ? n.slice(-10) : "");
   function addPaths(paths: string[]) {
     const have = new Set(basket.map((p) => p.toLowerCase()));
-    basket = [...basket, ...paths.filter((p) => !have.has(p.toLowerCase()))];
+    const fresh: string[] = [];
+    for (const p of paths) {
+      const k = p.toLowerCase();
+      if (p && !have.has(k)) {
+        have.add(k);
+        fresh.push(p);
+      }
+    }
+    if (fresh.length) setBasket([...basket, ...fresh]);
   }
   async function chooseFiles() {
     const r = await pick({ multiple: true, directory: false, title: "Choose files to send" });
@@ -277,12 +327,18 @@
   }
   async function send() {
     if (!current || !basket.length || sending) return;
+    const to = current.id;
+    const paths = basket;
     sending = true;
     try {
-      await api.directSend(current.id, basket, compress, sendName.trim() || null);
-      basket = [];
-      sendName = "";
-      compress = false;
+      await api.directSend(to, paths, compress, sendName.trim() || null);
+      // Only what was sent leaves: files added for them while it started stay for the next send.
+      const sent = new Set(paths);
+      setBasket((baskets[to] ?? []).filter((p) => !sent.has(p)), to);
+      if (current?.id === to) {
+        sendName = "";
+        compress = false;
+      } else drafts.delete(to);
     } catch (e) {
       app.toast(String(e), "error");
     } finally {
@@ -426,7 +482,7 @@
                 {/if}
                 {#if c.tags?.length}
                   <span class="ptags">
-                    {#each c.tags.slice(0, 2) as t (t)}<span class="tchip">{t}</span>{/each}
+                    {#each c.tags.slice(0, 2) as t, i (i)}<span class="tchip">{t}</span>{/each}
                     {#if c.tags.length > 2}<span class="tchip more">+{c.tags.length - 2}</span>{/if}
                   </span>
                 {/if}
@@ -561,7 +617,9 @@
               <div class="basket" transition:rowSlide={{ duration: 220 }}>
               <div class="items">
                 {#each basket as p (p)}
-                  <span class="chip" transition:pop={{ duration: 180, from: 0.9, y: 0 }} animate:flipIf={flipOpts}><FileIcon name={nameOf(p)} kind={/\.[a-z0-9]{1,5}$/i.test(p) ? undefined : "folder"} size={14} /><MiddleText text={nameOf(p)} /><button aria-label="Remove {nameOf(p)}" onclick={() => (basket = basket.filter((x) => x !== p))}><Icon name="x" size={10} stroke={2.4} /></button></span>
+                  {@const nm = nameOf(p)}
+                  {@const tail = tailOf(nm)}
+                  <span class="chip" title={p} transition:pop={{ duration: 180, from: 0.9, y: 0 }} animate:flipIf={flipOpts}><FileIcon name={nm} kind={/\.[a-z0-9]{1,5}$/i.test(p) ? undefined : "folder"} size={14} /><span class="cn"><span class="head">{tail ? nm.slice(0, -tail.length) : nm}</span>{#if tail}<span class="tail">{tail}</span>{/if}</span><button aria-label="Remove {nm}" onclick={() => setBasket(basket.filter((x) => x !== p))}><Icon name="x" size={10} stroke={2.4} /></button></span>
                 {/each}
               </div>
               <div class="opts">
@@ -575,9 +633,11 @@
                   onpick={(v) => (compress = v === "zip")}
                 />
                 <input class="input name" bind:value={sendName} placeholder="Name (optional)" maxlength="120" aria-label="Name of this send" />
-                <div class="spacer"></div>
-                <button class="btn ghost" onclick={() => (basket = [])}>Clear</button>
-                <button class="btn primary" disabled={!current.online || sending} onclick={send}><Icon name="send" size={13} stroke={2.2} />Send to {current.name}</button>
+                <!-- Not enough room on one line: the two buttons go to the next one, still on the right. -->
+                <div class="go">
+                  <button class="btn ghost" onclick={() => setBasket([])}>Clear</button>
+                  <button class="btn primary" disabled={!current.online || sending} onclick={send} title="Send to {current.name}"><Icon name="send" size={13} stroke={2.2} /><span class="to">Send to {current.name}</span></button>
+                </div>
               </div>
               </div>
             {/if}
@@ -633,7 +693,7 @@
   {@const tc = tagging}
   <Modal title="Tags for {tc.name}" width={440} onclose={() => (tagging = null)}>
     <div class="tagpick">
-      {#each tagChoices as t (t)}
+      {#each tagChoices as t, i (i)}
         {@const on = ticked.some((x) => x.toLowerCase() === t.toLowerCase())}
         <button class="tagopt" class:on role="checkbox" aria-checked={on} onclick={() => toggleTag(t)}>
           <span class="tick" aria-hidden="true">{#if on}<Icon name="check" size={11} stroke={3} />{/if}</span>{t}
@@ -656,6 +716,23 @@
     {#snippet actions()}
       <button class="btn ghost" onclick={() => (tagging = null)}>Cancel</button>
       <button class="btn primary" onclick={saveTags}>Save</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if clearing}
+  {@const c = clearing}
+  <Modal title="Clear your history with {c.name}?" width={440} onclose={() => (clearing = null)}>
+    <p class="msgtext">The list of what you sent and received with {c.name} is emptied on this PC and can't be brought back. The files themselves stay where they are, and {c.name} stays in your contacts.</p>
+    {#snippet actions()}
+      <button class="btn ghost" onclick={() => (clearing = null)}>Cancel</button>
+      <button
+        class="btn danger-fill"
+        onclick={() => {
+          clearing = null;
+          app.run(() => api.directClearHistory(c.id));
+        }}><Icon name="trash" size={13} />Clear history</button
+      >
     {/snippet}
   </Modal>
 {/if}
@@ -1345,7 +1422,24 @@
     border: 1px solid var(--line);
     font-size: 12.5px;
   }
+  .chip :global(svg) {
+    flex: none;
+  }
+  .cn {
+    display: flex;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .cn .head {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cn .tail {
+    flex: none;
+  }
   .chip button {
+    flex: none;
     border: none;
     background: none;
     color: var(--text-3);
@@ -1365,8 +1459,26 @@
   }
   .opts {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+  }
+  .go {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .go .btn.primary {
+    min-width: 0;
+  }
+  .go .to {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .basket {
     display: flex;
@@ -1374,7 +1486,9 @@
     gap: 10px;
   }
   .input.name {
-    width: 180px;
+    flex: 1 1 140px;
+    min-width: 120px;
+    max-width: 220px;
   }
   .droprow {
     display: flex;

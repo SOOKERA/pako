@@ -59,10 +59,11 @@
     }
     await startDrag({ item: paths, icon: dragIcon(paths.length, folder) }).catch((e) => app.toast(String(e), "error"));
   }
-  /** Finished rows being dragged: the selection if this row is in it, else just this row. */
+  /** Finished rows being dragged: the selection if this row is in it, else just this row. Only
+   *  rows shown under the current filter or search (like every other action on the selection). */
   function outIds(d: Download) {
     if (!app.selected.has(d.id)) return [d.id];
-    return app.downloads.filter((x) => app.selected.has(x.id) && x.status === "completed").map((x) => x.id);
+    return app.selectedDownloads.filter((x) => x.status === "completed").map((x) => x.id);
   }
   /** The little picture under the cursor while dragging: a warm red tile with the count. */
   const icons = new Map<string, string>();
@@ -191,7 +192,10 @@
   // ---------- per-row values ----------
   /** A folder's date: its newest file. */
   function newestOf(files: Download[]) {
-    return Math.max(...files.map((x) => x.date || x.addedAt));
+    // A loop, not Math.max(...list): a folder of many thousand files would overflow the call.
+    let m = 0;
+    for (const x of files) m = Math.max(m, x.date || x.addedAt);
+    return m;
   }
 
   function pct(d: Download) {

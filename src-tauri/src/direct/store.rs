@@ -257,7 +257,26 @@ pub fn delete_tag(tags: &mut Vec<String>, contacts: &mut [Contact], name: &str) 
 
 /// A list file; an unreadable one is set aside (never overwritten) and the list starts empty.
 fn read<T: for<'de> Deserialize<'de>>(path: &PathBuf) -> Vec<T> {
-    let Ok(bytes) = std::fs::read(path) else { return Vec::new() };
+    // Briefly busy (a backup or a virus scan has it open): tried again a moment later, so the
+    // list isn't taken as empty and then saved over.
+    let mut tries = 0;
+    let bytes = loop {
+        match std::fs::read(path) {
+            Ok(b) => break b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(_) if tries < 4 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(_) => {
+                // Still unreadable: kept aside (never overwritten) when that works.
+                let mut aside = path.clone();
+                aside.set_extension(format!("unreadable-{}.json", crate::model::now_secs()));
+                let _ = std::fs::rename(path, aside);
+                return Vec::new();
+            }
+        }
+    };
     match serde_json::from_slice::<Vec<T>>(&bytes) {
         Ok(v) => v,
         Err(_) => {

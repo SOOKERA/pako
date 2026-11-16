@@ -16,6 +16,7 @@
     onclose,
     autofocus = true,
     closeLabel = "Close",
+    outsideCloses = true,
     children,
     actions,
   }: {
@@ -26,6 +27,8 @@
     autofocus?: boolean;
     /** What the × (and Esc) does, when it's more than closing: "Decline". Shown as its tooltip. */
     closeLabel?: string;
+    /** A click beside the dialog closes it (off where that would answer for you: first-start setup). */
+    outsideCloses?: boolean;
     children: Snippet;
     actions?: Snippet;
   } = $props();
@@ -98,7 +101,7 @@
 
 <svelte:window onkeydown={key} />
 
-<div class="backdrop" role="presentation" transition:fadeIn onmousedown={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" transition:fadeIn onmousedown={(e) => outsideCloses && e.target === e.currentTarget && onclose()}>
   <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialog} style="width: min({width}px, calc(100vw - 48px))" transition:pop>
     <header class:line={above}>
       <h2>{title}</h2>

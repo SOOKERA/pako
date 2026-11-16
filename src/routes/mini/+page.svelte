@@ -10,6 +10,7 @@
   import Logo from "$lib/Logo.svelte";
   import MiddleText from "$lib/MiddleText.svelte";
   import WinButton from "$lib/WinButton.svelte";
+  import Toasts from "$lib/Toasts.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "$lib/motion";
 
   onMount(() => app.start());
@@ -225,6 +226,8 @@
   </footer>
 </div>
 {/key}
+<!-- "Link copied", or why Open or Pause didn't work: said here too, over the list. -->
+<Toasts plain />
 </div>
 
 <style>
@@ -308,6 +311,12 @@
     height: 100vh;
     box-sizing: border-box;
     padding: 14px;
+  }
+  /* Messages sit inside the list's box, just over its bottom bar. */
+  .frame :global(div.toasts) {
+    right: 26px;
+    bottom: 70px;
+    max-width: calc(100vw - 52px);
   }
   .mini {
     height: 100%;

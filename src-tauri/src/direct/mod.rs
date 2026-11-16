@@ -9,13 +9,19 @@
 //! public relays, which only ever see encrypted bytes. Finding each other uses the library's
 //! public address lookup. No Sookera server is involved. Contacts and history live only on
 //! this PC (contacts.json, direct_history.json).
+//!
+//! Direct starts with Pako only once it has been used (a contact, a transfer, a name, or the
+//! Direct page opened once: see `used_before`). Until then nothing of it runs: no relay
+//! connection, no address published, no port asked from the router. Opening the Direct page
+//! starts it (`Direct::wake`) and from then on it starts with Pako.
 
 mod node;
 mod proto;
 mod store;
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use iroh::endpoint::presets;
@@ -36,13 +42,31 @@ const PRESENCE_EVERY: Duration = Duration::from_secs(180);
 pub struct Direct {
     node: Mutex<Option<Arc<Node>>>,
     error: Mutex<Option<String>>,
+    /// Starting has begun (it begins once).
+    started: AtomicBool,
+    /// Pako itself, to start Direct later (set by `start` / `start_if_used`).
+    app: OnceLock<AppHandle>,
 }
 
 impl Direct {
+    /// The running node. Never starts Direct by itself (the quit question, the tray and
+    /// keep-awake ask here too): the Direct page does, with `wake`.
     pub fn node(&self) -> Result<Arc<Node>, String> {
         self.node.lock().unwrap().clone().ok_or_else(|| {
+            if !self.started.load(Ordering::SeqCst) {
+                return "Direct isn't running yet. Open the Direct page to start it.".to_string();
+            }
             self.error.lock().unwrap().clone().unwrap_or_else(|| "Direct is still starting. Try again in a moment.".into())
         })
+    }
+
+    /// Starts Direct if it isn't running yet (the Direct page opened). Returns at once: the
+    /// window gets "direct-changed" when it's ready. From then on Direct starts with Pako.
+    pub fn wake(&self) {
+        let Some(app) = self.app.get() else { return };
+        if !self.started.swap(true, Ordering::SeqCst) {
+            begin(app.clone());
+        }
     }
 }
 
@@ -123,10 +147,54 @@ fn window_in_view(app: &AppHandle) -> bool {
         .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false) && w.is_focused().unwrap_or(false))
 }
 
-/// Starts Direct in the background: the window works meanwhile and shows it as starting.
+/// The file that says Direct was used on this PC (made the first time it starts).
+const USED_FLAG: &str = "direct_used";
+
+/// A saved list (contacts, history, blocked people) that holds something. One that can't be
+/// read counts as holding something: Direct then starts and deals with it as before.
+fn list_has_items(path: &Path) -> bool {
+    match std::fs::read(path) {
+        Ok(b) => serde_json::from_slice::<Vec<serde_json::Value>>(&b).map(|l| !l.is_empty()).unwrap_or(true),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Direct was used on this PC: it started once since this version (the flag), or an earlier
+/// Pako left contacts, transfers, people turned away or your name for Direct.
+fn used_before(dir: &Path) -> bool {
+    dir.join(USED_FLAG).exists()
+        || ["contacts.json", "direct_history.json", "direct_blocked.json"].iter().any(|f| list_has_items(&dir.join(f)))
+        || std::fs::read(dir.join("direct_profile.json")).ok().and_then(|b| serde_json::from_slice::<Profile>(&b).ok()).is_some_and(|p| !p.name.trim().is_empty())
+}
+
+/// At Pako's start: Direct starts only if it was used before. Otherwise it waits for the
+/// Direct page (`Direct::wake`), and nothing of it touches the network until then.
+pub fn start_if_used(app: &AppHandle) {
+    let direct = Direct::default();
+    let _ = direct.app.set(app.clone());
+    app.manage(direct);
+    if used_before(crate::paths::data_dir()) {
+        app.state::<Direct>().wake();
+    }
+}
+
+/// Starts Direct now, used before or not.
+#[allow(dead_code)]
 pub fn start(app: &AppHandle) {
-    app.manage(Direct::default());
-    let app = app.clone();
+    let direct = Direct::default();
+    let _ = direct.app.set(app.clone());
+    app.manage(direct);
+    app.state::<Direct>().wake();
+}
+
+/// Starts Direct in the background: the window works meanwhile and shows it as starting.
+fn begin(app: AppHandle) {
+    // Used from now on: it starts with Pako (someone given this Pako ID can then reach it).
+    let flag = crate::paths::data_dir().join(USED_FLAG);
+    if !flag.exists() {
+        let _ = std::fs::write(&flag, b"1");
+    }
+    let _ = app.emit("direct-changed", ());
     tauri::async_runtime::spawn(async move {
         let key = match load_key() {
             Ok(k) => k,
@@ -182,4 +250,37 @@ pub fn start(app: &AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Direct starts with Pako only once it was used: a new install stays quiet, an upgrade
+    /// with contacts (or any other trace of Direct) starts as before.
+    #[test]
+    fn starts_with_pako_only_once_used() {
+        let dir = std::env::temp_dir().join(format!("pako-direct-used-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!used_before(&dir), "a new install");
+        // Pako 0.1.2 made a key for everyone: that alone isn't use.
+        std::fs::write(dir.join("direct_key.bin"), b"x").unwrap();
+        std::fs::write(dir.join("contacts.json"), b"[]").unwrap();
+        std::fs::write(dir.join("direct_history.json"), b"[]").unwrap();
+        std::fs::write(dir.join("direct_profile.json"), br#"{"name":"  "}"#).unwrap();
+        assert!(!used_before(&dir), "started by 0.1.2, never used");
+        std::fs::write(dir.join("contacts.json"), br#"[{"id":"a","name":"Rado"}]"#).unwrap();
+        assert!(used_before(&dir), "an upgrade with contacts");
+        std::fs::write(dir.join("contacts.json"), b"[]").unwrap();
+        std::fs::write(dir.join("direct_profile.json"), br#"{"name":"Zak"}"#).unwrap();
+        assert!(used_before(&dir), "a name for Direct");
+        std::fs::remove_file(dir.join("direct_profile.json")).unwrap();
+        std::fs::write(dir.join("direct_history.json"), b"{damaged").unwrap();
+        assert!(used_before(&dir), "a list that can't be read: start and deal with it as before");
+        std::fs::remove_file(dir.join("direct_history.json")).unwrap();
+        assert!(!used_before(&dir));
+        std::fs::write(dir.join(USED_FLAG), b"1").unwrap();
+        assert!(used_before(&dir), "the Direct page was opened once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

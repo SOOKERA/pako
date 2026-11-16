@@ -33,7 +33,7 @@ pub const CHROME_STORE_ID: &str = "cojnnpgiilnbkblckkjnheigiodkdlpl";
 /// fixed by the key in extension/manifest.chromium.json.
 pub const CHROMIUM_ID: &str = "fnaplmfbaccplngclnkchlngpkbcbhod";
 /// Every Chromium extension ID Pako answers. (An Edge Add-ons item gets its own ID: add it here
-/// and to `LIGHT_IDS` before that edition is submitted; see docs/store/chrome-web-store.md.)
+/// and to `LIGHT_IDS` before that edition is submitted.)
 pub const CHROMIUM_IDS: [&str; 2] = [CHROME_STORE_ID, CHROMIUM_ID];
 /// The Pako Light IDs: requests from them never become videos (those stores don't allow
 /// video downloading). The browser tells the native host which extension started it.
@@ -214,16 +214,34 @@ pub fn is_light_launch(args: &[String]) -> bool {
     args.iter().any(|a| LIGHT_IDS.iter().any(|id| a.trim_end_matches('/') == format!("chrome-extension://{id}")))
 }
 
-/// Pako Light's requests: never a video, nothing for a video site, and its links are marked so
-/// Links never turns them into videos (`light`). Links to video sites are left out.
+/// The sites Pako Light leaves alone, whole sites (any page on them): the same list as
+/// `LIGHT_SKIPS_SITES` in extension/background.js (a test keeps the two the same).
+const LIGHT_SKIPS_SITES: &[&str] = &[
+    "youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "twitch.tv", "facebook.com", "fb.watch",
+    "instagram.com", "tiktok.com", "x.com", "twitter.com", "dailymotion.com", "dai.ly", "reddit.com", "rumble.com",
+    "odysee.com", "bitchute.com", "bilibili.com", "streamable.com", "soundcloud.com",
+];
+
+/// On a site Pako Light leaves alone (any page of it, not only a video's page).
+fn light_skips(link: &str) -> bool {
+    let Some(host) = url::Url::parse(link).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)) else { return false };
+    let host = host.trim_end_matches('.');
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    LIGHT_SKIPS_SITES.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
+/// Pako Light's requests: never a video, nothing from or to the sites it leaves alone (Light
+/// checks the same on its side), and its links are marked so Links never turns them into videos
+/// (`light`). Links to those sites are left out.
 pub fn light_rules(mut r: Request) -> Result<Request, String> {
     match r.kind.as_str() {
         "ping" => return Ok(r),
         "video" => return Err(LIGHT_REFUSED.into()),
         _ => {}
     }
-    r.urls.retain(|u| !crate::video::is_video_site(u));
-    if r.urls.is_empty() || crate::video::is_video_site(&r.referrer) {
+    r.urls.retain(|u| !crate::video::is_video_site(u) && !light_skips(u));
+    // The referrer is often only "https://site/" (see `referrer_for`): the whole site counts.
+    if r.urls.is_empty() || crate::video::is_video_site(&r.referrer) || light_skips(&r.referrer) {
         return Err(LIGHT_REFUSED.into());
     }
     r.site_cookies.clear();
@@ -259,6 +277,7 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
         return Err("Pako only takes http and https links.".into());
     }
     r.referrer = if r.referrer.len() <= MAX_URL_LEN { web_link(&r.referrer).unwrap_or_default() } else { String::new() };
+    r.referrer = referrer_for(&r.referrer, &r.urls);
     // A cookie header with line breaks or other control characters could add headers: refused.
     if r.cookies.len() > MAX_COOKIES || r.cookies.chars().any(|c| c.is_control()) {
         r.cookies.clear();
@@ -268,8 +287,9 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
         [one] if crate::video::is_video_site(one) => clean_site_cookies(one, std::mem::take(&mut r.site_cookies), unix_now()),
         _ => Vec::new(),
     };
-    // Only a plain file name, never a path.
-    r.filename = crate::names::sanitize(r.filename.rsplit(['/', '\\']).next().unwrap_or_default());
+    // Only a plain file name, never a path. No name stays no name (the link's own name is used
+    // then): cleaning an empty one would call the file "download".
+    r.filename = clean_filename(&r.filename);
     // Only single browser downloads are held by the browser.
     r.takeover = r.takeover && r.kind == "download" && r.urls.len() == 1;
     if !r.takeover {
@@ -278,6 +298,40 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
     // Only a plain media type ("type/subtype", nothing after it).
     r.mime = if r.takeover { clean_mime(&r.mime) } else { String::new() };
     Ok(r)
+}
+
+/// The page a download came from, as a browser sends it to the file's server (its default rule,
+/// "strict-origin-when-cross-origin"): the whole address to the same site, only "https://site/"
+/// to another site, nothing from an https page to an http link. Never the "#…" part or a login
+/// in the address. So a page's private address (a token in it) doesn't reach another site.
+fn referrer_for(referrer: &str, urls: &[String]) -> String {
+    let Ok(mut page) = url::Url::parse(referrer) else { return String::new() };
+    if !matches!(page.scheme(), "http" | "https") || page.host_str().is_none() {
+        return String::new();
+    }
+    page.set_fragment(None);
+    let _ = page.set_username("");
+    let _ = page.set_password(None);
+    let mut other_site = false;
+    for u in urls {
+        let Ok(to) = url::Url::parse(u) else { return String::new() };
+        if page.scheme() == "https" && to.scheme() != "https" {
+            return String::new();
+        }
+        other_site |= to.origin() != page.origin();
+    }
+    if other_site {
+        page.set_path("/");
+        page.set_query(None);
+    }
+    page.to_string()
+}
+
+/// The browser's name for a file: its last part only (never a path), cleaned for Windows. Empty
+/// when the browser gave none (right-click "Download with Pako" sends none).
+fn clean_filename(name: &str) -> String {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or_default().trim();
+    if last.is_empty() { String::new() } else { crate::names::sanitize(last) }
 }
 
 fn clean_mime(m: &str) -> String {
@@ -1113,6 +1167,19 @@ mod tests {
         assert_eq!(validate(Request { kind: "ping".into(), ..Default::default() }).unwrap().kind, "ping");
     }
 
+    /// A request without a file name keeps none (the link's own name is used then); a name is
+    /// only ever its last part.
+    #[test]
+    fn no_file_name_stays_no_file_name() {
+        assert_eq!(clean_filename(""), "");
+        assert_eq!(clean_filename("   "), "");
+        assert_eq!(clean_filename(r"C:\Users\me\"), "");
+        assert_eq!(clean_filename(r"..\..\Windows\evil.exe"), "evil.exe");
+        assert_eq!(clean_filename("a/b/report.pdf"), "report.pdf");
+        let r = validate(Request { kind: "download".into(), urls: vec!["https://example.org/a.zip".into()], ..Default::default() }).unwrap();
+        assert_eq!(r.filename, "");
+    }
+
     #[test]
     fn pipe_message_round_trip() {
         let r = Request {
@@ -1453,6 +1520,72 @@ mod tests {
         assert!(!r.light);
         let open = parse_pipe_message(br#"{"pako":1,"request":{"kind":"download","urls":["https://www.youtube.com/watch?v=x"],"light":false},"light":true}"#);
         assert_eq!(open, Err(LIGHT_REFUSED.to_string()));
+    }
+
+    #[test]
+    fn referrer_as_a_browser_sends_it() {
+        let sent = |referrer: &str, url: &str| {
+            validate(Request { kind: "download".into(), urls: vec![url.into()], referrer: referrer.into(), ..Default::default() })
+                .unwrap()
+                .referrer
+        };
+        // Same site: the whole address, without its "#…" part or a login.
+        assert_eq!(sent("https://u:p@app.example/inbox?id=7#token=abc", "https://app.example/f.zip"), "https://app.example/inbox?id=7");
+        // Another site: only the site.
+        assert_eq!(sent("https://mail.example/inbox?id=7&token=abc#x", "https://cdn.other/f.zip"), "https://mail.example/");
+        assert_eq!(sent("https://app.example:8443/p?q=1", "https://app.example/f.zip"), "https://app.example:8443/");
+        // From https to http: nothing.
+        assert_eq!(sent("https://app.example/p", "http://app.example/f.zip"), "");
+        assert_eq!(sent("http://app.example/p?q=1", "https://cdn.other/f.zip"), "http://app.example/");
+        // Several links: only the site as soon as one is elsewhere.
+        let links = validate(Request {
+            kind: "links".into(),
+            urls: vec!["https://e.org/1".into(), "https://f.org/2".into()],
+            referrer: "https://e.org/page?x=1".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(links.referrer, "https://e.org/");
+        // Checked again on Pako's side: the same answer.
+        let r = validate(Request {
+            kind: "download".into(),
+            urls: vec!["https://cdn.other/f.zip".into()],
+            referrer: "https://mail.example/inbox#t".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(validate(r.clone()).unwrap().referrer, r.referrer);
+    }
+
+    #[test]
+    fn pako_light_skips_whole_sites_like_the_extension() {
+        // The same list as background.js.
+        let js = include_str!("../../extension/background.js");
+        let start = js.find("const LIGHT_SKIPS_SITES = [").expect("LIGHT_SKIPS_SITES in background.js");
+        let list = &js[start..start + js[start..].find("];").unwrap()];
+        let mut theirs: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        let mut ours = LIGHT_SKIPS_SITES.to_vec();
+        theirs.sort_unstable();
+        ours.sort_unstable();
+        assert_eq!(ours, theirs);
+        // Any page of those sites, also when only the site is known (the referrer).
+        let light = |urls: &[&str], referrer: &str| {
+            let r = validate(Request {
+                kind: "links".into(),
+                urls: urls.iter().map(|u| u.to_string()).collect(),
+                referrer: referrer.into(),
+                ..Default::default()
+            })
+            .unwrap();
+            light_rules(r)
+        };
+        assert_eq!(light(&["https://cdn.example/a.zip"], "https://www.youtube.com/watch?v=x"), Err(LIGHT_REFUSED.to_string()));
+        assert_eq!(light(&["https://cdn.example/a.zip"], "https://m.youtube.com/"), Err(LIGHT_REFUSED.to_string()));
+        assert_eq!(light(&["https://www.youtube.com/@someone"], ""), Err(LIGHT_REFUSED.to_string()));
+        let kept = light(&["https://www.reddit.com/r/x/", "https://cdn.example/a.zip"], "https://news.example/").unwrap();
+        assert_eq!(kept.urls, vec!["https://cdn.example/a.zip".to_string()]);
+        // Not a lookalike.
+        assert!(light(&["https://notyoutube.com/a.zip"], "https://youtube.com.example/").is_ok());
     }
 
     #[test]

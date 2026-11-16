@@ -4,7 +4,7 @@ Sends downloads, links and videos from your browser to Pako. It talks to Pako di
 PC through the browser's "native messaging": nothing listens on the network.
 
 - **Download button on videos** (YouTube watch pages, Shorts and embedded players, Vimeo,
-  Twitch): point at the video and a red **Download** button shows at its top right. Pick
+  Twitch, Facebook, Instagram): point at the video and a red **Download** button shows at its top right. Pick
   **Up to 1080p / 720p / 480p** or **Audio only** and the video starts in Downloads straight
   away (Pako's video tools must be installed). Turn the button off in the toolbar popup.
 - **Right-click a link, image or video › Download with Pako**: it starts in Downloads.
@@ -69,6 +69,10 @@ Firefox only runs extensions signed by Mozilla. "Unlisted" means nobody else see
    **Access your data for all websites**, so downloads behind a login work and the Download
    button shows on videos.
 
+The Firefox manifest says what the extension passes to Pako on this PC
+(`data_collection_permissions`: the download's cookies, addresses, and file names and links).
+Mozilla asks every new extension to say so, and Firefox 140 and later show it when adding Pako.
+
 A new version of the extension needs the same steps with the new zip (raise `version` in both
 `manifest.*.json` files first).
 
@@ -99,8 +103,9 @@ A new version of the extension needs the same steps with the new zip (raise `ver
     also takes the same takeover (same link and size) only once within 30 s, and gives both
     requests that answer.
   - **Edge Add-ons** gives the item its own ID. When the Edge draft exists, add its ID to
-    `CHROMIUM_IDS` and `LIGHT_IDS` in `src-tauri/src/extension.rs` and release that Pako before
-    submitting (see `docs/store/chrome-web-store.md`).
+    `CHROMIUM_IDS` and `LIGHT_IDS` in `src-tauri/src/extension.rs`, let the full extension answer
+    it too (`LIGHT_ID` in `background.js`, else the Edge copy never steps aside), and release that
+    Pako before submitting (see `docs/store/chrome-web-store.md`).
 - Firefox ID: `pako@sookera.com`.
 - Messages to the native host: `ping`; `download` / `links` with `urls` (plus `referrer`,
   `cookies`, `filename`, `takeover`); `video` with one `urls` entry (a video site Pako knows) and
@@ -111,7 +116,7 @@ A new version of the extension needs the same steps with the new zip (raise `ver
   read back both zips.
 - Every copy carries `LICENSE` and `NOTICE.md` (the folder Pako writes, both zips).
 - `player.js` is the Download button on video players: a content script that reads only the
-  page's address, draws its button in a closed shadow root, and asks the background page.
+  page's address (on Facebook and Instagram also the links of the post around the video), draws its button in a closed shadow root, and asks the background page.
 - `pako://connect` is the only `pako://` link Pako acts on (any other is ignored).
 - Native host name: `app.pako.host`. Pako writes the host files to `data/browser/` and the
   per-user registry entries (Chrome, Chromium, Edge, Brave, Vivaldi, Firefox) when the switch is

@@ -49,6 +49,24 @@ const FILE_CHANGED: &str =
 /// downloads finish" waits, and the PC is kept awake (when that setting is on).
 pub static UPLOADS_RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Other transfers that count like an upload (Direct sends and receives): told once at start by
+/// whoever runs them (see `also_busy_when`), so the engine needs to know nothing about them.
+static OTHER_TRANSFERS: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>> = std::sync::OnceLock::new();
+
+/// Registers the check for other transfers running (e.g. Direct's `Node::busy`): while it says
+/// yes, "when all downloads finish" waits and the PC is kept awake (when that setting is on).
+/// Called without the engine's lock held, so the check may take its own locks.
+// Registered by the app's start-up (lib.rs) once Direct is set up.
+pub fn also_busy_when(check: impl Fn() -> bool + Send + Sync + 'static) {
+    let _ = OTHER_TRANSFERS.set(Box::new(check));
+}
+
+/// An upload (Send) or another registered transfer (Direct) is running right now. Never call it
+/// while holding the engine's lock (the registered check takes other locks).
+pub fn transfers_running() -> bool {
+    UPLOADS_RUNNING.load(Ordering::Relaxed) > 0 || OTHER_TRANSFERS.get().is_some_and(|f| f())
+}
+
 /// The download list, saved in the background (see `paths::Saver`).
 static LIST_SAVER: std::sync::LazyLock<crate::paths::Saver> =
     std::sync::LazyLock::new(|| crate::paths::Saver::new(list_path()));
@@ -186,11 +204,10 @@ fn all_done_now(had_work: &mut bool, done_any: &mut bool, busy: bool) -> bool {
 }
 
 /// Something keeps "when all downloads finish" waiting: a download running or waiting, or an
-/// upload (Send) running.
-fn busy(inner: &Inner) -> bool {
-    !inner.jobs.is_empty()
-        || inner.downloads.iter().any(|d| d.status == Status::Queued)
-        || UPLOADS_RUNNING.load(Ordering::Relaxed) > 0
+/// upload (Send) or Direct transfer running (`transfers`, from `transfers_running`, read before
+/// taking the engine's lock).
+fn busy(inner: &Inner, transfers: bool) -> bool {
+    !inner.jobs.is_empty() || inner.downloads.iter().any(|d| d.status == Status::Queued) || transfers
 }
 
 /// A download stopped: is that news worth a notification? Not when Pako put it back in line by
@@ -617,7 +634,7 @@ impl Engine {
                 d.force = false;
             }
         }
-        let limiter = Arc::new(Limiter::new(settings.speed_limit_kb * 1024));
+        let limiter = Arc::new(Limiter::new(settings.speed_limit_kb.saturating_mul(1024)));
         crate::notices::use_settings(&settings);
         Arc::new(Self {
             emit,
@@ -672,7 +689,8 @@ impl Engine {
         };
         // A little room to spare: a completely full disk makes Windows itself struggle.
         const SPARE: u64 = 256 * 1024 * 1024;
-        if free >= left + others + SPARE {
+        // (Saturating: a server can announce any size.)
+        if free >= left.saturating_add(others).saturating_add(SPARE) {
             return None;
         }
         let place = if drive.is_empty() { "the drive".to_string() } else { drive };
@@ -698,6 +716,8 @@ impl Engine {
         let mut act = None;
         let mut changed = false;
         let mut events: Vec<(&'static str, serde_json::Value)> = Vec::new();
+        // Read before the lock (its check takes Direct's own locks).
+        let transfers = transfers_running();
         {
             let mut inner = self.inner.lock().unwrap();
             let s = inner.settings.clone();
@@ -757,7 +777,7 @@ impl Engine {
             }
 
             // When all downloads finish.
-            let busy = busy(&inner);
+            let busy = busy(&inner, transfers);
             if busy && inner.when_done_at.take().is_some() {
                 events.push(("when-done", serde_json::json!({ "phase": "cancelled" })));
             }
@@ -824,10 +844,11 @@ impl Engine {
 
     /// "When all downloads finish" from the window (resets to nothing after it fires or is cancelled).
     pub fn set_when_done(&self, action: &str) {
+        let transfers = transfers_running();
         let mut inner = self.inner.lock().unwrap();
         inner.when_done = WhenDone::parse(action);
         // Chosen while downloads run (or wait): it fires when they're done.
-        inner.had_work = busy(&inner);
+        inner.had_work = busy(&inner, transfers);
         if inner.when_done == WhenDone::Nothing {
             inner.when_done_at = None;
         }
@@ -1099,7 +1120,7 @@ impl Engine {
         if !s.auto_connections {
             n = n.min(s.connections.max(1));
         }
-        let rate = (s.speed_limit_kb > 0).then(|| s.speed_limit_kb * 1024 / (inner.jobs.len().max(1) as u64));
+        let rate = (s.speed_limit_kb > 0).then(|| s.speed_limit_kb.saturating_mul(1024) / (inner.jobs.len().max(1) as u64));
         (if fragments == 0 { 0 } else { n.max(1) }, rate)
     }
 
@@ -1655,7 +1676,7 @@ impl Engine {
         s.max_active = s.max_active.clamp(1, 20);
         std::fs::create_dir_all(&s.download_dir)
             .map_err(|_| anyhow!("Can't use that folder for downloads."))?;
-        self.limiter.set_rate(s.speed_limit_kb * 1024);
+        self.limiter.set_rate(s.speed_limit_kb.saturating_mul(1024));
         let saved = {
             // Saved under the lock: two saves at once reach the disk in the order they were made.
             let mut inner = self.inner.lock().unwrap();
@@ -1828,8 +1849,8 @@ impl Engine {
             d.downloaded = 0;
             recheck_server(d);
         }
+        d.name = ask_name(&d.dest_dir, &d.name, &dir, &wanted, &taken);
         d.dest_dir = dir;
-        d.name = names::unique(&d.dest_dir, &wanted, &taken);
         d.notify = a.notify;
         d.quiet = !a.notify;
         d.ask = false;
@@ -1912,7 +1933,7 @@ impl Engine {
                 added_ids.extend(made);
                 continue;
             }
-            let name = if r.filename.is_empty() || r.urls.len() > 1 { names::from_url(&url) } else { r.filename.clone() };
+            let name = browser_name(&r.filename, &url, r.urls.len() > 1);
             let mut d = new_download(&url, Source::Http { url: url.clone() }, name.clone(), dest.clone(), None);
             crate::extension::remember_headers(&d.id, crate::extension::BrowserHeaders { referrer: r.referrer.clone(), cookies: r.cookies.clone(), ..Default::default() });
             d.ask = ask;
@@ -2288,7 +2309,10 @@ impl Engine {
                     Some(exe) => tauri::async_runtime::spawn_blocking(move || {
                         let mut cmd = std::process::Command::new(exe);
                         // -snz: extracted files keep the "downloaded from the internet" mark.
-                        cmd.arg("x").arg("-y").arg("-snz").arg(format!("-o{}", out.display())).arg(&first);
+                        // -aou: a file of the same name already in the folder (another file of
+                        // a Drive folder, an earlier extraction) is never written over: the
+                        // extracted one gets a new name ("readme_1.txt").
+                        cmd.arg("x").arg("-y").arg("-aou").arg("-snz").arg(format!("-o{}", out.display())).arg(&first);
                         #[cfg(windows)]
                         {
                             use std::os::windows::process::CommandExt;
@@ -2490,6 +2514,9 @@ impl Engine {
         }
         inner.dirty = true;
         drop(inner);
+        // On disk before the next run lays the file out again: a crash in between must not
+        // leave the old parts ("half done") saved next to a new, empty file.
+        self.save_now();
         self.list_changed();
         self.schedule();
     }
@@ -2501,15 +2528,25 @@ impl Engine {
             bail!("Pause the download first, then rename it.");
         }
         let taken = taken_paths(&inner.downloads, Some(id));
+        let others = {
+            let d = inner.downloads.iter().find(|d| d.id == id).ok_or_else(|| anyhow!("Download not found"))?;
+            other_names(&inner.downloads, &d.dest_dir, &d.name)
+        };
         let d = inner.downloads.iter_mut().find(|d| d.id == id).ok_or_else(|| anyhow!("Download not found"))?;
         let wanted = names::sanitize(new_name.trim());
         if wanted == d.name {
             return Ok(wanted);
         }
-        let name = names::unique(&d.dest_dir, &wanted, &taken);
+        // Only capitals changed ("file.zip" to "File.zip"): Windows sees the same name, so its
+        // own file isn't "already there".
+        let name = if wanted.to_lowercase() == d.name.to_lowercase() { wanted.clone() } else { names::unique(&d.dest_dir, &wanted, &taken) };
         if d.status == Status::Completed {
             std::fs::rename(d.final_path(), d.dest_dir.join(&name))
                 .map_err(|e| anyhow!("Couldn't rename the file: {e}"))?;
+        } else if matches!(d.source, Source::Video { .. }) {
+            // A video not finished: its pieces (Pako's own streams and yt-dlp's) are named after
+            // it. They take the new name, so it carries on from them and none stays behind.
+            move_video_pieces(&d.dest_dir, &d.name, &name, &d.id, &others);
         } else {
             // Left unfinished by an older Pako: renamed under the new name in one go (straight
             // from its old ending if taking the new one failed, so it never stays behind under
@@ -2869,12 +2906,13 @@ impl Engine {
                 self.stats.lock().unwrap().sample();
             }
         }
+        // Uploads and Direct transfers, read before the lock (Direct's check takes its own).
+        let uploads = transfers_running();
         let mut inner = self.inner.lock().unwrap();
         let has_jobs = !inner.jobs.is_empty();
-        // Awake while downloads or uploads run, while downloads wait for the download hours
-        // (a PC asleep at the start time would never start them), and during the countdown
-        // before sleeping / shutting down.
-        let uploads = UPLOADS_RUNNING.load(Ordering::Relaxed) > 0;
+        // Awake while downloads, uploads or Direct transfers run, while downloads wait for the
+        // download hours (a PC asleep at the start time would never start them), and during
+        // the countdown before sleeping / shutting down.
         let waits_for_hours = inner.settings.schedule_on
             && !in_hours(&inner.settings)
             && inner.downloads.iter().any(|d| d.status == Status::Queued);
@@ -3089,8 +3127,12 @@ impl Engine {
                             }
                         }
                         Err(Stop::Fail(status, msg)) => {
-                            self.stats.lock().unwrap().finished(false);
-                            numbers_event(d, speed.as_ref(), false);
+                            // Counted once: Pako trying again by itself every few hours
+                            // (Google's daily limit) isn't another failed download.
+                            if stop_is_news(retried_from.as_ref(), &status) {
+                                self.stats.lock().unwrap().finished(false);
+                                numbers_event(d, speed.as_ref(), false);
+                            }
                             // Say it stopped, and why (asked for by this one, or by Settings),
                             // unless it is old news (tried again by itself, stopped the same way).
                             let wanted = d.notify || ((stopped_pref.popup || stopped_pref.bell) && !d.quiet);
@@ -3210,6 +3252,21 @@ impl Engine {
             // Paused meanwhile: stop before touching the file.
             if job.cancel.is_cancelled() {
                 return Err(Stop::Cancelled);
+            }
+            // Parts saved from an earlier run don't fit the file any more (it was deleted, or
+            // is another size): forget them on disk BEFORE the file is laid out again. Else a
+            // crash in the next seconds would leave "half done" parts saved next to a new file
+            // of the right size full of zeros, and the next start would continue from them.
+            if !d.segments.is_empty() {
+                {
+                    let mut inner = self.inner.lock().unwrap();
+                    if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) {
+                        dd.segments.clear();
+                        dd.downloaded = 0;
+                    }
+                    inner.dirty = true;
+                }
+                self.save_now();
             }
             segments = initial_segments(d.size, resumable, if auto { AUTO_START } else { connections });
             // Sparse: parts start far into the file, and Windows would otherwise write zeros
@@ -3478,8 +3535,9 @@ impl Engine {
             match r {
                 Ok(resp) => {
                     let info = probe_info(&resp);
+                    let page = crate::fetch::is_html(&resp);
                     drop(resp); // closes the connection; parts are fetched separately
-                    break info;
+                    break (info, page);
                 }
                 Err(FetchError::Retry(msg)) => {
                     match job.wait_before_retry(&self.net, attempt, &msg, 0).await {
@@ -3499,7 +3557,15 @@ impl Engine {
                 Err(e) => return Err(e.into()),
             }
         };
+        let (info, page) = info;
         *job.retry_msg.lock().unwrap() = None;
+        // A link to a file (".zip", ".mp4"...) that answers with a web page and no file name:
+        // an expired link or a sign-in page. Saving that page under the file's name would end
+        // as "finished" with a broken file.
+        let expected = self.find(&job.id).map(|d| d.name).unwrap_or_default();
+        if web_page_instead(&expected, page, info.name.is_some()) {
+            return Err(Stop::Fail(Status::Failed, WEB_PAGE.into()));
+        }
 
         let mut inner = self.inner.lock().unwrap();
         let taken = taken_paths(&inner.downloads, Some(&job.id));
@@ -3878,9 +3944,17 @@ impl Worker {
                 };
                 match next {
                     Some(Ok(chunk)) => {
-                        self.limiter.acquire(chunk.len()).await;
                         buf.extend_from_slice(&chunk);
                         *self.job.last_data.lock().unwrap() = Some(Instant::now());
+                        // The speed limit's wait (long when the limit is low and many
+                        // connections share it) ends at once on Pause: what came in is kept.
+                        tokio::select! {
+                            _ = self.abort.cancelled() => {
+                                self.flush(i, &mut cur, &mut buf)?;
+                                return Ok(());
+                            }
+                            _ = self.limiter.acquire(chunk.len()) => {}
+                        }
                         if buf.len() >= FLUSH_AT {
                             progressed = true;
                             if let Flush::PartDone = self.flush(i, &mut cur, &mut buf)? {
@@ -4101,6 +4175,25 @@ pub(crate) fn group_root(d: &Download) -> PathBuf {
     d.dest_dir.clone()
 }
 
+/// An unfinished video download renamed from `old` to `new`: its pieces in `dir` (see
+/// `video::leftovers`, never another download's) are renamed from "Old.…" to "New.…". A piece
+/// whose new name is already taken stays as it is.
+fn move_video_pieces(dir: &std::path::Path, old: &str, new: &str, id: &str, others: &[String]) {
+    let stem = |n: &str| std::path::Path::new(n).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let (from, to) = (stem(old), stem(new));
+    if from.is_empty() || to.is_empty() || from == to {
+        return;
+    }
+    for piece in crate::video::leftovers(dir, old, id, others) {
+        let Some(file) = piece.file_name().map(|n| n.to_string_lossy().to_string()) else { continue };
+        let Some(rest) = file.strip_prefix(&from) else { continue };
+        let target = dir.join(format!("{to}{rest}"));
+        if !target.exists() {
+            let _ = std::fs::rename(&piece, &target);
+        }
+    }
+}
+
 /// Names of the other downloads in `dir` (whose video pieces are never touched for `name`).
 fn other_names(list: &[Download], dir: &std::path::Path, name: &str) -> Vec<String> {
     list.iter().filter(|d| d.dest_dir == dir && d.name != name).map(|d| d.name.clone()).collect()
@@ -4116,9 +4209,54 @@ fn taken_paths(list: &[Download], except: Option<&str>) -> HashSet<String> {
 /// "Start over" on a web link: ask the server again for the file's size and version, since
 /// the usual reason to start over is that the file changed there (resuming would refuse it).
 fn recheck_server(d: &mut Download) {
-    if matches!(d.source, Source::Http { .. }) {
-        d.resolved = false;
+    match d.source {
+        Source::Http { .. } => d.resolved = false,
+        // A Drive file replaced by a newer version: its size is asked again (else every run
+        // stops with "the file changed"). Google's checksum noted when it was added may be the
+        // old version's, so it isn't used for this file any more.
+        Source::GDrive { .. } => {
+            d.resolved = false;
+            d.md5 = None;
+        }
+        Source::Video { .. } => {}
     }
+}
+
+/// The name a download gets from the Download with Pako window's answer. Left where it is and
+/// as it is named, it keeps its name: its own unfinished file (a browser download Pako already
+/// began) is not "a name already taken", and it carries on from it. Moved or renamed, it gets a
+/// free name in the new place.
+fn ask_name(old_dir: &std::path::Path, old_name: &str, dir: &std::path::Path, wanted: &str, taken: &HashSet<String>) -> String {
+    if dir == old_dir && wanted == old_name {
+        return old_name.to_string();
+    }
+    names::unique(dir, wanted, taken)
+}
+
+/// The name of a download sent by the browser: the browser's own name for the file when it
+/// gave one, else the link's. (A request without a name arrives as "download", what an empty
+/// name is cleaned to: the link's name is better, and is "download" too when it has none.)
+fn browser_name(given: &str, url: &str, several: bool) -> String {
+    if several || given.is_empty() || given == "download" {
+        names::from_url(url)
+    } else {
+        given.to_string()
+    }
+}
+
+/// Said when a link to a file answers with a web page instead.
+const WEB_PAGE: &str = "The server sent a web page instead of the file: the link may have expired, or it needs you to sign in. Open it in your browser and download it there: Pako catches the download.";
+
+/// The first answer for `name` is a web page (`html`) without a file name of its own
+/// (`named`), while the name says it is a file a web page never is (an archive, a video, a
+/// program, a PDF...). Pages, and links without such an ending, are downloaded as they are.
+fn web_page_instead(name: &str, html: bool, named: bool) -> bool {
+    if !html || named {
+        return false;
+    }
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    matches!(crate::numbers::file_type(name), "video" | "audio" | "image" | "archive" | "program")
+        || matches!(ext.as_str(), "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "epub" | "odt")
 }
 
 fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, group: Option<String>) -> Download {
@@ -4222,9 +4360,13 @@ pub fn extract_links(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{all_done_now, busy, clock_jumped, extract_links, first_needs_override, stop_is_news, Inner, WhenDone, UPLOADS_RUNNING};
-    use crate::model::{Settings, Status};
+    use super::{
+        all_done_now, ask_name, browser_name, busy, clock_jumped, extract_links, first_needs_override, move_video_pieces, new_download, recheck_server,
+        stop_is_news, transfers_running, web_page_instead, Inner, WhenDone, UPLOADS_RUNNING,
+    };
+    use crate::model::{Settings, Source, Status};
     use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
@@ -4278,11 +4420,97 @@ mod tests {
             quota_seen: HashMap::new(),
             auto_retry: HashMap::new(),
         };
-        assert!(!busy(&inner));
+        assert!(!busy(&inner, false));
         UPLOADS_RUNNING.fetch_add(1, Ordering::Relaxed);
-        let with_upload = busy(&inner);
+        let with_upload = busy(&inner, transfers_running());
         UPLOADS_RUNNING.fetch_sub(1, Ordering::Relaxed);
         assert!(with_upload);
+        // A Direct transfer (or any registered one) counts too.
+        assert!(busy(&inner, true));
+    }
+
+    #[test]
+    fn a_web_page_is_not_saved_as_the_file() {
+        // A ".zip" link answering with a page and no file name: an expired link or a sign-in.
+        assert!(web_page_instead("setup.zip", true, false));
+        assert!(web_page_instead("Film.MP4", true, false));
+        assert!(web_page_instead("report.pdf", true, false));
+        // The server names a file (Content-Disposition): it is the file.
+        assert!(!web_page_instead("setup.zip", true, true));
+        // Not a page, or a link that may well be a page: downloaded as it is.
+        assert!(!web_page_instead("setup.zip", false, false));
+        assert!(!web_page_instead("index.html", true, false));
+        assert!(!web_page_instead("download", true, false));
+        assert!(!web_page_instead("notes.txt", true, false));
+    }
+
+    /// The Download with Pako window answered without changing the name or the folder: the
+    /// download keeps its name even though its own unfinished file is already there (a browser
+    /// download Pako began to check it). It used to become "setup (1).exe", start again from
+    /// zero and leave "setup.exe.pakopart" behind.
+    #[test]
+    fn an_unchanged_answer_keeps_the_name_and_its_unfinished_file() {
+        let dir = std::env::temp_dir().join(format!("pako-ask-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(crate::names::part_of(&dir, "setup.exe"), b"begun").unwrap();
+        let none = HashSet::new();
+        assert_eq!(ask_name(&dir, "setup.exe", &dir, "setup.exe", &none), "setup.exe");
+        // Renamed to a name whose file (or unfinished file) is there: a free name.
+        std::fs::write(dir.join("other.exe"), b"x").unwrap();
+        assert_eq!(ask_name(&dir, "setup.exe", &dir, "other.exe", &none), "other (1).exe");
+        assert_eq!(ask_name(&dir, "setup.exe", &dir, "new.exe", &none), "new.exe");
+        // Moved to another folder under the same name: checked there.
+        let other = dir.join("sub");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(ask_name(&dir, "setup.exe", &other, "setup.exe", &none), "setup.exe");
+        std::fs::write(other.join("setup.exe"), b"x").unwrap();
+        assert_eq!(ask_name(&dir, "setup.exe", &other, "setup.exe", &none), "setup (1).exe");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A right-click "Download link with Pako" sends no file name (it arrives as "download"):
+    /// the link's own name is used, not a file called "download".
+    #[test]
+    fn a_browser_link_without_a_name_takes_the_links_name() {
+        let url = "https://example.com/files/setup%20v2.zip?x=1";
+        assert_eq!(browser_name(&crate::names::sanitize(""), url, false), "setup v2.zip");
+        assert_eq!(browser_name("", url, false), "setup v2.zip");
+        // The browser's own name for its download wins.
+        assert_eq!(browser_name("Report 2026.pdf", url, false), "Report 2026.pdf");
+        // Several links at once: each its own name.
+        assert_eq!(browser_name("Report 2026.pdf", url, true), "setup v2.zip");
+        // A link without a name of its own.
+        assert_eq!(browser_name("download", "https://example.com/", false), "download");
+    }
+
+    #[test]
+    fn start_over_asks_again_for_a_replaced_drive_file() {
+        let src = Source::GDrive { file_id: "ID1234567890".into(), resource_key: None, doc_type: None };
+        let mut d = new_download("https://drive.google.com/file/d/ID1234567890/view", src, "a.zip".into(), PathBuf::from("C:\\D"), None);
+        d.resolved = true;
+        d.size = Some(10);
+        d.md5 = Some("abc".into());
+        recheck_server(&mut d);
+        assert!(!d.resolved && d.md5.is_none());
+        // The size stays until the server says the new one (the name is kept too).
+        assert_eq!(d.size, Some(10));
+    }
+
+    #[test]
+    fn a_renamed_video_keeps_its_pieces() {
+        let dir = std::env::temp_dir().join(format!("pako-rename-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "1a2b3c4d-0000-0000-0000-000000000000";
+        let own = crate::video::stream_part(&dir, "Old.mp4", id, "137", "mp4");
+        std::fs::write(&own, b"v").unwrap();
+        std::fs::write(dir.join("Old.f140.m4a.part"), b"a").unwrap();
+        // Another download's file with a similar name stays.
+        std::fs::write(dir.join("Old remix.mp4"), b"x").unwrap();
+        move_video_pieces(&dir, "Old.mp4", "New.mp4", id, &["Old remix.mp4".to_string()]);
+        assert!(crate::video::stream_part(&dir, "New.mp4", id, "137", "mp4").exists());
+        assert!(dir.join("New.f140.m4a.part").exists());
+        assert!(!own.exists() && dir.join("Old remix.mp4").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

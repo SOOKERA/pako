@@ -50,9 +50,10 @@ class Theme {
     api.themeGet().then((t) => this.#take(known(t), false), () => {});
   }
 
-  /** Shows a choice without saving it (Settings, before Save or Cancel). */
+  /** Shows a choice without saving it (Settings, before Save or Cancel). Not kept for the next
+   *  start either: Pako closing meanwhile opens next time in the saved choice, without a flash. */
   preview(choice: ThemeChoice) {
-    this.#take(choice, true);
+    this.#take(choice, true, false);
   }
 
   /** Shows and saves a choice: every window follows. */
@@ -66,12 +67,14 @@ class Theme {
     return this.set(this.shown === "light" ? "dark" : "light");
   }
 
-  #take(choice: ThemeChoice, animate: boolean) {
+  #take(choice: ThemeChoice, animate: boolean, keep = true) {
     this.choice = choice;
-    try {
-      localStorage.setItem(KEY, choice);
-    } catch {
-      // Private storage unavailable: the next start shows dark first, then the saved choice.
+    if (keep) {
+      try {
+        localStorage.setItem(KEY, choice);
+      } catch {
+        // Private storage unavailable: the next start shows dark first, then the saved choice.
+      }
     }
     this.#paint(animate);
   }

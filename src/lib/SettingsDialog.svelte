@@ -30,6 +30,8 @@
   } = $props();
 
   let draft = $state<Settings>({ ...app.settings! });
+  /** The settings as they were when this opened: Save sends only what was changed here. */
+  const opened = $state.snapshot(app.settings!) as Settings;
   /** Theme: shows at once while picking; Save keeps it, Cancel goes back. */
   const openedTheme = theme.choice;
   let themePick = $state<ThemeChoice>(theme.choice);
@@ -38,11 +40,16 @@
     themePick = t;
     theme.preview(t);
   }
-  $effect(() => () => {
+  function unpreview() {
     if (!themeKept && theme.choice !== openedTheme) theme.preview(openedTheme);
-  });
-  /** "At once" can also change from the bottom bar while this is open. */
-  const openedMaxActive = app.settings!.maxActive;
+  }
+  /** Cancel, × or Esc: a previewed theme goes back at once, while the window fades out (not after). */
+  function cancel() {
+    unpreview();
+    onclose();
+  }
+  // Closed some other way (a tutorial ending, the extension's "Open Pako"): back then.
+  $effect(() => unpreview);
   let accountsEl: HTMLElement | undefined = $state();
   let browserEl: HTMLElement | undefined = $state();
   let noticesEl: HTMLElement | undefined = $state();
@@ -70,7 +77,8 @@
     const p = parts[i];
     if (!p || !scroller) return;
     current = i;
-    jumping = Date.now() + (smooth ? 500 : 0);
+    // Until the scroll ends ("scrollend" below); a long way can take more than half a second.
+    jumping = Date.now() + (smooth ? 1500 : 0);
     const top = p.el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
     const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     scroller.scrollTo({ top: i === 0 ? 0 : top, behavior: smooth && !calm ? "smooth" : "auto" });
@@ -81,10 +89,19 @@
     scroller = pane.closest<HTMLElement>(".body");
     parts = [...pane.querySelectorAll<HTMLElement>("section")].map((el) => ({ name: el.querySelector("h3")?.textContent?.trim() ?? "", el }));
     scroller?.addEventListener("scroll", spot, { passive: true });
+    // A jump from the list has arrived: the section clicked stays lit, and from here the list
+    // follows the scrolling again.
+    const arrived = () => {
+      jumping = 0;
+    };
+    scroller?.addEventListener("scrollend", arrived);
     const el = section === "accounts" ? accountsEl : section === "browser" ? browserEl : section === "notices" ? noticesEl : undefined;
     const i = parts.findIndex((p) => p.el === el);
     if (i > 0) setTimeout(() => go(i, false), 50);
-    return () => scroller?.removeEventListener("scroll", spot);
+    return () => {
+      scroller?.removeEventListener("scroll", spot);
+      scroller?.removeEventListener("scrollend", arrived);
+    };
   });
 
   /** Writes the extension's files next to Pako's data and opens that folder. */
@@ -104,16 +121,25 @@
     return Math.min(max, Math.max(min, n));
   }
 
+  /** Save on its way: a second click does nothing. */
+  let saving = false;
   async function save() {
-    // Not changed here: keep the bottom bar's value instead of the one copied at opening.
-    const maxActive =
-      Number(draft.maxActive) === openedMaxActive && app.settings ? app.settings.maxActive : whole(draft.maxActive, 3, 1, 20);
+    if (saving) return;
+    saving = true;
+    // What wasn't changed here keeps the value it has now, not the one copied at opening: "At
+    // once" from the bottom bar, "Don't ask again" ticked in the Download with Pako window, where
+    // uploads go after connecting Drive… all can change while this is open.
+    const mine = $state.snapshot(draft) as Settings;
+    const next = { ...(app.settings ? ($state.snapshot(app.settings) as Settings) : opened) };
+    for (const k of Object.keys(mine) as (keyof Settings)[]) {
+      if (JSON.stringify(mine[k]) !== JSON.stringify(opened[k])) (next as Record<string, unknown>)[k] = mine[k];
+    }
     try {
       await api.setSettings({
-        ...draft,
-        connections: whole(draft.connections, 8, 1, 32),
-        maxActive,
-        speedLimitKb: whole(draft.speedLimitKb, 0, 0),
+        ...next,
+        connections: whole(next.connections, 8, 1, 32),
+        maxActive: whole(next.maxActive, 3, 1, 20),
+        speedLimitKb: whole(next.speedLimitKb, 0, 0),
       });
       if (themePick !== openedTheme) await theme.set(themePick);
       themeKept = true;
@@ -122,6 +148,8 @@
       onclose();
     } catch (e) {
       app.toast(String(e), "error");
+    } finally {
+      saving = false;
     }
   }
 
@@ -192,7 +220,7 @@
   );
 </script>
 
-<Modal title="Settings" width={780} autofocus={false} {onclose}>
+<Modal title="Settings" width={780} autofocus={false} onclose={cancel}>
   <div class="set">
   <nav class="snav" data-tour="settings-nav" aria-label="Settings sections">
     {#if parts.length}<span class="hl" style="transform: translateY({current * 34}px)" aria-hidden="true"></span>{/if}
@@ -575,7 +603,7 @@
   <UpdatesSection
     bind:autoUpdate={draft.autoUpdate}
     onsetup={() => {
-      onclose();
+      cancel();
       app.setupOpen = true;
     }}
   />
@@ -583,7 +611,7 @@
   </div>
 
   {#snippet actions()}
-    <button class="btn ghost" onclick={onclose}>Cancel</button>
+    <button class="btn ghost" onclick={cancel}>Cancel</button>
     <button class="btn primary" data-tour="set-save" onclick={save}>Save</button>
   {/snippet}
 </Modal>

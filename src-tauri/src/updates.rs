@@ -16,6 +16,7 @@
 //! trial note (an update put in place by an older Pako) starts a trial the same way. The data
 //! folder is never touched.
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -186,7 +187,23 @@ fn ready_version() -> Option<String> {
 }
 
 fn rolled_back_version() -> Option<String> {
-    Some(std::fs::read_to_string(rolled_back_file()?).ok()?.trim().to_string()).filter(|v| !v.is_empty())
+    put_back_note(&std::fs::read_to_string(rolled_back_file()?).ok()?, current())
+}
+
+/// The version a "put back" note is about, while it still says something true: a version newer
+/// than this Pako. Once this Pako is that version or a later one (a later update worked), the
+/// note is out of date: Settings must not go on saying that version was put back.
+fn put_back_note(noted: &str, current: &str) -> Option<String> {
+    let v = noted.trim();
+    (!v.is_empty() && newer(v, current)).then(|| v.to_string())
+}
+
+/// At start: a "put back" note that is out of date goes (see `put_back_note`).
+fn forget_old_put_back_note() {
+    let Some(f) = rolled_back_file() else { return };
+    if f.is_file() && rolled_back_version().is_none() {
+        let _ = std::fs::remove_file(f);
+    }
 }
 
 /// Pako's folder accepts new files (a copy in Program Files or on a read-only drive doesn't).
@@ -810,11 +827,13 @@ fn move_or_copy(from: &Path, to: &Path) -> bool {
 /// and starts it. Returns true when this process should exit (another version is starting).
 pub fn apply_at_start() -> bool {
     LazyLock::force(&STARTED);
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    forget_old_put_back_note();
+    // As Windows gave them (a name that isn't valid Unicode is passed on unchanged).
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     // "Restart now": wait for the Pako that asked to be gone first.
     let mut waited = false;
     if let Some(i) = args.iter().position(|a| a == "--wait-pid") {
-        if let Some(pid) = args.get(i + 1).and_then(|p| p.parse::<u32>().ok()) {
+        if let Some(pid) = args.get(i + 1).and_then(|p| p.to_str()).and_then(|p| p.parse::<u32>().ok()) {
             wait_for_exit(pid, Duration::from_secs(20));
             waited = true;
         }
@@ -844,7 +863,11 @@ pub fn apply_at_start() -> bool {
                         if let Some(f) = trial_file() {
                             let _ = std::fs::remove_file(f);
                         }
-                        return std::process::Command::new(&exe).args(strip_wait_pid(args)).spawn().is_ok();
+                        // This process is the version that didn't start properly, now named
+                        // `bad`: it quits even if the old one can't be started from here (the
+                        // next start is the old one, under Pako's own name).
+                        let _ = std::process::Command::new(&exe).args(strip_wait_pid(args)).spawn();
+                        return true;
                     }
                     // Couldn't put the old one back: keep this one.
                     let _ = move_or_copy(&bad, &exe);
@@ -878,21 +901,77 @@ pub fn apply_at_start() -> bool {
         let _ = std::fs::remove_file(&mark);
         return false;
     };
-    let _ = std::fs::remove_file(&old);
-    if std::fs::rename(&exe, &old).is_err() {
-        return false;
+    let version = m.version.trim_start_matches('v').to_string();
+    // Written first: the new version reads it as soon as it starts.
+    write_trial(&Trial { version: version.clone(), started: false });
+    match swap_and_start(&exe, &new, &old, |exe| std::process::Command::new(exe).args(strip_wait_pid(args)).spawn().is_ok()) {
+        Swap::InPlace => {
+            let _ = std::fs::remove_file(&mark);
+            true
+        }
+        Swap::PutBack => {
+            // Windows wouldn't start it (an antivirus or a company rule that blocks new
+            // programs): this version stays, under its own name, and says so in Settings. The
+            // automatic check doesn't fetch that version again; "Update" tries again.
+            if let Some(f) = trial_file() {
+                let _ = std::fs::remove_file(f);
+            }
+            let _ = std::fs::remove_file(&new);
+            let _ = std::fs::remove_file(&mark);
+            if let Some(f) = rolled_back_file() {
+                let _ = std::fs::write(f, &version);
+            }
+            false
+        }
+        Swap::Unchanged => {
+            if let Some(f) = trial_file() {
+                let _ = std::fs::remove_file(f);
+            }
+            false
+        }
     }
-    if std::fs::rename(&new, &exe).is_err() {
-        // Pako.exe must exist whatever happens.
-        let _ = move_or_copy(&old, &exe);
-        return false;
-    }
-    let _ = std::fs::remove_file(&mark);
-    write_trial(&Trial { version: m.version.trim_start_matches('v').to_string(), started: false });
-    std::process::Command::new(&exe).args(strip_wait_pid(args)).spawn().is_ok()
 }
 
-fn strip_wait_pid(args: Vec<String>) -> Vec<String> {
+/// What `swap_and_start` did.
+#[derive(Debug, PartialEq)]
+enum Swap {
+    /// The new version is in place: started (or, if it couldn't be started and this version
+    /// couldn't be put back, waiting for the next start). This process quits.
+    InPlace,
+    /// It couldn't be put in place: nothing changed.
+    Unchanged,
+    /// It was put in place but Windows wouldn't start it: everything is back as it was.
+    PutBack,
+}
+
+/// Puts `new` in place of the running `exe` (which becomes `old`) and starts it. If it can't be
+/// started, the running version gets its own name back: otherwise it would go on running as
+/// `old` (start with Windows, pako:// links and the browser helper would follow it there, and
+/// `old` is deleted later) while `exe` is a program Windows won't start. `exe` exists whatever
+/// happens.
+fn swap_and_start(exe: &Path, new: &Path, old: &Path, start: impl FnOnce(&Path) -> bool) -> Swap {
+    let _ = std::fs::remove_file(old);
+    if std::fs::rename(exe, old).is_err() {
+        return Swap::Unchanged;
+    }
+    if std::fs::rename(new, exe).is_err() {
+        let _ = move_or_copy(old, exe);
+        return Swap::Unchanged;
+    }
+    if start(exe) {
+        return Swap::InPlace;
+    }
+    if std::fs::rename(exe, new).is_ok() {
+        if std::fs::rename(old, exe).is_ok() {
+            return Swap::PutBack;
+        }
+        // Pako.exe must exist: the new one goes back in place.
+        let _ = move_or_copy(new, exe);
+    }
+    Swap::InPlace
+}
+
+fn strip_wait_pid(args: Vec<OsString>) -> Vec<OsString> {
     let mut out = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -1006,6 +1085,20 @@ mod tests {
         assert!(key.verifying_key().verify(signed_message("0.3.0", &m.sha256).as_bytes(), &sig).is_ok());
     }
 
+    /// A built release, before it's published: `PAKO_MANIFEST=dist/<version>/latest.json cargo
+    /// test --lib -- --ignored built_release`. Both signatures must check out with the key built
+    /// into Pako (the first kind is what Pako 0.1.1 checks).
+    #[test]
+    #[ignore]
+    fn built_release_is_signed_with_pakos_key() {
+        let path = std::env::var("PAKO_MANIFEST").expect("PAKO_MANIFEST");
+        let m: Manifest = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        verify(&m).expect("second kind");
+        let key = public_key().unwrap();
+        let sig = Signature::from_slice(&B64.decode(&m.signature).unwrap()).unwrap();
+        key.verify(signed_message(&m.version, &m.sha256).as_bytes(), &sig).expect("first kind");
+    }
+
     #[test]
     fn the_embedded_key_is_valid() {
         assert!(public_key().is_ok());
@@ -1014,8 +1107,58 @@ mod tests {
     #[test]
     fn drops_the_wait_argument() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(strip_wait_pid(a(&["--tray", "--wait-pid", "42"])), a(&["--tray"]));
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(strip_wait_pid(os(&["--tray", "--wait-pid", "42"])), os(&["--tray"]));
         assert_eq!(restart_args(42), a(&["--wait-pid", "42"]));
+    }
+
+    fn swap_dir() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("pako-swap-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (exe, new, old) = (dir.join("Pako.exe"), dir.join("Pako.new.exe"), dir.join("Pako.old.exe"));
+        std::fs::write(&exe, b"running").unwrap();
+        std::fs::write(&new, b"update").unwrap();
+        (dir, exe, new, old)
+    }
+
+    /// The update goes in place and starts; the running version is kept as the old copy.
+    #[test]
+    fn swaps_in_the_update() {
+        let (dir, exe, new, old) = swap_dir();
+        let mut started = None;
+        assert_eq!(swap_and_start(&exe, &new, &old, |p| { started = Some(std::fs::read(p).unwrap()); true }), Swap::InPlace);
+        assert_eq!(started.as_deref(), Some(&b"update"[..]));
+        assert_eq!(std::fs::read(&old).unwrap(), b"running");
+        assert!(!new.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows won't start the update (an antivirus, a company rule): the running version gets
+    /// its own name back, the update waits where it was.
+    #[test]
+    fn an_update_that_wont_start_is_put_back() {
+        let (dir, exe, new, old) = swap_dir();
+        assert_eq!(swap_and_start(&exe, &new, &old, |_| false), Swap::PutBack);
+        assert_eq!(std::fs::read(&exe).unwrap(), b"running");
+        assert_eq!(std::fs::read(&new).unwrap(), b"update");
+        assert!(!old.exists());
+        // Nothing to put in place: nothing changes.
+        std::fs::remove_file(&new).unwrap();
+        assert_eq!(swap_and_start(&exe, &new, &old, |_| true), Swap::Unchanged);
+        assert_eq!(std::fs::read(&exe).unwrap(), b"running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Pako X didn't start properly" is said only while X is newer than this Pako: after a
+    /// later update worked, the note is out of date.
+    #[test]
+    fn a_put_back_note_ends_once_a_later_update_worked() {
+        // 1.0.1 was put back, this Pako is 1.0.0: still true.
+        assert_eq!(put_back_note("1.0.1\n", "1.0.0"), Some("1.0.1".into()));
+        // Now on 1.0.2 (or on 1.0.1 itself, after "Update" was pressed again): out of date.
+        assert_eq!(put_back_note("1.0.1", "1.0.2"), None);
+        assert_eq!(put_back_note("1.0.1", "1.0.1"), None);
+        assert_eq!(put_back_note("  ", "1.0.0"), None);
     }
 
     #[test]

@@ -223,7 +223,7 @@ struct InstallGuard(Kind);
 impl InstallGuard {
     fn take(kind: Kind) -> Result<Self> {
         if !INSTALLING.lock().unwrap().insert(kind) {
-            bail!("Already installing {}", kind.folder());
+            bail!("{} is already being installed.", kind.label());
         }
         Ok(Self(kind))
     }
@@ -414,8 +414,9 @@ fn unzip(zip_path: &Path, out: &Path, keep: impl Fn(&str) -> bool) -> Result<usi
         if f.is_dir() {
             continue;
         }
-        let name = f.name().rsplit('/').next().unwrap_or_default().to_string();
-        if name.is_empty() || !keep(f.name()) {
+        // Only the file's own name (a "\" in a zip name is a folder too on Windows), never "..".
+        let name = f.name().rsplit(['/', '\\']).next().unwrap_or_default().to_string();
+        if name.is_empty() || name == ".." || !keep(f.name()) {
             continue;
         }
         let mut dest = std::fs::File::create(out.join(&name))?;
@@ -551,7 +552,7 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
     let _ = std::fs::remove_dir_all(&old);
     if target.exists() && std::fs::rename(&target, &old).is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
-        bail!("{} is in use (a preview or an extraction is running). Close it, then try again.", kind.folder());
+        bail!("{} is in use (a preview, a video or an extraction is running). Close it, then try again.", kind.label());
     }
     if let Err(e) = std::fs::rename(&tmp, &target) {
         // Put the old copy back so the tool keeps working.

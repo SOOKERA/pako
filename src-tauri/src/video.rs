@@ -630,7 +630,7 @@ pub async fn probe_with(link: &str, limit: Duration, cookies: &[crate::extension
     if let Some(j) = &jar {
         cmd.arg("--cookies").arg(j.path());
     }
-    cmd.args(["-J", "--flat-playlist", "--no-playlist", "--no-warnings", "--skip-download"]).arg(link);
+    cmd.args(["-J", "--flat-playlist", "--no-playlist", "--no-warnings", "--skip-download"]).arg("--").arg(link);
     let json = run_json(cmd, limit).await;
     drop(jar);
     let json = json?;
@@ -774,7 +774,7 @@ pub fn download_command(
             cmd.args(["--merge-output-format", "mp4/mkv"]);
         }
     }
-    cmd.arg("-o").arg(out).arg(link);
+    cmd.arg("-o").arg(out).arg("--").arg(link);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd
 }
@@ -1095,7 +1095,7 @@ pub async fn select(link: &str, quality: u32, audio: Option<&str>, limit: Durati
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }
-    cmd.args(["-J", "--no-playlist", "--no-warnings"]).args(format_args(quality, audio)).arg(link);
+    cmd.args(["-J", "--no-playlist", "--no-warnings"]).args(format_args(quality, audio)).arg("--").arg(link);
     let json = run_json(cmd, limit).await?;
     match classify(&json) {
         Ok(Ok(plan)) => Ok(plan),
@@ -1470,6 +1470,8 @@ mod tests {
         let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert!(args.iter().any(|a| a == "height:720,ext:mp4:m4a"));
         assert!(!args.iter().any(|a| a == "--limit-rate" || a == "--downloader"));
+        // The link comes after "--": never read as one of yt-dlp's options.
+        assert!(args.ends_with(&["--".to_string(), "https://x.com/v".to_string()]), "{args:?}");
         // A speed limit share, and the browser's login kept off ffmpeg's command line.
         let cmd = download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", 0, Some(Path::new("j.txt")), Some(250_000));
         let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().to_string()).collect();

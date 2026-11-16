@@ -42,6 +42,13 @@
     }
   }
 
+  // The details panel closed (Ctrl+I), or Direct / the Dashboard shown: the panel stays in the
+  // page, hidden, so the video would go on playing out of sight. It pauses instead.
+  let video: HTMLVideoElement | undefined = $state();
+  $effect(() => {
+    if (video && (!app.panelOpen || app.view === "direct" || app.view === "dashboard")) video.pause();
+  });
+
   function setQuality(q: number) {
     quality = q;
     if (src && converted) play(q);
@@ -56,7 +63,7 @@
   <div class="screen">
     {#if src}
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video {src} controls autoplay preload="metadata"></video>
+      <video bind:this={video} {src} controls autoplay preload="metadata"></video>
     {:else}
       <button class="play" disabled={loading} aria-label="Play a preview" onclick={() => play()}>
         <Icon name="play" size={18} />

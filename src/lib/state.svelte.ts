@@ -674,7 +674,12 @@ class AppState {
     try {
       const before = new Set(this.found.map((f) => f.id));
       const r = await api.foundAdd(text);
-      for (const e of r.errors) this.toast(e, "error");
+      // A long list that can't be opened (offline, say): the first few, then how many more.
+      for (const e of r.errors.slice(0, 3)) this.toast(e, "error");
+      if (r.errors.length > 3) {
+        const more = r.errors.length - 3;
+        this.toast(more === 1 ? "1 more link couldn't be added" : `${more} more links couldn't be added`, "error");
+      }
       if (r.skipped) this.toast(r.skipped === 1 ? "1 link was already in Links" : `${r.skipped} links were already in Links`);
       await this.refresh();
       // New links land at the end of the list: show the first one.
@@ -1152,7 +1157,11 @@ class AppState {
         break;
       case "direct":
         this.view = "direct";
-        if (id && (this.direct?.contacts ?? []).some((c) => c.id === id)) this.directPicked = id;
+        if (id && (this.direct?.contacts ?? []).some((c) => c.id === id)) {
+          // Hidden by a filter or a tag: show everyone, or another conversation would open.
+          if (!this.directShown.some((c) => c.id === id)) this.directFilter = "all";
+          this.directPicked = id;
+        }
         break;
       case "dashboard":
         this.view = "dashboard";
@@ -1212,7 +1221,7 @@ class AppState {
       const lines: string[] = [];
       if (n) lines.push(`${n === 1 ? "A download is" : `${n} downloads are`} running. ${n === 1 ? "It continues" : "They continue"} where ${n === 1 ? "it" : "they"} left off after the restart.`);
       if (u) lines.push(uploadsStopNote(u));
-      if (!confirm(`${lines.join("\n\n")}\n\nRestart now?`)) return;
+      if (!(await askFirst("Restart Pako?", `${lines.join("\n\n")}\n\nRestart now?`))) return;
     }
     await this.run(() => api.updateRestart());
   }
@@ -1290,7 +1299,9 @@ class AppState {
   /** Shows a toast; returns its id. */
   toast(text: string, kind: "info" | "error" = "info", action?: Toast["action"]) {
     const id = ++this.toastSeq;
-    this.toasts = [...this.toasts, { id, text, kind, action }];
+    // The newest few: a burst never covers the window (an Undo that scrolled away still works
+    // with Ctrl+Z).
+    this.toasts = [...this.toasts, { id, text, kind, action }].slice(-5);
     setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), kind === "error" ? 9000 : action ? 8000 : 3500);
     return id;
   }
@@ -1301,6 +1312,18 @@ class AppState {
 }
 
 export const app = new AppState();
+
+/** A yes / no question in Windows' own message box, named "Pako" (the web view's own box would
+ *  say "tauri.localhost says"). */
+async function askFirst(title: string, message: string): Promise<boolean> {
+  if (!inApp) return confirm(message);
+  try {
+    const { confirm: ask } = await import("@tauri-apps/plugin-dialog");
+    return await ask(message, { title, kind: "warning" });
+  } catch {
+    return confirm(message);
+  }
+}
 
 /** Example people for the Direct tutorial: your own name and ID, three made-up contacts with a little
  *  history, one of them receiving a file right now. Shown only while the tutorial runs. */

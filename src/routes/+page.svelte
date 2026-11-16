@@ -69,7 +69,7 @@
   });
 
   /** "Quit while downloading / uploading?": how many of each are running. */
-  let quitAsk = $state<{ running: number; uploading: number } | null>(null);
+  let quitAsk = $state<{ running: number; uploading: number; direct: boolean } | null>(null);
   let quitDontAsk = $state(false);
   async function quitAnyway() {
     if (quitDontAsk && app.settings) await app.run(() => api.setSettings({ ...app.settings!, confirmQuit: false }));
@@ -81,9 +81,12 @@
   onMount(() => {
     const stop = app.start();
     // "Settings…" from the tray icon's menu or the compact list.
-    const un = listen("open-settings", () => (settingsOpen = "general"));
-    const unQuit = listen<{ running?: number; uploading?: number }>("confirm-quit", (e) => {
-      quitAsk = { running: e.payload.running ?? 0, uploading: e.payload.uploading ?? 0 };
+    // Not over the first-start setup: Settings would open under it.
+    const un = listen("open-settings", () => {
+      if (!trayAsk) settingsOpen = "general";
+    });
+    const unQuit = listen<{ running?: number; uploading?: number; direct?: boolean }>("confirm-quit", (e) => {
+      quitAsk = { running: e.payload.running ?? 0, uploading: e.payload.uploading ?? 0, direct: !!e.payload.direct };
     });
     // A video or "all links on this page" from the browser extension: show Links.
     const unView = listen<"found" | "downloads">("open-view", (e) => (app.view = e.payload));
@@ -106,8 +109,22 @@
     const t = e.dataTransfer?.types ?? [];
     return !t.includes(OWN_DRAG) && (t.includes("Files") || t.includes("text/uri-list") || t.includes("text/plain"));
   }
+  /** Upload and Direct take dropped files in their own page area (they stop the event there).
+   *  A file or link dragged anywhere else on those pages (the sidebar, the top bar, the details
+   *  panel, a dialog) reaches this window handler: left alone, the browser part of the window
+   *  would open what was dropped in place of Pako. So it's refused, except text dragged into a
+   *  field. */
+  function refusedHere(e: DragEvent) {
+    if (app.view !== "send" && app.view !== "direct") return false;
+    const files = e.dataTransfer?.types.includes("Files");
+    const field = e.target instanceof Element && !!e.target.closest("input, textarea");
+    if (!files && field) return true; // text into a field: the field's own business
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+    return true;
+  }
   function onDragOver(e: DragEvent) {
-    if (!isOutsideDrop(e) || app.view === "send" || app.view === "direct") return;
+    if (!isOutsideDrop(e) || refusedHere(e)) return;
     e.preventDefault();
     dropping = true;
   }
@@ -116,8 +133,9 @@
   }
   async function onDrop(e: DragEvent) {
     if (!isOutsideDrop(e)) return;
-    e.preventDefault();
     dropping = false;
+    if (refusedHere(e)) return;
+    e.preventDefault();
     const dt = e.dataTransfer!;
     let text = [dt.getData("text/uri-list"), dt.getData("text/plain")].filter(Boolean).join("\n");
     // Text files (link lists, .url shortcuts, saved pages): read them for links. Big files skipped.
@@ -152,7 +170,14 @@
     const list = removing!;
     const ids = list.map((d) => d.id);
     removing = null;
-    await app.run(() => api.remove(ids, deleteFiles));
+    try {
+      await api.remove(ids, deleteFiles);
+    } catch (e) {
+      // Not removed: say why, and don't offer to undo something that didn't happen.
+      app.toast(String(e), "error");
+      await app.refresh();
+      return;
+    }
     app.clearSelection();
     await app.refresh();
     // Finished files only taken off the list (nothing deleted): that can be undone.
@@ -309,13 +334,17 @@
       app.view = app.view === "found" ? "downloads" : "found";
     } else if (typing()) {
       return;
-    } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && app.view !== "dashboard") {
+    } else if (app.view !== "downloads" && app.view !== "found") {
+      // Upload, Direct and the Dashboard have no list these keys move in: they must not act on
+      // the Downloads list hidden behind them (Space would tick a download you can't see).
+      return;
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       app.moveFocus(e.key === "ArrowDown" ? 1 : -1, e.shiftKey);
-    } else if ((e.key === "Home" || e.key === "End") && app.view !== "dashboard") {
+    } else if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
       app.moveFocus(e.key === "End" ? Infinity : -Infinity, e.shiftKey);
-    } else if (e.key === " " && !onControl() && app.view !== "dashboard") {
+    } else if (e.key === " " && !onControl()) {
       e.preventDefault();
       app.toggleFocused();
     } else if (e.key === "Delete" && app.view === "found") {
@@ -508,8 +537,9 @@
   {@const up = quitAsk.uploading}
   {@const downs = dn === 1 ? "1 download" : `${dn} downloads`}
   {@const ups = up === 1 ? "1 upload" : `${up} uploads`}
+  {@const dt = quitAsk.direct}
   <Modal
-    title={dn && up ? `${downs} and ${ups} are running` : up ? (up === 1 ? "An upload is running" : `${ups} are running`) : dn === 1 ? "A download is running" : `${downs} are running`}
+    title={dt && (dn || up) ? "Pako is still busy" : dt ? "Files are on their way in Direct" : dn && up ? `${downs} and ${ups} are running` : up ? (up === 1 ? "An upload is running" : `${ups} are running`) : dn === 1 ? "A download is running" : `${downs} are running`}
     width={460}
     onclose={() => (quitAsk = null)}
   >
@@ -522,6 +552,9 @@
         One file or a ZIP starts over from the beginning; of several files, the ones already up stay on Gofile.
       </p>
     {/if}
+    {#if dt}
+      <p class="msg">{dn || up ? "Files going to or from your contacts in Direct stop too" : "If you quit, files going to or from your contacts in Direct stop"}: they have to be sent again.</p>
+    {/if}
     <button class="dont-ask" role="checkbox" aria-checked={quitDontAsk} onclick={() => (quitDontAsk = !quitDontAsk)}>
       <span class="check" class:on={quitDontAsk} aria-hidden="true">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
@@ -529,7 +562,7 @@
       Don't ask again
     </button>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (quitAsk = null)}>{dn && up ? "Don't quit" : up ? "Keep uploading" : "Keep downloading"}</button>
+      <button class="btn ghost" onclick={() => (quitAsk = null)}>{dt || (dn && up) ? "Don't quit" : up ? "Keep uploading" : "Keep downloading"}</button>
       <button class="btn danger-fill" onclick={quitAnyway}>Quit</button>
     {/snippet}
   </Modal>

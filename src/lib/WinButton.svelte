@@ -66,6 +66,10 @@
   .win.on:hover {
     color: var(--accent-hover);
   }
+  /* Light: the lighter coral fades into the grey hover; the darker edge colour stays clear. */
+  :global(:root[data-theme="light"]) .win.on:hover {
+    color: var(--accent-strong);
+  }
   .win.close:hover {
     background: #c42b1c;
     color: #fff;

@@ -11,4 +11,4 @@ These guides explain what Pako does today, with the names you see in the window.
 7. [Direct](direct.md): send files straight to people you know, PC to PC.
 8. [Notifications](notifications.md): pop-ups, the bell, and Do not disturb.
 9. [Dashboard](dashboard.md): your Pako in numbers, kept on your PC.
-10. [Help and problems](help-and-problems.md): Help and its tutorials, and reporting a problem with your own email app.
+10. [Help and problems](help-and-problems.md): Help and its tutorials, and reporting a problem with **Send report** or your own email app.

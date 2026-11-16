@@ -40,6 +40,9 @@ pub enum Msg {
     Done { id: String, hashes: Vec<String> },
     /// The receiver's verdict after checking.
     Result { id: String, ok: bool, message: Option<String> },
+    /// A kind of message this Pako doesn't know (a newer Pako's): ignored, the connection stays.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -125,6 +128,9 @@ const RUNS_CODE: &[&str] = &[
     "scf", "website", "settingcontent-ms", "library-ms", "searchconnector-ms", "xll", "xlam", "ppam", "docm",
     "xlsm", "pptm", "iso", "img", "vhd", "vhdx", "py", "pyw", "pl", "rb", "sh", "diagcab", "mht", "mhtml",
     "theme", "themepack", "desktopthemepack", "rdp", "cab", "ins", "isp", "job", "mde", "mdb", "accde",
+    "msh", "msh1", "msh2", "mshxml", "msh1xml", "msh2xml", "ps2", "ps2xml", "psc1", "psc2", "ws", "appinstaller",
+    "msu", "mst", "hlp", "jnlp", "xbap", "ade", "adp", "pyz", "pyzw", "pyc", "dotm", "xltm", "xlsb", "xla", "potm",
+    "ppsm", "sldm", "wsb", "search-ms",
 ];
 
 /// This file would run code if opened (by its last extension).
@@ -256,6 +262,8 @@ mod tests {
         assert!(runs_code(std::path::Path::new("C:/x/setup.EXE")));
         assert!(runs_code(std::path::Path::new("a.tar.ps1")));
         assert!(runs_code(std::path::Path::new("link.lnk")));
+        assert!(runs_code(std::path::Path::new("Update.appinstaller")));
+        assert!(runs_code(std::path::Path::new("tool.pyz")));
         assert!(!runs_code(std::path::Path::new("photo.jpg")));
         assert!(!runs_code(std::path::Path::new("folder")));
     }
@@ -297,6 +305,12 @@ mod tests {
         assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), Some(m));
         assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), Some(Msg::Accept { id: "t1".into() }));
         assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), None);
+        // A message kind from a newer Pako is read as "unknown", not as a broken connection.
+        let (mut a, mut b) = tokio::io::duplex(1 << 16);
+        let newer = br#"{"t":"somethingNew","id":"x","more":[1,2]}"#;
+        a.write_all(&(newer.len() as u32).to_be_bytes()).await.unwrap();
+        a.write_all(newer).await.unwrap();
+        assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), Some(Msg::Unknown));
         let (mut a, mut b) = tokio::io::duplex(1 << 16);
         a.write_all(&(10_000u32).to_be_bytes()).await.unwrap();
         assert!(read_frame::<_, Msg>(&mut b, 100).await.is_err());

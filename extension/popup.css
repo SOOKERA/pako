@@ -56,7 +56,8 @@
   box-sizing: border-box;
 }
 /* Keyboard focus: the same azure ring as Pako's window. */
-button:focus-visible {
+button:focus-visible,
+a:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -156,6 +157,19 @@ button.primary:disabled {
 }
 .connect button.primary {
   margin-top: 10px;
+}
+/* Pako Light, not connected: where to get the Pako app. */
+.connect .get {
+  margin: 10px 0 0;
+}
+.get a {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: 3px;
+}
+.get a:hover {
+  color: var(--text);
 }
 .t {
   font-weight: 550;

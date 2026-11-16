@@ -61,41 +61,56 @@
     if (x) clearTimeout(x.t);
     timers.delete(id);
   }
-  // A card that comes into view starts its time (questions have none).
+  // A card that comes into view starts its time (questions have none); not while pointed at or
+  // hidden for Do not disturb (it waits, see `hushed`).
   $effect(() => {
     for (const c of visible) {
       if (c.stays || timers.has(c.id) || left.has(c.id)) continue;
-      if (hovered) left.set(c.id, STAY);
+      if (hovered || hushed) left.set(c.id, STAY);
       else startTimer(c.id, STAY);
     }
   });
-  function enter() {
-    hovered = true;
+  /** Stops every card's time, keeping what's left of it. */
+  function pauseAll() {
     for (const [id, x] of timers) {
       left.set(id, Math.max(0, x.ends - Date.now()));
       stopTimer(id);
     }
   }
-  function leave() {
-    hovered = false;
+  /** Starts the stopped cards' time again (at least AFTER_HOVER, so they can be read). */
+  function resumeAll() {
     for (const [id, ms] of left) {
       if (cards.some((c) => c.id === id)) startTimer(id, Math.max(ms, AFTER_HOVER));
     }
     left.clear();
   }
+  function enter() {
+    hovered = true;
+    pauseAll();
+  }
+  function leave() {
+    hovered = false;
+    if (!hushed) resumeAll();
+  }
 
   // ---------- no time for pop-ups ----------
   /** Do not disturb, a full-screen game, a presentation: the window hides and the cards wait in
-   *  it. Looked at every few seconds while there are cards, and at once when settings change. */
+   *  it, their time stopped, and show again for the rest of it afterwards. Looked at every few
+   *  seconds while there are cards, and at once when settings change. */
   let hushed = false;
   async function checkQuiet() {
     if (!inApp || !cards.length) return;
     const quiet = await api.popupQuiet().catch(() => false);
     if (quiet) {
-      if (!hushed && hovered) leave();
-      hushed = true;
+      if (!hushed) {
+        // Hidden under the pointer: no mouseleave will come.
+        hovered = false;
+        hushed = true;
+        pauseAll();
+      }
     } else if (hushed) {
       hushed = false;
+      if (!hovered) resumeAll();
       reported = -1;
       fit();
     }
@@ -228,8 +243,8 @@
             <div class="body">{errors[c.id] ?? c.body}</div>
             {#if c.kind === "download-done" && c.go.id}
               <div class="acts">
-                <button class="btn small" onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, false)))}>Open</button>
-                <button class="btn small" onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, true)))}>Show in folder</button>
+                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, false)))}>Open</button>
+                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, true)))}>Show in folder</button>
               </div>
             {:else if c.kind === "direct-offer" && c.go.offer}
               <div class="acts">

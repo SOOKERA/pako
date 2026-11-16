@@ -4,7 +4,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // (args_os: an argument that isn't valid Unicode must not stop Pako; `args()` would panic.)
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     // Started by the uninstaller: remove what Pako registered with Windows (and its data when
     // asked), open no window.
     if args.first().map(|a| a == pako_lib::install::UNINSTALL_CLEANUP).unwrap_or(false) {

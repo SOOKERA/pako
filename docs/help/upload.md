@@ -44,7 +44,7 @@ A **single file** goes up as it is. Under **Compression**, pick **Compressed ZIP
 
 ## While it uploads
 
-Uploads in progress show under **Uploading**, with how far they are, the speed and the time left. **Cancel** stops one: what already went up is deleted too.
+Uploads in progress show under **Uploading**, with how far they are, the speed and the time left. **Cancel** stops one: what already went up is deleted too. After a **Try again**, **Cancel** keeps what was already up, and it stays on the list as **Not all uploaded**.
 
 If some files didn't make it, the upload says so. **Try again** uploads only the missing ones, into the same folder, so the link stays the same. **Copy link** already works for the files that are up. The **×** takes the message away.
 
@@ -63,7 +63,7 @@ The counts are checked when you open **Upload**, at most every few minutes. The 
 
 What you may see on a Gofile upload:
 
-- **May be removed by Gofile soon**: nobody downloaded it for a while, and Gofile may remove it after 10 days without a download.
+- **May be removed by Gofile soon**: an upload with no delete date that nobody downloaded for a while. Gofile may remove it after 10 days without a download.
 - **Gone from Gofile**: it was deleted or expired, and the link doesn't work any more. **Remove from list** takes it off.
 - **Not all uploaded**: only some files are up. The link works for them. While Pako is still trying, it says **Uploading**.
 
@@ -92,7 +92,7 @@ Select an upload and press **Ctrl+I** (or double-click it) to see its details on
 
 ## Your Google Drive
 
-To upload to your own Drive, connect it once: click **Connect Google Drive** in **Settings › Accounts** (under **Google Drive for uploads**), or on the bar that shows in **Upload** when **Google Drive** is picked. Google's page opens in your browser: sign in and allow it.
+To upload to your own Drive, connect it once: click **Connect Google Drive** in **Settings › Accounts** (under **Google Drive for uploads**), or on the bar that shows in **Upload** when **Google Drive** is picked. Google's page opens in your browser: sign in and allow it. If Google's page shows a box for Google Drive, tick it before you continue. Without it, Pako doesn't connect and says "Google didn't give Pako the permission to add files to your Google Drive. Connect again and, on Google's page, tick the box for Google Drive before you continue."
 
 - Pako only sees the files it uploads, nothing else in your Drive.
 - Connecting it makes **Google Drive** the usual choice for uploads. You can still pick **Gofile** for any upload.
@@ -113,5 +113,7 @@ If uploads on your list are in another Google account's Drive, the bar says so: 
 ## Good to know
 
 - With Pako's window open, a finished upload shows a message at the bottom of the window. Otherwise it's a pop-up (see [Notifications](notifications.md)).
-- If Pako closes during an upload, what was already up stays on the list as **Not all uploaded**.
+- If Pako closes while several files go up **As they are**, what was already up stays on the list as **Not all uploaded**. A ZIP or a single file that didn't finish isn't kept.
 - Your list of uploads and your notes stay on your PC.
+- You don't make a Gofile account, but Gofile makes a guest one at your first upload. Pako keeps its key on your PC (encrypted), to read the download counts and to delete your uploads.
+- For Google Drive, Pako keeps your sign-in on your PC (encrypted) and reads your account's email address, to show which account is connected.

@@ -4,7 +4,7 @@ Pick what to download from the links you paste, and keep an eye on your download
 
 ## Links
 
-Links you paste, drop or send from the browser first land in **Links**. Pako checks each one (name, size, whether it works), then you pick what to download. Pako switches to **Links** by itself when you paste, so you always see where they went.
+Links you paste or drop, and the ones from **Send all links on this page to Pako (to pick from)** in your browser, first land in **Links**. (A single download from your browser goes straight to **Downloads**.) Pako checks each one (name, size, whether it works), then you pick what to download. Pako switches to **Links** by itself when you paste, so you always see where they went.
 
 ### Pick and download
 
@@ -13,7 +13,7 @@ Links you paste, drop or send from the browser first land in **Links**. Pako che
 
 The button says **Download** when there's room to start now, and **Add to queue** when the downloads already running leave no room (see **At once** in [Downloading](downloading.md)). Then **Download first** also appears: the downloads that started last step aside (nothing is lost) and yours start now.
 
-The small arrow next to the button has more choices: **Download and notify me** (or **Add to queue and notify me**), and **Download first and notify me**.
+The small arrow next to the button has more choices: **Download and notify me**, or, when the button says **Add to queue**, **Add to queue and notify me** and **Download first and notify me**.
 
 **Save to** (at the top) picks the folder the links download to. A link can have its own folder: select it and change **Save to** in its details, or right-click it › **Save to…**.
 
@@ -26,7 +26,7 @@ Right-click a link for **Download**, **Download first**, **Download and notify m
 - **Split archive** sets (.part1.rar, .7z.001…) are grouped, and **Incomplete set** warns when parts are missing.
 - **Ready · Google limit today**: a Drive file that can be downloaded, but Google's daily limit for it is reached. See [Google limit](downloading.md#google-limit-too-many-downloads-today).
 - Select a link to see its details on the right: type, size, and for videos the **Quality**. You can also set its **Save to** folder, **Priority** and **Notify when done** there, before it downloads.
-- A link to a video file (.mp4, .mkv…) also gets a **Preview** in its details: play a short check that it's the right video before downloading it (**Settings › Downloads › Video preview quality**).
+- A link to a video file (.mp4, .mkv…) also gets a **Preview** in its details: play a short check that it's the right video before downloading it (**Settings › Downloads › Video preview quality**). MP4 and WebM play as they are; other types, and the preview quality, need **Preview more video types** in **Settings › Features & updates**.
 
 ### Filters
 
@@ -40,7 +40,9 @@ On the left:
 
 ### Link pages
 
-Some links lead to a page you have to click through before the file. Pako works through common ones by itself. When a page needs you (a "I'm not a robot" check, for example), the link shows **Waiting for you** and a **Pako needs you** pop-up appears (see [Notifications](notifications.md)): click **Show page** (or **Show check**), finish it, and Pako carries on.
+Some links lead to a web page instead of the file: a page you have to click through, for example. Pako opens any such page in a hidden window of its own and looks for the file behind it, working through common "click to continue" pages by itself. The link shows "Opening link…" meanwhile. When a page needs you (a "I'm not a robot" check, for example), the link shows **Waiting for you** and a **Pako needs you** pop-up appears (see [Notifications](notifications.md)): click **Show page** (or **Show check**), finish it, and Pako carries on.
+
+The page runs in that window as it would in your browser, ads included, but without your browser's logins. It's a private window: its cookies and other site data are gone when it closes, and nothing is kept on your PC. Each link page starts fresh, so a site's check may ask you again for each link.
 
 ### Good to know
 
@@ -59,8 +61,8 @@ Pako lives in the taskbar's tray, next to the clock. Its icon gives you a small 
 
 ### Pin, minimise, close
 
-- **Always on top** (the pin) keeps the window open and above other windows, where you put it. Drag it anywhere; Pako remembers the spot.
+- **Always on top** (the pin) keeps the window open where you put it, even when you click somewhere else. Drag it anywhere; Pako remembers the spot.
 - Without the pin, the window closes when you click somewhere else.
 - **Minimize** and **Close** hide it. One click on the tray icon brings it back.
 
-With **Settings › Browser extension › Show the small window when a browser download starts** on, it opens by itself at the bottom right when a download arrives from your browser, without taking you away from the browser.
+With **Settings › Browser extension › Show the small window when a browser download starts** on, it opens by itself when a download arrives from your browser (at the bottom right, or where you pinned it), without taking you away from the browser.

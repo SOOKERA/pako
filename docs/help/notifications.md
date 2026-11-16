@@ -60,7 +60,7 @@ A download with **Notify when done** (right-click it) still gets its pop-up when
 
 ### Do not disturb
 
-- **Do not disturb**: no pop-ups at all, also not for downloads with **Notify when done**. The bell still collects.
+- **Do not disturb**: no pop-ups at all, also not for downloads with **Notify when done**. The bell still collects (the kinds with their **Bell** switch on).
 - **Follow Windows' Do not disturb** (on at first): no pop-ups during full-screen games and videos, presentations, or Windows' own Do not disturb. The bell still collects.
 
-Pop-ups that would have shown during that time are skipped, not saved for later (the bell still has them). Pop-ups already on screen hide, and come back when it's over.
+Pop-ups that would have shown during that time are skipped, not saved for later (the bell has the kinds with their **Bell** switch on). Pop-ups already on screen hide, and come back when it's over with the rest of their time.

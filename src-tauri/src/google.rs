@@ -65,6 +65,10 @@ struct Access {
 /// "login refused" at the same moment returns it instead of renewing again and again.
 const JUST_RENEWED: Duration = Duration::from_secs(10);
 
+/// Longest wait for one answer from Google's sign-in service. Without it, a connection that
+/// goes quiet would hold up every Drive upload (they all wait for the renewed login) for good.
+const GOOGLE_WAIT: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 struct State {
     login: Option<SavedLogin>,
@@ -85,6 +89,17 @@ struct TokenResponse {
     access_token: String,
     expires_in: u64,
     refresh_token: Option<String>,
+    /// What Google granted (space-separated). On Google's page a box can be left unticked.
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// The permissions asked for (the web-address ones: "openid" and "email" come back under other
+/// names) that Google's answer doesn't list. No list in the answer = nothing known to be missing.
+fn missing_scopes<'a>(asked: &'a str, granted: Option<&str>) -> Vec<&'a str> {
+    let Some(granted) = granted else { return Vec::new() };
+    let have: Vec<&str> = granted.split_whitespace().collect();
+    asked.split_whitespace().filter(|s| s.starts_with("https://") && !have.contains(s)).collect()
 }
 
 #[derive(Deserialize)]
@@ -215,7 +230,7 @@ async fn remove_old_copies(google: &Google, http: &reqwest::Client, install: &st
     )
     .to_string();
     let listed = async {
-        let resp = http.get(format!("{API}/files?q={q}&fields=files(id,name)&pageSize=1000")).bearer_auth(&token).send().await?;
+        let resp = http.get(format!("{API}/files?q={q}&fields=files(id,name)&pageSize=1000")).bearer_auth(&token).timeout(GOOGLE_WAIT).send().await?;
         resp.error_for_status()?.json::<Page>().await
     };
     let page = match listed.await {
@@ -225,7 +240,7 @@ async fn remove_old_copies(google: &Google, http: &reqwest::Client, install: &st
     let mut removed = Vec::new();
     let mut left = Vec::new();
     for f in page.files {
-        let gone = http.delete(format!("{API}/files/{}?supportsAllDrives=true", f.id)).bearer_auth(&token).send().await;
+        let gone = http.delete(format!("{API}/files/{}?supportsAllDrives=true", f.id)).bearer_auth(&token).timeout(GOOGLE_WAIT).send().await;
         match gone {
             // Already gone counts as removed.
             Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::NOT_FOUND => removed.push(f.name),
@@ -326,6 +341,7 @@ impl Google {
                 ("refresh_token", login.refresh_token.as_str()),
                 ("grant_type", "refresh_token"),
             ])
+            .timeout(GOOGLE_WAIT)
             .send()
             .await
             .context("Could not reach Google to renew the login")?;
@@ -427,13 +443,22 @@ impl Google {
                 ("grant_type", "authorization_code"),
                 ("redirect_uri", redirect.as_str()),
             ])
+            .timeout(GOOGLE_WAIT)
             .send()
             .await?;
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            bail!("Google refused the sign-in: {body}");
+            // Google's own reason in a few words, not its raw answer.
+            let why = resp.json::<TokenError>().await.ok().map(|e| format!(" ({})", e.error_description.unwrap_or(e.error))).unwrap_or_default();
+            bail!("Google refused the sign-in{why}. Try again.");
         }
         let t: TokenResponse = resp.json().await?;
+        // The box for Google Drive was left unticked on Google's page: this login couldn't add
+        // a single file. Said now, instead of "connected" with every upload refused.
+        if !missing_scopes(self.account.scopes, t.scope.as_deref()).is_empty() {
+            let token = t.refresh_token.unwrap_or(t.access_token);
+            let _ = self.http.post(REVOKE_URL).form(&[("token", token)]).timeout(GOOGLE_WAIT).send().await;
+            bail!("Google didn't give Pako the permission to add files to your Google Drive. Connect again and, on Google's page, tick the box for Google Drive before you continue.");
+        }
         let refresh = t
             .refresh_token
             .ok_or_else(|| anyhow!("Google didn't return a lasting login. Try again."))?;
@@ -454,13 +479,18 @@ impl Google {
         Ok(email)
     }
 
+    /// Forgets the login here at once, then tells Google (without holding anything up while
+    /// Google answers, and not for long).
     pub async fn sign_out(&self) {
-        let mut st = self.state.lock().await;
-        if let Some(login) = st.login.take() {
-            let _ = self.http.post(REVOKE_URL).form(&[("token", login.refresh_token)]).send().await;
+        let login = {
+            let mut st = self.state.lock().await;
+            st.access = None;
+            let _ = std::fs::remove_file(login_path(self.account));
+            st.login.take()
+        };
+        if let Some(login) = login {
+            let _ = self.http.post(REVOKE_URL).form(&[("token", login.refresh_token)]).timeout(GOOGLE_WAIT).send().await;
         }
-        st.access = None;
-        let _ = std::fs::remove_file(login_path(self.account));
     }
 
     async fn fetch_email(&self, token: &str) -> Result<String> {
@@ -478,6 +508,7 @@ impl Google {
             .http
             .get("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)")
             .bearer_auth(token)
+            .timeout(GOOGLE_WAIT)
             .send()
             .await?
             .error_for_status()?
@@ -498,19 +529,27 @@ async fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<S
     loop {
         let (mut sock, _) = listener.accept().await?;
         let mut buf = vec![0u8; 8192];
-        let n = sock.read(&mut buf).await.unwrap_or(0);
+        // A browser may open a spare connection and never use it: it doesn't hold up the real one long.
+        let n = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf)).await.ok().and_then(|r| r.ok()).unwrap_or(0);
         let req = String::from_utf8_lossy(&buf[..n]);
         let path = req.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("/");
-        let parsed = url::Url::parse(&format!("http://localhost{path}"))?;
+        // Something else knocking with an odd request doesn't end the sign-in.
+        let Ok(parsed) = url::Url::parse(&format!("http://localhost{path}")) else {
+            let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
+            continue;
+        };
         let get = |k: &str| parsed.query_pairs().find(|(key, _)| key == k).map(|(_, v)| v.to_string());
 
         let (code, err) = (get("code"), get("error"));
-        if code.is_none() && err.is_none() {
-            // e.g. /favicon.ico
-            let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
+        // e.g. /favicon.ico. Also an answer without this sign-in's own mark: Google always
+        // sends it back (with a refusal too), so it's something else knocking (another program,
+        // a web page trying ports), and it doesn't end the sign-in.
+        if (code.is_none() && err.is_none()) || get("state").as_deref() != Some(expected_state) {
+            let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+            let _ = sock.shutdown().await;
             continue;
         }
-        let ok = code.is_some() && get("state").as_deref() == Some(expected_state);
+        let ok = code.is_some() && err.is_none();
         let page = if ok {
             page_html("Signed in", "You can close this tab and go back to Pako.")
         } else {
@@ -525,12 +564,11 @@ async fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<S
         let _ = sock.shutdown().await;
 
         if let Some(e) = err {
+            // Google's own short word for it ("access_denied"), never a long or odd text.
+            let e: String = e.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(40).collect();
             bail!("Sign-in was cancelled ({e}).");
         }
-        if !ok {
-            bail!("Sign-in answer didn't match. Try again.");
-        }
-        return Ok(code.unwrap());
+        return code.ok_or_else(|| anyhow!("Sign-in answer didn't match. Try again."));
     }
 }
 
@@ -564,6 +602,47 @@ mod tests {
     }
 
     use super::*;
+
+    /// On Google's page the box for Google Drive can be left unticked: the login then can't
+    /// upload anything, and Pako says so instead of showing "connected".
+    #[test]
+    fn a_sign_in_without_the_drive_box_is_noticed() {
+        let asked = SENDING.scopes;
+        let all = "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.file";
+        assert!(missing_scopes(asked, Some(all)).is_empty());
+        assert_eq!(missing_scopes(asked, Some("openid https://www.googleapis.com/auth/userinfo.email")), vec!["https://www.googleapis.com/auth/drive.file"]);
+        assert!(missing_scopes(asked, None).is_empty(), "Google didn't say: not refused");
+        let t: TokenResponse = serde_json::from_str(r#"{"access_token":"a","expires_in":3599}"#).unwrap();
+        assert!(t.scope.is_none() && t.refresh_token.is_none());
+    }
+
+    /// Only Google's answer to this sign-in (with its own mark) ends the wait: anything else
+    /// knocking on the port is turned away and the sign-in goes on.
+    #[tokio::test]
+    async fn only_the_real_answer_ends_the_sign_in() {
+        async fn knock(addr: std::net::SocketAddr, path: &str) -> String {
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).await.unwrap();
+            let mut out = Vec::new();
+            let _ = s.read_to_end(&mut out).await;
+            String::from_utf8_lossy(&out).to_string()
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            assert!(knock(addr, "/favicon.ico").await.starts_with("HTTP/1.1 404"));
+            assert!(knock(addr, "/?error=access_denied").await.starts_with("HTTP/1.1 404"), "no mark: not Google's answer");
+            assert!(knock(addr, "/?code=stolen&state=wrong").await.starts_with("HTTP/1.1 404"));
+            assert!(knock(addr, "/?code=abc&state=mark").await.contains("Signed in"));
+        });
+        assert_eq!(wait_for_code(&listener, "mark").await.unwrap(), "abc");
+        client.await.unwrap();
+        // Google's own refusal (with the mark) ends it, in its short word.
+        let client = tokio::spawn(async move { knock(addr, "/?error=access_denied&state=mark").await });
+        let err = wait_for_code(&listener, "mark").await.unwrap_err().to_string();
+        assert_eq!(err, "Sign-in was cancelled (access_denied).");
+        client.await.unwrap();
+    }
 
     #[test]
     fn sending_sign_in_asks_only_for_its_own_files() {

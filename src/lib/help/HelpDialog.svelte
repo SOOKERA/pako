@@ -77,6 +77,12 @@
   }
 
   function startTour(id: TourId) {
+    // Help opened from Settings (its "?" and About links): Settings is still open under it, over
+    // the page the tutorial would show. Its own tutorial is fine.
+    if (id !== "settings" && app.modals > 1) {
+      app.toast("Close Settings first: this tutorial shows another page.");
+      return;
+    }
     help.close();
     tour.start(id);
   }
@@ -101,7 +107,7 @@
         <input bind:value={q} placeholder="Search the guides" aria-label="Search the guides" spellcheck="false" onkeydown={searchKey} />
         {#if q}<button class="clear" aria-label="Clear search" onclick={() => (q = "")}><Icon name="x" size={10} stroke={2.4} /></button>{/if}
       </label>
-      <div class="list">
+      <div class="list focus-in">
         {#if navIndex >= 0}<span class="lit" style="transform: translateY({navIndex * 34}px)" aria-hidden="true"></span>{/if}
         <button class:on={navIndex === 0} onclick={() => open()}><Icon name="help" size={15} />Start here</button>
         {#each guides as g, i (g.file)}
@@ -164,7 +170,7 @@
               </button>
               <button class="guide" onclick={() => (help.report = true)}>
                 <span class="gname"><Icon name="chat" size={14} />Report a problem</span>
-                <span class="gabout">Something went wrong? Send Sookera a report from your email app.</span>
+                <span class="gabout">Something went wrong? Send Sookera a report in one click, or by email.</span>
               </button>
             </div>
             <div class="credit-row"><Credit /></div>
@@ -279,6 +285,7 @@
   .hnav {
     width: 196px;
     flex: none;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -324,11 +331,15 @@
     background: var(--raise-hover);
     color: var(--text-3);
   }
+  /* In a low window the list scrolls by itself (the search box and the page beside it stay put). */
   .list {
     position: relative;
+    flex: 0 1 auto;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 2px;
+    overflow-y: auto;
   }
   /* One highlight that slides to the page you're on (rows are 32px with 2px between). */
   .lit {
@@ -344,6 +355,7 @@
   }
   .list button {
     position: relative;
+    flex: none;
     display: flex;
     align-items: center;
     gap: 9px;
@@ -378,6 +390,7 @@
     color: var(--accent-strong);
   }
   .f1 {
+    flex: none;
     margin: auto 0 0;
     font-size: 11.5px;
     color: var(--text-4);

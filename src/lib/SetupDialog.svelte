@@ -88,7 +88,11 @@
     }
   }
 
+  /** Saving: a second click (or Esc right after) does nothing. */
+  let saving = false;
   async function save(useChoices: boolean) {
+    if (saving) return false;
+    saving = true;
     // Only the setup's own answers: saving them never depends on the download folder being there.
     const choices: SetupChoices = useChoices
       ? {
@@ -98,14 +102,18 @@
         }
       : {};
     app.setupOpen = false;
-    await app.run(() => api.saveSetup(choices));
-    await app.refresh();
+    try {
+      await app.run(() => api.saveSetup(choices));
+      await app.refresh();
+    } finally {
+      saving = false;
+    }
+    return true;
   }
 
   async function setUp() {
     const list = [...toInstall];
-    await save(true);
-    if (!list.length) return;
+    if (!(await save(true)) || !list.length) return;
     const names: Record<ComponentKind, string> = { sevenZip: "7-Zip", ffmpeg: "ffmpeg", ytDlp: "yt-dlp", deno: "Deno" };
     app.toast(list.length === 1 ? "Getting it ready in the background…" : "Getting them ready in the background…");
     // One after the other, in the background (progress in Settings › Features & updates).
@@ -116,7 +124,7 @@
   }
 </script>
 
-<Modal title="Set up Pako" width={540} onclose={() => save(false)}>
+<Modal title="Set up Pako" width={540} closeLabel="Skip for now" outsideCloses={false} onclose={() => save(false)}>
   <p class="intro">Pick what you'd like Pako to do. You can change all of this later in Settings.</p>
 
   <h4>Look</h4>
