@@ -91,12 +91,17 @@ pub fn set_autostart(on: bool, in_tray: bool) -> Result<(), String> {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW};
     let key = wide(RUN_KEY);
     let name = wide(RUN_NAME);
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     if !on {
-        // SAFETY: valid NUL-terminated strings. "Not there" is fine.
-        unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
+        // Only this Pako's own entry (or one whose Pako is gone): another copy (portable and
+        // installed side by side) keeps starting with Windows when this one is set not to.
+        let entry = reg_get_value(HKEY_CURRENT_USER, RUN_KEY, Some(RUN_NAME), 0);
+        if may_remove_autostart(entry.as_deref(), &exe) {
+            // SAFETY: valid NUL-terminated strings. "Not there" is fine.
+            unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
+        }
         return Ok(());
     }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = format!("\"{}\"", exe.display());
     if in_tray {
         cmd.push(' ');
@@ -115,6 +120,17 @@ pub fn set_autostart(on: bool, in_tray: bool) -> Result<(), String> {
         )
     };
     if r == 0 { Ok(()) } else { Err(format!("Windows refused to add Pako to start-up (error {r}).")) }
+}
+
+/// Windows' start-up entry may go when it starts this Pako, or a Pako that isn't there any more
+/// (moved or deleted); never when it starts another copy that is still there.
+fn may_remove_autostart(entry: Option<&str>, exe: &Path) -> bool {
+    let Some(entry) = entry else { return false };
+    if command_starts(entry, exe) {
+        return true;
+    }
+    let target = entry.trim().strip_prefix('"').and_then(|r| r.split_once('"')).map(|(p, _)| PathBuf::from(p));
+    target.is_none_or(|t| !t.exists())
 }
 
 /// Uninstalling: takes Pako out of the programs Windows starts at sign-in, if that entry starts
@@ -574,6 +590,23 @@ pub fn pako_in_front() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turning_start_up_off_leaves_another_copys_entry() {
+        let dir = std::env::temp_dir().join(format!("pako-run-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        let me = dir.join("a").join("Pako.exe");
+        let other = dir.join("b").join("Pako.exe");
+        std::fs::write(&me, b"x").unwrap();
+        std::fs::write(&other, b"x").unwrap();
+        let q = |p: &Path, tray: bool| format!("\"{}\"{}", p.display(), if tray { " --tray" } else { "" });
+        assert!(may_remove_autostart(Some(&q(&me, true)), &me), "this Pako's own entry");
+        assert!(!may_remove_autostart(Some(&q(&other, false)), &me), "another copy that is there");
+        assert!(may_remove_autostart(Some(&q(&dir.join("gone").join("Pako.exe"), false)), &me), "a Pako that is gone");
+        assert!(!may_remove_autostart(None, &me));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn knows_which_copy_a_command_starts() {

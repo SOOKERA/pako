@@ -1,5 +1,12 @@
 # What's new
 
+## 1.0.1
+
+### Fixed
+
+- Installing ffmpeg (for **Preview more video types** and **Download videos from YouTube and other sites**) failed with "No Windows build in the latest release": its source changed how it names its builds. Pako finds them again.
+- With a portable and an installed Pako on the same PC, turning off **Start with Windows** in one (or leaving it off in the first-start setup) no longer stops the other from starting with Windows.
+
 ## 1.0.0
 
 ### Light or dark

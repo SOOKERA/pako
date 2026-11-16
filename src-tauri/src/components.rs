@@ -301,7 +301,21 @@ fn parse_version(kind: Kind, text: &str) -> Option<String> {
 }
 
 async fn latest_release(http: &reqwest::Client, kind: Kind) -> Result<Release> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", kind.repo());
+    // ffmpeg: BtbN keeps the stable builds in the release tagged "latest"; what GitHub calls the
+    // latest release is the day's automatic build (other file names). That one only if the tag
+    // has no Windows build.
+    if kind == Kind::Ffmpeg {
+        if let Ok(rel) = release_at(http, kind, "tags/latest").await {
+            if pick_ffmpeg(&rel.assets).is_some() {
+                return Ok(rel);
+            }
+        }
+    }
+    release_at(http, kind, "latest").await
+}
+
+async fn release_at(http: &reqwest::Client, kind: Kind, which: &str) -> Result<Release> {
+    let url = format!("https://api.github.com/repos/{}/releases/{which}", kind.repo());
     let r = http
         .get(url)
         .header(reqwest::header::USER_AGENT, "Pako")
@@ -315,16 +329,19 @@ async fn latest_release(http: &reqwest::Client, kind: Kind) -> Result<Release> {
     Ok(r.json().await?)
 }
 
-/// The newest stable ffmpeg build ("ffmpeg-n9.0-latest-win64-gpl-9.0.zip" -> (asset, "9.0")).
+/// The newest stable ffmpeg build: "ffmpeg-n9.0-latest-win64-gpl-9.0.zip" (the "latest" tag) or
+/// "ffmpeg-n9.0.2-57-gd838f9f9ae-win64-gpl-9.0.zip" (a day's build) -> (asset, "9.0"). Never the
+/// "shared" or "lgpl" builds, or master ("ffmpeg-master-…", "ffmpeg-N-…").
 fn pick_ffmpeg(assets: &[Asset]) -> Option<(Asset, String)> {
     assets
         .iter()
         .filter_map(|a| {
             let rest = a.name.strip_prefix("ffmpeg-n")?.strip_suffix(".zip")?;
-            if !rest.contains("-latest-win64-gpl-") || rest.contains("shared") {
+            let (_, ver) = rest.rsplit_once("-win64-gpl-")?;
+            if ver.is_empty() || !ver.chars().all(|c| c.is_ascii_digit() || c == '.') {
                 return None;
             }
-            let ver = rest.rsplit('-').next()?.to_string();
+            let ver = ver.to_string();
             let key: Vec<u32> = ver.split('.').filter_map(|p| p.parse().ok()).collect();
             Some((key, a.clone(), ver))
         })
@@ -607,6 +624,22 @@ mod tests {
         assert!(InstallGuard::take(Kind::Deno).is_ok());
     }
 
+    /// Against GitHub today (network): ffmpeg's stable Windows build is found and its checksum is
+    /// listed. `cargo test --lib -- --ignored ffmpeg_on_github`.
+    #[test]
+    #[ignore]
+    fn ffmpeg_on_github() {
+        tauri::async_runtime::block_on(async {
+            let http = reqwest::Client::new();
+            let rel = latest_release(&http, Kind::Ffmpeg).await.unwrap();
+            let (a, v) = pick_ffmpeg(&rel.assets).expect("a Windows build");
+            let sums = asset(&rel, "checksums.sha256").unwrap().browser_download_url.clone();
+            let text = http.get(sums).header(reqwest::header::USER_AGENT, "Pako").send().await.unwrap().text().await.unwrap();
+            assert!(hash_for(&text, &a.name).is_some(), "{} has no checksum", a.name);
+            println!("ffmpeg {v}: {} (release {})", a.name, rel.tag_name);
+        });
+    }
+
     #[test]
     fn picks_the_newest_stable_ffmpeg() {
         let a = |n: &str| Asset { name: n.into(), browser_download_url: String::new() };
@@ -618,6 +651,17 @@ mod tests {
         ];
         let (pick, ver) = pick_ffmpeg(&assets).unwrap();
         assert_eq!(pick.name, "ffmpeg-n9.0-latest-win64-gpl-9.0.zip");
+        // A day's automatic build (BtbN's "latest" release since late 2026).
+        let day = [
+            a("ffmpeg-N-128959-g4dbee3b241-win64-gpl.zip"),
+            a("ffmpeg-n8.1.3-35-gf1acb0a266-win64-gpl-8.1.zip"),
+            a("ffmpeg-n9.0.2-57-gd838f9f9ae-win64-gpl-shared-9.0.zip"),
+            a("ffmpeg-n9.0.2-57-gd838f9f9ae-win64-lgpl-9.0.zip"),
+            a("ffmpeg-n9.0.2-57-gd838f9f9ae-win64-gpl-9.0.zip"),
+            a("ffmpeg-n9.0.2-57-gd838f9f9ae-winarm64-gpl-9.0.zip"),
+        ];
+        let (pick, v) = pick_ffmpeg(&day).unwrap();
+        assert_eq!((pick.name.as_str(), v.as_str()), ("ffmpeg-n9.0.2-57-gd838f9f9ae-win64-gpl-9.0.zip", "9.0"));
         assert_eq!(ver, "9.0");
     }
 
