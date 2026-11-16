@@ -1,0 +1,27 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
+<!doctype html>
+<html lang="en" style="background: #0f1114; color-scheme: dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pako</title>
+    <script>
+      // Light or dark before the first paint: the choice this window last showed (theme.svelte.ts).
+      try {
+        var t = localStorage.getItem("pako.theme");
+        if (t === "system") t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        if (t === "light") {
+          var r = document.documentElement;
+          r.dataset.theme = "light";
+          r.style.background = "#ffffff";
+          r.style.colorScheme = "light";
+        }
+      } catch (e) {}
+    </script>
+    %sveltekit.head%
+  </head>
+  <body>
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

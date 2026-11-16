@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
+// Builds the extension for both browser families:
+//   dist/extension/chromium/             folder for "Load unpacked" (Vivaldi, Chrome, Edge, Brave)
+//   dist/extension/pako-firefox.zip      file to sign on addons.mozilla.org
+//   dist/extension/pako-light-store.zip  Pako Light, to upload to the Chrome Web Store and Edge Add-ons
+// Run: node extension/build.mjs
+// (Pako itself writes only the full extension, from the same source files: the chromium folder
+// and the Firefox zip, in Settings › Browser extension. It never writes Pako Light.)
+import { cpSync, mkdirSync, rmSync, copyFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { toLight, LIGHT_BANNED } from "./light.mjs";
+import { makeZip, readZip } from "./zip.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..");
+const out = join(root, "dist", "extension");
+const shared = ["background.js", "player.js", "popup.html", "popup.css", "popup.js", "icons"];
+/** The licence and its additional terms travel with every copy. */
+const legal = ["LICENSE", "NOTICE.md"];
+
+function stage(dir, manifest) {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  for (const f of shared) cpSync(join(here, f), join(dir, f), { recursive: true });
+  for (const f of legal) copyFileSync(join(root, f), join(dir, f));
+  copyFileSync(join(here, manifest), join(dir, "manifest.json"));
+}
+
+/** Every file under `dir`, as zip entries named with "/". */
+function entriesOf(dir) {
+  const list = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else list.push({ name: relative(dir, p).split(sep).join("/"), data: readFileSync(p) });
+    }
+  };
+  walk(dir);
+  return list;
+}
+
+/** Zips a staged folder with its files at the top of the zip (as the stores expect), checks the
+ *  zip reads back the same, then removes the folder. */
+function zipUp(dir, zip) {
+  const entries = entriesOf(dir);
+  writeFileSync(zip, makeZip(entries));
+  const back = readZip(readFileSync(zip));
+  if (back.length !== entries.length || back.some((e, i) => e.name !== entries[i].name || !e.data.equals(entries[i].data))) {
+    throw new Error(`${zip}: the zip doesn't read back the same`);
+  }
+  if (back.some((e) => e.name.includes("\\"))) throw new Error(`${zip}: an entry name has a "\\"`);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+mkdirSync(out, { recursive: true });
+stage(join(out, "chromium"), "manifest.chromium.json");
+
+const ff = join(out, "firefox");
+stage(ff, "manifest.firefox.json");
+zipUp(ff, join(out, "pako-firefox.zip"));
+
+// Pako Light: the Chrome Web Store / Edge Add-ons edition. Those stores don't allow downloading
+// videos (YouTube above all), so it has none of that: no player.js, the full-only blocks taken
+// out of its scripts and window (see light.mjs), and the build stops if a word of it is left.
+// Its own name and icons, and no "key": the store gives it its own ID
+// (cojnnpgiilnbkblckkjnheigiodkdlpl), separate from the full extension's.
+const store = join(out, "chrome-store");
+stage(store, "manifest.chromium.json");
+rmSync(join(store, "player.js"));
+rmSync(join(store, "icons"), { recursive: true, force: true });
+cpSync(join(here, "icons-light"), join(store, "icons"), { recursive: true });
+for (const f of ["background.js", "popup.js", "popup.html", "popup.css"]) {
+  const file = join(store, f);
+  writeFileSync(file, toLight(f, readFileSync(file, "utf8")));
+}
+// NOTICE.md's last part is about the Pako app's own parts and tools, not this extension.
+const notice = join(store, "NOTICE.md");
+writeFileSync(notice, toLight("NOTICE.md", readFileSync(notice, "utf8").replace(/\r?\n## Third-party parts[\s\S]*$/, "\n")));
+const m = JSON.parse(readFileSync(join(store, "manifest.json"), "utf8"));
+delete m.key;
+delete m.content_scripts;
+m.name = "Pako Light";
+m.short_name = "Pako Light";
+m.description = "Send downloads and links from your browser to Pako, the download manager for Windows.";
+m.action.default_title = "Pako Light";
+writeFileSync(join(store, "manifest.json"), toLight("manifest.json", JSON.stringify(m, null, 2) + "\n"));
+// Nothing else may slip in (LICENSE is the GPL's own text, word for word).
+for (const e of entriesOf(store)) {
+  if (e.name === "LICENSE" || !/\.(js|html|css|json|md)$/.test(e.name)) continue;
+  if (LIGHT_BANNED.test(e.data.toString("utf8"))) throw new Error(`Pako Light's ${e.name} still has a word of the full extension`);
+}
+zipUp(store, join(out, "pako-light-store.zip"));
+rmSync(join(out, "pako-chrome-store.zip"), { force: true });
+
+console.log("Ready:", join(out, "chromium"), "·", join(out, "pako-firefox.zip"), "·", join(out, "pako-light-store.zip"));

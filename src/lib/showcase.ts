@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
+// The showcase set: sample data for the website's screenshots (scripts/screenshots.mjs), used only
+// in the design preview (a normal browser, never inside the app) and only with "?showcase" in the
+// address. Everything going well; plain made-up names, no brands, no real people.
+import type { DirectState, Download, FoundItem, Part, Progress, SendState, Snapshot } from "./api";
+import type { Notice, PopupCard } from "./notices";
+
+export const showcase = typeof location !== "undefined" && new URLSearchParams(location.search).has("showcase");
+
+const now = Date.now();
+const MIN = 60_000;
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+const GB = 1024 ** 3;
+const MB = 1024 ** 2;
+const HOME = "C:\\Users\\Sam\\Downloads";
+
+/** The same contact IDs as the Dashboard's sample numbers (mock.ts), so "Your people" matches. */
+export const ALEX = "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e";
+export const NINA = "f0e1d2c3b4a5968778695a4b3c2d1e0f1f2e3d4c5b6a79881726354a3b2c1d0e";
+export const JO = "5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f";
+const LEO = "7c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d";
+
+// ---------- Downloads ----------
+
+let seq = 0;
+function dl(over: Partial<Download> & { name: string }): Download {
+  seq++;
+  const url = "https://files.example.com/" + encodeURIComponent(over.name);
+  return {
+    id: "s" + seq,
+    link: url,
+    source: { kind: "http", url },
+    destDir: HOME,
+    size: null,
+    md5: null,
+    status: "downloading",
+    message: null,
+    resumable: true,
+    downloaded: 0,
+    addedAt: 1000 + seq,
+    date: now - seq * 7 * MIN,
+    finishedAt: null,
+    group: null,
+    resolved: true,
+    priority: "normal",
+    notify: false,
+    extract: false,
+    ...over,
+  };
+}
+const drive = (fileId: string) => ({ source: { kind: "gDrive", fileId } as const, link: `https://drive.google.com/file/d/${fileId}/view`, md5: "x" });
+const STUDIO = HOME + "\\Studio assets";
+
+const downloads: Download[] = [
+  dl({ name: "Holiday photos 2025.zip", size: 6.4 * GB, downloaded: 3.71 * GB, ...drive("1hP7sQ2"), notify: true }),
+  dl({ name: "Project final cut.mp4", size: 3.9 * GB, downloaded: 1.21 * GB }),
+  dl({ name: "Interview A-cam.mov", size: 4.6 * GB, downloaded: 2.02 * GB, ...drive("1sA9cM4"), group: "Studio assets", destDir: STUDIO }),
+  dl({ name: "Interview B-cam.mov", size: 4.4 * GB, downloaded: 0.53 * GB, ...drive("1sB2cM7"), group: "Studio assets", destDir: STUDIO }),
+  dl({ name: "Logo pack.zip", status: "completed", size: 240 * MB, downloaded: 240 * MB, ...drive("1sL5pK1"), group: "Studio assets", destDir: STUDIO, finishedAt: now - 9 * MIN }),
+  dl({ name: "Wallpapers 4K.zip", size: 1.2 * GB, downloaded: 0.98 * GB }),
+  dl({ name: "Podcast season 2.zip", status: "queued", size: 2.3 * GB }),
+  dl({ name: "Course materials.zip", status: "completed", size: 2.7 * GB, downloaded: 2.7 * GB, ...drive("1cM8tR3"), date: now - 3 * HOUR, finishedAt: now - 52 * MIN }),
+];
+
+/** Speed (bytes/s) and connections of each running one. */
+const running: Record<string, [number, number]> = {
+  "Holiday photos 2025.zip": [26_400_000, 8],
+  "Project final cut.mp4": [18_900_000, 8],
+  "Interview A-cam.mov": [21_700_000, 6],
+  "Interview B-cam.mov": [16_800_000, 6],
+  "Wallpapers 4K.zip": [9_600_000, 4],
+};
+
+export const showcaseProgress: Progress[] = downloads
+  .filter((d) => d.status === "downloading")
+  .map((d) => ({ id: d.id, status: d.status, message: null, downloaded: d.downloaded, size: d.size, speed: running[d.name]?.[0] ?? 0, connections: running[d.name]?.[1] ?? 8, name: d.name }));
+
+/** The parts map of a running download: equal parts, the first ones furthest along. */
+export function showcaseParts(id: string): Part[] {
+  const d = downloads.find((x) => x.id === id);
+  if (!d || !d.size || d.status !== "downloading") return [];
+  const count = running[d.name]?.[1] ?? 8;
+  const part = d.size / count;
+  const avg = d.downloaded / d.size;
+  const spread = Math.min(0.8, 2 * Math.min(avg, 1 - avg));
+  return Array.from({ length: count }, (_, i) => {
+    const fill = Math.max(0.04, Math.min(1, avg + spread * (0.5 - i / (count - 1))));
+    const start = Math.round(i * part);
+    const end = Math.round((i + 1) * part) - 1;
+    return { start, end, done: Math.round(fill * part), active: fill < 1 };
+  });
+}
+
+// ---------- Links ----------
+
+let fseq = 0;
+function found(over: { name: string; size?: number | null; source?: Download["source"]; link?: string; state?: FoundItem["state"]; folder?: string; relDir?: string }): FoundItem {
+  fseq++;
+  const link = over.link ?? "https://files.example.com/" + encodeURIComponent(over.name);
+  const template = dl({ name: over.name, size: over.size ?? null, link, source: over.source ?? { kind: "http", url: link }, status: "queued", date: now - 4 * MIN + fseq * 1000 });
+  template.id = "f" + fseq;
+  return { id: template.id, template, state: over.state ?? "ready", message: null, folder: over.folder ?? null, relDir: over.folder ? (over.relDir ?? "") : null, isFolder: false, dest: null, extract: null };
+}
+const tripLink = "https://drive.google.com/drive/folders/1TrIp9";
+const inTrip = (name: string, size: number, fileId: string) => found({ name, size, source: { kind: "gDrive", fileId }, link: tripLink, folder: "Summer trip" });
+
+/** A video with its qualities (for the quality picker). No site: the link is a plain address. */
+const VIDEO_LINK = "https://media.example.com/watch/sunrise-over-the-lake";
+const foundItems: FoundItem[] = [
+  inTrip("Beach day.mp4", 1.4 * GB, "1tB1"),
+  inTrip("Drone over the bay.mp4", 2.3 * GB, "1tD2"),
+  inTrip("Photos.zip", 860 * MB, "1tP3"),
+  inTrip("Itinerary.pdf", 2.4 * MB, "1tI4"),
+  found({ name: "Mountain timelapse 4K.mkv", size: 1.2 * GB, source: { kind: "gDrive", fileId: "1mT5" }, link: "https://drive.google.com/file/d/1mT5/view" }),
+  found({ name: "Brushes and textures.zip", size: 640 * MB }),
+  found({ name: "Font collection.zip", size: 96 * MB }),
+  found({
+    name: "Sunrise over the lake 4K.mp4",
+    size: 1.1 * GB,
+    link: VIDEO_LINK,
+    source: { kind: "video", url: VIDEO_LINK, quality: null, audio: null, duration: 754, audioSize: 12 * MB, options: [2160, 1440, 1080, 720, 480, 360].map((height, i) => ({ height, size: [2.3 * GB, 1.1 * GB, 560 * MB, 280 * MB, 130 * MB, 76 * MB][i] })) },
+  }),
+  found({ name: "Presentation deck.pdf", source: { kind: "gDrive", fileId: "1pD6" }, link: "https://drive.google.com/file/d/1pD6/view", state: "checking" }),
+];
+
+export const showcaseSnapshot: Snapshot = {
+  downloads,
+  found: foundItems,
+  foundSets: [],
+  downloadSets: [],
+  settings: {
+    downloadDir: HOME, autoConnections: true, connections: 8, maxActive: 5, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true,
+    extractDefault: true, minimizeToTray: true, closeToTray: true, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, startWithWindows: true, startInTray: true,
+    videoQuality: 1080, setupDone: true, videoAsked: true, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: true, browserConnect: true,
+    sendCompression: "off", sendMode: "files", askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7,
+    whatsNewSeen: "1.0.0", tourOffered: true, toursDone: ["downloads", "found", "send", "direct", "dashboard", "settings", "full"],
+  },
+  dataDir: "C:\\Users\\Sam\\AppData\\Roaming\\Pako",
+  sevenZip: true,
+  ffmpeg: true,
+  version: "1.0.0",
+  installed: true,
+};
+
+// ---------- Upload ----------
+
+/** Your Google Drive for uploads, connected (an address that can't belong to anyone). */
+export const showcaseDrive = { configured: true, missingNote: null, signedIn: true, email: "sam@example.com", limit: 15e9, used: 6.1e9, error: null };
+
+export const showcaseSend: SendState = {
+  jobs: [],
+  sent: [
+    {
+      id: "u1", name: "Holiday clips", asFiles: true, files: 12, size: 2_100_000_000, date: now - 3 * HOUR, link: "https://gofile.io/d/Hc7Kp2",
+      folderId: "f1", fileId: "a1", compressed: false, downloads: 5, downloadedAt: now - 35 * MIN, canDelete: true,
+      deleteAt: now + 7 * DAY - 3 * HOUR, expiryOnHost: true, secs: 168, peak: 16_400_000,
+      contents: ["Beach day.mp4", "Boat trip.mp4", "Dinner.mov", "Drone over the bay.mp4", "Fireworks.mp4", "Hike part 1.mp4", "Hike part 2.mp4", "Market.mov", "Morning swim.mp4", "Sunset timelapse.mp4", "Snorkel.mp4", "Waterfall.mp4"].map((name, i) => ({ name, size: 90_000_000 + ((i * 37_000_000) % 260_000_000) })),
+      countHistory: [[now - 3 * HOUR, 0], [now - 2.4 * HOUR, 1], [now - 1.7 * HOUR, 3], [now - 70 * MIN, 4], [now - 35 * MIN, 5]],
+    },
+    {
+      id: "u2", name: "Portfolio 2025.pdf", files: 1, size: 48_000_000, date: now - 1.2 * DAY, link: "https://drive.google.com/file/d/1Pf2025/view",
+      folderId: null, fileId: "d2", compressed: false, host: "drive", canDelete: true,
+      deleteAt: now + 1.8 * DAY, secs: 5.4, peak: 10_100_000, contents: [{ name: "Portfolio 2025.pdf", size: 48_000_000 }],
+    },
+    {
+      id: "u3", name: "Source files.zip", files: 386, size: 640_000_000, date: now - 6 * DAY, link: "https://gofile.io/d/Sf8Wq1",
+      folderId: "f3", fileId: "a3", compressed: true, downloads: 9, downloadedAt: now - 0.6 * DAY, canDelete: true,
+      deleteAt: null, secs: 64, peak: 12_800_000, note: "The v2 sources and the fonts.",
+      contents: [{ name: "Source files/main.psd", size: 312_000_000 }, { name: "Source files/layers/sky.psd", size: 98_000_000 }, { name: "Fonts/Inter.ttf", size: 820_000 }, { name: "Readme.txt", size: 4_000 }],
+      countHistory: [[now - 6 * DAY, 0], [now - 5.2 * DAY, 2], [now - 3.1 * DAY, 5], [now - 1.4 * DAY, 7], [now - 0.6 * DAY, 9]],
+    },
+  ],
+  canDelete: true,
+  keepNote: "Gofile keeps files while people download them. After 10 days without a download, they may be removed.",
+  checking: false,
+  checkedAt: now - 2 * MIN,
+  countsNote: null,
+};
+
+// ---------- Bell and pop-ups ----------
+
+export const showcaseNotices: Notice[] = [
+  { id: "n2", kind: "direct-offer", title: "Files for you", body: "Nina wants to send you Recipes (420 MB).", at: now - 12 * MIN, read: false, go: { page: "direct", id: NINA }, answered: "Accepted" },
+  { id: "n1", kind: "direct-request", title: "Someone wants to connect", body: "Leo wants to connect with you in Pako.", at: now - 26 * HOUR, read: true, go: { page: "direct", peer: LEO }, answered: "Accepted" },
+];
+
+export const showcaseCards: PopupCard[] = [
+  { id: "p1", kind: "browser", title: "Downloading in Pako", body: "Wallpapers 4K.zip", go: { page: "downloads" }, stays: false },
+  { id: "p2", kind: "download-done", title: "Download finished", body: "Course materials.zip", go: { page: "downloads", id: "s8" }, stays: false },
+  { id: "p3", kind: "direct-offer", title: "Files for you", body: "Nina wants to send you Recipes (420 MB).", go: { page: "direct", offer: "o-nina" }, stays: true },
+];
+
+// ---------- Direct ----------
+
+/** One file on its way to Alex: it moves on each time Direct asks (about 40 MB/s). */
+const SENDING = { size: 3.6e9, from: 1.52e9, rate: 41.5e6, since: now };
+
+export function showcaseDirect(): DirectState {
+  const t = Date.now();
+  const into = (name: string) => `${HOME}\\From ${name}`;
+  const contact = (id: string, name: string, over: Partial<NonNullable<DirectState["contacts"]>[number]>) => ({
+    id, name, trusted: true, autoAccept: false, saveFolder: null, lastSeen: t, added: t - 40 * DAY, online: false, path: null, waiting: false,
+    code: "4821 0937 5512", note: null, folder: into(name), tags: [], favourite: false, theirName: null, ...over,
+  });
+  return {
+    ready: true,
+    error: null,
+    myId: "9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
+    myName: "Sam",
+    tags: ["Friends", "Family", "Work"],
+    contacts: [
+      contact(ALEX, "Alex", { online: true, path: "direct", autoAccept: true, favourite: true, tags: ["Friends", "Work"], added: t - 64 * DAY, code: "4821 0937 5512 0386" }),
+      contact(JO, "Jo", { online: true, path: "relay", tags: ["Work"], added: t - 31 * DAY, code: "3301 8842 1176" }),
+      contact(NINA, "Nina", { lastSeen: t - 8 * MIN, tags: ["Family"], added: t - 120 * DAY, code: "1170 6640 2093" }),
+      contact(LEO, "Leo", { lastSeen: t - 22 * HOUR, tags: ["Friends"], added: t - 26 * HOUR, code: "6658 2210 9034" }),
+    ],
+    requests: [],
+    offers: [],
+    transfers: [
+      { id: "x1", contact: ALEX, outgoing: true, name: "Short film final.mov", files: 1, size: SENDING.size, done: Math.min(SENDING.size * 0.97, SENDING.from + ((t - SENDING.since) / 1000) * SENDING.rate), state: "sending", path: "direct", message: null },
+    ],
+    history: [
+      { id: "h1", contact: ALEX, outgoing: false, name: "Photos from Saturday", files: 48, size: 412e6, date: now - 3 * DAY, path: "direct", result: "done", message: null, savedTo: into("Alex") + "\\Photos from Saturday", durationMs: 9000, avgSpeed: 45e6 },
+      { id: "h2", contact: ALEX, outgoing: true, name: "Slides.pdf", files: 1, size: 6.2e6, date: now - 2 * DAY, path: "direct", result: "done", message: null, savedTo: null, durationMs: 300, avgSpeed: 20e6 },
+      { id: "h3", contact: ALEX, outgoing: false, name: "Music for the trailer.zip", files: 1, size: 186e6, date: now - 20 * HOUR, path: "direct", result: "done", message: null, savedTo: into("Alex") + "\\Music for the trailer.zip", durationMs: 4600, avgSpeed: 40e6 },
+      { id: "h4", contact: ALEX, outgoing: true, name: "Colour notes.pdf", files: 1, size: 2.4e6, date: now - 25 * MIN, path: "direct", result: "done", message: null, savedTo: null, durationMs: 200, avgSpeed: 12e6 },
+      { id: "h5", contact: JO, outgoing: true, name: "Report Q3.xlsx", files: 1, size: 1.4e6, date: now - DAY, path: "relay", result: "done", message: null, savedTo: null, durationMs: 900, avgSpeed: 1.5e6 },
+      { id: "h6", contact: NINA, outgoing: false, name: "Recipes", files: 36, size: 420e6, date: now - 10 * MIN, path: "direct", result: "done", message: null, savedTo: into("Nina") + "\\Recipes", durationMs: 14000, avgSpeed: 30e6 },
+    ],
+  };
+}

@@ -1,0 +1,342 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
+<script lang="ts">
+  // "Download with Pako": a download from the browser waits here for your OK, with its name,
+  // folder, quality (videos) and "Notify me". Several at once come one after another.
+  import { onMount, tick } from "svelte";
+  import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+  import { api, inApp, listen, type AskView } from "$lib/api";
+  import { bytes } from "$lib/format";
+  import FileIcon from "$lib/FileIcon.svelte";
+  import Logo from "$lib/Logo.svelte";
+  import MiddleText from "$lib/MiddleText.svelte";
+  import WinButton from "$lib/WinButton.svelte";
+  import { fadeIn, pop } from "$lib/motion";
+
+  let view = $state<AskView | null>(null);
+  let stem = $state("");
+  let dir = $state("");
+  let quality = $state(1080);
+  let notify = $state(true);
+  let dontAsk = $state(false);
+  let busy = $state(false);
+  let error = $state("");
+  let nameEl: HTMLInputElement | undefined = $state();
+
+  const QUALITIES: [number, string][] = [
+    [1080, "Up to 1080p"],
+    [720, "Up to 720p"],
+    [480, "Up to 480p"],
+    [0, "Audio only"],
+  ];
+
+  /** A video's kind of file follows its quality; anything else keeps its own. */
+  const ext = $derived(view?.video ? (quality === 0 ? "m4a" : "mp4") : (view?.ext ?? ""));
+  const size = $derived(view?.video ? (view.sizes.find(([q]) => q === quality)?.[1] ?? view.size) : (view?.size ?? null));
+  /** Other downloads running: "Download now" goes before them, "Add to queue" after. */
+  const busyElse = $derived((view?.running ?? 0) > 0);
+
+  async function load() {
+    const v = await api.askCurrent();
+    // Another download joined the line: the one shown stays as you're editing it (name,
+    // folder, quality, a click in progress); only its "1 of 3" changes.
+    if (v && view && v.id === view.id) {
+      view = { ...view, position: v.position, total: v.total, running: v.running };
+      return;
+    }
+    view = v;
+    error = "";
+    busy = false;
+    if (!v) return;
+    stem = v.stem;
+    dir = v.dir;
+    quality = v.quality;
+    notify = v.notify;
+    await tick();
+    nameEl?.focus();
+    nameEl?.select();
+  }
+
+  onMount(() => {
+    load();
+    if (!inApp) return;
+    const un = listen("ask-changed", () => load());
+    return () => {
+      un.then((f) => f());
+    };
+  });
+
+  async function answer(action: "now" | "queue" | "cancel") {
+    if (!view || busy) return;
+    busy = true;
+    error = "";
+    try {
+      await api.askAnswer({ id: view.id, action, stem, dir, quality: view.video ? quality : null, notify, dontAsk });
+      if (!inApp) busy = false;
+    } catch (e) {
+      error = String(e);
+      busy = false;
+    }
+  }
+
+  async function changeFolder() {
+    const picked = await pickFolder({ directory: true, defaultPath: dir || undefined, title: "Save to" });
+    if (typeof picked === "string") dir = picked;
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      answer("cancel");
+    } else if (e.key === "Enter" && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLSelectElement)) {
+      e.preventDefault();
+      answer("now");
+    }
+  }
+</script>
+
+<svelte:window onkeydown={onKey} />
+
+<div class="ask">
+  <div class="titlebar" data-tauri-drag-region>
+    <span class="brand" data-tauri-drag-region><Logo size={14} word={false} /></span>
+    <span class="title" data-tauri-drag-region>Download with Pako</span>
+    {#if view && view.total > 1}{#key view.position}<span class="count" data-tauri-drag-region in:fadeIn={{ duration: 160 }}>{view.position} of {view.total}</span>{/key}{/if}
+    <span class="grow" data-tauri-drag-region></span>
+    <WinButton kind="close" small label="Cancel this download" title="Cancel (Esc)" onclick={() => answer("cancel")} />
+  </div>
+
+  {#if view}
+    <!-- Each download (the first, then the next one waiting) comes in softly. -->
+    {#key view.id}
+    <div class="body" in:pop|global={{ duration: 240, from: 0.99, y: 6 }}>
+      <div class="file">
+        <FileIcon name={`${stem}.${ext}`} size={32} />
+        <div class="what">
+          <div class="nm" title={`${stem}.${ext}`}>{stem}{ext ? `.${ext}` : ""}</div>
+          <div class="sub">{view.site}{size != null ? ` · ${view.video ? "about " : ""}${bytes(size)}` : ""}</div>
+        </div>
+      </div>
+
+      <label class="lbl" for="ask-name">Name</label>
+      <div class="name">
+        <input id="ask-name" class="input" bind:this={nameEl} bind:value={stem} spellcheck="false" autocomplete="off" />
+        {#if ext}<span class="ext mono">.{ext}</span>{/if}
+      </div>
+
+      <div class="row" class:two={view.video}>
+        <div>
+          <span class="lbl">Save to</span>
+          <div class="folder">
+            <MiddleText text={dir} class="path" />
+            <button class="link" onclick={changeFolder}>Change</button>
+          </div>
+        </div>
+        {#if view.video}
+          <div>
+            <label class="lbl" for="ask-quality">Quality</label>
+            <select id="ask-quality" class="input" bind:value={quality}>
+              {#each QUALITIES as [q, label] (q)}
+                <option value={q}>{label}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+      </div>
+
+      <div class="opts">
+        <label class="notify">
+          <button class="switch" class:on={notify} role="switch" aria-checked={notify} aria-label="Notify me when it's done" onclick={() => (notify = !notify)}></button>
+          <span>Notify me when it's done</span>
+        </label>
+        <label class="dont" title="You can turn it back on in Settings › Browser extension">
+          <button class="check" class:on={dontAsk} role="checkbox" aria-checked={dontAsk} aria-label="Don't ask again" onclick={() => (dontAsk = !dontAsk)}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
+          </button>
+          <span>Don't ask again</span>
+        </label>
+      </div>
+    </div>
+    {/key}
+
+    <div class="foot">
+      {#if error}<span class="err" role="alert" in:fadeIn={{ duration: 160 }}>{error}</span>{/if}
+      <button class="btn ghost" disabled={busy} onclick={() => answer("cancel")}>Cancel</button>
+      {#if busyElse}
+        <button class="btn" disabled={busy} onclick={() => answer("queue")}>Add to queue</button>
+        <button class="btn primary" disabled={busy} onclick={() => answer("now")}>Download now</button>
+      {:else}
+        <button class="btn primary" disabled={busy} onclick={() => answer("now")}>Download</button>
+      {/if}
+    </div>
+  {/if}
+</div>
+
+<style>
+  .ask {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  /* The main window's title bar, scaled down (32 px instead of 40). */
+  .titlebar {
+    height: 32px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    background: var(--bar);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    display: grid;
+    place-items: center;
+    padding: 0 8px 0 12px;
+  }
+  .title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-2);
+  }
+  .count {
+    margin-left: 8px;
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+  .grow {
+    flex: 1;
+    align-self: stretch;
+  }
+  .body {
+    flex: 1;
+    min-height: 0;
+    padding: 16px 16px 0;
+  }
+  .file {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .what {
+    min-width: 0;
+  }
+  .nm {
+    font-size: 13.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sub {
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: var(--text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lbl {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+  .input {
+    height: 32px;
+  }
+  .name {
+    position: relative;
+    margin-bottom: 12px;
+  }
+  .name .input {
+    padding-right: 52px;
+  }
+  .ext {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 12px;
+    color: var(--text-3);
+    pointer-events: none;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .row.two {
+    grid-template-columns: minmax(0, 1fr) 128px;
+  }
+  .folder {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 4px 0 10px;
+    border: 1px solid var(--control);
+    border-radius: var(--radius);
+    background: var(--bar);
+  }
+  .folder :global(.path) {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--text-2);
+  }
+  .link {
+    height: 24px;
+    padding: 0 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--focus-text);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .link:hover {
+    background: var(--raise);
+  }
+  .opts {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .notify {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+    background: var(--head);
+  }
+  .dont {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-3);
+    cursor: pointer;
+  }
+  .err {
+    flex: 1;
+    min-width: 0;
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--st-fail-text);
+  }
+</style>

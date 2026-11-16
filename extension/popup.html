@@ -1,0 +1,60 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
+<!-- Blocks between "full-only:start" and "full-only:end" are only in the full extension. -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pako</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon32.png" alt="" width="20" height="20" />
+      <span class="brand">Pako<span class="light-only" hidden> Light</span></span>
+      <span id="status" class="status">Checking…</span>
+    </header>
+    <p id="detail" class="detail" hidden></p>
+
+    <div id="connect" class="connect" hidden>
+      <div id="connect-title" class="t">Pako isn't connected to this browser</div>
+      <div id="connect-text" class="muted">Opens Pako and connects it in one go. If your browser asks, allow it.</div>
+      <button id="open" class="primary">Open Pako</button>
+    </div>
+
+    <div id="yield" class="connect" hidden>
+      <div class="t">The full Pako extension is on in this browser</div>
+      <div class="muted">Pako Light stays out of the way: the full extension takes your downloads and right-click items.</div>
+    </div>
+
+    <div id="main">
+      <button id="send" class="primary">Send this page to Pako</button>
+      <!-- full-only:start -->
+      <p class="hint">Pako asks where to save it (and the quality, for videos), unless you turned that off in Pako.</p>
+      <!-- full-only:end -->
+      <p id="light-hint" class="hint light-only" hidden>Pako asks where to save it, unless you turned that off in Pako.</p>
+    </div>
+
+    <div id="lines" class="lines">
+      <div class="line">
+        <div>
+          <div class="t">Let Pako take over downloads</div>
+          <div class="muted">Files over 2 MB you download in this browser go to Pako instead.</div>
+        </div>
+        <button id="take" class="switch" role="switch" aria-checked="true" aria-label="Let Pako take over downloads"></button>
+      </div>
+      <!-- full-only:start -->
+      <div class="line">
+        <div>
+          <div class="t">Download button on videos</div>
+          <div class="muted">On YouTube, Vimeo, Twitch, Facebook and Instagram: shows at the top right of the video when you point at it.</div>
+        </div>
+        <button id="player" class="switch" role="switch" aria-checked="true" aria-label="Download button on videos"></button>
+      </div>
+      <!-- full-only:end -->
+    </div>
+
+    <p id="error" class="error" hidden></p>
+    <script src="popup.js"></script>
+  </body>
+</html>

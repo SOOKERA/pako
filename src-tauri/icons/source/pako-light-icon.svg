@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 56 56" width="128" height="128">
+  <defs>
+    <clipPath id="isil"><path d="M30.257 6.98 Q32 6 33.743 6.98 L54.257 18.52 Q56 19.5 56 21.5 L56 42.5 Q56 44.5 54.257 45.48 L33.743 57.02 Q32 58 30.257 57.02 L9.743 45.48 Q8 44.5 8 42.5 L8 21.5 Q8 19.5 9.743 18.52 Z"/></clipPath>
+    <mask id="im" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M14.35 13 L40.95 27.97 V37.97 L47.05 34.53 V24.53 L20.45 9.56" fill="none" stroke="#000" stroke-width="2.2" stroke-linejoin="round"/>
+      <g transform="matrix(1 0.5625 0 1.0417 8 19.5)"><path d="M10 4.5 H14 V12 H18 L12 19.5 L6 12 H10 Z" fill="#000" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/></g>
+      <g transform="matrix(1 -0.5625 0 1.0417 32 33)"><rect x="5.275" y="15.225" width="2.75" height="3.75" rx="1.375" ry="1.6" fill="none" stroke="#000" stroke-width="1.25"/><path d="M9.45 16.35 L11.125 14.85 V19.6" fill="none" stroke="#000" stroke-width="1.25" stroke-linejoin="round"/><rect x="12.875" y="15.225" width="2.75" height="3.75" rx="1.375" ry="1.6" fill="none" stroke="#000" stroke-width="1.25"/><path d="M17.05 16.35 L18.725 14.85 V19.6" fill="none" stroke="#000" stroke-width="1.25" stroke-linejoin="round"/></g>
+    </mask>
+  </defs>
+  <g clip-path="url(#isil)"><g mask="url(#im)">
+    <path d="M32 6 L56 19.5 V44.5 L32 58 L8 44.5 V19.5 Z" fill="#2CC6C6"/>
+    <path d="M8 19.5 L32 33 L56 19.5 V44.5 L32 58 L8 44.5 Z" fill="#000" fill-opacity="0.14"/>
+    <path d="M56 19.5 L32 33 V58 L56 44.5 Z" fill="#000" fill-opacity="0.1628"/>
+  </g></g>
+</svg>

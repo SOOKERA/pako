@@ -1,0 +1,588 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. */
+/* Pako — Studio look. Dark, slightly rounded (6px corners), dense but calm.
+   Brand: warm red. Download activity uses azure and "done" uses mint, the two colours
+   opposite warm red on the colour wheel (split-complementary), so the screen stays balanced. */
+@import "@fontsource-variable/inter/index.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+
+:root {
+  /* Surfaces */
+  --bg: #0f1114;
+  --bar: #0b0d10;
+  --panel: #14171b;
+  --raise: #1a1d22;
+  --hover: #1b1f26;
+  /* alternate rows in lists: faint, just enough to follow a row across */
+  --zebra: rgba(255, 255, 255, 0.014);
+  --select: #1e232b;
+  /* folder blocks: a clearly lighter header over darker files */
+  --group-head: #252b35;
+  --group-head-hover: #2b323d;
+  --group-body: #14171b;
+  --line: #262a31;
+  --line-soft: #22262d;
+  --line-strong: #343a44;
+  /* table heads and the bottom bar: a shade under the page */
+  --head: #121418;
+  /* hover on raised things (buttons, cards) and the picked option of a switcher */
+  --raise-hover: #22262d;
+  --active: #262c35;
+  /* edges of things you type in or tick (fields, tick boxes, switches): 3:1 or more on every surface */
+  --control: #737b88;
+  --control-hover: #9299a5;
+  /* empty part of progress bars: clearly visible on any row, still quieter than the fill */
+  --track: #3a414e;
+  /* inside of fields you type in */
+  --field: #0b0d10;
+  /* an "off" switch */
+  --switch-off: #353a43;
+  /* tree lines from a folder to its files */
+  --rail: #555c68;
+  /* a folder's files: pointed at, picked */
+  --child-hover: #1a1e24;
+  --child-select: #20252d;
+  /* hover on a picked (active) thing, e.g. a folder's open/close arrow */
+  --active-hover: #2f353f;
+  /* blocks inside a dialog (Settings' sections) */
+  --card: var(--raise);
+  /* the details panel's map of a file's parts */
+  --parts-map: #1d2127;
+  /* a contact's round initial (Direct, the Dashboard's people) */
+  --avatar-bg: var(--group-head);
+  --avatar-ring: transparent;
+  /* quiet underline of link-like words */
+  --underline: #3a404a;
+  /* scroll bars */
+  --scroll: #3a414e;
+  --scroll-hover: #4d5563;
+  /* selected text */
+  --selection: #2f5687;
+  --selection-text: #ffffff;
+
+  /* Floating things (menus, the bell, tips, dialogs) and the dim behind dialogs */
+  --menu-bg: rgba(28, 31, 37, 0.96);
+  --pop-bg: rgba(28, 31, 37, 0.97);
+  --shadow-menu:
+    0 16px 40px rgba(0, 0, 0, 0.45),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-modal:
+    0 24px 64px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --scrim: rgba(5, 6, 8, 0.55);
+  /* behind "drop files here" */
+  --drop-scrim: rgba(8, 10, 12, 0.55);
+  /* the tutorials' dim around the spotlight */
+  --tour-dim: rgba(5, 6, 8, 0.62);
+  /* a red button (delete for good) */
+  --danger-fill: #c93a3a;
+  --danger-fill-hover: #d94545;
+
+  /* Text */
+  --text: #eceef1;
+  --text-2: #c9cdd4;
+  --text-3: #9aa2af;
+  --text-4: #8b93a0;
+
+  /* Accent (brand warm red): buttons, ticks, switches, focus, selection */
+  --accent: #f96263;
+  --accent-hover: #ff7676;
+  --accent-ink: #17181c;
+  --accent-soft: rgba(249, 98, 99, 0.16);
+  /* the accent as words or small icons (a darker shade in light, so it stays readable) */
+  --accent-text: var(--accent);
+  /* the edge of coral ticks and switches */
+  --accent-strong: var(--accent);
+  /* Keyboard focus and the field being typed in: azure, never red (a red edge reads as a mistake) */
+  --focus: #7db4ff;
+  --focus-soft: rgba(125, 180, 255, 0.22);
+  /* azure as words (links, small actions) */
+  --focus-text: var(--focus);
+
+  /* Status. The "-text" shades are for words; the others for dots, bars and icons. */
+  --st-run: #4da3ff;
+  --st-run-text: var(--st-run);
+  /* counts of things in progress, on a soft azure chip */
+  --st-run-chip: #7dbbff;
+  --st-check: #2cc6c6;
+  --st-check-text: #6adada;
+  --st-retry: #f2b648;
+  --st-retry-text: var(--st-retry);
+  --st-wait: #8f8cff;
+  --st-wait-text: #adabff;
+  --st-pause: #858c98;
+  --st-done: #46c97e;
+  --st-done-text: #6fd89a;
+  --st-fail: #f24b4f;
+  --st-fail-text: #ff7a7d;
+  --st-limit: #d17bf0;
+  --st-limit-text: #dda0f5;
+  --tint-fail: rgba(242, 75, 79, 0.07);
+  --tint-limit: rgba(209, 123, 240, 0.08);
+
+  /* Sources */
+  --src-drive: #5aa9ff;
+  --src-drive-text: var(--src-drive);
+  --src-mega: #e2626b;
+  --src-web: #8e95a1;
+  --src-video: #ff6b6b;
+
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --font: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace;
+
+  /* Motion: Apple-like springy ease-out */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --fast: 120ms;
+  --mid: 200ms;
+  --slow: 320ms;
+
+  color-scheme: dark;
+}
+
+/* Light: Sookera's paper and ink on Pako's layers. The lists are white; the bars and panels
+   around them a shade greyer; raised and picked things a shade darker. Shadows are softer and
+   in two layers. Coral stays the accent for fills (dark words on coral, as in dark); where coral
+   or a status colour is used as words it takes a darker shade, so every text reaches 4.5:1 and
+   every control edge 3:1, on every surface. */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bar: #f6f7f9;
+  --panel: #f6f7f9;
+  --raise: #eef1f5;
+  --hover: #f4f6f9;
+  --zebra: rgba(20, 26, 46, 0.018);
+  --select: #e9eef6;
+  --group-head: #eef1f5;
+  --group-head-hover: #e6eaf0;
+  --group-body: #ffffff;
+  --line: #dce1ea;
+  --line-soft: #e6eaf0;
+  --line-strong: #cdd4de;
+  --head: #f9fafb;
+  --raise-hover: #e5e9ef;
+  --active: #e2e7ee;
+  --control: #7a8394;
+  --control-hover: #5d6677;
+  --track: #dce1ea;
+  --field: #ffffff;
+  --switch-off: #e3e7ee;
+  --rail: #b3bbc7;
+  --child-hover: #f4f6f9;
+  --child-select: #e9eef6;
+  --active-hover: #d6dde7;
+  --parts-map: #e4e8ee;
+  --avatar-bg: #ffffff;
+  --avatar-ring: #cdd4de;
+  --card: #ffffff;
+  --underline: #b9c1cd;
+  --scroll: #c5ccd6;
+  --scroll-hover: #a9b1bd;
+  --selection: #c9dafc;
+  --selection-text: #141a2e;
+
+  --menu-bg: rgba(255, 255, 255, 0.97);
+  --pop-bg: rgba(255, 255, 255, 0.98);
+  --shadow-menu:
+    0 12px 32px rgba(20, 26, 46, 0.12),
+    0 2px 6px rgba(20, 26, 46, 0.08);
+  --shadow-modal:
+    0 24px 60px rgba(20, 26, 46, 0.16),
+    0 2px 8px rgba(20, 26, 46, 0.08);
+  --shadow-knob: 0 1px 3px rgba(20, 26, 46, 0.25);
+  --scrim: rgba(20, 26, 46, 0.32);
+  --drop-scrim: rgba(246, 247, 249, 0.72);
+  --tour-dim: rgba(15, 20, 36, 0.52);
+  --danger-fill-hover: #b53131;
+  /* the edge of coral ticks and switches, so they stand out from white (3:1) */
+  --accent-strong: #d64b4d;
+
+  --text: #141a2e;
+  --text-2: #3a4257;
+  --text-3: #586174;
+  --text-4: #5f687a;
+
+  --accent-soft: rgba(249, 98, 99, 0.12);
+  --accent-text: #bb3639;
+  --focus: #3b6fe0;
+  --focus-soft: rgba(59, 111, 224, 0.2);
+  --focus-text: #2c5cc5;
+
+  --st-run: #2b80e0;
+  --st-run-text: #1f63c0;
+  --st-run-chip: #1f63c0;
+  --st-check: #128f8f;
+  --st-check-text: #0b7575;
+  --st-retry: #b07a00;
+  --st-retry-text: #8a5b00;
+  --st-wait: #6f6bf0;
+  --st-wait-text: #4d48cf;
+  --st-pause: #7d8697;
+  --st-done: #1d9450;
+  --st-done-text: #13753f;
+  --st-fail: #e5383d;
+  --st-fail-text: #c01f26;
+  --st-limit: #b763dd;
+  --st-limit-text: #8b3bb2;
+  --tint-fail: rgba(229, 56, 61, 0.06);
+  --tint-limit: rgba(183, 99, 221, 0.07);
+
+  --src-drive: #2b80e0;
+  --src-drive-text: #1f63c0;
+  --src-mega: #d9434d;
+  --src-web: #7d8697;
+  --src-video: #e5484d;
+
+  color-scheme: light;
+}
+
+/* Switching between light and dark: the old colours fade into the new ones (a cross-fade of
+   the whole window, so nothing moves and every other animation carries on). Not with reduce
+   motion (theme.svelte.ts switches at once then). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--slow);
+  animation-timing-function: var(--ease);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+/* Selected text: a solid azure (the focus colour) under full-white text, readable whether the
+   window is in front or not (the browser's own grey for a window in the back is too faint). */
+::selection {
+  background: var(--selection);
+  color: var(--selection-text);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+/* Keyboard focus: one ring for everything you can press. Only shows when moving with the
+   keyboard (never on a mouse click). */
+:where(button, a, select, summary, input[type="checkbox"], input[type="radio"], input[type="range"], [tabindex="0"]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+:where(button, a, select, summary, [tabindex="0"]):focus:not(:focus-visible) {
+  outline: none;
+}
+/* Buttons that sit edge to edge in a clipped group keep the ring inside. */
+:where(.seg, .stepper, .split, .opts, .feats, .win, .focus-in):focus-visible,
+:where(.seg, .stepper, .split, .opts, .feats, .focus-in) :where(button, a, select):focus-visible {
+  outline-offset: -2px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-hover);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- Buttons (press = gentle scale, like iOS) ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--raise);
+  color: var(--text-2);
+  white-space: nowrap;
+  transition:
+    background var(--fast) ease,
+    border-color var(--fast) ease,
+    color var(--fast) ease,
+    transform var(--fast) var(--ease),
+    opacity var(--fast) ease;
+}
+.btn:hover:not(:disabled) {
+  background: var(--raise-hover);
+  color: var(--text);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: var(--accent-ink);
+}
+/* Not ready yet: plain grey, not a washed-out red. */
+.btn.primary:disabled,
+.btn.danger-fill:disabled {
+  opacity: 1;
+  background: var(--raise);
+  border-color: var(--line);
+  color: var(--text-4);
+  font-weight: 500;
+}
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-3);
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--raise);
+  color: var(--text);
+}
+.btn.danger {
+  color: var(--st-fail-text);
+}
+.btn.danger-fill {
+  background: var(--danger-fill);
+  border-color: var(--danger-fill);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.danger-fill:hover:not(:disabled) {
+  background: var(--danger-fill-hover);
+  color: #fff;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-3);
+  transition:
+    background var(--fast) ease,
+    color var(--fast) ease,
+    transform var(--fast) var(--ease);
+}
+.icon-btn:hover {
+  background: var(--raise);
+  color: var(--text);
+}
+.icon-btn:active {
+  transform: scale(0.97);
+}
+
+/* ---------- Form controls ---------- */
+.input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--control);
+  background: var(--field);
+  color: var(--text);
+  outline: none;
+  transition:
+    border-color var(--fast) ease,
+    box-shadow var(--fast) ease;
+}
+.input:hover:not(:disabled):not(:focus) {
+  border-color: var(--control-hover);
+}
+.input:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-soft);
+}
+.input::placeholder {
+  color: var(--text-3);
+}
+.input:disabled {
+  border-color: var(--line-strong);
+  color: var(--text-4);
+}
+textarea.input {
+  height: auto;
+  padding: 10px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+/* Checkbox drawn by us (animated tick) */
+.check {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--control);
+  background: transparent;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition:
+    background var(--fast) ease,
+    border-color var(--fast) ease,
+    transform var(--fast) var(--ease);
+}
+.check:hover {
+  border-color: var(--control-hover);
+}
+.check:disabled {
+  border-color: var(--line-strong);
+  cursor: default;
+}
+.check:active {
+  transform: scale(0.88);
+}
+.check.on,
+.check.some {
+  background: var(--accent);
+  border-color: var(--accent-strong);
+}
+.check svg {
+  transform: scale(0.4);
+  opacity: 0;
+  transition:
+    transform var(--mid) var(--ease),
+    opacity var(--fast) ease;
+}
+.check.on svg,
+.check.some svg {
+  transform: scale(1);
+  opacity: 1;
+}
+
+/* Toggle switch */
+.switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  border-radius: 10px;
+  border: none;
+  padding: 0;
+  background: var(--switch-off);
+  /* the edge that makes an "off" switch readable on any surface */
+  box-shadow: inset 0 0 0 1.5px var(--control);
+  transition:
+    background var(--mid) ease,
+    box-shadow var(--mid) ease;
+}
+.switch:hover:not(.on):not(:disabled) {
+  box-shadow: inset 0 0 0 1.5px var(--control-hover);
+}
+.switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow-knob);
+  transition: transform var(--mid) var(--ease);
+}
+.switch.on {
+  background: var(--accent);
+  box-shadow: none;
+}
+.switch.on::after {
+  transform: translateX(14px);
+}
+:root[data-theme="light"] .switch.on {
+  box-shadow: inset 0 0 0 1px var(--accent-strong);
+}
+
+/* Drop-down lists look like the other fields. */
+select.input {
+  padding-right: 6px;
+  cursor: pointer;
+}
+
+/* Small grey capitals over a block (sidebar, panels, dialogs). */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}

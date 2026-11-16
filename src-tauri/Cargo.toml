@@ -1,0 +1,67 @@
+[package]
+name = "pako"
+version = "0.1.2"
+description = "Pako - a dependable download manager"
+authors = ["Sookera"]
+license = "GPL-3.0-only"
+edition = "2024"
+
+[lib]
+# The `_lib` suffix is needed so the lib name doesn't clash with the bin name on Windows.
+name = "pako_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "multipart"] }
+futures-util = "0.3"
+anyhow = "1"
+md-5 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+percent-encoding = "2"
+trash = "5"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Send: the ZIP is written by Pako itself as a stream (zip only writes to seekable files).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+bytes = "1"
+# Signed updates (Pako checks each release against its public key).
+ed25519-dalek = "2"
+# Version numbers compared the standard way ("1.0.0-beta" comes before "1.0.0").
+semver = "1"
+tauri-plugin-drag = "2.1.1"
+# Direct: Pako-to-Pako transfers (QUIC, hole punching, public relays and address lookup).
+iroh = "1.4"
+blake3 = "1"
+# The Dashboard's numbers: events and running totals in one local file (data/numbers.sqlite).
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Upload details: the link as a QR code, made locally.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# Paths of files and folders dropped on the Send tab (the same WebView2 crates Tauri uses).
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
