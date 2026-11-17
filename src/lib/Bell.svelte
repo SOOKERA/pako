@@ -85,7 +85,15 @@
   function open(n: Notice) {
     close(false);
     app.readNotices([n.id]);
-    app.goTo(n.go);
+    // A ready update restarts only from its button; the line itself just opens Pako.
+    if (n.kind !== "update-ready") app.goTo(n.go);
+  }
+  /** "Restart now" on a ready update: still the newest one? (a later restart already used it) */
+  const updateWaiting = (n: Notice) => !!app.update?.ready && /\d+(?:\.\d+)+/.exec(n.title)?.[0] === app.update.latest;
+  function restart(n: Notice) {
+    close(false);
+    app.readNotices([n.id]);
+    app.restartForUpdate();
   }
   function lineKey(e: KeyboardEvent, n: Notice) {
     if (e.target !== e.currentTarget) return;
@@ -210,6 +218,10 @@
                     {:else if ans?.kind === "request"}
                       <div class="acts" in:fadeIn={{ duration: 160 }}>
                         <button class="btn small" onclick={(e) => (e.stopPropagation(), review(n))}>Review</button>
+                      </div>
+                    {:else if n.kind === "update-ready" && updateWaiting(n)}
+                      <div class="acts" in:fadeIn={{ duration: 160 }}>
+                        <button class="btn primary small" onclick={(e) => (e.stopPropagation(), restart(n))}>Restart now</button>
                       </div>
                     {:else if ans?.kind === "done"}
                       <div class="answered" in:fadeIn={{ duration: 200 }}><Icon name="check" size={11} stroke={2.4} />{ans.text}</div>

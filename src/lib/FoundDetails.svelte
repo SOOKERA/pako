@@ -3,13 +3,18 @@
 <script lang="ts">
   // Details panel of the Found tab: what the link is, and its own settings
   // (save folder, priority, notify) before it downloads.
-  import { app } from "./state.svelte";
+  import { app, hostLook } from "./state.svelte";
   import { api, canDownload, type FoundItem, type Priority } from "./api";
   import { bytes, duration, extension, pickQuality, sourceOf } from "./format";
   import Icon from "./Icon.svelte";
   import ItemSettings from "./ItemSettings.svelte";
   import VideoPreview from "./VideoPreview.svelte";
   import { isVideo } from "./format";
+  import ContextMenu from "./ContextMenu.svelte";
+  import { rowSlide } from "./motion";
+  import type { MenuItem } from "./menu";
+  import { choices, targets } from "./devices.svelte";
+  import { downloadFoundOn, downloadOnMenu, downloadSplit, sending } from "./downloadOn.svelte";
 
   const items = $derived(app.foundFocusItems);
   const one = $derived(items.length === 1 && !app.foundFocus?.startsWith("g:") ? items[0] : null);
@@ -20,6 +25,41 @@
   const defaultDest = $derived(app.foundDest ?? app.settings?.downloadDir ?? "");
   const able = $derived(items.filter(canDownload));
   const extractOn = $derived(set ? set.members.every((f) => f.extract ?? app.settings?.extractDefault ?? false) : false);
+
+  // ---------- the same file on several hosts ----------
+  /** The focused link's file is on several hosts: each host's row. */
+  const mirror = $derived(one ? app.mirrorOf.get(one.id) : undefined);
+  /** A split set whose parts are on several hosts: each host, with its parts. */
+  const setHosts = $derived.by(() => {
+    if (!set) return [];
+    const by = new Map<string, { host: string; label: string; ids: string[]; ready: number; checking: number; size: number; chosen: number }>();
+    const groups = new Set<string>();
+    for (const f of set.members) {
+      const m = app.mirrorOf.get(f.id);
+      if (!m) continue;
+      groups.add(m.key);
+      const host = m.hostOf.get(f.id) ?? "";
+      const h = by.get(host) ?? { host, label: sourceOf(f.template).label, ids: [], ready: 0, checking: 0, size: 0, chosen: 0 };
+      if (f.state === "ready") {
+        h.ready++;
+        h.ids.push(f.id);
+      } else if (hostLook(f).label === "Checking") h.checking++;
+      h.size += f.template.size ?? 0;
+      if (m.chosen?.id === f.id) h.chosen++;
+      by.set(host, h);
+    }
+    const parts = groups.size;
+    // Its parts all ready, some still being checked, or none working.
+    const look = (h: { ready: number; checking: number }) =>
+      h.ready === parts
+        ? { label: "Ready", color: "var(--st-done-text)" }
+        : h.checking
+          ? { label: "Checking", color: "var(--st-check-text)" }
+          : h.ready
+            ? { label: `${h.ready} of ${parts} ready`, color: "var(--st-limit-text)" }
+            : { label: "Broken", color: "var(--st-fail-text)" };
+    return by.size > 1 ? [...by.values()].map((h) => ({ ...h, parts, on: h.chosen === parts, look: look(h) })) : [];
+  });
 
   function look(f: FoundItem) {
     switch (f.state) {
@@ -41,8 +81,9 @@
   }
 
   async function change(o: { dest?: string | null; priority?: Priority; notify?: boolean; extract?: boolean }) {
-    // Extracting is about the whole set, even parts hidden by the filter.
-    const target = o.extract !== undefined && set ? set.members : items;
+    // Extracting is about the whole set, even parts hidden by the filter. Every host of a file
+    // on several hosts gets the same settings (any of them may be the one that downloads).
+    const target = app.withMirrors(o.extract !== undefined && set ? set.members : items);
     await app.run(() => api.foundSet(target.map((f) => f.id), o));
     await app.refresh();
   }
@@ -85,18 +126,51 @@
     await app.refresh();
   }
 
-  async function downloadThese() {
-    const ids = able.map((f) => f.id);
-    if (!ids.length) return;
-    await app.run(async () => {
-      const n = await api.foundDownload(ids, false, app.foundDest);
-      await app.refresh();
-      if (n) app.toast(`${n === 1 ? "1 file" : `${n} files`} moved to Downloads`);
-    });
+  /** Download: each link on the PC its "Download on" says (this PC by default). `here`: on
+   *  this PC whatever it says (the arrow's "Download on this PC", for this time only). */
+  async function downloadThese(here = false) {
+    const local = async (rows: typeof able) => {
+      const ids = rows.map((f) => f.id);
+      if (!ids.length) return;
+      await app.run(async () => {
+        const n = await api.foundDownload(ids, false, app.foundDest);
+        await app.refresh();
+        if (n) app.toast(`${n === 1 ? "1 file" : `${n} files`} moved to Downloads`);
+      });
+    };
+    if (here) return local(able);
+    await downloadSplit(able, false, local);
+  }
+
+  // ---------- Download on (this link's own PC, remembered with it) ----------
+  choices.start();
+  /** What the select shows: "" = This PC, a device's ID, or "mixed" across several links. */
+  const onDevice = $derived.by(() => {
+    const vals = items.map((f) => f.device ?? "");
+    return vals.length && vals.every((v) => v === vals[0]) ? vals[0] : "mixed";
+  });
+  /** A link set to a PC that isn't offered any more still shows it (until it falls back). */
+  const deviceNote = $derived(items.find((f) => f.deviceNote)?.deviceNote ?? null);
+  async function setDevice(v: string) {
+    if (v === "mixed") return;
+    // Every host of a file on several hosts follows (any of them may be the one sent).
+    await app.run(() => api.foundSetDevice(app.withMirrors(items).map((f) => f.id), v || null));
+    await app.refresh();
+  }
+
+  // "Download on ▾" (only while one of your devices can take links): the arrow next to Download.
+  targets.start();
+  let onMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  function openOn(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const these = able;
+    // Opens upwards from the panel's foot, its right edge on the arrow's.
+    onMenu = { x: r.right, y: r.top - 6, items: downloadOnMenu(targets.list, () => downloadThese(true), (t) => downloadFoundOn(t, these), true) };
   }
 
   async function remove() {
-    await app.removeFound(items.map((f) => f.id));
+    // A file on several hosts goes with all its hosts (as Remove in the toolbar and the menu).
+    await app.removeFound(app.withMirrors(items).map((f) => f.id));
   }
 
   function when(ms: number) {
@@ -133,8 +207,42 @@
       {/if}
     </section>
 
-    {#if one && isVideo(one.template.name) && one.state !== "broken" && one.template.source.kind !== "video"}
-      <VideoPreview id={one.id} />
+    {#if mirror}
+      <section class="hostlist" data-tour="found-hosts-panel">
+        <div class="label">Hosts <span class="muted">{mirror.items.length}</span></div>
+        <div class="hrows" role="radiogroup" aria-label="Host to download from">
+          {#each mirror.items as f (f.id)}
+            {@const h = hostLook(f)}
+            {@const on = mirror.chosen?.id === f.id}
+            <button class="host" class:on role="radio" aria-checked={on} disabled={!canDownload(f)} title={f.message ?? f.template.link} onclick={() => !on && app.pickHost([f.id])}>
+              <span class="radio" aria-hidden="true"></span>
+              <span class="hname">{sourceOf(f.template).label}</span>
+              <span class="hst" style="color: {h.color}">{h.label}</span>
+              <span class="hsize mono">{f.template.size != null ? bytes(f.template.size) : "—"}</span>
+            </button>
+          {/each}
+        </div>
+        <p class="hnote">Pako downloads from the picked host. If it fails for good, Pako goes on from the next ready one by itself.</p>
+      </section>
+    {:else if setHosts.length}
+      <section class="hostlist" data-tour="found-hosts-panel">
+        <div class="label">Hosts <span class="muted">{setHosts.length}</span></div>
+        <div class="hrows" role="radiogroup" aria-label="Host to download the parts from">
+          {#each setHosts as h (h.host)}
+            <button class="host" class:on={h.on} role="radio" aria-checked={h.on} disabled={!h.ids.length} onclick={() => !h.on && app.pickHost(h.ids)}>
+              <span class="radio" aria-hidden="true"></span>
+              <span class="hname">{h.label}</span>
+              <span class="hst" style="color: {h.look.color}">{h.look.label}</span>
+              <span class="hsize mono">{h.parts} {h.parts === 1 ? "part" : "parts"}</span>
+            </button>
+          {/each}
+        </div>
+        <p class="hnote">The parts on several hosts download from the picked host. If one fails for good, Pako goes on from another host by itself.</p>
+      </section>
+    {/if}
+
+    {#if one && isVideo(one.template.name) && one.state !== "broken"}
+      <VideoPreview id={one.id} site={one.template.source.kind === "video"} />
     {/if}
 
     <ItemSettings
@@ -149,6 +257,26 @@
       onNotify={(on) => change({ notify: on })}
     >
       {#snippet extra()}
+        {#if choices.list.length || items.some((f) => f.device)}
+          <div class="qfield" data-tour="found-device">
+            <span class="qk">Download on</span>
+            <select class="input" aria-label="Download on" value={onDevice} onchange={(e) => setDevice(e.currentTarget.value)}>
+              {#if onDevice === "mixed"}<option value="mixed" disabled>Different for each</option>{/if}
+              <option value="">This PC</option>
+              {#each choices.list as c (c.id)}
+                <option value={c.id}>{c.name}{c.online ? "" : " (offline)"}</option>
+              {/each}
+              {#if onDevice && onDevice !== "mixed" && !choices.list.some((c) => c.id === onDevice)}
+                <option value={onDevice} disabled>A PC no longer offered</option>
+              {/if}
+            </select>
+            {#if deviceNote}
+              <span class="qnote warn" transition:rowSlide={{ duration: 180 }}><Icon name="alert" size={12} />{deviceNote}</span>
+            {:else if onDevice && onDevice !== "mixed"}
+              <span class="qnote" transition:rowSlide={{ duration: 180 }}>Download sends {items.length > 1 ? "them" : "it"} to that PC, with {videos.length ? "the quality and " : ""}priority set here, into that PC's own download folder{items[0].folder ? ` (in a folder named ${items[0].folder})` : ""}.</span>
+            {/if}
+          </div>
+        {/if}
         {#if videos.length}
           <div class="qfield">
             <span class="qk">Quality{#if videos.length > 1}<span class="qn">{` · for ${videos.length} videos`}</span>{/if}</span>
@@ -195,9 +323,16 @@
     {/if}
 
     <div class="actions">
-      <button class="btn primary" disabled={!able.length} onclick={downloadThese}>
-        <Icon name="download" size={13} stroke={2.4} />{able.length > 1 ? `Download ${able.length}` : "Download"}
-      </button>
+      <div class="split">
+        <button class="btn primary" disabled={!able.length || sending.busy} onclick={() => downloadThese()}>
+          <Icon name="download" size={13} stroke={2.4} />{able.length > 1 ? `Download ${able.length}` : "Download"}
+        </button>
+        {#if targets.list.length}
+          <button class="btn primary more" disabled={!able.length || sending.busy} aria-label="Download on" aria-haspopup="menu" title="Download on this PC or on one of your devices" onclick={openOn}>
+            <Icon name="chevron" size={12} stroke={2.6} />
+          </button>
+        {/if}
+      </div>
       <button class="btn danger" onclick={remove}><Icon name="trash" size={13} />Remove</button>
     </div>
   {:else}
@@ -212,6 +347,10 @@
     </div>
   {/if}
 </div>
+
+{#if onMenu}
+  <ContextMenu x={onMenu.x} y={onMenu.y} items={onMenu.items} onclose={() => (onMenu = null)} />
+{/if}
 
 <style>
   .panel {
@@ -286,6 +425,88 @@
     background: var(--tint-limit);
     color: var(--st-limit-text);
   }
+  .label .muted {
+    margin-left: 4px;
+    color: var(--text-4);
+    letter-spacing: 0;
+  }
+  .hrows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0 -8px;
+  }
+  .host {
+    height: 34px;
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto 64px;
+    align-items: center;
+    gap: 10px;
+    padding: 0 8px;
+    border: none;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background var(--fast) ease,
+      transform var(--fast) var(--ease);
+  }
+  .host:hover:not(:disabled) {
+    background: var(--hover);
+  }
+  .host:active:not(:disabled):not(.on) {
+    transform: scale(0.99);
+  }
+  .host.on {
+    background: var(--select);
+    cursor: default;
+  }
+  .host:disabled {
+    cursor: default;
+  }
+  .host:disabled .hname,
+  .host:disabled .hsize {
+    color: var(--text-3);
+  }
+  .radio {
+    width: 14px;
+    height: 14px;
+    box-sizing: border-box;
+    border-radius: 50%;
+    border: 1.5px solid var(--line-strong);
+    transition:
+      border-color var(--fast) ease,
+      border-width var(--fast) var(--ease);
+  }
+  .host.on .radio {
+    border: 4px solid var(--accent);
+  }
+  .hname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+  .hst {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .hsize {
+    font-size: 11.5px;
+    color: var(--text-2);
+    text-align: right;
+    white-space: nowrap;
+  }
+  .hnote {
+    margin: 10px 0 0;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--text-3);
+  }
   .qfield {
     display: flex;
     flex-direction: column;
@@ -303,7 +524,17 @@
   }
   .qnote {
     font-size: 11.5px;
+    line-height: 1.45;
     color: var(--text-3);
+  }
+  .qnote.warn {
+    display: flex;
+    gap: 6px;
+    color: var(--st-limit-text);
+  }
+  .qnote.warn :global(svg) {
+    flex: none;
+    margin-top: 2px;
   }
   .xrow {
     display: flex;
@@ -361,8 +592,25 @@
     padding: 14px 18px;
     border-top: 1px solid var(--line);
   }
-  .actions .btn.primary {
+  .actions .split {
     flex: 1;
+    min-width: 0;
+    display: flex;
+  }
+  .actions .split .btn:first-child {
+    flex: 1;
+  }
+  .split .btn:not(:last-child) {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .split .more {
+    flex: none;
+    width: 30px;
+    padding: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid rgba(0, 0, 0, 0.22);
   }
   .btn.danger {
     color: var(--st-fail-text);

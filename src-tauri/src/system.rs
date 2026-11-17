@@ -231,7 +231,7 @@ pub fn remove_url_protocol_if_mine(exe: &Path) {
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Browser {
-    /// "chrome", "edge", "brave", "vivaldi" or "firefox".
+    /// "chrome", "edge", "brave", "vivaldi", "opera", "operagx" or "firefox".
     pub id: &'static str,
     pub name: &'static str,
     /// "chromium" (Load unpacked) or "firefox" (signed .xpi).
@@ -244,7 +244,11 @@ struct Known {
     id: &'static str,
     name: &'static str,
     family: &'static str,
-    exe: &'static str,
+    /// Its name in Windows' "App Paths" list (None = don't look there).
+    app_path: Option<&'static str>,
+    /// The files that start it, best first. Opera: `launcher.exe` in its folder starts the newest
+    /// version (`opera.exe` sits in a folder named after the version, which changes with updates).
+    files: &'static [&'static str],
     /// Usual places, under a folder from the environment.
     folders: &'static [(&'static str, &'static str)],
 }
@@ -254,7 +258,8 @@ const BROWSERS: &[Known] = &[
         id: "chrome",
         name: "Google Chrome",
         family: "chromium",
-        exe: "chrome.exe",
+        app_path: Some("chrome.exe"),
+        files: &["chrome.exe"],
         folders: &[
             ("ProgramFiles", r"Google\Chrome\Application"),
             ("ProgramFiles(x86)", r"Google\Chrome\Application"),
@@ -265,14 +270,16 @@ const BROWSERS: &[Known] = &[
         id: "edge",
         name: "Microsoft Edge",
         family: "chromium",
-        exe: "msedge.exe",
+        app_path: Some("msedge.exe"),
+        files: &["msedge.exe"],
         folders: &[("ProgramFiles(x86)", r"Microsoft\Edge\Application"), ("ProgramFiles", r"Microsoft\Edge\Application")],
     },
     Known {
         id: "brave",
         name: "Brave",
         family: "chromium",
-        exe: "brave.exe",
+        app_path: Some("brave.exe"),
+        files: &["brave.exe"],
         folders: &[
             ("ProgramFiles", r"BraveSoftware\Brave-Browser\Application"),
             ("ProgramFiles(x86)", r"BraveSoftware\Brave-Browser\Application"),
@@ -283,14 +290,34 @@ const BROWSERS: &[Known] = &[
         id: "vivaldi",
         name: "Vivaldi",
         family: "chromium",
-        exe: "vivaldi.exe",
+        app_path: Some("vivaldi.exe"),
+        files: &["vivaldi.exe"],
         folders: &[("LOCALAPPDATA", r"Vivaldi\Application"), ("ProgramFiles", r"Vivaldi\Application")],
+    },
+    Known {
+        id: "opera",
+        name: "Opera",
+        family: "chromium",
+        // Points at launcher.exe (or, on older installs, opera.exe).
+        app_path: Some("opera.exe"),
+        files: &["launcher.exe", "opera.exe"],
+        folders: &[("LOCALAPPDATA", r"Programs\Opera"), ("ProgramFiles", "Opera"), ("ProgramFiles(x86)", "Opera")],
+    },
+    Known {
+        id: "operagx",
+        name: "Opera GX",
+        family: "chromium",
+        // Its own folders only: Windows' "opera.exe" entry may belong to Opera.
+        app_path: None,
+        files: &["launcher.exe"],
+        folders: &[("LOCALAPPDATA", r"Programs\Opera GX"), ("ProgramFiles", "Opera GX"), ("ProgramFiles(x86)", "Opera GX")],
     },
     Known {
         id: "firefox",
         name: "Firefox",
         family: "firefox",
-        exe: "firefox.exe",
+        app_path: Some("firefox.exe"),
+        files: &["firefox.exe"],
         folders: &[
             ("ProgramFiles", "Mozilla Firefox"),
             ("ProgramFiles(x86)", "Mozilla Firefox"),
@@ -339,18 +366,28 @@ pub fn command_starts(command: &str, exe: &Path) -> bool {
     command.trim().to_lowercase().starts_with(&quoted)
 }
 
+/// Can `p` be this browser's program? One of its file names, and for Opera not Opera GX's
+/// (both are started by a `launcher.exe`).
+fn fits(b: &Known, p: &Path) -> bool {
+    let named = p.file_name().is_some_and(|n| b.files.iter().any(|f| n.to_string_lossy().eq_ignore_ascii_case(f)));
+    let in_gx = p.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("Opera GX"));
+    named && !(b.id == "opera" && in_gx)
+}
+
 /// Where a browser's program is: Windows' "App Paths" list first, then the usual folders.
 fn find_exe(b: &Known) -> Option<PathBuf> {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY};
-    let key = format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{}", b.exe);
+    let key = b.app_path.map(|exe| format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe}"));
     let registered = [(HKEY_CURRENT_USER, 0), (HKEY_LOCAL_MACHINE, 0), (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY)]
         .into_iter()
-        .filter_map(|(root, flags)| reg_get(root, &key, flags))
+        .filter_map(|(root, flags)| reg_get(root, key.as_deref()?, flags))
         .map(PathBuf::from);
-    let usual = b.folders.iter().filter_map(|(env, sub)| std::env::var_os(env).map(|d| PathBuf::from(d).join(sub).join(b.exe)));
-    registered
-        .chain(usual)
-        .find(|p| p.is_file() && p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(b.exe)))
+    let usual = b
+        .folders
+        .iter()
+        .filter_map(|(env, sub)| std::env::var_os(env).map(|d| PathBuf::from(d).join(sub)))
+        .flat_map(|dir| b.files.iter().map(move |f| dir.join(f)));
+    registered.chain(usual).find(|p| p.is_file() && fits(b, p))
 }
 
 /// The browsers installed on this PC, in a fixed order.
@@ -367,6 +404,7 @@ pub fn extensions_page(id: &str) -> &'static str {
         "edge" => "edge://extensions",
         "brave" => "brave://extensions",
         "vivaldi" => "vivaldi://extensions",
+        "opera" | "operagx" => "opera://extensions",
         _ => "chrome://extensions",
     }
 }
@@ -669,5 +707,44 @@ mod tests {
         assert_eq!(extensions_page("edge"), "edge://extensions");
         assert_eq!(extensions_page("vivaldi"), "vivaldi://extensions");
         assert_eq!(extensions_page("chrome"), "chrome://extensions");
+        assert_eq!(extensions_page("opera"), "opera://extensions");
+        assert_eq!(extensions_page("operagx"), "opera://extensions");
+    }
+
+    fn known(id: &str) -> &'static Known {
+        BROWSERS.iter().find(|b| b.id == id).unwrap()
+    }
+
+    #[test]
+    fn browser_list() {
+        let ids: Vec<_> = BROWSERS.iter().map(|b| b.id).collect();
+        assert_eq!(ids, ["chrome", "edge", "brave", "vivaldi", "opera", "operagx", "firefox"]);
+        let opera = known("opera");
+        assert_eq!((opera.name, opera.family, opera.app_path), ("Opera", "chromium", Some("opera.exe")));
+        assert!(opera.folders.contains(&("LOCALAPPDATA", r"Programs\Opera")));
+        let gx = known("operagx");
+        assert_eq!((gx.name, gx.family, gx.app_path), ("Opera GX", "chromium", None));
+        assert!(gx.folders.contains(&("LOCALAPPDATA", r"Programs\Opera GX")));
+        // Every page the window names for a Chromium browser is the one Pako opens.
+        for b in BROWSERS.iter().filter(|b| b.family == "chromium") {
+            assert!(extensions_page(b.id).ends_with("://extensions"), "{}", b.id);
+        }
+    }
+
+    #[test]
+    fn opera_programs() {
+        let opera = known("opera");
+        let gx = known("operagx");
+        let p = |s: &str| PathBuf::from(s);
+        assert!(fits(opera, &p(r"C:\Users\me\AppData\Local\Programs\Opera\launcher.exe")));
+        assert!(fits(opera, &p(r"C:\Program Files\Opera\120.0.5543.61\opera.exe")));
+        // Windows' "opera.exe" entry written by Opera GX isn't Opera.
+        assert!(!fits(opera, &p(r"C:\Users\me\AppData\Local\Programs\Opera GX\launcher.exe")));
+        assert!(fits(gx, &p(r"C:\Users\me\AppData\Local\Programs\Opera GX\Launcher.exe")));
+        assert!(!fits(gx, &p(r"C:\Users\me\AppData\Local\Programs\Opera GX\opera.exe")));
+        assert!(!fits(opera, &p(r"C:\Opera\chrome.exe")));
+        // The others: only their own program.
+        assert!(fits(known("vivaldi"), &p(r"C:\x\Vivaldi\Application\vivaldi.exe")));
+        assert!(!fits(known("vivaldi"), &p(r"C:\x\Vivaldi\Application\launcher.exe")));
     }
 }

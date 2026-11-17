@@ -22,14 +22,25 @@ pub const MAX_FILES: usize = 100_000;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "t", rename_all = "camelCase")]
 pub enum Msg {
-    /// First message from the side that connects: its name as it introduces itself.
-    Hello { name: String },
+    /// First message from the side that connects: its name as it introduces itself. `device`:
+    /// "I'm pairing you as my own device" (older Pakos don't send it, and ignore it).
+    Hello {
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        device: bool,
+        /// With `device`: this PC's own name ("Desk PC"), shown on the pairing question.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pc: Option<String>,
+    },
     /// "You're one of my contacts": the connection is open for transfers.
     Welcome { name: String },
     /// "Asking my user": the first time only.
     Wait,
     /// "My user declined" (or removed you): the connection closes.
     Refused,
+    /// "My user changed the name I go by" (sent to connected contacts at once; older Pakos ignore it
+    /// and learn the name at the next connection).
+    Name { name: String },
     /// Files I'd like to send you.
     Offer { id: String, name: String, files: Vec<OfferFile> },
     Accept { id: String },
@@ -40,9 +51,110 @@ pub enum Msg {
     Done { id: String, hashes: Vec<String> },
     /// The receiver's verdict after checking.
     Result { id: String, ok: bool, message: Option<String> },
+    // ---------- My devices (older Pakos read these as `Unknown` and ignore them) ----------
+    /// "You're one of my devices" (`mine`), and "you may control my Pako" (`control`). Sent after
+    /// connecting and whenever it changes. `pc_name`: this PC's name ("Desk PC"), when set; sent
+    /// again when it's renamed (Pakos without it keep the name they had).
+    Device {
+        mine: bool,
+        control: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pc_name: Option<String>,
+    },
+    /// "Send me your download list while I look at it" (or stop).
+    Watch { on: bool },
+    /// The download list, a summary (newest first).
+    List { items: Vec<RemoteItem> },
+    /// An order from one of your devices; answered with `Reply` (same id).
+    Order { id: String, order: Order },
+    /// `failed`: for an `Add`, the links that PC couldn't take (the others it took), so the PC
+    /// that sent them keeps those. Left out when empty.
+    Reply {
+        id: String,
+        ok: bool,
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed: Vec<String>,
+        /// For an `Add`: the downloads each link became there (their ids in its list), so the
+        /// PC that sent them can follow them. Older Pakos don't send it. Left out when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<LinkItems>,
+    },
     /// A kind of message this Pako doesn't know (a newer Pako's): ignored, the connection stays.
     #[serde(other)]
     Unknown,
+}
+
+/// What a device may ask another of your devices to do. Nothing else exists: no path on disk,
+/// no program, nothing opened.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "do", rename_all = "camelCase")]
+pub enum Order {
+    /// Download these http(s) links, into that Pako's own download folder. `opts`: a link's
+    /// video quality, priority and subfolder, chosen on the PC that sends it (older Pakos don't send it,
+    /// and ignore it). Left out when empty.
+    Add {
+        links: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        opts: Vec<LinkOpts>,
+    },
+    Pause { item: String },
+    Resume { item: String },
+    /// Off the list (the file, if finished, stays on that PC).
+    Remove { item: String },
+    /// Send me this finished download (a normal Direct transfer).
+    Get { item: String },
+    /// Change a download's priority ("first", "normal" or "later"). An older Pako answers it
+    /// as an order it doesn't know.
+    Priority { item: String, priority: String },
+    /// An order from a newer Pako: refused.
+    #[serde(other)]
+    Unknown,
+}
+
+/// What goes with one link of an `Add` order: the quality (a height in px; 0 = audio only),
+/// the priority ("first", "normal", "later") and a subfolder name, picked on the PC that
+/// sends it. Never a path of that PC, never cookies or headers. Matched to its link by the
+/// link itself.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOpts {
+    pub link: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    /// A subfolder of that PC's own download folder ("Playlist name"): a relative name only,
+    /// at most 2 levels, cleaned and checked there. Never a path of this PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+/// The downloads one link of an `Add` became on the PC that took it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct LinkItems {
+    pub link: String,
+    pub ids: Vec<String>,
+}
+
+/// One download in a device's list, as another of your devices sees it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteItem {
+    pub id: String,
+    pub name: String,
+    /// 0 = not known yet.
+    pub size: u64,
+    pub done: u64,
+    /// Bytes per second (0 when not moving).
+    pub speed: u64,
+    /// queued, starting, downloading, retrying, paused, verifying, completed, failed...
+    pub status: String,
+    #[serde(default)]
+    pub message: Option<String>,
+    /// "first" or "later" (left out for normal, and by older Pakos).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

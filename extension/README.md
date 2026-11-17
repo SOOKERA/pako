@@ -7,6 +7,9 @@ PC through the browser's "native messaging": nothing listens on the network.
   Twitch, Facebook, Instagram): point at the video and a red **Download** button shows at its top right. Pick
   **Up to 1080p / 720p / 480p** or **Audio only** and the video starts in Downloads straight
   away (Pako's video tools must be installed). Turn the button off in the toolbar popup.
+- **Videos on this page** (toolbar popup): the video a page plays (HLS, DASH or a plain video
+  file, also in embedded players), noticed from the browser's own requests; the toolbar badge shows
+  how many. **Download with Pako** sends one; **Record this video** is the last resort.
 - **Right-click a link, image or video › Download with Pako**: it starts in Downloads.
 - **Right-click the page › Send all links on this page to Pako**: they go to Links, to pick from.
 - **Toolbar button › Send this page to Pako**: handy for YouTube (videos go to Links so you can
@@ -31,10 +34,10 @@ Open the popup again: it says Connected too.
 (This uses a `pako://connect` link that Pako registers for this Windows user each time it
 starts. It only ever opens Pako and switches the connection on.)
 
-## 2. Vivaldi, Chrome, Edge, Brave
+## 2. Vivaldi, Chrome, Edge, Brave, Opera
 
 In Pako: **Settings › Browser extension › Add Pako to your browser** (also in the first-start
-setup) lists the browsers on this PC. Press **Add to Chrome** (or Edge, Brave, Vivaldi): Pako
+setup) lists the browsers on this PC. Press **Add to Chrome** (or Edge, Brave, Vivaldi, Opera, Opera GX): Pako
 opens the browser's extensions page and copies the extension's folder for you. Then:
 
 1. Turn on **Developer mode**.
@@ -45,36 +48,30 @@ opens the browser's extensions page and copies the extension's folder for you. T
 
 Keep the folder where it is (Pako's `data\extension\chromium`): the browser loads the
 extension from it. (Doing it by hand: open `chrome://extensions`, `edge://extensions`,
-`brave://extensions` or `vivaldi://extensions` and pick that folder. **Open the extension
+`brave://extensions`, `vivaldi://extensions` or `opera://extensions` and pick that folder. **Open the extension
 folder** in Settings shows it.)
 
 (Building from the source instead: `node extension/build.mjs` writes the same files to
 `dist/extension/`, plus Pako Light's store zip.)
 
-## 3. Firefox (needs Mozilla's free signature once)
+## 3. Firefox
 
-Firefox only runs extensions signed by Mozilla. "Unlisted" means nobody else sees it.
+The Firefox version comes with Pako, signed by Mozilla (Firefox only adds signed extensions).
 
-1. Go to <https://addons.mozilla.org/developers/> and sign in or create a free Firefox account.
-2. Click **Submit a New Add-on**.
-3. Choose **On your own** (unlisted), then **Continue**.
-4. Upload `pako-firefox.zip`. Accept the developer agreement if it asks. If it asks about
-   source code, answer **No** (the files aren't minified or generated).
-5. Wait for the automatic check (usually a few minutes), then download the signed `.xpi` file
-   from the add-on's page.
-6. Rename it `pako-firefox.xpi` and put it in Pako's extension folder, next to
-   `pako-firefox.zip`. From then on **Add to Firefox** in Pako opens it in Firefox, which
-   offers to add Pako: click **Add**. (Or drag the `.xpi` into a Firefox window.)
-7. In Firefox: open the Pako extension's settings (about:addons › Pako › Permissions) and allow
-   **Access your data for all websites**, so downloads behind a login work and the Download
-   button shows on videos.
+1. In Pako: **Settings › Browser extension › Add to Firefox**. Firefox opens
+   `pako-firefox.xpi` (in this folder) and asks to add Pako: click **Add**. (If Firefox doesn't
+   open, drag `pako-firefox.xpi` into a Firefox window.)
+2. In Firefox: about:addons › Pako › **Permissions**: turn on **Access your data for all
+   websites** if it is off, so downloads behind a login work and the Download button shows on
+   videos.
+3. Pin Pako to the toolbar; its popup should say **Connected**.
 
-The Firefox manifest says what the extension passes to Pako on this PC
-(`data_collection_permissions`: the download's cookies, addresses, and file names and links).
-Mozilla asks every new extension to say so, and Firefox 140 and later show it when adding Pako.
+Firefox keeps the extension up to date by itself. Firefox 140 and later list what the extension
+passes to Pako on this PC when adding it (`data_collection_permissions`: the download's cookies,
+addresses, and file names and links).
 
-A new version of the extension needs the same steps with the new zip (raise `version` in both
-`manifest.*.json` files first).
+A copy of Pako built from the source without Sookera's signed file has no `pako-firefox.xpi`:
+Pako then says the Firefox version isn't included.
 
 ## For developers
 
@@ -88,7 +85,7 @@ A new version of the extension needs the same steps with the new zip (raise `ver
     `node extension/build.mjs` makes `pako-light-store.zip` from the same files (`light.mjs`):
     the blocks marked `/* full-only:start */ … /* full-only:end */` (JS) and
     `<!-- full-only:start --> … <!-- full-only:end -->` (popup.html) are taken out,
-    `LIGHT = true`, no `player.js`, its own name and icons (`icons-light/`). The build stops if a
+    `LIGHT = true`, no `player.js` / `recorder.js` / `recorder-bridge.js` and no `webRequest` permission, its own name and icons (`icons-light/`). The build stops if a
     word of the full extension's extras (video, quality, player…) is left. Store ID
     `cojnnpgiilnbkblckkjnheigiodkdlpl`.
   - Light sends nothing from the sites in `LIGHT_SKIPS_SITES` (its page items are greyed out
@@ -106,10 +103,16 @@ A new version of the extension needs the same steps with the new zip (raise `ver
     `CHROMIUM_IDS` and `LIGHT_IDS` in `src-tauri/src/extension.rs`, let the full extension answer
     it too (`LIGHT_ID` in `background.js`, else the Edge copy never steps aside), and release that
     Pako before submitting (see `docs/store/chrome-web-store.md`).
-- Firefox ID: `pako@sookera.com`.
+- Firefox ID: `extension@pako.sookera.com` (`pako@sookera.com` was refused by Mozilla as taken). Signing (unlisted, on addons.mozilla.org), how Pako ships the
+  signed file and how Firefox gets updates: `docs/firefox-extension.md`.
 - Messages to the native host: `ping`; `download` / `links` with `urls` (plus `referrer`,
   `cookies`, `filename`, `takeover`); `video` with one `urls` entry (a video site Pako knows) and
-  `quality` 1080, 720, 480 or 0 (audio only). Pako checks each one again on its side.
+  `quality` 1080, 720, 480 or 0 (audio only); `stream` with one `urls` entry (the caught
+  stream), `referrer` (the document that loaded it), `filename` (the page's title) and
+  `siteCookies` (the stream's own server's); `record` with `record: {action: start | chunk | end |
+  cancel, session, page, title, track, mime, seq, data (base64, at most 512 KB)}`, sent over one
+  `connectNative` line. Pako checks each one again on its side (`src-tauri/src/stream.rs`), and
+  refuses `stream` and `record` from Pako Light.
 - Tests (Node only, no browser, nothing to install): `node --test extension/test/*.test.mjs`.
   They load the real `background.js` of each edition against a fake browser API (Light sends
   nothing from video sites, the two editions don't both take over a download), and build and
@@ -117,6 +120,19 @@ A new version of the extension needs the same steps with the new zip (raise `ver
 - Every copy carries `LICENSE` and `NOTICE.md` (the folder Pako writes, both zips).
 - `player.js` is the Download button on video players: a content script that reads only the
   page's address (on Facebook and Instagram also the links of the post around the video), draws its button in a closed shadow root, and asks the background page.
+- **Videos on this page** (full only, `background.js`): `webRequest.onHeadersReceived`
+  (observation only) notes HLS / DASH playlists and whole video files (the media element's own
+  requests, 1 MB or more; never single pieces) per tab in `storage.session` (memory only), cleared
+  when the tab loads another page or closes. A caught HLS playlist is read again (browser cache
+  first) to tell a master playlist (its qualities; its own playlists then leave the list).
+- **Record this video** (full only): the popup asks the background page, which tells Pako
+  (`record` start), registers `recorder.js` (MAIN world: wraps `MediaSource.addSourceBuffer`,
+  `SourceBuffer.appendBuffer` / `changeType`, `requestMediaKeySystemAccess`) and
+  `recorder-bridge.js` (isolated: asks whether its tab is the recorded one, then passes the parts
+  on a `pako-rec` port, a few at a time, pausing the video while Pako catches up) for all frames at
+  `document_start`, and reloads the tab. Only the recorded tab arms them; they are unregistered
+  when the recording ends. A key system (DRM) stops it at once. Needs Firefox 128+ / a recent
+  Chromium (`world: "MAIN"`).
 - `pako://connect` is the only `pako://` link Pako acts on (any other is ignored).
 - Native host name: `app.pako.host`. Pako writes the host files to `data/browser/` and the
   per-user registry entries (Chrome, Chromium, Edge, Brave, Vivaldi, Firefox) when the switch is

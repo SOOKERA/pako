@@ -32,6 +32,7 @@ By default, it keeps:
 - **Someone wants to connect**
 - **Files waiting for your answer**
 - **Pako needs you**
+- **New Pako ready**: a new version is downloaded, with **Restart now**
 
 Other kinds can go in too: turn on their **Bell** switch in **Settings › Notifications**.
 
@@ -52,7 +53,7 @@ Each kind of notification has two switches: **Pop-up** and **Bell**. They're gro
 - **Downloads**: **Download finished**, **Download stopped**, **Sent from your browser**, **Couldn't get a video**.
 - **Upload**: **Upload finished**, **Couldn't upload**, **Upload deleted on its date**.
 - **Direct**: **Someone wants to connect**, **Files waiting for your answer**, **Files coming in**, **Files received**.
-- **Pako**: **Pako needs you**, **Sleep and shut down**, **Other messages**.
+- **Pako**: **Pako needs you**, **Sleep and shut down**, **New Pako ready**, **Other messages**.
 
 Every kind pops up at first. Click **Save** to keep your changes.
 

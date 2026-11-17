@@ -139,6 +139,8 @@ Var PakoDeleteHere
     ${AndIf} $DeleteAppDataCheckboxState = 1
       RMDir /r "$LOCALAPPDATA\Pako"
       RMDir /r "$LOCALAPPDATA\app.zdownloader"
+      ; Recordings not joined yet and browser logins left by a Pako that didn't close normally.
+      RMDir /r "$TEMP\Pako"
     ${EndIf}
   ${EndIf}
 !macroend

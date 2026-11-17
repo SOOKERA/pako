@@ -1,5 +1,48 @@
 # What's new
 
+## 1.1.0
+
+### Videos
+
+- **Videos on any page**: the full browser extension spots the video playing on almost any page. Click the **Download** button on the video, or the Pako button in the toolbar.
+- **Record this video**, when Pako can't download a video: the extension records it while it plays. Protected videos are never downloaded or recorded.
+- **Preview**: play about 20 seconds of a video in its details, to check it's the right one.
+
+### Browser extension
+
+- Now in **Firefox**, **Opera** and **Opera GX** too: **Settings › Browser extension**.
+- **Settings › Browser extension** shows which browsers are **Connected**.
+
+### Links
+
+- **The same file on several hosts** is now one row: pick the host, and if it fails, Pako carries on from the next one, where it stopped when the file is the same.
+
+### My devices
+
+- A new page for **your own PCs**: send files between them without Accept, see and control each other's downloads, and send links for another PC to download, with their quality and priority.
+- **Download on** in Links: pick which of your PCs downloads a link.
+
+### Direct
+
+- **On the same Wi-Fi**, two Pakos send files straight over your home network, much faster, even without internet. The contact's dot turns blue.
+- Pako asks for your name once, before your first contact.
+
+### Pako
+
+- A pop-up tells you when a new Pako is ready, with **Restart now**.
+- **Continue downloads when Pako starts** can now be turned off, in **Settings › Downloads**.
+- Pako now has **terms of use**, which you accept once. Your downloads and lists stay as they are.
+
+### Fixed
+
+- **Download first** no longer restarts a download that can't resume.
+- Downloading a split archive again now asks before making a second copy.
+- **Restart now** asks first while files are moving in Direct.
+- A contact's new name shows at once, instead of staying "Someone".
+- With automatic updates off, the video tool no longer updates by itself.
+- Uninstalling with **Also delete Pako's settings and lists** also clears Pako's temporary files.
+- Safety fixes for Direct, My devices, video playlists and Pako Portable.
+
 ## 1.0.1
 
 ### Fixed

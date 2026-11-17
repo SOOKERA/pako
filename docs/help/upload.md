@@ -2,6 +2,12 @@
 
 Share big files with a link. Pako uploads them to Gofile or to your own Google Drive, copies the link, and anyone can download it in their browser.
 
+## How sharing works
+
+1. **You drop the files** on the Upload page.
+2. **Pako puts them online**, on Gofile or in your Google Drive. Nothing goes through our servers.
+3. **They open the link** in any browser, or paste it into **Links** in their own Pako.
+
 ## Upload files
 
 1. Open **Upload** on the left.

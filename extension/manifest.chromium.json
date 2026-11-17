@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Pako",
   "short_name": "Pako",
-  "version": "1.2.0",
+  "version": "1.2.5",
   "description": "Send downloads, links and videos to Pako, your download manager.",
   "icons": {
     "16": "icons/icon16.png",
@@ -17,7 +17,8 @@
     "cookies",
     "storage",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -36,6 +37,7 @@
         "https://www.instagram.com/*"
       ],
       "js": [
+        "pill.js",
         "player.js"
       ],
       "all_frames": true,

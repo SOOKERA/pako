@@ -25,6 +25,15 @@ if ($latest.version -ne $version) { throw "The latest release is $($latest.versi
 $help = Invoke-WebRequest -Method Head -UseBasicParsing "https://github.com/sookera/pako-releases/releases/latest/download/help.zip"
 if ($help.StatusCode -ne 200) { throw "The latest release has no help.zip: upload it first." }
 Write-Host "Release $version is out, with help.zip."
+# Firefox finds the extension's updates there (update_url in extension/manifest.firefox.json).
+try {
+    $ff = Invoke-RestMethod "https://github.com/sookera/pako-releases/releases/latest/download/firefox-updates.json"
+    $ffLink = @($ff.addons.'extension@pako.sookera.com'.updates)[0].update_link
+    $xpi = Invoke-WebRequest -Method Head -UseBasicParsing $ffLink
+    Write-Host "Firefox updates: firefox-updates.json points at $ffLink ($($xpi.StatusCode))."
+} catch {
+    Write-Host "Warning: the latest release has no working firefox-updates.json (or its .xpi): Firefox users get no extension updates until one has."
+}
 
 # 2. The report label.
 $labels = gh label list -R sookera/pako-reports --limit 200 --json name -q ".[].name"

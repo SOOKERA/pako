@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::endpoint::{Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
+use iroh::{Endpoint, EndpointAddr, EndpointId, Watcher};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, Notify};
 use tokio_util::sync::CancellationToken;
@@ -19,6 +19,9 @@ use tokio_util::sync::CancellationToken;
 use super::proto::{self, Msg, OfferFile, Part, ALPN, MAX_HEADER, MAX_MSG};
 use crate::notices::Go;
 use super::store::{self, Blocked, Contact, HistoryItem, Store};
+
+#[path = "devices.rs"]
+pub mod devices;
 
 /// Size of each piece a file is cut into, so one big file uses several streams at once.
 const PIECE: u64 = 8 * 1024 * 1024;
@@ -48,6 +51,8 @@ const MAX_OFFERS_PER_MINUTE: usize = 20;
 const SETTLED_AFTER: Duration = Duration::from_secs(30);
 /// Longest text kept from the other side's "couldn't take it" answer.
 const MAX_PEER_MESSAGE: usize = 300;
+/// A contact that can't be reached while the internet is down (they're not on this network).
+const NO_INTERNET: &str = "Not reachable without internet";
 /// How long someone you declined or removed is turned away without asking you again.
 const BLOCK_FOR_MS: u64 = 7 * 24 * 3600 * 1000;
 
@@ -82,15 +87,12 @@ fn human(n: u64) -> String {
     if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", U[i]) }
 }
 
-/// How a connection travels right now: "direct6", "direct" or "relay".
+/// How a connection travels right now: "local" (the home network), "direct6", "direct" or
+/// "relay".
 fn path_of(conn: &Connection) -> Option<String> {
     let paths = conn.paths();
     let sel = paths.iter().find(|p| p.is_selected())?;
-    Some(match sel.remote_addr() {
-        TransportAddr::Ip(a) if a.is_ipv6() => "direct6".into(),
-        TransportAddr::Ip(_) => "direct".into(),
-        _ => "relay".into(),
-    })
+    Some(super::local::route_of(sel.remote_addr()).into())
 }
 
 struct Live {
@@ -111,6 +113,25 @@ fn replaces(old_opener: &str, old_age: Duration, new_opener: &str) -> bool {
     new_opener == old_opener || old_age >= SETTLED_AFTER || new_opener < old_opener
 }
 
+/// "… wants to connect" questions from people who aren't contacts, in ten minutes, all of
+/// them together. Anyone who has this Pako ID (or sees it on the same network) can make new
+/// keys at will and ask again as soon as a question closes: past this, they're turned away
+/// without a question or a notification.
+const MAX_NEW_REQUESTS: usize = 10;
+const NEW_REQUESTS_WINDOW: Duration = Duration::from_secs(600);
+
+/// Counts one more such question at `now`: false past the limit (not asked, not counted).
+fn request_ok(times: &mut VecDeque<std::time::Instant>, now: std::time::Instant) -> bool {
+    while times.front().is_some_and(|t| now.duration_since(*t) >= NEW_REQUESTS_WINDOW) {
+        times.pop_front();
+    }
+    if times.len() >= MAX_NEW_REQUESTS {
+        return false;
+    }
+    times.push_back(now);
+    true
+}
+
 /// What to do with one more offer from a contact.
 #[derive(Debug, PartialEq)]
 enum Flood {
@@ -119,6 +140,22 @@ enum Flood {
     TurnAway,
     /// Far too many: not even answered.
     Ignore,
+}
+
+/// Name changes and "my device" messages one contact may send in a minute (each one rewrites
+/// contacts.json and may show a notification); more are ignored. A normal Pako sends a few.
+const MAX_SMALL_PER_MINUTE: usize = 30;
+
+/// Counts one more such message at `now`: false past the limit (ignored, not counted).
+fn small_ok(times: &mut VecDeque<std::time::Instant>, now: std::time::Instant) -> bool {
+    while times.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60)) {
+        times.pop_front();
+    }
+    if times.len() >= MAX_SMALL_PER_MINUTE {
+        return false;
+    }
+    times.push_back(now);
+    true
 }
 
 /// Counts an offer from a contact at `now`; `times` holds their offers of the last minute.
@@ -135,6 +172,8 @@ fn offer_flood(times: &mut VecDeque<std::time::Instant>, now: std::time::Instant
 
 struct Request {
     name: String,
+    /// They pair this PC as their own device (shown in My devices, not Direct).
+    device: bool,
     answer: Option<oneshot::Sender<bool>>,
     /// Arrival order (questions are shown oldest first).
     at: u64,
@@ -288,6 +327,12 @@ struct Inner {
     seq: u64,
     /// When each contact's offers of the last minute came in.
     offer_times: HashMap<String, VecDeque<std::time::Instant>>,
+    /// When each contact's name changes and "my device" messages of the last minute came in.
+    small_times: HashMap<String, VecDeque<std::time::Instant>>,
+    /// When the last "… wants to connect" questions from people who aren't contacts came in.
+    request_times: VecDeque<std::time::Instant>,
+    /// My devices: lists, orders, their history.
+    dev: devices::DevInner,
 }
 
 impl Inner {
@@ -308,8 +353,12 @@ pub struct Node {
     notify: Notify2,
     settle: Settle,
     pub stop: CancellationToken,
+    /// No relay answers (no internet): only contacts on the same network can be reached.
+    offline: AtomicBool,
     /// Where background work runs (the window's commands aren't async).
     rt: tokio::runtime::Handle,
+    /// My devices: where their orders act.
+    dev: devices::DevNode,
 }
 
 #[derive(Serialize)]
@@ -334,6 +383,9 @@ pub struct RequestView {
     pub code: String,
     /// One of your contacts already has this name (a different Pako: maybe someone pretending).
     pub known_as: Option<String>,
+    /// A device pairing (My devices shows it, Direct doesn't).
+    #[serde(skip)]
+    pub device: bool,
 }
 
 #[derive(Serialize)]
@@ -378,6 +430,9 @@ pub struct State {
     pub offers: Vec<OfferView>,
     pub transfers: Vec<TransferView>,
     pub history: Vec<HistoryItem>,
+    /// The internet answers (a relay is connected). Without it only contacts on the same
+    /// network can be reached.
+    pub internet: bool,
 }
 
 impl Node {
@@ -403,7 +458,9 @@ impl Node {
         let contacts = store.load_contacts();
         let tags = store.load_tags(&contacts);
         let blocked = store.load_blocked(now_ms());
-        let inner = Inner { contacts, history: store.load_history(), tags, my_name, blocked, ..Default::default() };
+        let mut inner = Inner { contacts, history: store.load_history(), tags, my_name, blocked, ..Default::default() };
+        inner.dev.log = store.load_device_log();
+        inner.dev.sent = store.load_sent();
         Arc::new(Self {
             ep,
             store,
@@ -414,7 +471,9 @@ impl Node {
             notify,
             settle,
             stop: CancellationToken::new(),
+            offline: AtomicBool::new(false),
             rt: tokio::runtime::Handle::current(),
+            dev: devices::DevNode::default(),
         })
     }
 
@@ -462,7 +521,19 @@ impl Node {
 
     // ---------- the window's view ----------
 
+    /// Direct's view: people only (your devices are in My devices).
     pub fn state(&self) -> State {
+        let mut s = self.full_state();
+        let devices: HashSet<String> = s.contacts.iter().filter(|c| c.contact.device).map(|c| c.contact.id.clone()).collect();
+        s.contacts.retain(|c| !c.contact.device);
+        s.requests.retain(|r| !r.device);
+        s.transfers.retain(|t| !devices.contains(&t.contact));
+        s.history.retain(|h| !devices.contains(&h.contact));
+        s
+    }
+
+    /// Everything, devices too.
+    fn full_state(&self) -> State {
         let me = self.my_id();
         let inner = self.inner.lock().unwrap();
         let contacts = inner
@@ -496,6 +567,7 @@ impl Node {
                     .iter()
                     .find(|c| fold(&c.name) == fold(&r.name) || c.their_name.as_deref().is_some_and(|t| fold(t) == fold(&r.name)))
                     .map(|c| c.name.clone()),
+                device: r.device,
             })
             .collect();
         let name_of = |id: &str| inner.contacts.iter().find(|c| c.id == id).map(|c| c.name.clone()).unwrap_or_default();
@@ -559,6 +631,7 @@ impl Node {
             offers,
             transfers,
             history: inner.history.clone(),
+            internet: !self.offline.load(Ordering::Relaxed),
         }
     }
 
@@ -569,8 +642,24 @@ impl Node {
 
     // ---------- contacts ----------
 
+    /// Your name is set (what contacts see; asked before adding or accepting anyone).
+    pub fn has_name(&self) -> bool {
+        !self.inner.lock().unwrap().my_name.trim().is_empty()
+    }
+
     pub fn set_my_name(&self, name: &str) {
-        self.inner.lock().unwrap().my_name = name.trim().chars().take(60).collect();
+        let name: String = name.trim().chars().take(60).collect();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.my_name == name {
+                return;
+            }
+            inner.my_name = name.clone();
+            // Connected contacts see the new name at once (the others at the next connection).
+            for live in inner.live.values() {
+                let _ = live.tx.send(Msg::Name { name: name.clone() });
+            }
+        }
         self.changed();
     }
 
@@ -601,6 +690,7 @@ impl Node {
                 favourite: false,
                 their_name: None,
                 declined: false,
+                ..Default::default()
             });
             self.save_contacts(&inner);
         }
@@ -707,10 +797,12 @@ impl Node {
             inner.waiting.remove(id);
             inner.notes.remove(id);
             inner.offer_times.remove(id);
+            inner.small_times.remove(id);
             self.save_contacts(&inner);
             self.block(&mut inner, id);
             inner.live.remove(id)
         };
+        self.device_gone(id);
         if let Some(l) = live {
             let _ = l.tx.send(Msg::Refused);
             let conn = l.conn.clone();
@@ -741,6 +833,9 @@ impl Node {
 
     fn record(&self, item: HistoryItem) {
         if item.result == "done" {
+            // Your own devices aren't among the Dashboard's people (Direct doesn't list them:
+            // they showed as "Removed contact"). Their bytes still count.
+            let device = self.inner.lock().unwrap().contacts.iter().any(|c| c.id == item.contact && c.device);
             let e = crate::numbers::direct_event(
                 &item.id,
                 item.date as i64,
@@ -749,7 +844,7 @@ impl Node {
                 item.size,
                 item.files,
                 item.path.as_deref(),
-                &item.contact,
+                if device { "" } else { &item.contact },
                 item.duration_ms,
                 item.avg_speed,
                 item.peak_speed,
@@ -818,11 +913,11 @@ impl Node {
         let conn = match tokio::time::timeout(CONNECT_TIMEOUT, self.ep.connect(addr, ALPN)).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
-                self.note(id, Some(format!("Not reachable right now ({e})")));
+                self.note(id, Some(if self.is_offline() { NO_INTERNET.into() } else { format!("Not reachable right now ({e})") }));
                 return Err(e.to_string());
             }
             Err(_) => {
-                self.note(id, Some("Not reachable right now".into()));
+                self.note(id, Some(if self.is_offline() { NO_INTERNET.into() } else { "Not reachable right now".into() }));
                 return Err("timed out".into());
             }
         };
@@ -855,6 +950,66 @@ impl Node {
                     me.run(conn, None).await;
                 }
             });
+        }
+    }
+
+    fn is_offline(&self) -> bool {
+        self.offline.load(Ordering::Relaxed)
+    }
+
+    /// Follows whether the internet answers (a relay connected). Without it, contacts that
+    /// aren't on the same network show "Not reachable without internet"; when it's back, every
+    /// contact is tried again at once. `settle`: how long a relay may stay away before that
+    /// counts (a network change reconnects it within seconds).
+    pub async fn internet_loop(self: Arc<Self>, settle: Duration) {
+        let mut status = self.ep.home_relay_status();
+        loop {
+            let mut up = status.get().iter().any(|r| r.is_connected());
+            if !up {
+                tokio::select! {
+                    _ = self.stop.cancelled() => return,
+                    _ = tokio::time::sleep(settle) => {}
+                }
+                up = status.get().iter().any(|r| r.is_connected());
+            }
+            if self.offline.swap(!up, Ordering::Relaxed) == up {
+                self.changed();
+                if up {
+                    self.reach_all();
+                }
+            }
+            tokio::select! {
+                _ = self.stop.cancelled() => return,
+                r = status.updated() => if r.is_err() { return },
+            }
+        }
+    }
+
+    /// Follows the Pakos found on the same network: a contact that shows up is connected at
+    /// once (its dot turns blue), without waiting for the next round of `presence_loop`.
+    /// Anyone else found there is left alone.
+    pub async fn local_loop(self: Arc<Self>, mdns: iroh_mdns_address_lookup::MdnsAddressLookup) {
+        use futures_util::StreamExt;
+        let mut events = mdns.subscribe().await;
+        loop {
+            let ev = tokio::select! {
+                _ = self.stop.cancelled() => return,
+                e = events.next() => e,
+            };
+            match ev {
+                Some(iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. }) => {
+                    let id = endpoint_info.endpoint_id.to_string();
+                    let known = {
+                        let inner = self.inner.lock().unwrap();
+                        inner.contacts.iter().any(|c| c.id == id && !c.declined) && !inner.live.contains_key(&id)
+                    };
+                    if known {
+                        self.dial(&id);
+                    }
+                }
+                Some(_) => {}
+                None => return,
+            }
         }
     }
 
@@ -931,6 +1086,7 @@ impl Node {
         if replaced {
             self.connection_lost(&peer);
         }
+        self.device_hello(&peer);
         self.changed();
         // Files arrive on one-way streams.
         let data = {
@@ -945,6 +1101,24 @@ impl Node {
                 }
             })
         };
+        // The way it travels changes (a relay at first, then the home network or straight
+        // over the internet; someone leaving the Wi-Fi): the window shows it at once.
+        let paths = {
+            use futures_util::StreamExt;
+            let me = self.clone();
+            let conn = conn.clone();
+            let mut events = conn.path_events();
+            let mut last = path_of(&conn);
+            tokio::spawn(async move {
+                while events.next().await.is_some() {
+                    let now = path_of(&conn);
+                    if now != last {
+                        last = now;
+                        me.changed();
+                    }
+                }
+            })
+        };
         loop {
             let msg = tokio::select! {
                 _ = self.stop.cancelled() => break,
@@ -956,6 +1130,7 @@ impl Node {
             }
         }
         data.abort();
+        paths.abort();
         // Gone: whatever was moving with them stops.
         let still_ours = {
             let mut inner = self.inner.lock().unwrap();
@@ -971,14 +1146,21 @@ impl Node {
         };
         if still_ours {
             self.connection_lost(&peer);
+            self.device_gone(&peer);
         }
         conn.close(0u32.into(), b"bye");
         self.changed();
     }
 
     async fn handshake_out(&self, peer: &str, tx: &mpsc::UnboundedSender<Msg>, recv: &mut RecvStream, conn: &Connection) -> bool {
-        let name = self.inner.lock().unwrap().my_name.clone();
-        if tx.send(Msg::Hello { name }).is_err() {
+        let (name, device, pc) = {
+            let inner = self.inner.lock().unwrap();
+            let device = inner.contacts.iter().any(|c| c.id == peer && c.device);
+            // Pairing your own PC: it's asked with this PC's name ("Desk PC"), not yours.
+            let pc = device.then(|| inner.dev.pc_name.clone()).filter(|n| !n.is_empty());
+            (inner.my_name.clone(), device, pc)
+        };
+        if tx.send(Msg::Hello { name, device, pc }).is_err() {
             return false;
         }
         // They were asked (else a refusal came without asking: they declined or removed you before).
@@ -1025,14 +1207,17 @@ impl Node {
     }
 
     async fn handshake_in(&self, peer: &str, tx: &mpsc::UnboundedSender<Msg>, recv: &mut RecvStream, conn: &Connection) -> bool {
-        let hello = match tokio::time::timeout(CONNECT_TIMEOUT, proto::read_frame::<_, Msg>(recv, 64 * 1024)).await {
-            Ok(Ok(Some(Msg::Hello { name }))) => name,
+        let (hello, device, pc) = match tokio::time::timeout(CONNECT_TIMEOUT, proto::read_frame::<_, Msg>(recv, 64 * 1024)).await {
+            Ok(Ok(Some(Msg::Hello { name, device, pc }))) => (name, device, pc.as_deref().and_then(clean_name)),
             _ => return false,
         };
         let my_name = self.inner.lock().unwrap().my_name.clone();
         // Someone in your contacts (you added them): connected, no question asked.
         if self.inner.lock().unwrap().contacts.iter().any(|c| c.id == peer) {
             self.remember_their_name(peer, &hello);
+            if let (true, Some(pc)) = (device, &pc) {
+                self.remember_pc_name(peer, pc);
+            }
             return tx.send(Msg::Welcome { name: my_name }).is_ok();
         }
         // Someone you declined or removed lately: turned away without asking you again.
@@ -1041,8 +1226,9 @@ impl Node {
             let _ = tx.send(Msg::Refused);
             return false;
         }
-        // Someone new: asked once.
-        let shown = clean_name(&hello).unwrap_or_else(|| "Someone".into());
+        // Someone new: asked once. A PC pairing as your device shows its PC's name.
+        let pc = pc.filter(|_| device);
+        let shown = pc.clone().or_else(|| clean_name(&hello)).unwrap_or_else(|| PLACEHOLDER.into());
         let (atx, arx) = oneshot::channel();
         {
             let mut inner = self.inner.lock().unwrap();
@@ -1051,17 +1237,30 @@ impl Node {
             if inner.requests.contains_key(peer) || inner.requests.len() >= MAX_REQUESTS {
                 return false;
             }
+            // Nor one question after the other without end (each closed to make room).
+            if !request_ok(&mut inner.request_times, std::time::Instant::now()) {
+                return false;
+            }
             let at = inner.next_seq();
-            inner.requests.insert(peer.to_string(), Request { name: shown.clone(), answer: Some(atx), at });
+            inner.requests.insert(peer.to_string(), Request { name: shown.clone(), device, answer: Some(atx), at });
         }
         let _ = tx.send(Msg::Wait);
         self.changed();
-        (self.notify)(
-            "direct-request",
-            "Someone wants to connect",
-            &format!("{shown} wants to connect with you in Pako."),
-            Go { page: "direct".into(), peer: Some(peer.to_string()), ..Go::none() },
-        );
+        if device {
+            (self.notify)(
+                "direct-request",
+                "Pair a device",
+                &format!("{shown} wants to pair with this PC as one of your devices."),
+                Go { page: "devices".into(), peer: Some(peer.to_string()), ..Go::none() },
+            );
+        } else {
+            (self.notify)(
+                "direct-request",
+                "Someone wants to connect",
+                &format!("{shown} wants to connect with you in Pako."),
+                Go { page: "direct".into(), peer: Some(peer.to_string()), ..Go::none() },
+            );
+        }
         let answer = tokio::select! {
             _ = conn.closed() => Answer::Silent,
             a = arx => match a {
@@ -1107,24 +1306,40 @@ impl Node {
                     added: now_ms(),
                     tags: Vec::new(),
                     favourite: false,
-                    their_name: Some(shown.clone()),
+                    // None when they gave no name: "Someone" is only what you see until they do.
+                    their_name: clean_name(&hello),
+                    their_pc_name: pc,
                     declined: false,
+                    // A device you confirmed: it may control this Pako until you turn that off;
+                    // its files go to the folder you chose when pairing.
+                    device,
+                    control: device,
+                    ..Default::default()
                 });
+                if device {
+                    let folder = inner.dev.folder_for_request(peer);
+                    if let Some(c) = inner.contacts.last_mut() {
+                        c.save_folder = folder;
+                    }
+                }
                 self.save_contacts(&inner);
             }
         }
         tx.send(Msg::Welcome { name: my_name }).is_ok()
     }
 
-    /// Keeps the name a contact chose for themselves up to date (your name for them stays).
+    /// Keeps the name a contact chose for themselves up to date. Your name for them stays, unless
+    /// it was only theirs or the "Someone" placeholder (then it follows theirs).
     fn remember_their_name(&self, peer: &str, said: &str) {
-        let theirs = clean_name(said);
         let mut inner = self.inner.lock().unwrap();
         let Some(c) = inner.contacts.iter_mut().find(|c| c.id == peer) else { return };
-        if theirs.is_none() || c.their_name == theirs {
-            return;
+        let Some((name, theirs)) = updated_names(&c.name, c.their_name.as_deref(), said) else { return };
+        // One of your devices that said its PC's name goes by that one, not its owner's. (A
+        // plain contact's PC name never replaces the name of the person: see remember_pc_name.)
+        if !(c.device && c.their_pc_name.is_some()) {
+            c.name = name;
         }
-        c.their_name = theirs;
+        c.their_name = Some(theirs);
         self.save_contacts(&inner);
         drop(inner);
         self.changed();
@@ -1192,6 +1407,19 @@ impl Node {
                     tokio::spawn(async move { me.finish_incoming(&id, hashes, tx).await });
                 }
             }
+            // Each one rewrites the contacts (and may notify): a contact's Pako sending them
+            // without end can't keep the disk and the window busy.
+            Msg::Name { .. } | Msg::Device { .. } if !small_ok(self.inner.lock().unwrap().small_times.entry(peer.to_string()).or_default(), std::time::Instant::now()) => {}
+            Msg::Name { name } => self.remember_their_name(peer, &name),
+            Msg::Device { mine, control, pc_name } => self.on_device(peer, mine, control, pc_name),
+            Msg::Watch { on } => self.on_watch(peer, on),
+            Msg::List { items } => self.on_list(peer, items),
+            // Done off the connection's reading (adding links can take a moment).
+            Msg::Order { id, order } => {
+                let peer = peer.to_string();
+                tokio::spawn(self.on_order(peer, id, order));
+            }
+            Msg::Reply { id, ok, message, failed, items } => self.on_reply(peer, &id, ok, message, failed, items),
             // Refused (they removed you), Hello/Welcome/Wait after the handshake: nothing to do.
             _ => {}
         }
@@ -1573,7 +1801,10 @@ impl Node {
         };
         let name = proto::safe_part(&name).unwrap_or_else(|| "files".into());
         // "Can send without asking" still asks when the send is big for the drive.
-        let asked_because = if contact.auto_accept {
+        // Your own devices (paired both ways) send without asking, like "can send without asking".
+        let auto = contact.auto_accept || devices::paired(&contact);
+        let page = if contact.device { "devices" } else { "direct" };
+        let asked_because = if auto {
             match crate::system::disk_space(&self.folder_for(&contact)) {
                 Some((free, size)) if total.saturating_add(margin_for(size)) > free || total > free / 2 => {
                     Some(format!("Asked because it's big for the drive: {} is free there.", human(free)))
@@ -1583,7 +1814,7 @@ impl Node {
         } else {
             None
         };
-        let ask = !contact.auto_accept || asked_because.is_some();
+        let ask = !auto || asked_because.is_some();
         {
             let mut inner = self.inner.lock().unwrap();
             let at = inner.next_seq();
@@ -1611,7 +1842,7 @@ impl Node {
             );
         }
         if !ask {
-            (self.notify)("direct-incoming", "Files coming in", &format!("{} is sending you {} ({}).", contact.name, name, human(total)), Go::item("direct", peer));
+            (self.notify)("direct-incoming", "Files coming in", &format!("{} is sending you {} ({}).", contact.name, name, human(total)), Go::item(page, peer));
             // Making the files takes a moment: off the connection's task.
             let me = self.clone();
             self.rt.spawn_blocking(move || {
@@ -1622,7 +1853,7 @@ impl Node {
                 "direct-offer",
                 "Files for you",
                 &format!("{} wants to send you {} ({}).", contact.name, name, human(total)),
-                Go { page: "direct".into(), id: Some(peer.to_string()), offer: Some(id.clone()), ..Go::none() },
+                Go { page: page.into(), id: Some(peer.to_string()), offer: Some(id.clone()), ..Go::none() },
             );
             self.changed();
         }
@@ -1886,7 +2117,15 @@ impl Node {
         }
         let asked_only = t.state == "asking";
         let path = self.inner.lock().unwrap().live.get(&t.contact).and_then(|l| path_of(&l.conn));
-        let contact_name = self.inner.lock().unwrap().contacts.iter().find(|c| c.id == t.contact).map(|c| c.name.clone()).unwrap_or_default();
+        let (contact_name, page) = self
+            .inner
+            .lock()
+            .unwrap()
+            .contacts
+            .iter()
+            .find(|c| c.id == t.contact)
+            .map(|c| (c.name.clone(), if c.device { "devices" } else { "direct" }))
+            .unwrap_or(("".into(), "direct"));
         let (duration_ms, avg_speed, peak_speed) = t.meter.summary(t.received.load(Ordering::Relaxed));
         self.record(HistoryItem {
             id: id.to_string(),
@@ -1905,7 +2144,7 @@ impl Node {
             peak_speed,
         });
         if result == "done" {
-            (self.notify)("direct-received", "Files received", &format!("{} from {} is saved.", t.name, contact_name), Go::item("direct", t.contact.clone()));
+            (self.notify)("direct-received", "Files received", &format!("{} from {} is saved.", t.name, contact_name), Go::item(page, t.contact.clone()));
         }
         // An offer still waiting for your answer (or one whose accepting failed) ends: its
         // pop-up leaves and its bell line says so. (Accepted ones were settled when accepted.)
@@ -2070,6 +2309,35 @@ fn default_title(list: &[(PathBuf, OfferFile)]) -> String {
 
 /// A person's name as shown: no control or hidden characters (which could make one name look
 /// like another), at most 60 characters.
+/// A contact's names after they said what they're called: (your name for them, theirs), or None
+/// when nothing changes. Your own name for them stays unless it was theirs or the placeholder.
+fn updated_names(name: &str, their_name: Option<&str>, said: &str) -> Option<(String, String)> {
+    let theirs = clean_name(said)?;
+    // "Someone" stored as their own name by Pako 1.0.0/1.0.1 when they had none: not a name.
+    let before = their_name.filter(|t| *t != PLACEHOLDER);
+    if before == Some(theirs.as_str()) && name != PLACEHOLDER {
+        return None;
+    }
+    let follows = name == PLACEHOLDER || their_name == Some(name);
+    Some((if follows { theirs.clone() } else { name.to_string() }, theirs))
+}
+
+/// A device's names after it said its PC's name: (your name for it, its PC's name), or None
+/// when nothing changes. Your name for it follows unless you renamed it here (it was neither
+/// what it said before, its owner's name, nor the placeholder): like `updated_names`.
+fn updated_pc_name(name: &str, their_name: Option<&str>, their_pc: Option<&str>, said: &str) -> Option<(String, String)> {
+    let pc = clean_name(said)?;
+    if their_pc == Some(pc.as_str()) && name != PLACEHOLDER {
+        return None;
+    }
+    let before = their_pc.or(their_name);
+    let follows = name == PLACEHOLDER || before == Some(name);
+    Some((if follows { pc.clone() } else { name.to_string() }, pc))
+}
+
+/// What a contact who gave no name is called until they do.
+const PLACEHOLDER: &str = "Someone";
+
 fn clean_name(name: &str) -> Option<String> {
     let n: String = name.chars().filter(|c| !c.is_control() && !proto::is_hidden(*c)).collect::<String>().trim().chars().take(60).collect();
     let n = n.trim().to_string();
@@ -2354,9 +2622,33 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_contacts_new_name_reaches_you() {
+        let u = |n: &str, t: Option<&str>, said: &str| updated_names(n, t, said);
+        // Your own name for them stays; theirs is noted ("calls themselves …").
+        assert_eq!(u("Anthony-3D", Some("Someone"), "Anthony"), Some(("Anthony-3D".into(), "Anthony".into())));
+        assert_eq!(u("Mum", Some("Nina"), "Nina R."), Some(("Mum".into(), "Nina R.".into())));
+        // A name that was only theirs, or the placeholder, follows theirs.
+        assert_eq!(u("Rado", Some("Rado"), "Rado R."), Some(("Rado R.".into(), "Rado R.".into())));
+        assert_eq!(u("Someone", Some("Someone"), "Bob"), Some(("Bob".into(), "Bob".into())));
+        assert_eq!(u("Someone", None, "Bob"), Some(("Bob".into(), "Bob".into())));
+        // Nothing new, or no name given: nothing changes.
+        assert_eq!(u("Rado", Some("Rado"), "Rado"), None);
+        assert_eq!(u("Someone", None, "  "), None);
+        assert_eq!(u("Mum", Some("Nina"), ""), None);
+    }
+
+    #[test]
+    fn the_name_message_is_understood_and_old_pakos_skip_it() {
+        let m = Msg::Name { name: "Anthony".into() };
+        let json = serde_json::to_string(&m).unwrap();
+        assert_eq!(serde_json::from_str::<Msg>(&json).unwrap(), m);
+        assert_eq!(serde_json::from_str::<Msg>(r#"{"t":"somethingNew","x":1}"#).unwrap(), Msg::Unknown);
+    }
     use iroh::endpoint::presets;
 
-    async fn node(dir: &Path, name: &str) -> Arc<Node> {
+    pub(super) async fn node(dir: &Path, name: &str) -> Arc<Node> {
         let ep = Endpoint::builder(presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
             .alpns(vec![ALPN.to_vec()])
@@ -2372,12 +2664,12 @@ mod tests {
         n
     }
 
-    fn addr(n: &Node) -> EndpointAddr {
+    pub(super) fn addr(n: &Node) -> EndpointAddr {
         let sock = n.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap();
         EndpointAddr::new(n.ep.id()).with_ip_addr(sock)
     }
 
-    async fn until(mut f: impl FnMut() -> bool) {
+    pub(super) async fn until(mut f: impl FnMut() -> bool) {
         for _ in 0..400 {
             if f() {
                 return;
@@ -2534,6 +2826,37 @@ mod tests {
         assert_eq!(times.len(), MAX_OFFERS_PER_MINUTE * 2, "nothing piles up");
         // A minute later they can send again.
         assert_eq!(offer_flood(&mut times, start + Duration::from_secs(63)), Flood::Fine);
+    }
+
+    /// Someone making new keys to ask "… wants to connect" again and again: after a few
+    /// questions in ten minutes the next ones aren't asked; later they are again.
+    #[test]
+    fn a_flood_of_connection_questions_is_turned_away() {
+        let mut times = VecDeque::new();
+        let t0 = std::time::Instant::now();
+        for i in 0..MAX_NEW_REQUESTS {
+            assert!(request_ok(&mut times, t0 + Duration::from_secs(i as u64)), "{i}");
+        }
+        assert!(!request_ok(&mut times, t0 + Duration::from_secs(60)));
+        assert!(!request_ok(&mut times, t0 + Duration::from_secs(599)));
+        assert_eq!(times.len(), MAX_NEW_REQUESTS, "the ones turned away aren't counted");
+        assert!(request_ok(&mut times, t0 + NEW_REQUESTS_WINDOW), "the first one is ten minutes old");
+    }
+
+    /// A contact's Pako sending name changes or "my device" without end: past a few a minute
+    /// they're ignored (each one rewrote contacts.json, and could show a notification).
+    #[test]
+    fn a_flood_of_names_and_device_messages_is_ignored() {
+        let start = std::time::Instant::now();
+        let mut times = VecDeque::new();
+        for i in 0..MAX_SMALL_PER_MINUTE {
+            assert!(small_ok(&mut times, start + Duration::from_millis(i as u64)));
+        }
+        for _ in 0..1000 {
+            assert!(!small_ok(&mut times, start + Duration::from_secs(1)));
+        }
+        assert_eq!(times.len(), MAX_SMALL_PER_MINUTE, "nothing piles up");
+        assert!(small_ok(&mut times, start + Duration::from_secs(61)), "a minute later it works again");
     }
 
     #[tokio::test(flavor = "multi_thread")]

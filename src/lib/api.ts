@@ -15,6 +15,24 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (cmd === "add_links" || cmd === "found_add")
     return Promise.resolve({ added: 0, errors: ["Preview mode: links aren't checked or downloaded"] } as T);
   if (cmd === "found_download") return Promise.resolve(0 as T);
+  if (cmd === "found_set_device" || cmd === "found_device_note") {
+    const ids = (args?.ids as string[]) ?? [];
+    for (const f of mockSnapshot.found ?? []) {
+      if (!ids.includes(f.id)) continue;
+      if (cmd === "found_set_device") Object.assign(f, { device: args?.device ?? null, deviceNote: null });
+      else f.deviceNote = (args?.note as string | null) ?? null;
+    }
+    return Promise.resolve(undefined as T);
+  }
+  // Design preview: picking a host of a file on several hosts sticks until the page reloads.
+  if (cmd === "found_pick_host") {
+    const ids = (args?.ids as string[]) ?? [];
+    for (const m of mockSnapshot.foundMirrors ?? []) {
+      const id = m.ids.find((x) => ids.includes(x));
+      if (id) Object.assign(m, { chosen: id, picked: true });
+    }
+    return Promise.resolve(undefined as T);
+  }
   if (cmd === "stats") return Promise.resolve(mockStats() as T);
   if (cmd === "numbers_view") return Promise.resolve(mockNumbers(String(args?.period ?? "month")) as T);
   if (cmd === "numbers_contact") return Promise.resolve(mockContactNumbers(String(args?.id ?? "")) as T);
@@ -52,6 +70,8 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
         size: kind === "ytDlp" ? 18_000_000 : null,
       })) as T,
     );
+  // ("?update=ready": the "ready" news comes a moment later, as from the daily check.)
+  if (updateReadyPreview() && cmd === "update_check") return Promise.resolve(UPDATE_READY as T);
   if (cmd === "update_status" || cmd === "update_check")
     return Promise.resolve({ current: "0.1.0", latest: null, notes: null, ready: false, busy: false, error: null, checked: cmd === "update_check" } as T);
   if (cmd === "parts") return Promise.resolve(mockParts(String(args?.id ?? "")) as T);
@@ -61,12 +81,22 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
       { id: "edge", name: "Microsoft Edge", family: "chromium" },
       { id: "firefox", name: "Firefox", family: "firefox" },
     ] as T);
+  // Chrome connected a moment ago; Edge's Pako Light not used for two months; Firefox never.
+  if (cmd === "browsers_connected")
+    return Promise.resolve([
+      { browser: "chrome", edition: "full", version: "1.4.0", lastSeen: Math.floor(Date.now() / 1000) - 3600 },
+      { browser: "edge", edition: "light", lastSeen: Math.floor(Date.now() / 1000) - 62 * 86400 },
+    ] as T);
   if (cmd === "add_to_browser")
     return Promise.resolve(
       (args?.id === "firefox"
-        ? { folder: "", copied: false, opened: "needsSigning" }
+        ? { folder: "C:\\Pako\\data\\extension", copied: false, opened: "firefox" }
         : { folder: "C:\\Pako\\data\\extension\\chromium", copied: true, opened: "extensions" }) as T,
     );
+  // Design preview: nothing to play; a video site answers after a moment.
+  if (cmd === "preview_url") return Promise.resolve({ url: "http://127.0.0.1:1/site/preview", converted: true, quality: 480 } as T);
+  // ("?showcase": the site answers, so the website's picture can show the clip playing.)
+  if (cmd === "preview_check") return new Promise((ok, no) => setTimeout(() => (showcase ? ok(undefined as T) : no("Preview mode: nothing is fetched from the site.")), 900));
   if (cmd === "send_state") return Promise.resolve(structuredClone(mockSend) as T);
   if (cmd === "direct_state") return Promise.resolve(mockDirect() as T);
   if (cmd === "direct_send") return Promise.reject("Preview mode: nothing is sent");
@@ -111,7 +141,11 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     if (showcase) return Promise.resolve(showcaseDrive as T);
     return Promise.resolve({ configured: true, missingNote: null, signedIn: true, email: "me@gmail.com", limit: 15e9, used: 6.1e9, error: null } as T);
   }
-  if (cmd === "send_measure") return Promise.resolve(4.2e9 as T);
+  // The same sizes as send_sizes below, so "This upload needs …" matches the basket's total.
+  if (cmd === "send_measure")
+    return Promise.resolve(
+      ((args?.paths as string[]) ?? []).reduce((t, p) => t + (!/\.[a-z0-9]{2,4}$/i.test(p) ? 3_400_000_000 : p.endsWith(".zip") ? 840_000_000 : 2_100_000), 0) as T,
+    );
   // Design preview: the basket's sizes (folders end without an extension).
   if (cmd === "send_sizes") {
     const paths = (args?.paths as string[]) ?? [];
@@ -145,8 +179,15 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return Promise.resolve(undefined as T);
 }
 
+/** Design preview: "?update=ready" (a new Pako downloaded and waiting for a restart). */
+const updateReadyPreview = () => typeof location !== "undefined" && new URLSearchParams(location.search).get("update") === "ready";
+const UPDATE_READY = { current: "1.1.0", latest: "1.1.1", notes: null, ready: true, busy: false, error: null, checked: true };
+
 export function listen<T>(event: string, cb: EventCallback<T>): Promise<UnlistenFn> {
   if (inApp) return tauriListen<T>(event, cb);
+  if (event === "update-status" && updateReadyPreview()) {
+    setTimeout(() => cb({ event, id: 0, payload: UPDATE_READY as T }), 900);
+  }
   if (event === "progress") {
     setTimeout(() => cb({ event, id: 0, payload: mockProgress as T }), 300);
   }
@@ -217,6 +258,20 @@ export interface Download {
   extract: boolean;
   /** From the browser, waiting for the Download with Pako window's answer. */
   ask?: boolean;
+  /** The same file on other hosts (picked in Links), tried in order if this host fails for good. */
+  mirrors?: Mirror[];
+  /** Hosts that already failed for good, in the order tried. */
+  tried?: Mirror[];
+}
+
+/** One host offering a file: a backup of a download, or a host it already tried. */
+export interface Mirror {
+  link: string;
+  source: Source;
+  size: number | null;
+  md5: string | null;
+  /** Why this host was left (tried hosts only). */
+  why?: string;
 }
 
 /** Queue order: First, then Normal, then Later. */
@@ -251,6 +306,8 @@ export interface Settings {
   keepAwake: boolean;
   /** Quitting while downloads run asks first. */
   confirmQuit: boolean;
+  /** Downloads running when Pako closed continue when it starts (off: they're paused). */
+  resumeOnStart: boolean;
   /** Pako starts when you sign in to Windows... */
   startWithWindows: boolean;
   /** ...straight to the tray. */
@@ -297,7 +354,17 @@ export interface Settings {
   toursDone: string[];
   /** Light or dark (changed only with `api.themeSet`). */
   theme?: ThemeChoice;
+  /** Direct › "Be visible to Pakos on this network" (missing = "home"). */
+  directVisible?: DirectVisible;
+  /** Hosts picked for files on several hosts, most recent first (kept by Links). */
+  mirrorHosts?: string[];
+  /** The date of the terms of use accepted ("2026-11-18"); missing = not accepted yet. */
+  termsAccepted?: string | null;
 }
+
+/** Direct › "Be visible to Pakos on this network": "home" only while Windows marks every network
+ *  this PC is on as Private (or Domain), or always, or never. */
+export type DirectVisible = "home" | "always" | "never";
 
 /** Settings › Window › Theme: "system" follows Windows' app mode. */
 export type ThemeChoice = "dark" | "light" | "system";
@@ -335,6 +402,12 @@ export interface FoundItem {
   dest: string | null;
   /** Split archive: extract after the last part; null = the default from Settings. */
   extract: boolean | null;
+  /** The host the user picked, when the same file is on several hosts. */
+  hostPick?: boolean;
+  /** "Download on": the paired PC (its Pako ID) it's sent to when you press Download. Unset = this PC. */
+  device?: string | null;
+  /** Why it wasn't sent to its PC (offline, refused, no longer allowed). */
+  deviceNote?: string | null;
 }
 
 /** Ready, or still being checked: can be downloaded. */
@@ -351,10 +424,27 @@ export interface SetView {
   missing: string[];
 }
 
+/** The same file on several hosts in Links, worked out by the engine. */
+export interface MirrorView {
+  key: string;
+  name: string;
+  size: number | null;
+  /** Its rows, in the order the links came in. */
+  ids: string[];
+  /** Each row's host ("example.com"), same order as ids. */
+  hosts: string[];
+  /** The row that downloads (null = every host is broken). */
+  chosen: string | null;
+  /** The user picked that host. */
+  picked: boolean;
+}
+
 export interface Snapshot {
   downloads: Download[];
   found: FoundItem[];
   foundSets: SetView[];
+  /** Missing in older design-preview data. */
+  foundMirrors?: MirrorView[];
   downloadSets: SetView[];
   settings: Settings;
   dataDir: string;
@@ -366,6 +456,8 @@ export interface Snapshot {
   version: string;
   /** Installed with Pako Setup (false = the portable Pako.exe). */
   installed: boolean;
+  /** The terms of use wait to be accepted: nothing else runs until then. */
+  termsNeeded?: boolean;
 }
 
 export type ComponentKind = "sevenZip" | "ffmpeg" | "ytDlp" | "deno";
@@ -383,10 +475,20 @@ export interface SetupChoices {
 
 /** A browser the Pako extension can be added to. */
 export interface Browser {
-  id: "chrome" | "edge" | "brave" | "vivaldi" | "firefox";
+  id: "chrome" | "edge" | "brave" | "vivaldi" | "opera" | "operagx" | "firefox";
   name: string;
   /** "chromium": Load unpacked. "firefox": the signed .xpi. */
   family: "chromium" | "firefox";
+}
+
+/** A browser Pako's extension talked to Pako from (noted by the native host, at most once a minute). */
+export interface BrowserSeen {
+  browser: Browser["id"];
+  /** "light": Pako Light, from a store. */
+  edition: "full" | "light";
+  version?: string;
+  /** Unix seconds. */
+  lastSeen: number;
 }
 
 /** What "Add to <browser>" did. */
@@ -395,8 +497,9 @@ export interface AddedToBrowser {
   folder: string;
   copied: boolean;
   /** extensions = the browser's extensions page opened; folder = the folder opened instead;
-   *  firefox = Firefox offers to add Pako; needsSigning = no signed Firefox file yet. */
-  opened: "extensions" | "folder" | "firefox" | "needsSigning";
+   *  firefox = Firefox offers to add Pako; firefoxFolder = Firefox didn't start, so the folder
+   *  opened with the signed file selected; unavailable = this Pako has no Firefox version. */
+  opened: "extensions" | "folder" | "firefox" | "firefoxFolder" | "unavailable";
 }
 
 /** What a pako:// link did (the extension's "Open Pako" button). */
@@ -547,7 +650,10 @@ export interface ContactNumbers {
   peakReceived: number;
   avgSent: number | null;
   avgReceived: number | null;
+  /** Not through a relay (the home network included). */
   directBytes: number;
+  /** The part of directBytes that went over the home network. */
+  localBytes: number;
   relayBytes: number;
   last: number | null;
 }
@@ -788,6 +894,10 @@ export interface DirectState {
   offers?: DirectOffer[];
   transfers?: DirectTransfer[];
   history?: DirectHistory[];
+  /** Direct has never run on this PC before (the window says Windows may ask about the network). */
+  firstStart?: boolean;
+  /** A relay answered lately; false = offline (contacts elsewhere aren't reachable). */
+  internet?: boolean;
 }
 
 /** Design preview: two contacts (one online) and a short history. */
@@ -872,6 +982,8 @@ export const api = {
   foundRestore: (items: FoundItem[], at: number) => invoke<void>("found_restore", { items, at }),
   foundSetVideo: (ids: string[], quality: number | null, audio: string | null) => invoke<void>("found_set_video", { ids, quality, audio }),
   foundRecheck: (ids: string[]) => invoke<void>("found_recheck", { ids }),
+  /** Same file on several hosts: download from these rows' hosts (the others become backups). */
+  foundPickHost: (ids: string[]) => invoke<void>("found_pick_host", { ids }),
   restoreDownloads: (list: Download[]) => invoke<void>("restore_downloads", { list }),
   moveBefore: (ids: string[], target: string | null) => invoke<void>("move_before", { ids, target }),
   openSettings: () => invoke<void>("open_settings"),
@@ -929,6 +1041,10 @@ export const api = {
       extract: o.extract ?? null,
     }),
   setExtract: (ids: string[], on: boolean) => invoke<void>("set_extract", { ids, on }),
+  /** Links › "Download on" for these links: a paired PC's ID, or null for this PC. */
+  foundSetDevice: (ids: string[], device: string | null) => invoke<void>("found_set_device", { ids, device }),
+  /** The note on rows a device didn't take (null clears it). */
+  foundDeviceNote: (ids: string[], note: string | null) => invoke<void>("found_device_note", { ids, note }),
   hideToTray: () => invoke<void>("hide_to_tray"),
   stats: () => invoke<StatsView>("stats"),
   numbersView: (period: NumbersPeriod) => invoke<NumbersView>("numbers_view", { period }),
@@ -938,6 +1054,8 @@ export const api = {
   numbersReset: () => invoke<void>("numbers_reset"),
   previewUrl: (id: string, quality: number) =>
     invoke<{ url: string; converted: boolean; quality: number }>("preview_url", { id, quality }),
+  /** A video-site preview: asks the site for a small stream; fails with the reason it can't play. */
+  previewCheck: (url: string) => invoke<void>("preview_check", { url }),
   componentsStatus: () => invoke<ComponentStatus[]>("components_status"),
   componentsCheck: () => invoke<ComponentStatus[]>("components_check"),
   componentInstall: (kind: ComponentKind) => invoke<string>("component_install", { kind }),
@@ -984,14 +1102,15 @@ export const api = {
   themeShown: (light: boolean) => invoke<void>("theme_shown", { light }),
   /** First-start setup: saves only its answers (works with the download folder unavailable). */
   saveSetup: (choices: SetupChoices) => invoke<void>("save_setup", { choices }),
+  /** Agree and continue: saves the terms' date, and everything that waited for it starts. */
+  acceptTerms: () => invoke<void>("accept_terms"),
   openItem: (id: string, reveal: boolean) => invoke<void>("open_item", { id, reveal }),
   openLink: (id: string) => invoke<void>("open_link", { id }),
   openFolder: (path: string) => invoke<void>("open_folder", { path }),
   extensionFiles: () => invoke<string>("extension_files"),
   browsersFound: () => invoke<Browser[]>("browsers_found"),
+  browsersConnected: () => invoke<BrowserSeen[]>("browsers_connected"),
   addToBrowser: (id: Browser["id"]) => invoke<AddedToBrowser>("add_to_browser", { id }),
-  /** The Firefox signing steps: the README, selected in its folder. */
-  extensionSteps: () => invoke<void>("extension_steps"),
   /** The last pako:// result, once. */
   takePakoLink: () => invoke<PakoLinkResult | null>("take_pako_link"),
   // Direct
@@ -1094,6 +1213,8 @@ export interface AskView {
   /** Downloads running now: then "Download now" and "Add to queue". */
   running: number;
   notify: boolean;
+  /** A video caught on a page or a recording: only this PC can make it (no "Download on"). */
+  hereOnly: boolean;
 }
 
 export interface AskAnswer {

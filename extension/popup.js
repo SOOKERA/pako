@@ -112,6 +112,9 @@ async function init() {
   if (reply?.ok) {
     status.textContent = "Connected";
     status.className = "status ok";
+    /* full-only:start */
+    showVideos();
+    /* full-only:end */
   } else {
     status.textContent = "Not connected";
     status.className = "status bad";
@@ -135,6 +138,127 @@ async function init() {
     showDetail(reply?.detail);
   }
 }
+
+/* full-only:start */
+// ---------- videos on this page ----------
+
+const KINDS = { hls: "HLS stream", dash: "DASH stream", file: "Video file" };
+/** The tab the list is for. */
+let videoTab = null;
+/** Pako couldn't take a video of this page: recording it is offered. */
+let sendFailed = false;
+let watching = null;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+async function showVideos() {
+  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id == null || !/^https?:/i.test(tab.url || "")) return;
+  videoTab = tab.id;
+  let r;
+  try {
+    r = await api.runtime.sendMessage({ type: "videos", tabId: tab.id });
+  } catch {
+    return;
+  }
+  if (r?.ok) renderVideos(r);
+}
+
+function renderVideos(r) {
+  const busy = r.recording && ["waiting", "recording", "saving"].includes(r.recording.state);
+  $("videos").hidden = !(r.list.length || r.playing || r.protected || r.recording);
+  $("videos-locked").hidden = !r.protected;
+  const ul = $("videos-list");
+  ul.replaceChildren();
+  if (!r.protected) {
+    for (const v of r.list) {
+      const li = el("li", "caught-item");
+      const what = el("div", "caught-what");
+      what.append(el("div", "t", v.height ? `${KINDS[v.kind]} · up to ${v.height}p` : KINDS[v.kind]), el("div", "muted", v.host));
+      const go = el("button", "secondary", "Download with Pako");
+      go.addEventListener("click", () => sendVideoStream(v.url, go));
+      li.append(what, go);
+      ul.append(li);
+    }
+  }
+  if (!r.list.length && r.playing && !r.protected) ul.append(el("li", "muted", "Pako didn't find this video's address."));
+  renderRecording(r, busy);
+  // While recording, the window follows it.
+  if (busy && !watching) watching = setInterval(showVideos, 1000);
+  if (!busy && watching) {
+    clearInterval(watching);
+    watching = null;
+  }
+}
+
+/** "Record this video": offered whenever a video plays or was found on the page (Pako may have
+ *  failed to get it after taking it: the small window can't know), or Pako refused it. Never
+ *  for a protected one. */
+function renderRecording(r, busy) {
+  const s = r.recording;
+  const offer = !r.protected && (sendFailed || r.playing || r.list.length > 0);
+  $("rec").hidden = !(busy || s || offer) || r.protected;
+  $("rec-start").hidden = busy || !offer;
+  $("rec-cancel").hidden = !busy || s?.state === "saving";
+  const mb = s ? Math.round((s.bytes / (1024 * 1024)) * 10) / 10 : 0;
+  const text = {
+    waiting: "The page reloaded. Waiting for the video to play: press play if it doesn't start. It has to play to the end.",
+    recording: `Recording: ${mb} MB. Keep this tab open: the video has to play to the end (sped up and muted when the page allows).`,
+    saving: "Sending the recording to Pako…",
+    done: "Sent to Pako: it makes the video in Downloads.",
+  };
+  if (s && text[s.state]) $("rec-text").textContent = text[s.state];
+  else if (s?.state === "failed" && !offer) $("rec-text").textContent = s.error;
+  else $("rec-text").textContent = `${s?.state === "failed" ? s.error + " " : ""}The last resort when Pako can't get it: Pako records the video while it plays. The page reloads, and the video has to play to the end.`;
+}
+
+async function sendVideoStream(url, button) {
+  button.disabled = true;
+  let reply;
+  try {
+    reply = await api.runtime.sendMessage({ type: "send-stream", tabId: videoTab, url });
+  } catch (e) {
+    reply = { ok: false, error: "Couldn't send this video.", detail: e?.message || String(e) };
+  }
+  if (reply?.ok) {
+    button.textContent = "Sent to Pako ✓";
+    return;
+  }
+  button.disabled = false;
+  showError(reply?.error || "Couldn't send this video.");
+  showDetail(reply?.detail);
+  if (reply?.error !== "This video is protected, so it can't be downloaded.") sendFailed = true;
+  showVideos();
+}
+
+$("rec-start").addEventListener("click", async () => {
+  $("rec-start").disabled = true;
+  showError("");
+  showDetail("");
+  let reply;
+  try {
+    reply = await api.runtime.sendMessage({ type: "record-start", tabId: videoTab });
+  } catch (e) {
+    reply = { ok: false, error: "Couldn't start recording.", detail: e?.message || String(e) };
+  }
+  $("rec-start").disabled = false;
+  if (!reply?.ok) {
+    showError(reply?.error || "Couldn't start recording.");
+    showDetail(reply?.detail);
+  }
+  showVideos();
+});
+
+$("rec-cancel").addEventListener("click", async () => {
+  await api.runtime.sendMessage({ type: "record-cancel", tabId: videoTab }).catch(() => {});
+  showVideos();
+});
+/* full-only:end */
 
 /** Opens a pako:// link: in the current tab when it's a web page (it stays as it is, the
  *  browser only asks to open Pako), else in a new tab. */

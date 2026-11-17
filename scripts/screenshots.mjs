@@ -6,6 +6,9 @@
 //   2. node extension/build.mjs          (only for the Pako Light popup: its copy is in the store zip)
 //   3. node scripts/screenshots.mjs [--light] [name ...]   (no names = all of them)
 //
+// video-preview-site also needs ffmpeg (on the PATH, in FFMPEG, or the copy Pako installed in
+// %LOCALAPPDATA%\Pako\components\ffmpeg): it makes a short sample clip to play.
+//
 // Writes docs/screenshots/<name>.png at 2× and docs/screenshots/1x/<name>.png at 1×. With --light,
 // the same pictures in Pako's light theme, as <name>-light.png (the window's saved choice
 // "pako.theme" in its storage, src/lib/theme.svelte.ts; the extension popups follow the browser's
@@ -40,7 +43,7 @@ const ASK = { width: 420, height: 324 };
 const STILL_CSS = `*, *::before, *::after { transition-duration: 0s !important; transition-delay: 0s !important; caret-color: transparent !important; }
 ::-webkit-scrollbar { width: 0 !important; height: 0 !important; }`;
 
-async function open(browser, scale, path, viewport) {
+async function open(browser, scale, path, viewport, before) {
   const context = await browser.newContext({
     viewport,
     deviceScaleFactor: scale,
@@ -54,6 +57,7 @@ async function open(browser, scale, path, viewport) {
       localStorage.setItem("pako.theme", t);
     } catch {}
   }, THEME);
+  if (before) await before(context);
   const page = await context.newPage();
   page.on("pageerror", (e) => console.warn(`  page error on ${path}: ${e.message}`));
   await page.goto(BASE + path, { waitUntil: "networkidle" });
@@ -85,6 +89,23 @@ async function closePanel(page) {
 }
 
 const main = (path = "/?showcase") => ({ path, viewport: MAIN });
+/** The share pictures: smaller windows (each the size where its page reads best), cropped to
+ *  about 4:3 without the title bar and the sidebar. */
+const SHARE_DROP = { width: 1100, height: 700 };
+const SHARE_LINK = { width: 1200, height: 800 };
+const SHARE_OPEN = { width: 1100, height: 700 };
+/** The page and its details panel below the title bar, right of the sidebar; `bar` keeps the
+ *  bottom bar (32 px). */
+const pageClip = (v, bar = true) => () => ({ x: 220, y: 40, width: v.width - 220, height: v.height - 40 - (bar ? 0 : 32) });
+/** Only the element marked data-shot shows (on a see-through background). */
+const SHOT_ONLY = `html, body { background: transparent !important; }
+      body * { visibility: hidden !important; }
+      [data-shot], [data-shot] * { visibility: visible !important; }`;
+/** A clip around the first element matching `selector`, with `pad` page pixels around it. */
+const around = (selector, pad) => async (page) => {
+  const b = await page.locator(selector).first().boundingBox();
+  return { x: b.x - pad, y: b.y - pad, width: b.width + pad * 2, height: b.height + pad * 2 };
+};
 
 /** Every picture: where it opens, what to do there, and what to keep (the whole window, or a
  *  `clip` rectangle in page pixels). */
@@ -117,6 +138,34 @@ const SHOTS = {
       await settle(page);
     },
   },
+  "links-sets": {
+    ...main("/?showcase=sets"),
+    async run(page) {
+      await sidebar(page, "Links");
+      // The complete split archive (first row) in the details panel.
+      await home(page);
+      await park(page, 700, 860);
+      await settle(page);
+    },
+  },
+  "links-duplicate": {
+    ...main("/?showcase=sets"),
+    async run(page) {
+      await sidebar(page, "Links");
+      // The main button (Add to queue, as downloads are running): Course materials.zip is
+      // already in Downloads, so Pako asks first.
+      await page.locator(".split .btn.primary").first().click();
+      await page.getByRole("dialog").waitFor();
+      await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+      await park(page, 2, 700);
+      await settle(page, 1000);
+      await page.getByRole("dialog").evaluate((el) => el.setAttribute("data-shot", ""));
+    },
+    // Only the question, on a see-through background (Links under it is left out).
+    transparent: true,
+    css: SHOT_ONLY,
+    clip: around("[data-shot]", 24),
+  },
   upload: {
     ...main(),
     async run(page) {
@@ -135,6 +184,53 @@ const SHOTS = {
       await park(page, 700, 880);
       await settle(page, 2000);
     },
+  },
+  // How sharing works, in three steps: tight crops of the window, about 4:3.
+  "share-step-drop": {
+    path: "/?showcase=share",
+    viewport: SHARE_DROP,
+    async run(page) {
+      await sidebar(page, "Upload");
+      await closePanel(page);
+      // Three things picked, going to Google Drive, under one name.
+      await page.getByRole("radio", { name: "Google Drive", exact: true }).click();
+      await page.getByLabel("Name of this upload").fill("Wedding");
+      await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+      await park(page, 2, SHARE_DROP.height - 1);
+      await settle(page, 1200);
+    },
+    // From under the title bar to just below the panel, without the sidebar.
+    async clip(page) {
+      const b = await page.locator(".basket").boundingBox();
+      return { x: 220, y: 40, width: SHARE_DROP.width - 220, height: b.y + b.height + 16 - 40 };
+    },
+  },
+  "share-step-link": {
+    path: "/?showcase=share",
+    viewport: SHARE_LINK,
+    async run(page) {
+      await sidebar(page, "Upload");
+      // The upload just made: the basket is empty again, its link was copied.
+      await page.getByRole("button", { name: "Clear", exact: true }).first().click();
+      await settle(page, 600);
+      await clickRow(page, "Wedding");
+      await settle(page, 900);
+      await page.locator(".panel").getByRole("button", { name: "Copy link" }).first().click();
+      await park(page, 2, SHARE_LINK.height - 1);
+      await settle(page, 900);
+    },
+    clip: pageClip(SHARE_LINK, false),
+  },
+  "share-step-open": {
+    path: "/?showcase=share",
+    viewport: SHARE_OPEN,
+    async run(page) {
+      await sidebar(page, "Links");
+      await home(page);
+      await park(page, 2, SHARE_OPEN.height - 1);
+      await settle(page);
+    },
+    clip: pageClip(SHARE_OPEN),
   },
   direct: {
     ...main(),
@@ -292,9 +388,198 @@ const SHOTS = {
       await settle(page, 900);
     },
   },
+  // ---------- new since 1.0.1 ----------
+  "links-mirrors": {
+    ...main("/?showcase=hosts"),
+    async run(page) {
+      await sidebar(page, "Links");
+      // The file on three hosts in the details panel (Hosts), and its row's host list open.
+      await clickRow(page, "Field recordings.zip");
+      await settle(page, 700);
+      await page.getByRole("button", { name: /^Pick the host/ }).first().click();
+      await page.getByRole("menu").first().waitFor();
+      await park(page, 700, 880);
+      await settle(page, 1000);
+    },
+  },
+  "download-fallback": {
+    ...main("/?showcase=hosts"),
+    async run(page) {
+      // The download that went on from its next host: first in the list, in the details panel.
+      await home(page);
+      await park(page, 700, 880);
+      await settle(page, 1800);
+    },
+    // Its row ("from …") and the details panel down to Backups and Tried, without the sidebar.
+    async clip(page) {
+      // Ends halfway between Tried and the next line (Saved to).
+      const tried = await page.locator(".panel dt", { hasText: "Tried" }).first().boundingBox();
+      const next = await page.locator(".panel dt", { hasText: "Saved to" }).first().boundingBox();
+      return { x: 220, y: 40, width: MAIN.width - 220, height: Math.round((tried.y + tried.height + next.y) / 2) - 40 };
+    },
+  },
+  "video-preview-site": {
+    ...main(),
+    async before(context) {
+      // The short clip the site would send (a still sample picture, about 20 seconds).
+      await context.route("http://127.0.0.1:1/**", (route) => serveClip(route));
+    },
+    async run(page) {
+      await sidebar(page, "Links");
+      await clickRow(page, "Sunrise over the lake 4K.mp4");
+      await settle(page, 600);
+      await page.getByRole("button", { name: "Play a preview" }).click();
+      const video = page.locator(".preview video");
+      await video.waitFor();
+      // A few seconds in, paused, so the player shows its time and controls.
+      await video.evaluate(async (v) => {
+        const el = /** @type {HTMLVideoElement} */ (v);
+        if (el.readyState < 2) await new Promise((r) => el.addEventListener("loadeddata", r, { once: true }));
+        el.pause();
+        el.currentTime = 6.4;
+        await new Promise((r) => el.addEventListener("seeked", r, { once: true }));
+      });
+      await park(page, 700, 880);
+      await settle(page, 1200);
+    },
+  },
+  "direct-local": {
+    ...main("/?showcase=local"),
+    async run(page) {
+      await sidebar(page, "Direct");
+      await park(page, 700, 880);
+      // The live speed is measured from two updates a second apart.
+      await settle(page, 3500);
+    },
+  },
+  "devices-files": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "My devices");
+      await clickRow(page, "Home PC");
+      await park(page, 700, 880);
+      await settle(page, 3500);
+    },
+  },
+  "devices-downloads": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "My devices");
+      await clickRow(page, "Home PC");
+      await settle(page, 600);
+      await page.locator(".tabs").getByText("Downloads", { exact: true }).first().click();
+      await park(page, 700, 880);
+      await settle(page, 3000);
+    },
+  },
+  "devices-links": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "My devices");
+      await clickRow(page, "Home PC");
+      await settle(page, 600);
+      await page.locator(".tabs").getByText("Links", { exact: true }).first().click();
+      // A finished send followed live, and a playlist read here, its videos to pick.
+      await page.getByText(/^Send \d+ to Home PC$/).first().waitFor();
+      await park(page, 700, 880);
+      await settle(page, 3000);
+    },
+  },
+  "links-download-on": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "Links");
+      // The link set to Home PC in the details panel (its Download on), and the toolbar's
+      // "Download on" menu open.
+      await clickRow(page, "Mountain timelapse 4K.mkv");
+      await settle(page, 700);
+      await page.locator('[data-tour="found-download-on"]').click();
+      await page.getByRole("menu").first().waitFor();
+      await park(page, 700, 880);
+      await settle(page, 1000);
+    },
+  },
+  "update-ready": {
+    path: "/popup?update=ready",
+    viewport: { width: POPUP_W, height: 260 },
+    transparent: true,
+    css: ".frame.preview { background: transparent !important; }",
+    async run(page) {
+      await page.locator(".stack").waitFor();
+      // Pointing at the card keeps it.
+      await page.locator(".stack").hover({ position: { x: 4, y: 4 } });
+      await settle(page, 800);
+    },
+    async clip(page) {
+      const b = await page.locator(".stack").boundingBox();
+      const p = 14;
+      return { x: b.x - p, y: b.y - p, width: b.width + p * 2, height: b.height + p * 2 };
+    },
+  },
   "pako-light-popup": { extension: "light" },
   "extension-popup": { extension: "full" },
+  "extension-videos": { extension: "full", videos: true },
 };
+
+// ---------- the sample clip for video-preview-site ----------
+
+/** A made-up "Sunrise over the lake" picture (no real footage, no logos). */
+const CLIP_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="854" height="480" viewBox="0 0 854 480">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d2a55"/><stop offset=".45" stop-color="#7a4f86"/><stop offset=".78" stop-color="#f08a5d"/><stop offset="1" stop-color="#ffd08a"/>
+    </linearGradient>
+    <linearGradient id="lake" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f3a66e"/><stop offset=".35" stop-color="#8a5a7e"/><stop offset="1" stop-color="#1b2448"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#fff3c4" stop-opacity=".95"/><stop offset=".35" stop-color="#ffd27a" stop-opacity=".55"/><stop offset="1" stop-color="#ffb36b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="854" height="300" fill="url(#sky)"/>
+  <circle cx="470" cy="292" r="150" fill="url(#glow)"/>
+  <circle cx="470" cy="292" r="34" fill="#fff1c2"/>
+  <path d="M0 250 L90 205 L170 240 L260 190 L350 236 L430 214 L520 250 L610 196 L700 232 L780 204 L854 236 L854 300 L0 300 Z" fill="#5a3f6e" opacity=".75"/>
+  <path d="M0 272 L120 236 L210 262 L320 228 L420 270 L540 244 L640 268 L760 238 L854 262 L854 300 L0 300 Z" fill="#3a2d55"/>
+  <rect y="300" width="854" height="180" fill="url(#lake)"/>
+  <g fill="#fff1c2" opacity=".75">
+    <rect x="440" y="306" width="60" height="3" rx="1.5"/><rect x="430" y="318" width="80" height="3" rx="1.5"/><rect x="446" y="332" width="48" height="2.5" rx="1.25"/>
+    <rect x="424" y="346" width="92" height="2.5" rx="1.25" opacity=".7"/><rect x="452" y="362" width="36" height="2" rx="1" opacity=".6"/><rect x="436" y="380" width="68" height="2" rx="1" opacity=".45"/>
+  </g>
+  <path d="M0 430 Q120 410 250 428 T520 432 T854 420 L854 480 L0 480 Z" fill="#141a33"/>
+</svg>`;
+
+let clip = null;
+/** Makes the sample clip once (VP9 WebM, 20 seconds), with ffmpeg. */
+async function sampleClip(browser) {
+  if (clip) return clip;
+  const ff = [process.env.FFMPEG, join(process.env.LOCALAPPDATA ?? "", "Pako", "components", "ffmpeg", "ffmpeg.exe")].find((f) => f && existsSync(f)) ?? "ffmpeg";
+  const dir = mkdtempSync(join(tmpdir(), "pako-clip-"));
+  const png = join(dir, "frame.png");
+  const out = join(dir, "clip.webm");
+  const page = await browser.newPage({ viewport: { width: 854, height: 480 } });
+  await page.setContent(`<style>html,body{margin:0}</style>${CLIP_SVG}`);
+  await page.screenshot({ path: png });
+  await page.close();
+  execFileSync(ff, ["-v", "error", "-y", "-loop", "1", "-i", png, "-t", "20", "-r", "25", "-c:v", "libvpx-vp9", "-b:v", "600k", "-pix_fmt", "yuv420p", out]);
+  clip = readFileSync(out);
+  rmSync(dir, { recursive: true, force: true });
+  return clip;
+}
+/** Serves the clip with byte ranges, as Pako's small preview server does. */
+function serveClip(route) {
+  const body = clip;
+  const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers()["range"] ?? "");
+  if (!range) return route.fulfill({ status: 200, contentType: "video/webm", headers: { "Accept-Ranges": "bytes" }, body });
+  const start = Number(range[1]);
+  const end = range[2] ? Math.min(Number(range[2]), body.length - 1) : body.length - 1;
+  return route.fulfill({
+    status: 206,
+    contentType: "video/webm",
+    headers: { "Accept-Ranges": "bytes", "Content-Range": `bytes ${start}-${end}/${body.length}` },
+    body: body.subarray(start, end + 1),
+  });
+}
 
 // ---------- the browser extension's popup, standalone ----------
 
@@ -309,11 +594,18 @@ function extensionDir(edition) {
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-/** Just enough of `chrome.*` for the popup to say Connected. */
-const CHROME_STUB = `(() => {
+/** Videos the full extension caught on a sample page (extension-videos), on neutral sample hosts. */
+const CAUGHT = [
+  { kind: "hls", height: 1080, host: "video.example.com", url: "https://video.example.com/hls/master.m3u8" },
+  { kind: "dash", height: 720, host: "stream.example.net", url: "https://stream.example.net/dash/manifest.mpd" },
+  { kind: "file", height: null, host: "media.example.org", url: "https://media.example.org/clips/trailer.mp4" },
+];
+/** Just enough of `chrome.*` for the popup to say Connected (and list `videos` on the page). */
+const chromeStub = (videos) => `(() => {
   const store = { takeOver: true, playerButton: true, lastError: "", lastDetail: "" };
+  const caught = ${JSON.stringify(videos)};
   window.chrome = {
-    runtime: { sendMessage: async () => ({ ok: true }), sendNativeMessage: (_h, _m, cb) => cb && cb({ ok: true }), lastError: undefined },
+    runtime: { sendMessage: async (m) => (m && m.type === "videos" ? { ok: true, list: caught, playing: caught.length > 0 } : { ok: true }), sendNativeMessage: (_h, _m, cb) => cb && cb({ ok: true }), lastError: undefined },
     storage: { local: { get: async (d) => ({ ...d, ...store }), set: async (v) => Object.assign(store, v) } },
     action: { setBadgeText: () => {} },
     tabs: { query: async () => [{ id: 1, url: "https://example.com/" }], update: async () => {}, create: async () => {} },
@@ -322,12 +614,12 @@ const CHROME_STUB = `(() => {
 
 const TYPES = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".png": "image/png", ".svg": "image/svg+xml" };
 
-async function shootExtension(browser, name, edition) {
+async function shootExtension(browser, name, edition, videos = false) {
   const { dir, cleanup } = extensionDir(edition);
   try {
     for (const { scale, dir: outDir } of SCALES) {
       const context = await browser.newContext({ viewport: { width: 360, height: 420 }, deviceScaleFactor: scale, colorScheme: THEME, reducedMotion: "reduce" });
-      await context.addInitScript(CHROME_STUB);
+      await context.addInitScript(chromeStub(videos ? CAUGHT : []));
       await context.route("http://pako-extension.local/**", (route) => {
         const file = join(dir, decodeURIComponent(new URL(route.request().url()).pathname));
         if (!existsSync(file)) return route.fulfill({ status: 404, body: "" });
@@ -342,6 +634,11 @@ async function shootExtension(browser, name, edition) {
           : "border: 1px solid #262a31; box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3);";
       await page.addStyleTag({ content: `html { background: transparent; padding: 16px; } body { border-radius: 10px; ${frame} }` });
       await page.waitForFunction(() => document.getElementById("status")?.textContent === "Connected");
+      if (videos) {
+        await page.locator("#videos-list li").first().waitFor();
+        // Only the videos and Send this page: the settings lines below stay out of this picture.
+        await page.addStyleTag({ content: "#lines { display: none !important; }" });
+      }
       await settle(page, 300);
       const box = await page.locator("body").boundingBox();
       const pad = 16;
@@ -356,9 +653,10 @@ async function shootExtension(browser, name, edition) {
 // ---------- run ----------
 
 async function shoot(browser, name, shot) {
-  if (shot.extension) return shootExtension(browser, name, shot.extension);
+  if (shot.extension) return shootExtension(browser, name, shot.extension, !!shot.videos);
+  if (shot.before) await sampleClip(browser);
   for (const { scale, dir } of SCALES) {
-    const { context, page } = await open(browser, scale, shot.path, shot.viewport);
+    const { context, page } = await open(browser, scale, shot.path, shot.viewport, shot.before);
     await shot.run(page);
     if (shot.css) await page.addStyleTag({ content: shot.css });
     const file = join(dir, `${name}${SUFFIX}.png`);

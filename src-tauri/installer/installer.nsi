@@ -179,6 +179,13 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; 2. License Page (if defined)
 !if "${LICENSE}" != ""
   !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+  ; [Pako] The page is Pako's terms of use (bundle.licenseFile: TERMS.md as plain text, made by
+  ; build.rs), with its own titles (installer/English.nsh). "I Agree" goes on; Cancel ends Setup.
+  !define MUI_PAGE_HEADER_TEXT "$(pakoTermsTitle)"
+  !define MUI_PAGE_HEADER_SUBTEXT "$(pakoTermsSubtitle)"
+  !define MUI_LICENSEPAGE_TEXT_TOP "$(pakoTermsTop)"
+  !define MUI_LICENSEPAGE_TEXT_BOTTOM "$(pakoTermsBottom)"
+  ; [Pako] end
   !insertmacro MUI_PAGE_LICENSE "${LICENSE}"
 !endif
 

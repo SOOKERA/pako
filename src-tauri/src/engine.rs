@@ -36,6 +36,8 @@ use crate::paths::{data_dir, write_atomic};
 
 #[path = "found.rs"]
 mod found;
+pub use found::{DeviceChoice, DeviceSplit, DeviceVideo, PickItem};
+pub use found::MirrorView;
 
 /// Smallest part worth giving its own connection.
 const MIN_SPLIT: u64 = 1024 * 1024;
@@ -65,6 +67,12 @@ pub fn also_busy_when(check: impl Fn() -> bool + Send + Sync + 'static) {
 /// while holding the engine's lock (the registered check takes other locks).
 pub fn transfers_running() -> bool {
     UPLOADS_RUNNING.load(Ordering::Relaxed) > 0 || OTHER_TRANSFERS.get().is_some_and(|f| f())
+}
+
+/// A download only this PC can make: a video caught on a page (its address works with this
+/// browser's page and login) or a recording. Never sent to another of your PCs.
+pub fn here_only(d: &Download) -> bool {
+    matches!(&d.source, Source::Video { caught, recording, .. } if *caught || recording.is_some())
 }
 
 /// The download list, saved in the background (see `paths::Saver`).
@@ -310,6 +318,9 @@ struct Job {
     connections: AtomicU32,
     last_data: Mutex<Option<Instant>>,
     retry_msg: Mutex<Option<String>>,
+    /// What a host change decided ("…: continuing from B where A stopped", "…: starting over"),
+    /// kept as the row's message while it runs (the live status would wipe it otherwise).
+    host_note: Mutex<Option<String>>,
     phase: Mutex<Phase>,
     resumable: Mutex<bool>,
     /// How many connections this file should use right now (Auto changes it while running).
@@ -334,6 +345,9 @@ struct Job {
     /// The parts as they were at the last flush to disk: the only progress ever saved while
     /// running, so a power cut can't leave parts marked done that are still zeros on disk.
     flushed: Mutex<Option<Vec<Segment>>>,
+    /// When the host last answered with data: a download with backups moves on after 5 minutes
+    /// of nothing (see `found::AnswerClock`). A new run (Resume, a new host) starts it again.
+    answers: Mutex<found::AnswerClock>,
 }
 
 /// Split sets being extracted right now (by their first part's path).
@@ -579,13 +593,7 @@ fn settings_path() -> PathBuf {
 
 impl Engine {
     pub fn new(emit: Emit) -> Arc<Self> {
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            // A connection that receives nothing for 45s is considered dead and reopened.
-            .read_timeout(Duration::from_secs(45))
-            .pool_idle_timeout(Duration::from_secs(30))
-            .build()
-            .expect("http client");
+        let http = crate::fetch::download_client();
         // A damaged file falls back to its .bak copy and is moved aside, never overwritten. A
         // file that can't be read right now (locked) is never saved over this session.
         let mut start_notes = Vec::new();
@@ -626,7 +634,8 @@ impl Engine {
                 d.date = d.added_at;
             }
             if d.status.is_active() {
-                d.status = Status::Queued;
+                // Settings › Downloads › Continue downloads when Pako starts (on by default).
+                d.status = if settings.resume_on_start { Status::Queued } else { Status::Paused };
                 d.message = None;
             }
             if d.force {
@@ -636,6 +645,8 @@ impl Engine {
         }
         let limiter = Arc::new(Limiter::new(settings.speed_limit_kb.saturating_mul(1024)));
         crate::notices::use_settings(&settings);
+        // Terms of use already accepted (or not needed): Pako runs as usual (see consent.rs).
+        crate::consent::start_with(&settings);
         Arc::new(Self {
             emit,
             http,
@@ -919,13 +930,27 @@ impl Engine {
     /// - anything else (live streams...): yt-dlp as it is.
     /// When Pako's own download can't work for a video (the server won't send parts, or keeps
     /// refusing the stream addresses), yt-dlp downloads it instead.
+    ///
+    /// A stream caught on a page (the extension's "Videos on this page") goes the same way, with
+    /// the page as referrer; when yt-dlp can't get it, Pako's own HLS download tries (`run_hls`).
+    /// A recording ("Record this video") is only joined.
     async fn run_video(self: &Arc<Self>, job: &Arc<Job>, d: Download) -> Result<(), Stop> {
-        let Source::Video { url, quality, audio, audio_size, options, streams: saved, .. } = &d.source else { return Err(Stop::Cancelled) };
+        let Source::Video { url, quality, audio, audio_size, options, streams: saved, referrer, caught, recording, .. } = &d.source else {
+            return Err(Stop::Cancelled);
+        };
         let Some(tools) = crate::video::tools() else {
             return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
         };
+        if let Some(dir) = recording {
+            return self.finish_recording(job, &d, &tools, dir).await;
+        }
         let quality = quality.unwrap_or_else(|| self.settings().video_quality);
         let audio = audio.clone().or_else(|| (quality == 0).then(|| "m4a".to_string()));
+        let referrer = referrer.as_deref();
+        // Pako's own HLS download began on this stream: it carries on from its pieces.
+        if *caught && crate::hls::work_dir(&d.dest_dir, &d.name, &d.id).is_dir() {
+            return self.run_hls(job, &d, &tools, url, quality, audio.as_deref(), referrer).await;
+        }
         let estimate = crate::video::estimate(options, *audio_size, if audio.is_some() { 0 } else { quality });
         let _ = std::fs::create_dir_all(&d.dest_dir);
         *job.phase.lock().unwrap() = Phase::Starting;
@@ -940,10 +965,30 @@ impl Engine {
             let pieces = saved.iter().map(|s| piece_of(&d, s)).collect::<Vec<_>>();
             return self.finish_video(job, &d, &tools, &pieces, audio.as_deref()).await;
         }
-        let plan = self.video_plan(job, url, quality, audio.as_deref()).await?;
+        let by_tool = self.video_by_tool(job, &d, &tools, url, quality, audio.as_deref(), estimate, referrer).await;
+        match by_tool {
+            Err(Stop::Fail(_, msg)) if *caught => self.caught_fallback(job, &d, &tools, url, quality, audio.as_deref(), referrer, &msg).await,
+            other => other,
+        }
+    }
+
+    /// The usual way: Pako's own download of the streams yt-dlp names, or yt-dlp itself.
+    #[allow(clippy::too_many_arguments)]
+    async fn video_by_tool(
+        self: &Arc<Self>,
+        job: &Arc<Job>,
+        d: &Download,
+        tools: &crate::video::Tools,
+        url: &str,
+        quality: u32,
+        audio: Option<&str>,
+        estimate: Option<u64>,
+        referrer: Option<&str>,
+    ) -> Result<(), Stop> {
+        let plan = self.video_plan(job, url, quality, audio, referrer).await?;
         let fragments = match plan {
             crate::video::Plan::Direct(streams) => {
-                match self.run_video_direct(job, &d, &tools, url, quality, audio.as_deref(), streams).await? {
+                match self.run_video_direct(job, d, tools, url, quality, audio, streams, referrer).await? {
                     true => return Ok(()),
                     false => crate::video::FRAGMENTS_AT_ONCE,
                 }
@@ -953,18 +998,202 @@ impl Engine {
         };
         // yt-dlp downloads it: Pako's own pieces from an earlier try are of no use to it.
         self.drop_video_streams(&job.id);
-        self.run_ytdlp(job, &d, &tools, url, quality, audio.as_deref(), estimate, fragments).await
+        self.run_ytdlp(job, d, tools, url, quality, audio, estimate, fragments, referrer).await
+    }
+
+    /// yt-dlp couldn't get a stream caught on a page: Pako's own HLS download tries (never a
+    /// stream yt-dlp found DRM in: that one is protected).
+    #[allow(clippy::too_many_arguments)]
+    async fn caught_fallback(
+        self: &Arc<Self>,
+        job: &Arc<Job>,
+        d: &Download,
+        tools: &crate::video::Tools,
+        url: &str,
+        quality: u32,
+        audio: Option<&str>,
+        referrer: Option<&str>,
+        msg: &str,
+    ) -> Result<(), Stop> {
+        if msg == crate::video::DRM {
+            return Err(Stop::Fail(Status::Failed, crate::hls::PROTECTED.into()));
+        }
+        if msg == crate::video::NEEDS_TOOLS {
+            return Err(Stop::Fail(Status::Failed, msg.into()));
+        }
+        // Pieces of yt-dlp's (or of Pako's own stream download) are of no use now.
+        self.drop_video_streams(&job.id);
+        let work = crate::hls::work_dir(&d.dest_dir, &d.name, &d.id);
+        for p in self.video_leftovers(&d.dest_dir, &d.name, &d.id) {
+            if p != work {
+                crate::video::remove_piece(&p);
+            }
+        }
+        self.run_hls(job, d, tools, url, quality, audio, referrer).await
+    }
+
+    /// Pako's own HLS download (see `hls`): the pieces with the page as referrer and the
+    /// browser's cookies for the stream's server, then ffmpeg makes the video (MP4, or MKV when
+    /// the streams don't fit in MP4). A lost connection is waited out; the pieces already in
+    /// are kept for a pause, a restart or Try again.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_hls(
+        self: &Arc<Self>,
+        job: &Arc<Job>,
+        d: &Download,
+        tools: &crate::video::Tools,
+        url: &str,
+        quality: u32,
+        audio: Option<&str>,
+        referrer: Option<&str>,
+    ) -> Result<(), Stop> {
+        if tools.ffmpeg.is_none() {
+            return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
+        }
+        let work = crate::hls::work_dir(&d.dest_dir, &d.name, &d.id);
+        let ctx = crate::hls::Ctx {
+            http: self.http.clone(),
+            referrer: referrer.map(str::to_string),
+            cookies: crate::extension::headers_for(&d.id).map(|h| h.site_cookies).unwrap_or_default(),
+            cancel: job.cancel.clone(),
+        };
+        let me = self.clone();
+        let jb = job.clone();
+        let progress = move |bytes: u64, total: Option<u64>| {
+            jb.downloaded.store(bytes, Ordering::Relaxed);
+            *jb.last_data.lock().unwrap() = Some(Instant::now());
+            *jb.phase.lock().unwrap() = Phase::Downloading;
+            *jb.retry_msg.lock().unwrap() = None;
+            if let Some(t) = total {
+                let mut inner = me.inner.lock().unwrap();
+                if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == jb.id) {
+                    dd.size = Some(t);
+                    dd.resolved = true;
+                }
+            }
+        };
+        let mut attempt = 0u32;
+        let tracks = loop {
+            *job.phase.lock().unwrap() = Phase::Starting;
+            match crate::hls::download(&ctx, url, quality, audio.is_some(), &work, &progress).await {
+                Ok(t) => break t,
+                Err(crate::hls::Error::Cancelled) => return Err(Stop::Cancelled),
+                Err(crate::hls::Error::Net(_)) if attempt < 30 => match job.wait_before_retry(&self.net, attempt, "No connection to the video", 0).await {
+                    None => return Err(Stop::Cancelled),
+                    Some(_) => attempt += 1,
+                },
+                Err(e) => return Err(Stop::Fail(Status::Failed, e.message())),
+            }
+        };
+        // A track whose init section changes part-way came in several files: one file first.
+        let mut tracks = tracks;
+        for (n, t) in tracks.iter_mut().enumerate().filter(|(_, t)| !t.more.is_empty()) {
+            let names: Vec<String> =
+                std::iter::once(&t.path).chain(&t.more).map(|p| p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()).collect();
+            let files: Vec<&str> = names.iter().map(String::as_str).collect();
+            t.path = self.rejoin(job, tools, &work, &format!("track{n}"), &files, t.has_video, t.has_audio, t.size).await?;
+            t.ext = if t.has_video { "mp4" } else { "m4a" }.into();
+            t.more.clear();
+        }
+        let pieces: Vec<crate::video::Piece> = tracks
+            .iter()
+            .map(|t| crate::video::Piece { path: t.path.clone(), ext: t.ext.clone(), has_video: t.has_video, has_audio: t.has_audio })
+            .collect();
+        if audio.is_some() {
+            self.finish_video(job, d, tools, &pieces, audio).await?;
+        } else {
+            *job.phase.lock().unwrap() = Phase::Joining;
+            let stem = video_stem(&d.name);
+            let mut made = None;
+            let mut why = String::new();
+            for (ext, mkv) in [("mp4", false), ("mkv", true)] {
+                let temp = d.dest_dir.join(format!("{stem}.temp.{ext}"));
+                match self.run_ffmpeg(job, tools, crate::hls::join_args(&tracks, &temp, mkv), &temp).await? {
+                    Ok(()) => {
+                        made = Some((temp, ext));
+                        break;
+                    }
+                    Err(w) => why = w,
+                }
+            }
+            let Some((temp, ext)) = made else {
+                let msg = if why.is_empty() {
+                    "Couldn't join picture and sound. Click Try again.".to_string()
+                } else {
+                    format!("Couldn't join picture and sound ({why}). Click Try again.")
+                };
+                return Err(Stop::Fail(Status::Failed, msg));
+            };
+            self.settle_video(job, d, &temp, &stem, ext, &[]).await?;
+        }
+        let _ = std::fs::remove_dir_all(&work);
+        Ok(())
+    }
+
+    /// One track that comes in parts, each with its own init part (a quality change part-way):
+    /// ffmpeg makes them one file, "`stem`-all.mp4" (or .m4a) in `dir`, the parts' folder.
+    #[allow(clippy::too_many_arguments)]
+    async fn rejoin(
+        &self,
+        job: &Arc<Job>,
+        tools: &crate::video::Tools,
+        dir: &std::path::Path,
+        stem: &str,
+        files: &[&str],
+        has_video: bool,
+        has_audio: bool,
+        size: (u32, u32),
+    ) -> Result<PathBuf, Stop> {
+        *job.phase.lock().unwrap() = Phase::Joining;
+        let list = dir.join(format!("{stem}.txt"));
+        let out = dir.join(format!("{stem}-all.{}", if has_video { "mp4" } else { "m4a" }));
+        std::fs::write(&list, crate::stream::parts_list(files.iter().copied())).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+        if let Err(why) = self.run_ffmpeg(job, tools, crate::stream::rejoin_args(&list, has_video, has_audio, size, &out), &out).await? {
+            let why = if why.is_empty() { String::new() } else { format!(" ({why})") };
+            return Err(Stop::Fail(Status::Failed, format!("Couldn't join the video's parts{why}. Click Try again.")));
+        }
+        Ok(out)
+    }
+
+    /// "Record this video": what the page played (one file per track) becomes the video. The
+    /// recording's folder goes once it's done.
+    async fn finish_recording(self: &Arc<Self>, job: &Arc<Job>, d: &Download, tools: &crate::video::Tools, dir: &std::path::Path) -> Result<(), Stop> {
+        let Some(tracks) = crate::stream::recorded_tracks(dir) else {
+            return Err(Stop::Fail(Status::Failed, "The recording is gone. Record the video again.".into()));
+        };
+        let mut pieces: Vec<crate::video::Piece> = Vec::new();
+        for t in &tracks {
+            if t.more.is_empty() {
+                pieces.push(crate::video::Piece { path: dir.join(&t.file), ext: t.ext.clone(), has_video: t.has_video, has_audio: t.has_audio });
+                continue;
+            }
+            // The player changed quality while recording: the parts become one file first.
+            let stem = t.file.split('.').next().unwrap_or("t");
+            let files: Vec<&str> = std::iter::once(t.file.as_str()).chain(t.more.iter().map(String::as_str)).collect();
+            let out = self.rejoin(job, tools, dir, stem, &files, t.has_video, t.has_audio, (t.width, t.height)).await?;
+            pieces.push(crate::video::Piece { path: out, ext: if t.has_video { "mp4" } else { "m4a" }.into(), has_video: t.has_video, has_audio: t.has_audio });
+        }
+        self.finish_video(job, d, tools, &pieces, None).await?;
+        let _ = std::fs::remove_dir_all(dir);
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) {
+            if let Source::Video { recording, .. } = &mut dd.source {
+                *recording = None;
+            }
+        }
+        inner.dirty = true;
+        Ok(())
     }
 
     /// Asks yt-dlp which streams make up the quality (waiting out a lost connection).
-    async fn video_plan(&self, job: &Arc<Job>, link: &str, quality: u32, audio: Option<&str>) -> Result<crate::video::Plan, Stop> {
+    async fn video_plan(&self, job: &Arc<Job>, link: &str, quality: u32, audio: Option<&str>, referrer: Option<&str>) -> Result<crate::video::Plan, Stop> {
         let mut attempt = 0u32;
         loop {
             // The browser's login for this video (deleted again right after the answer).
             let jar = crate::video::cookie_file_for(&job.id);
             let r = tokio::select! {
                 _ = job.cancel.cancelled() => return Err(Stop::Cancelled),
-                r = crate::video::select(link, quality, audio, Duration::from_secs(90), jar.as_ref().map(|j| j.path())) => r,
+                r = crate::video::select(link, quality, audio, Duration::from_secs(90), jar.as_ref().map(|j| j.path()), referrer) => r,
             };
             drop(jar);
             match r {
@@ -1036,6 +1265,7 @@ impl Engine {
         quality: u32,
         audio: Option<&str>,
         mut streams: Vec<crate::video::Stream>,
+        referrer: Option<&str>,
     ) -> Result<bool, Stop> {
         // New addresses are asked for when the old ones are refused (they expire), as long as
         // the download moves between two refusals.
@@ -1070,7 +1300,7 @@ impl Engine {
             }
             if let Some(why) = refused {
                 if crate::video::worth_new_links(&why) && renew(job) {
-                    match self.video_plan(job, link, quality, audio).await? {
+                    match self.video_plan(job, link, quality, audio, referrer).await? {
                         crate::video::Plan::Direct(s) => {
                             streams = s;
                             continue;
@@ -1099,7 +1329,7 @@ impl Engine {
                 }
                 Err(Stop::Fail(_, msg)) if crate::video::worth_new_links(&msg) && renew(job) => {
                     // Addresses expired mid-way: new ones, and the parts already in are kept.
-                    match self.video_plan(job, link, quality, audio).await? {
+                    match self.video_plan(job, link, quality, audio, referrer).await? {
                         crate::video::Plan::Direct(s) => streams = s,
                         _ => return Ok(false),
                     }
@@ -1310,53 +1540,24 @@ impl Engine {
         audio: Option<&str>,
     ) -> Result<(), Stop> {
         *job.phase.lock().unwrap() = if audio.is_some() { Phase::Converting } else { Phase::Joining };
-        let stem = std::path::Path::new(&d.name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Video".into());
+        let stem = video_stem(&d.name);
         let ext = crate::video::finish_plan(pieces, audio, std::path::Path::new("x")).ext;
         // "Title.temp.mp4": what yt-dlp also calls a file being joined (cleaned up on remove).
         let temp = d.dest_dir.join(format!("{stem}.temp.{ext}"));
         let plan = crate::video::finish_plan(pieces, audio, &temp);
         let made = match plan.ffmpeg {
-            None => pieces[0].path.clone(),
-            Some(args) => {
-                let Some(ff) = tools.ffmpeg.clone() else {
-                    return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
-                };
-                let mut cmd = tokio::process::Command::new(ff);
-                cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
-                cmd.kill_on_drop(true);
-                let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't start ffmpeg: {e}")))?;
-                let pid = child.id();
-                let stderr = child.stderr.take();
-                let err_task = tauri::async_runtime::spawn(async move {
-                    let mut lines: Vec<String> = Vec::new();
-                    if let Some(e) = stderr {
-                        crate::video::lines(e, |l| {
-                            if !l.trim().is_empty() {
-                                lines.push(l);
-                            }
-                        })
-                        .await;
-                    }
-                    lines
-                });
-                let status = tokio::select! {
-                    s = child.wait() => s.ok(),
-                    _ = job.cancel.cancelled() => {
-                        if let Some(pid) = pid {
-                            let _ = tauri::async_runtime::spawn_blocking(move || crate::video::kill_tree(pid)).await;
-                        }
-                        let _ = child.wait().await;
-                        None
-                    }
-                };
-                let errors = err_task.await.unwrap_or_default();
-                if job.cancel.is_cancelled() {
+            // The single stream already is the file. One kept elsewhere (a recording) is copied
+            // next to where it goes first.
+            None if pieces[0].path.parent() == Some(d.dest_dir.as_path()) => pieces[0].path.clone(),
+            None => {
+                if let Err(e) = tokio::fs::copy(&pieces[0].path, &temp).await {
                     let _ = std::fs::remove_file(&temp);
-                    return Err(Stop::Cancelled);
+                    return Err(Stop::Fail(Status::Failed, disk_message(&e)));
                 }
-                if !status.is_some_and(|s| s.success()) {
-                    let _ = std::fs::remove_file(&temp);
-                    let why = errors.last().map(|l| l.chars().take(160).collect::<String>()).unwrap_or_default();
+                temp.clone()
+            }
+            Some(args) => {
+                if let Err(why) = self.run_ffmpeg(job, tools, args, &temp).await? {
                     let what = if audio.is_some() { "convert the sound" } else { "join picture and sound" };
                     return Err(Stop::Fail(
                         Status::Failed,
@@ -1366,6 +1567,67 @@ impl Engine {
                 temp.clone()
             }
         };
+        let paths: Vec<PathBuf> = pieces.iter().map(|p| p.path.clone()).collect();
+        self.settle_video(job, d, &made, &stem, &ext, &paths).await
+    }
+
+    /// Runs ffmpeg to make `temp` (stopped with the download). Inner Err = it failed: its last
+    /// words (the half-made file is deleted).
+    async fn run_ffmpeg(&self, job: &Arc<Job>, tools: &crate::video::Tools, args: Vec<std::ffi::OsString>, temp: &std::path::Path) -> Result<Result<(), String>, Stop> {
+        let Some(ff) = tools.ffmpeg.clone() else {
+            return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
+        };
+        let mut cmd = tokio::process::Command::new(ff);
+        cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
+        let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't start ffmpeg: {e}")))?;
+        let pid = child.id();
+        let stderr = child.stderr.take();
+        let err_task = tauri::async_runtime::spawn(async move {
+            let mut lines: Vec<String> = Vec::new();
+            if let Some(e) = stderr {
+                crate::video::lines(e, |l| {
+                    if !l.trim().is_empty() {
+                        lines.push(l);
+                    }
+                })
+                .await;
+            }
+            lines
+        });
+        let status = tokio::select! {
+            s = child.wait() => s.ok(),
+            _ = job.cancel.cancelled() => {
+                if let Some(pid) = pid {
+                    let _ = tauri::async_runtime::spawn_blocking(move || crate::video::kill_tree(pid)).await;
+                }
+                let _ = child.wait().await;
+                None
+            }
+        };
+        let errors = err_task.await.unwrap_or_default();
+        if job.cancel.is_cancelled() {
+            let _ = std::fs::remove_file(temp);
+            return Err(Stop::Cancelled);
+        }
+        if !status.is_some_and(|s| s.success()) {
+            let _ = std::fs::remove_file(temp);
+            return Ok(Err(errors.last().map(|l| l.chars().take(160).collect::<String>()).unwrap_or_default()));
+        }
+        Ok(Ok(()))
+    }
+
+    /// The joined file `made` gets its real name ("stem.ext", or a free one like it), the
+    /// pieces go, and the list notes the file.
+    async fn settle_video(
+        &self,
+        job: &Arc<Job>,
+        d: &Download,
+        made: &std::path::Path,
+        stem: &str,
+        ext: &str,
+        pieces: &[PathBuf],
+    ) -> Result<(), Stop> {
         // Its real name (only recorded once the rename worked).
         let final_name = {
             let inner = self.inner.lock().unwrap();
@@ -1375,7 +1637,7 @@ impl Engine {
         let target = d.dest_dir.join(&final_name);
         let mut tries = 0;
         loop {
-            match std::fs::rename(&made, &target) {
+            match std::fs::rename(made, &target) {
                 Ok(()) => break,
                 // Antivirus or the indexer often holds a just-closed file for a moment.
                 Err(_) if tries < 8 => {
@@ -1391,8 +1653,8 @@ impl Engine {
             }
         }
         for p in pieces {
-            if p.path != made {
-                let _ = std::fs::remove_file(&p.path);
+            if p.as_path() != made {
+                let _ = std::fs::remove_file(p);
             }
         }
         let len = std::fs::metadata(&target).map(|m| m.len()).ok();
@@ -1430,6 +1692,7 @@ impl Engine {
         audio: Option<&str>,
         estimate: Option<u64>,
         fragments: u32,
+        referrer: Option<&str>,
     ) -> Result<(), Stop> {
         let mut attempt = 0u32;
         loop {
@@ -1443,7 +1706,7 @@ impl Engine {
             // The browser's login for this video: kept for this run only.
             let jar = crate::video::cookie_file_for(&d.id);
             let (fragments, rate) = self.ytdlp_budget(fragments);
-            let mut cmd = crate::video::download_command(tools, url, quality, audio, &d.dest_dir, &d.name, fragments, jar.as_ref().map(|j| j.path()), rate);
+            let mut cmd = crate::video::download_command(tools, url, quality, audio, &d.dest_dir, &d.name, fragments, jar.as_ref().map(|j| j.path()), rate, referrer);
             let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't start the video tool: {e}")))?;
             let pid = child.id();
             let stdout = child.stdout.take();
@@ -1561,9 +1824,13 @@ impl Engine {
         }
     }
 
-    /// A site changed and yt-dlp couldn't follow: get the newest yt-dlp in the background.
+    /// A site changed and yt-dlp couldn't follow: get the newest yt-dlp in the background. Only
+    /// with "Update Pako and its tools automatically" on: off, Pako asks GitHub nothing by itself.
     fn update_video_tool(&self) {
         use crate::components::{Kind, install, installed_version, is_installing, latest_version};
+        if !self.settings().auto_update {
+            return;
+        }
         let http = self.http.clone();
         tauri::async_runtime::spawn(async move {
             if is_installing(Kind::YtDlp) {
@@ -1626,7 +1893,15 @@ impl Engine {
         out
     }
 
+    /// Starts the queue, the copied-links catch and the start-up clean-ups, once the terms of
+    /// use are accepted (straight away when they already are; see consent.rs). Until then the
+    /// lists only stay as they are: waiting and paused downloads simply wait.
     pub fn start(self: &Arc<Self>) {
+        let me = self.clone();
+        crate::consent::after(move || me.start_now());
+    }
+
+    fn start_now(self: &Arc<Self>) {
         let notes = std::mem::take(&mut self.inner.lock().unwrap().start_notes);
         if !notes.is_empty() {
             // A list read in part (or from its backup) is saved as read soon, so the copy kept
@@ -1646,6 +1921,19 @@ impl Engine {
                 me.notify("other", &title, &body, Go::none());
             }
         });
+        // Recordings a Pako that closed meanwhile left behind, which no download uses.
+        let recordings: Vec<PathBuf> = self
+            .inner
+            .lock()
+            .unwrap()
+            .downloads
+            .iter()
+            .filter_map(|d| match &d.source {
+                Source::Video { recording: Some(p), .. } => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        std::thread::spawn(move || crate::stream::sweep(&crate::stream::recordings_dir(), &recordings));
         self.recheck_found();
         self.watch_clipboard();
         let me = self.clone();
@@ -1691,6 +1979,10 @@ impl Engine {
             s.tours_done = inner.settings.tours_done.clone();
             // Kept by the theme switch (`theme::theme_set`), so an older copy can't undo it.
             s.theme = inner.settings.theme.clone();
+            // Kept by Links (the hosts picked for files on several hosts).
+            s.mirror_hosts = inner.settings.mirror_hosts.clone();
+            // Kept by the terms of use step (`accept_terms`): an older copy can't undo it.
+            s.terms_accepted = inner.settings.terms_accepted.clone();
             let bytes = serde_json::to_vec_pretty(&s)?;
             if inner.settings_ok {
                 write_atomic(&settings_path(), &bytes)?;
@@ -1788,6 +2080,7 @@ impl Engine {
             total,
             running: inner.jobs.len(),
             notify: inner.settings.ask_notify,
+            here_only: here_only(d),
         })
     }
 
@@ -1875,11 +2168,21 @@ impl Engine {
     // ---------- adding ----------
 
     pub async fn add_links(self: &Arc<Self>, text: &str, dest: Option<PathBuf>) -> AddResult {
+        self.add_links_as(text, dest, false).await
+    }
+
+    /// Links another of your PCs sent (My devices): added like pasted ones, and marked so
+    /// they never bring back what this PC itself serves (`Download::from_device`).
+    pub async fn add_links_from_device(self: &Arc<Self>, text: &str, dest: Option<PathBuf>) -> AddResult {
+        self.add_links_as(text, dest, true).await
+    }
+
+    async fn add_links_as(self: &Arc<Self>, text: &str, dest: Option<PathBuf>, from_device: bool) -> AddResult {
         let dest = dest.unwrap_or_else(|| self.settings().download_dir);
         let mut added = 0;
         let mut errors = Vec::new();
         for link in extract_links(text) {
-            match self.add_one(&link, &dest).await {
+            match self.add_one_as(&link, &dest, from_device).await {
                 Ok(n) => added += n,
                 Err(e) => errors.push(format!("{}: {e}", short(&link))),
             }
@@ -1970,6 +2273,10 @@ impl Engine {
     }
 
     async fn add_one(&self, link: &str, dest: &PathBuf) -> Result<usize> {
+        self.add_one_as(link, dest, false).await
+    }
+
+    async fn add_one_as(&self, link: &str, dest: &PathBuf, from_device: bool) -> Result<usize> {
         if let Some(dl) = drive::parse_link(link) {
             return self.add_drive(link, dl, dest).await;
         }
@@ -1978,7 +2285,9 @@ impl Engine {
             bail!("only http and https links are supported");
         }
         let name = names::from_url(link);
-        self.push(new_download(link, Source::Http { url: link.into() }, name, dest.clone(), None));
+        let mut d = new_download(link, Source::Http { url: link.into() }, name, dest.clone(), None);
+        d.from_device = from_device;
+        self.push(d);
         Ok(1)
     }
 
@@ -2129,6 +2438,8 @@ impl Engine {
     pub fn remove(self: &Arc<Self>, ids: &[String], delete_files: bool) {
         // Videos not finished: yt-dlp's pieces go too (folder, name, running).
         let mut videos: Vec<(PathBuf, String, String, bool)> = Vec::new();
+        // Recordings not joined yet: their folders go too.
+        let mut recordings: Vec<PathBuf> = Vec::new();
         let mut inner = self.inner.lock().unwrap();
         for id in ids {
             let running = inner.jobs.get(id).cloned();
@@ -2139,6 +2450,9 @@ impl Engine {
                 let d = inner.downloads.remove(pos);
                 if running.is_none() {
                     d.remove_part();
+                }
+                if let Source::Video { recording: Some(dir), .. } = &d.source {
+                    recordings.push(dir.clone());
                 }
                 if matches!(d.source, Source::Video { .. }) && d.status != Status::Completed {
                     videos.push((d.dest_dir.clone(), d.name.clone(), d.id.clone(), running.is_some()));
@@ -2154,13 +2468,17 @@ impl Engine {
         }
         inner.dirty = true;
         drop(inner);
+        for dir in recordings {
+            // (One being joined right now is held by ffmpeg: it goes at the next start.)
+            let _ = std::fs::remove_dir_all(dir);
+        }
         for (dir, name, vid, running) in videos {
             // The pieces as they are now (not whatever is there later: the same video may be
             // added again in the meantime and continue them).
             let listed = self.video_leftovers(&dir, &name, &vid);
             if !running {
                 for p in listed {
-                    let _ = std::fs::remove_file(p);
+                    crate::video::remove_piece(&p);
                 }
                 continue;
             }
@@ -2183,7 +2501,7 @@ impl Engine {
                     }
                 }
                 for p in all {
-                    let _ = std::fs::remove_file(p);
+                    crate::video::remove_piece(&p);
                 }
             });
         }
@@ -2484,7 +2802,7 @@ impl Engine {
                 if let Some(d) = place {
                     let others = other_names(&inner.downloads, &d.dest_dir, &d.name);
                     for p in crate::video::leftovers(&d.dest_dir, &d.name, &d.id, &others) {
-                        let _ = std::fs::remove_file(p);
+                        crate::video::remove_piece(&p);
                     }
                 }
             }
@@ -2651,6 +2969,10 @@ impl Engine {
     // ---------- scheduling ----------
 
     fn schedule(self: &Arc<Self>) {
+        // Nothing starts before the terms of use are accepted (see consent.rs).
+        if !crate::consent::ok() {
+            return;
+        }
         let mut to_start = Vec::new();
         {
             let mut inner = self.inner.lock().unwrap();
@@ -2700,8 +3022,11 @@ impl Engine {
                         // Never one in its final checksum check: that work would be thrown away.
                         .filter(|j| *j.phase.lock().unwrap() != Phase::Verifying)
                         .filter_map(|j| {
-                            let p = inner.downloads.iter().find(|d| d.id == j.id)?.priority;
-                            (p > Priority::First).then_some((p, j.started, j.clone()))
+                            let d = inner.downloads.iter().find(|d| d.id == j.id)?;
+                            // Never one that can't continue where it stopped (the server can't
+                            // resume, or its size is unknown): it would start over from zero.
+                            let loses = !matches!(d.source, Source::Video { .. }) && !*j.resumable.lock().unwrap() && j.downloaded.load(Ordering::Relaxed) > 0;
+                            (d.priority > Priority::First && !loses).then_some((d.priority, j.started, j.clone()))
                         })
                         .max_by_key(|(p, started, _)| (*p, *started));
                     match victim {
@@ -2709,14 +3034,17 @@ impl Engine {
                             job.requeue.store(true, Ordering::Relaxed);
                             job.cancel.cancel();
                         }
-                        None => break, // every spot is taken by First downloads: wait
+                        None => break, // every spot is taken by First downloads (or ones that would lose their work): wait
                     }
                     continue;
                 }
                 let d = &mut inner.downloads[i];
                 d.status = Status::Starting;
-                d.message = None;
+                // A host change's note (as after the final check failed) stays while it runs.
+                let note = d.message.take().filter(|m| !d.tried.is_empty() && m.starts_with(&format!("{}: ", d.name)));
                 let job = Arc::new(Job::new(d.id.clone(), CancellationToken::new(), d.downloaded, d.resumable));
+                *job.host_note.lock().unwrap() = note.clone();
+                d.message = note;
                 let id = d.id.clone();
                 inner.jobs.insert(id, job.clone());
                 inner.had_work = true;
@@ -3126,7 +3454,32 @@ impl Engine {
                                 d.message = None;
                             }
                         }
+                        Err(Stop::Fail(_, msg)) if msg == found::SPLICE_FAILED => {
+                            // Continued from another host's bytes, and the whole file failed
+                            // its checksum: the mixed file goes, and it starts over from zero
+                            // on this host (once: the next file is from this host alone).
+                            crate::errorlog::note(crate::errorlog::Area::download(false), &msg);
+                            d.remove_part();
+                            d.segments.clear();
+                            d.downloaded = 0;
+                            d.spliced = false;
+                            d.status = Status::Queued;
+                            d.message = Some(found::splice_failed_note(d));
+                        }
+                        Err(Stop::Fail(status, msg)) if matches!(found::next_host(d, &status, &msg, retried_from.is_some()), found::NextHost::Switch { .. }) => {
+                            // The same file on another host (picked in Links): go on from there.
+                            // Not a failed download (yet): no notification, not counted.
+                            let keep = found::next_host(d, &status, &msg, false) == (found::NextHost::Switch { keep: true });
+                            crate::errorlog::note(crate::errorlog::Area::download(false), &msg);
+                            found::switch_host(d, keep, &msg);
+                        }
                         Err(Stop::Fail(status, msg)) => {
+                            // Every host of a file on several hosts failed: said in the message.
+                            let msg = if found::next_host(d, &status, &msg, retried_from.is_some()) == found::NextHost::AllTried {
+                                found::all_hosts_failed(d, &msg)
+                            } else {
+                                msg
+                            };
                             // Counted once: Pako trying again by itself every few hours
                             // (Google's daily limit) isn't another failed download.
                             if stop_is_news(retried_from.as_ref(), &status) {
@@ -3154,7 +3507,7 @@ impl Engine {
                         // A video: yt-dlp's pieces too (it has stopped), before it can start again.
                         if matches!(d.source, Source::Video { .. }) {
                             for p in crate::video::leftovers(&d.dest_dir, &d.name, &d.id, &others) {
-                                let _ = std::fs::remove_file(p);
+                                crate::video::remove_piece(&p);
                             }
                         }
                         done_ok = false;
@@ -3208,6 +3561,86 @@ impl Engine {
         PENDING_DELETE.lock().unwrap().insert(job.id.clone(), d.part_path());
         let mut fetcher = Fetcher::new(self.http.clone(), &d.source);
         fetcher.set_browser_headers(crate::extension::headers_for(&d.id));
+        fetcher.refuse_this_pc(d.from_device);
+        // With backups, a host that gives no answer with data for 5 minutes gives way to the
+        // next one. Not for Pako's own retry after Google's daily limit: that one stays on its
+        // host (see `found::next_host`).
+        let by_pako = self.inner.lock().unwrap().auto_retry.contains_key(&job.id);
+        if !d.mirrors.is_empty() && !by_pako {
+            job.answers.lock().unwrap().arm(found::NO_ANSWER_AFTER);
+        }
+
+        // 0. Just moved to a host with the same size: a few samples from it must match the
+        //    parts on disk (from the host before) before it goes on from them; else from zero.
+        if d.spot_check {
+            fetcher.set_validator(d.validator.clone());
+            let part = d.part_path();
+            let to_host = found::host_label(&d.link, &d.source);
+            // A sample it can't get right now is asked again (the usual waits, the 5 minutes
+            // still apply): only a clear answer decides. A host that gives up for good ends the
+            // run with the parts kept, and the next host checks them again.
+            let (mut attempt, mut odd) = (0u32, 0u32);
+            let checked: Result<(), String> = loop {
+                if let Some(stop) = job.host_silent() {
+                    return Err(stop);
+                }
+                let r = tokio::select! {
+                    _ = job.cancel.cancelled() => return Err(Stop::Cancelled),
+                    r = found::spot_check(&fetcher, &part, &d.segments, d.size.unwrap_or(0)) => r,
+                };
+                let (why, wait) = match r {
+                    Ok(()) => break Ok(()),
+                    Err(found::SpotFail::Refused(why)) => break Err(why),
+                    Err(found::SpotFail::Gone(e)) => return Err(e.into()),
+                    Err(found::SpotFail::Odd(why)) => {
+                        odd += 1;
+                        if odd > 6 {
+                            break Err("answered a sample oddly".into());
+                        }
+                        (why, 0)
+                    }
+                    Err(found::SpotFail::Again(why, wait)) => (why, wait),
+                };
+                let note = format!("Comparing a few samples from {to_host}: {}", why.trim_end_matches('.'));
+                match job.wait_before_retry(&self.net, attempt, &note, wait).await {
+                    None => return Err(Stop::Cancelled),
+                    Some(true) => attempt = 0,
+                    Some(false) => attempt += 1,
+                }
+            };
+            *job.retry_msg.lock().unwrap() = None;
+            if checked.is_ok() {
+                job.host_answered();
+            }
+            {
+                let mut inner = self.inner.lock().unwrap();
+                let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) else { return Err(Stop::Cancelled) };
+                let from = dd.tried.last().map(|m| found::host_label(&m.link, &m.source)).unwrap_or_else(|| "the host before".into());
+                let to = found::host_label(&dd.link, &dd.source);
+                let note = found::spot_note(&dd.name, &to, &from, &checked);
+                dd.spot_check = false;
+                if checked.is_err() {
+                    // Never a mix on a guess: the parts go, and the file is asked again from
+                    // this host (its size and version), from zero.
+                    dd.remove_part();
+                    dd.segments.clear();
+                    dd.downloaded = 0;
+                    dd.validator = None;
+                    dd.resolved = false;
+                    dd.spliced = false;
+                }
+                if checked.is_err() {
+                    crate::errorlog::note(crate::errorlog::Area::download(false), &note);
+                }
+                *job.host_note.lock().unwrap() = Some(note.clone());
+                dd.message = Some(note);
+                d = dd.clone();
+                inner.dirty = true;
+            }
+            // The answer is on disk before a byte is written from this host.
+            self.save_now();
+            job.downloaded.store(d.downloaded, Ordering::Relaxed);
+        }
 
         // 1. Find out the file's size, name and whether it can be split/resumed.
         if !d.resolved {
@@ -3321,6 +3754,11 @@ impl Engine {
                         job.slots.lock().unwrap().clear();
                         *job.flushed.lock().unwrap() = None;
                         job.downloaded.store(0, Ordering::Relaxed);
+                        // Bytes from two hosts that don't add up: never kept, never stopped
+                        // on; it starts over from zero on this host (see `job_ended`).
+                        if d.spliced {
+                            return Err(Stop::Fail(Status::Failed, found::SPLICE_FAILED.into()));
+                        }
                         return Err(Stop::Fail(
                             Status::Failed,
                             "The file came out damaged (checksum doesn't match). Click Retry to download it again."
@@ -3524,16 +3962,21 @@ impl Engine {
         HOST_BUDGET.saturating_sub(others).max(1)
     }
 
-    /// First request: size, name, resumable. Retries forever on connection problems.
+    /// First request: size, name, resumable. Retries forever on connection problems, except
+    /// for a download with backups whose host hasn't answered for 5 minutes (`Job::host_silent`).
     async fn resolve(&self, job: &Arc<Job>, fetcher: &Fetcher) -> Result<Download, Stop> {
         let mut attempt = 0;
         let info = loop {
+            if let Some(stop) = job.host_silent() {
+                return Err(stop);
+            }
             let r = tokio::select! {
                 _ = job.cancel.cancelled() => return Err(Stop::Cancelled),
                 r = fetcher.get(0, None) => r,
             };
             match r {
                 Ok(resp) => {
+                    job.host_answered();
                     let info = probe_info(&resp);
                     let page = crate::fetch::is_html(&resp);
                     drop(resp); // closes the connection; parts are fetched separately
@@ -3614,6 +4057,7 @@ impl Job {
             connections: AtomicU32::new(0),
             last_data: Mutex::new(None),
             retry_msg: Mutex::new(None),
+            host_note: Mutex::new(None),
             phase: Mutex::new(Phase::Starting),
             resumable: Mutex::new(resumable),
             target: AtomicU32::new(1),
@@ -3626,7 +4070,19 @@ impl Job {
             requeue: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
             flushed: Mutex::new(None),
+            answers: Mutex::new(found::AnswerClock::new(Instant::now())),
         }
+    }
+
+    /// The host answered with data: its 5 minutes start again.
+    fn host_answered(&self) {
+        self.answers.lock().unwrap().answered(Instant::now());
+    }
+
+    /// The host gave no answer with data for 5 minutes and the download has backups: this run
+    /// ends so it can go on from the next host (`job_ended`).
+    fn host_silent(&self) -> Option<Stop> {
+        self.answers.lock().unwrap().silent(Instant::now()).then(|| Stop::Fail(Status::Failed, found::NO_ANSWER.into()))
     }
 
     fn live_status(&self) -> (Status, Option<String>) {
@@ -3640,17 +4096,18 @@ impl Job {
         if phase == Phase::Converting {
             return (Status::Verifying, Some("Converting".into()));
         }
+        let note = self.host_note.lock().unwrap().clone();
         let recent = self.last_data.lock().unwrap().map(|t| t.elapsed() < Duration::from_secs(4)).unwrap_or(false);
         if recent {
-            return (Status::Downloading, None);
+            return (Status::Downloading, note);
         }
         if let Some(m) = self.retry_msg.lock().unwrap().clone() {
             return (Status::Retrying, Some(m));
         }
         if phase == Phase::Starting {
-            (Status::Starting, None)
+            (Status::Starting, note)
         } else {
-            (Status::Downloading, None)
+            (Status::Downloading, note)
         }
     }
 
@@ -3668,9 +4125,13 @@ impl Job {
         self.disturbed.store(true, Ordering::Relaxed);
         if !net.online().await {
             *self.retry_msg.lock().unwrap() = Some("No internet connection. Waiting for it to come back".into());
+            // No internet here isn't the host's fault: its 5 minutes start again.
+            self.host_answered();
             // Wait for it a minute at most, then try the server anyway with the normal
             // delays below: the test addresses may be blocked here while the server works.
-            if net.wait_online(stop, OFFLINE_WAIT).await? {
+            let back = net.wait_online(stop, OFFLINE_WAIT).await?;
+            self.host_answered();
+            if back {
                 *self.retry_msg.lock().unwrap() = Some("Internet is back. Reconnecting".into());
                 let jitter = rand::random::<u64>() % 800;
                 tokio::select! {
@@ -3680,7 +4141,11 @@ impl Job {
                 return Some(true);
             }
         }
-        let secs = (2u64 << attempt.min(5)).min(60).max(min_wait);
+        let mut secs = (2u64 << attempt.min(5)).min(60).max(min_wait);
+        // A download with backups: never waits past its host's 5 minutes (then it moves on).
+        if let Some(left) = self.answers.lock().unwrap().left(Instant::now()) {
+            secs = secs.min(left.as_secs() + 1);
+        }
         let jitter = rand::random::<u64>() % 1000;
         *self.retry_msg.lock().unwrap() = Some(format!("{msg}. Trying again in {secs}s"));
         tokio::select! {
@@ -3800,6 +4265,11 @@ impl Worker {
         // Odd answers from Google to "continue from here" (see below), tried again a few times.
         let mut odd_tries = 0u32;
         loop {
+            // A download with backups whose host hasn't answered with data for 5 minutes
+            // (dead, refusing, busy for good) stops here and goes on from the next host.
+            if let Some(stop) = self.job.host_silent() {
+                return Err(stop);
+            }
             let (pos, end) = {
                 let slots = self.job.slots.lock().unwrap();
                 let s = &slots[i].seg;
@@ -3946,6 +4416,7 @@ impl Worker {
                     Some(Ok(chunk)) => {
                         buf.extend_from_slice(&chunk);
                         *self.job.last_data.lock().unwrap() = Some(Instant::now());
+                        self.job.host_answered();
                         // The speed limit's wait (long when the limit is low and many
                         // connections share it) ends at once on Pause: what came in is kept.
                         tokio::select! {
@@ -3955,6 +4426,8 @@ impl Worker {
                             }
                             _ = self.limiter.acquire(chunk.len()) => {}
                         }
+                        // Time spent on this side (the speed limit) isn't the host's silence.
+                        self.job.host_answered();
                         if buf.len() >= FLUSH_AT {
                             progressed = true;
                             if let Flush::PartDone = self.flush(i, &mut cur, &mut buf)? {
@@ -4019,6 +4492,9 @@ impl Worker {
         if writable > 0 {
             // A slow disk (USB drive, busy hard disk) holds up this connection only.
             off_async(|| write_all_at(&self.file, &buf[..writable], *cur)).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+            // These bytes came from the host just before: a slow write (a big file on a USB
+            // drive fills the gap before it with zeros first) isn't the host's silence.
+            self.job.host_answered();
         }
         let mut slots = self.job.slots.lock().unwrap();
         let s = &mut slots[i].seg;
@@ -4036,6 +4512,11 @@ impl Worker {
 }
 
 /// A video stream's piece on disk, to join.
+/// A video's name without its extension ("Video" when it has none).
+fn video_stem(name: &str) -> String {
+    std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Video".into())
+}
+
 fn piece_of(d: &Download, s: &StreamPart) -> crate::video::Piece {
     crate::video::Piece {
         path: crate::video::stream_part(&d.dest_dir, &d.name, &d.id, &s.format_id, &s.ext),
@@ -4209,6 +4690,9 @@ fn taken_paths(list: &[Download], except: Option<&str>) -> HashSet<String> {
 /// "Start over" on a web link: ask the server again for the file's size and version, since
 /// the usual reason to start over is that the file changed there (resuming would refuse it).
 fn recheck_server(d: &mut Download) {
+    // From zero: nothing from another host is left to check or to start over from.
+    d.spot_check = false;
+    d.spliced = false;
     match d.source {
         Source::Http { .. } => d.resolved = false,
         // A Drive file replaced by a newer version: its size is asked again (else every run
@@ -4285,6 +4769,11 @@ fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, gro
         validator: None,
         ask: false,
         quiet: false,
+        mirrors: Vec::new(),
+        tried: Vec::new(),
+        spot_check: false,
+        spliced: false,
+        from_device: false,
     }
 }
 
@@ -4369,6 +4858,28 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
+
+    /// A video caught on a page or a recording never goes to another PC ("Download on").
+    #[test]
+    fn caught_videos_and_recordings_stay_here() {
+        let video = |caught: bool, recording: Option<PathBuf>| Source::Video {
+            url: "https://cdn.example/m.m3u8".into(),
+            quality: None,
+            audio: None,
+            options: Vec::new(),
+            audio_size: None,
+            duration: None,
+            streams: Vec::new(),
+            referrer: None,
+            caught,
+            recording,
+        };
+        let d = |s: Source| new_download("https://page.example/v", s, "v.mp4".into(), PathBuf::from(r"C:\D"), None);
+        assert!(super::here_only(&d(video(true, None))));
+        assert!(super::here_only(&d(video(false, Some(PathBuf::from(r"C:\t\rec-1"))))));
+        assert!(!super::here_only(&d(video(false, None))));
+        assert!(!super::here_only(&d(Source::Http { url: "https://a.example/f.zip".into() })));
+    }
 
     #[test]
     fn a_stop_is_said_only_when_it_is_news() {
@@ -4605,6 +5116,7 @@ mod real_video {
         let quality: u32 = std::env::var("PAKO_REAL_QUALITY").ok().and_then(|q| q.parse().ok()).unwrap_or(720);
         let dest = std::env::temp_dir().join(format!("pako-real-video-{}", std::process::id()));
         let engine = Engine::new(Arc::new(|_, _| {}));
+        crate::consent::open();
         let src = Source::Video {
             url: url.clone(),
             quality: Some(quality),
@@ -4613,6 +5125,9 @@ mod real_video {
             audio_size: None,
             duration: None,
             streams: Vec::new(),
+            referrer: None,
+            caught: false,
+            recording: None,
         };
         let d = new_download(&url, src, "Real test.mp4".into(), dest.clone(), None);
         let id = d.id.clone();

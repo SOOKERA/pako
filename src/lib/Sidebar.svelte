@@ -5,6 +5,7 @@
   import { api } from "./api";
   import type { MenuItem } from "./menu";
   import { SUGGESTED_TAGS } from "./direct";
+  import { devices } from "./devices.svelte";
   import Icon from "./Icon.svelte";
   import Modal from "./Modal.svelte";
   import { help } from "./help/help.svelte";
@@ -14,6 +15,9 @@
     onsettings,
     onmenu,
   }: { onsettings: (section?: "accounts") => void; onmenu?: (x: number, y: number, items: MenuItem[]) => void } = $props();
+
+  // My devices: its badge (pairing questions, files moving) shows from any page.
+  devices.start();
 
   // ---------- Direct: filters and your tags ----------
   const directShows: { key: string; label: string; icon?: string; dot?: string }[] = [
@@ -99,7 +103,7 @@
     </button>
     <button class="view" data-tour="nav-found" class:on={app.view === "found"} role="tab" aria-selected={app.view === "found"} onclick={() => (app.view = "found")}>
       <span class="lead"><Icon name="link" size={16} stroke={1.9} />Links</span>
-      {#if app.found.length}<span class="badge" title="{app.found.length} waiting to be picked" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.found.length}</span>{/if}
+      {#if app.foundCounts.all}<span class="badge" title="{app.foundCounts.all} waiting to be picked" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.foundCounts.all}</span>{/if}
     </button>
     <button class="view" data-tour="nav-send" class:on={app.view === "send"} role="tab" aria-selected={app.view === "send"} onclick={() => (app.view = "send")}>
       <span class="lead"><Icon name="upload" size={16} stroke={1.9} />Upload</span>
@@ -115,6 +119,14 @@
         <span class="run" title="{app.directMoving} moving"><span class="live"></span>{app.directMoving}</span>
       {/if}
     </button>
+    <button class="view" data-tour="nav-devices" class:on={app.view === "devices"} role="tab" aria-selected={app.view === "devices"} onclick={() => (app.view = "devices")}>
+      <span class="lead"><Icon name="devices" size={16} stroke={1.9} />My devices</span>
+      {#if devices.waiting}
+        <span class="badge attn" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{devices.waiting}</span>
+      {:else if devices.moving}
+        <span class="run" title="{devices.moving} moving"><span class="live"></span>{devices.moving}</span>
+      {/if}
+    </button>
     <button class="view" data-tour="nav-dashboard" class:on={app.view === "dashboard"} role="tab" aria-selected={app.view === "dashboard"} onclick={() => (app.view = "dashboard")}>
       <span class="lead"><Icon name="chart" size={16} stroke={1.9} />Dashboard</span>
     </button>
@@ -122,8 +134,8 @@
 
   {#key app.view}
   <div class="filters" data-tour="filters" in:fadeIn={{ duration: 160 }}>
-  {#if app.view !== "dashboard" && app.view !== "send"}<div class="label">Show</div>{/if}
-  {#if app.view === "dashboard" || app.view === "send"}
+  {#if app.view !== "dashboard" && app.view !== "send" && app.view !== "devices"}<div class="label">Show</div>{/if}
+  {#if app.view === "dashboard" || app.view === "send" || app.view === "devices"}
     <!-- the Dashboard has its own period picker -->
   {:else if app.view === "direct"}
     <nav>

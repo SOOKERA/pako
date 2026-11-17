@@ -2,7 +2,7 @@
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
   import { untrack } from "svelte";
-  import { app, type Row, type SortKey } from "./state.svelte";
+  import { app, hostName, hostSwitch, type Row, type SortKey } from "./state.svelte";
   import { api, inApp, isActive, type Download } from "./api";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
   import { bytes, bytesOf, extension, sourceOf, speed, statusLook, timeLeft, shortDate, dateTitle } from "./format";
@@ -484,6 +484,9 @@
               <div class="cell name">
                 {#if r.kind === "child"}<span class="rail" class:end={r.last}></span>{/if}
                 <MiddleText text={d.name} class="nm" />
+                {#if hostSwitch(d)}
+                  <span class="via" title={hostSwitch(d)}>from {hostName(d)}</span>
+                {/if}
                 {#if d.priority === "first"}
                   <span class="prio first" title="Priority: First (starts before the others)"><Icon name="up" size={11} stroke={2.6} /></span>
                 {:else if d.priority === "later"}
@@ -774,6 +777,22 @@
     border-radius: var(--radius-sm);
     display: grid;
     place-items: center;
+  }
+  /* Continuing from a backup host (the first one failed): a quiet note, never red. */
+  .via {
+    flex: 0 1000 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    height: 18px;
+    line-height: 18px;
+    padding: 0 7px;
+    border-radius: var(--radius-sm);
+    background: var(--active);
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 500;
   }
   /* "First" is a choice, not a problem: bright grey, never red. */
   .prio.first {

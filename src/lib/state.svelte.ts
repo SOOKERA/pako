@@ -1,21 +1,56 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // All window state in one place: the list, live progress, filters, selection, folders, panels.
-import { api, canDownload, isActive, isProblem, listen, type ComponentKind, type Download, type FoundItem, type Progress, type SetView, type Settings, type Status, type UpdateView, type WhenDone, type SendJob, type SentItem, type SendMode, type SendHost, type PathSize, type DirectState, inApp } from "./api";
+import { api, canDownload, isActive, isProblem, listen, type ComponentKind, type Download, type FoundItem, type MirrorView, type Progress, type SetView, type Settings, type Status, type UpdateView, type WhenDone, type SendJob, type SentItem, type SendMode, type SendHost, type PathSize, type DirectState, inApp } from "./api";
 import { mostUrgent, sourceOf } from "./format";
 import { matchesFilter, sortContacts, type DirectFilter } from "./direct";
+import { devices } from "./devices.svelte";
 import type { Go, Notice } from "./notices";
 
 export type Library = "all" | "active" | "waiting" | "done" | "problems";
 /** The two lists, switched from the top of the sidebar. */
-export type View = "downloads" | "found" | "send" | "direct" | "dashboard";
+export type View = "downloads" | "found" | "send" | "direct" | "devices" | "dashboard";
 export type FoundFilter = "all" | "ready" | "needs" | "broken" | "checking";
 
-/** One line in the Found table: a link, a Drive folder header, or a file inside it. */
+/** The same file on several hosts: its rows, the one that downloads, and each row's host. */
+export interface FoundMirror {
+  key: string;
+  /** Every host's row, in the order the links came in. */
+  items: FoundItem[];
+  /** The row that downloads (null = every host is broken). */
+  chosen: FoundItem | null;
+  /** The user picked that host. */
+  picked: boolean;
+  hostOf: Map<string, string>;
+}
+
+/** One line in the Found table: a link, a Drive folder header, or a file inside it. A file on
+ *  several hosts is one line (`mirror`), showing the host it will use. */
 export type FoundRow =
-  | { kind: "file"; f: FoundItem }
-  | { kind: "child"; f: FoundItem; folderKey: string; last: boolean }
+  | { kind: "file"; f: FoundItem; mirror?: FoundMirror }
+  | { kind: "child"; f: FoundItem; folderKey: string; last: boolean; mirror?: FoundMirror }
   | { kind: "folder"; key: string; name: string; items: FoundItem[]; open: boolean; set?: { missing: string[] } };
+
+/** The host a download (or one of its backups) uses, in the window's words. */
+export function hostName(x: Pick<Download, "link" | "source">): string {
+  return sourceOf(x as Download).label;
+}
+
+/** A download that left a host that failed for good: "Holiday.zip: continuing from B (A didn't
+ *  work)". Null while it hasn't (or when every host failed: its message says so). */
+export function hostSwitch(d: Download): string | null {
+  const tried = d.tried ?? [];
+  if (!tried.length || d.status === "failed" || d.status === "completed") return null;
+  const from = tried.map(hostName).join(", ");
+  return `${d.name}: continuing from ${hostName(d)} (${from} didn't work)`;
+}
+
+/** One host's row of a file on several hosts, in the host list's words. */
+export function hostLook(f: FoundItem): { label: "Ready" | "Checking" | "Broken"; color: string } {
+  if (f.state === "ready") return { label: "Ready", color: "var(--st-done-text)" };
+  if (f.state === "checking" || f.state === "opening") return { label: "Checking", color: "var(--st-check-text)" };
+  return { label: "Broken", color: "var(--st-fail-text)" };
+}
 
 function matchesFound(f: FoundItem, filter: FoundFilter) {
   switch (filter) {
@@ -140,6 +175,8 @@ class AppState {
   version = $state("");
   /** Installed with Pako Setup (false = the portable Pako.exe). */
   installed = $state(false);
+  /** The terms of use wait to be accepted (the window shows only them; see consent.rs). */
+  termsNeeded = $state(false);
   loaded = $state(false);
 
   view = $state<View>("downloads");
@@ -528,12 +565,15 @@ class AppState {
 
   // ---------- Found tab ----------
 
+  /** Rows each filter shows: a file on several hosts counts once (as in the list). */
   foundCounts = $derived.by(() => {
-    const c = { all: 0, ready: 0, needs: 0, broken: 0, checking: 0 } as Record<FoundFilter, number>;
+    const keys = { all: new Set<string>(), ready: new Set<string>(), needs: new Set<string>(), broken: new Set<string>(), checking: new Set<string>() } as Record<FoundFilter, Set<string>>;
     for (const f of this.found) {
-      c.all++;
-      for (const k of ["ready", "needs", "broken", "checking"] as FoundFilter[]) if (matchesFound(f, k)) c[k]++;
+      const key = this.mirrorOf.get(f.id)?.key ?? f.id;
+      for (const k of ["all", "ready", "needs", "broken", "checking"] as FoundFilter[]) if (matchesFound(f, k)) keys[k].add(key);
     }
+    const c = {} as Record<FoundFilter, number>;
+    for (const k of Object.keys(keys) as FoundFilter[]) c[k] = keys[k].size;
     return c;
   });
 
@@ -576,28 +616,69 @@ class AppState {
     this.foundSetViews.map((s) => ({ ...s, members: this.found.filter((f) => s.ids.includes(f.id)) })),
   );
 
+  /** The same file on several hosts, as the engine sees it. */
+  foundMirrorViews = $state<MirrorView[]>([]);
+  /** Each grouped row's group (every host's row points to the same one). */
+  mirrorOf = $derived.by(() => {
+    const out = new Map<string, FoundMirror>();
+    const byId = new Map(this.found.map((f) => [f.id, f]));
+    for (const m of this.foundMirrorViews) {
+      const items = m.ids.map((id) => byId.get(id)).filter((f): f is FoundItem => !!f);
+      if (items.length < 2) continue;
+      const g: FoundMirror = {
+        key: m.key,
+        items,
+        chosen: (m.chosen && byId.get(m.chosen)) || null,
+        picked: m.picked,
+        hostOf: new Map(m.ids.map((id, i) => [id, m.hosts[i] ?? ""])),
+      };
+      for (const f of items) out.set(f.id, g);
+    }
+    return out;
+  });
+
+  /** Visible rows, a file on several hosts once: the row of the host it will use (or the first
+   *  of its rows that passes the filter). */
+  foundShown = $derived.by(() => {
+    const seen = new Set<string>();
+    const shown = new Set(this.foundVisible.map((f) => f.id));
+    const out: { f: FoundItem; mirror?: FoundMirror }[] = [];
+    for (const f of this.foundVisible) {
+      const m = this.mirrorOf.get(f.id);
+      if (!m) {
+        out.push({ f });
+        continue;
+      }
+      if (seen.has(m.key)) continue;
+      seen.add(m.key);
+      out.push({ f: m.chosen && shown.has(m.chosen.id) ? m.chosen : f, mirror: m });
+    }
+    return out;
+  });
+
   foundRows = $derived.by(() => {
     const rows: FoundRow[] = [];
-    const groups = new Map<string, FoundItem[]>();
-    const order: (FoundItem | string)[] = [];
+    const groups = new Map<string, { f: FoundItem; mirror?: FoundMirror }[]>();
+    const order: ({ f: FoundItem; mirror?: FoundMirror } | string)[] = [];
     const setOf = new Map<string, string>();
     const missingOf = new Map<string, string[]>();
     for (const s of this.foundSets) {
       missingOf.set(s.key, s.missing);
       for (const f of s.members) setOf.set(f.id, s.key);
     }
-    for (const f of this.foundVisible) {
+    for (const it of this.foundShown) {
+      const f = it.f;
       const setKey = setOf.get(f.id);
       if (setKey) {
         if (!groups.has(setKey)) {
           groups.set(setKey, []);
           order.push(setKey);
         }
-        groups.get(setKey)!.push(f);
+        groups.get(setKey)!.push(it);
         continue;
       }
       if (!f.folder) {
-        order.push(f);
+        order.push(it);
         continue;
       }
       const key = f.folder + "|" + f.template.link;
@@ -605,22 +686,57 @@ class AppState {
         groups.set(key, []);
         order.push(key);
       }
-      groups.get(key)!.push(f);
+      groups.get(key)!.push(it);
     }
     for (const item of order) {
       if (typeof item !== "string") {
-        rows.push({ kind: "file", f: item });
+        rows.push({ kind: "file", f: item.f, mirror: item.mirror });
         continue;
       }
-      const items = groups.get(item)!;
+      // A part on several hosts counts once (the host it will use).
+      const members = groups.get(item)!;
+      const items = members.map((m) => m.f);
       const open = !this.foundCollapsed.has(item);
       const set = missingOf.get(item);
       const name = set ? (this.foundSets.find((s) => s.key === item)?.base ?? "Archive") : (items[0].folder ?? "Folder");
       rows.push({ kind: "folder", key: item, name, items, open, set: set ? { missing: set } : undefined });
-      if (open) items.forEach((f, i) => rows.push({ kind: "child", f, folderKey: item, last: i === items.length - 1 }));
+      if (open) members.forEach((m, i) => rows.push({ kind: "child", f: m.f, folderKey: item, last: i === members.length - 1, mirror: m.mirror }));
     }
     return rows;
   });
+
+  /** Rows with a file on several hosts once (its first row given). */
+  oncePerFile(items: FoundItem[]): FoundItem[] {
+    const seen = new Set<string>();
+    return items.filter((f) => {
+      const m = this.mirrorOf.get(f.id);
+      if (!m) return true;
+      if (seen.has(m.key)) return false;
+      seen.add(m.key);
+      return true;
+    });
+  }
+
+  /** Rows plus every other host's row of the files on several hosts among them. */
+  withMirrors(items: FoundItem[]): FoundItem[] {
+    const out = new Map<string, FoundItem>();
+    for (const f of items) {
+      const m = this.mirrorOf.get(f.id);
+      for (const x of m ? m.items : [f]) out.set(x.id, x);
+    }
+    return [...out.values()];
+  }
+
+  /** Same file on several hosts: download from these rows' hosts (a split set's parts on one
+   *  host at once). A host's row in the details panel stays there. */
+  async pickHost(ids: string[]) {
+    if (!ids.length) return;
+    const focus = this.foundFocus;
+    const follow = !!focus && !focus.startsWith("g:") && ids.some((id) => this.mirrorOf.get(id)?.items.some((f) => f.id === focus));
+    await this.run(() => api.foundPickHost(ids));
+    await this.refresh();
+    if (follow) this.foundFocus = ids[0];
+  }
 
   /** What the Found details panel shows and changes: one link, or the files of a folder
    *  that pass the filter/search (the same ones as its row). */
@@ -631,7 +747,8 @@ class AppState {
       const key = k.slice(2);
       const set = this.foundSets.find((s) => s.key === key);
       if (set) {
-        const shown = new Set(this.foundVisible.map((f) => f.id));
+        // A part on several hosts once (the row it shows).
+        const shown = new Set(this.foundShown.map((r) => r.f.id));
         return set.members.filter((f) => shown.has(f.id));
       }
       return this.foundVisible.filter((f) => f.folder && f.folder + "|" + f.template.link === key);
@@ -640,18 +757,28 @@ class AppState {
     return f ? [f] : [];
   });
 
-  /** Ticked rows that can download (what the Download button acts on). */
-  picked = $derived(this.foundVisible.filter((f) => this.isTicked(f) && canDownload(f)));
+  /** Ticked rows that can download (what the Download button acts on). A file on several hosts
+   *  counts once: the engine downloads it from its chosen host. */
+  picked = $derived(this.foundShown.map((r) => r.f).filter((f) => this.isTicked(f) && canDownload(f)));
   pickedSize = $derived(this.picked.reduce((s, f) => s + (f.template.size ?? 0), 0));
-  /** Every ticked row (what Remove acts on). */
-  ticked = $derived(this.foundVisible.filter((f) => this.isTicked(f)));
+  /** Every ticked row (what Remove acts on), with all hosts of a file on several hosts. */
+  ticked = $derived(this.withMirrors(this.foundShown.map((r) => r.f).filter((f) => this.isTicked(f))));
 
   isTicked(f: FoundItem) {
-    return this.picks.get(f.id) ?? canDownload(f);
+    const own = this.picks.get(f.id);
+    if (own !== undefined) return own;
+    // A host that joined a file on several hosts after you ticked or unticked it: the file's
+    // tick, not a fresh one (else unticking a file would come undone when its next host is checked).
+    for (const x of this.mirrorOf.get(f.id)?.items ?? []) {
+      const p = this.picks.get(x.id);
+      if (p !== undefined) return p;
+    }
+    return canDownload(f);
   }
   setTicked(items: FoundItem[], on: boolean) {
     const next = new Map(this.picks);
-    for (const f of items) next.set(f.id, on);
+    // Every host of a file on several hosts together: picking another host keeps the tick.
+    for (const f of this.withMirrors(items)) next.set(f.id, on);
     this.picks = next;
   }
   toggleFoundFolder(key: string) {
@@ -718,6 +845,7 @@ class AppState {
       this.downloads = s.downloads;
       this.found = s.found ?? [];
       this.foundSetViews = s.foundSets ?? [];
+      this.foundMirrorViews = s.foundMirrors ?? [];
       this.downloadSets = s.downloadSets ?? [];
       const foundIds = new Set(this.found.map((f) => f.id));
       const keepPicks = [...this.picks].filter(([id]) => foundIds.has(id));
@@ -728,6 +856,7 @@ class AppState {
       this.ffmpeg = s.ffmpeg ?? false;
       this.version = s.version ?? "";
       this.installed = s.installed ?? false;
+      this.termsNeeded = s.termsNeeded ?? false;
       this.loaded = true;
       // Forget selections of downloads that are gone.
       const ids = new Set(s.downloads.map((d) => d.id));
@@ -1166,6 +1295,13 @@ class AppState {
       case "dashboard":
         this.view = "dashboard";
         break;
+      case "devices":
+        this.view = "devices";
+        if (id ?? go.peer) devices.picked = (id ?? go.peer)!;
+        break;
+      case "update":
+        this.restartForUpdate();
+        break;
     }
   }
 
@@ -1213,14 +1349,17 @@ class AppState {
   update = $state<UpdateView | null>(null);
 
   /** Restarts into the downloaded update. Asks first if downloads run (they stop and continue
-   *  after the restart) or uploads run (they stop and don't continue). */
+   *  after the restart), uploads run (they stop and don't continue) or files move in Direct or
+   *  between your devices (they stop and have to be sent again), as Quit does. */
   async restartForUpdate() {
     const n = this.runningCount;
     const u = this.uploadingCount;
-    if (n || u) {
+    const d = this.directMoving;
+    if (n || u || d) {
       const lines: string[] = [];
       if (n) lines.push(`${n === 1 ? "A download is" : `${n} downloads are`} running. ${n === 1 ? "It continues" : "They continue"} where ${n === 1 ? "it" : "they"} left off after the restart.`);
       if (u) lines.push(uploadsStopNote(u));
+      if (d) lines.push(`Files going to or from your contacts in Direct stop${n || u ? " too" : ""}: they have to be sent again.`);
       if (!(await askFirst("Restart Pako?", `${lines.join("\n\n")}\n\nRestart now?`))) return;
     }
     await this.run(() => api.updateRestart());

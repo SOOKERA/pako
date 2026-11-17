@@ -5,7 +5,7 @@
 #
 #   1. Raise the version in src-tauri/Cargo.toml, src-tauri/tauri.conf.json AND package.json (same number).
 #   2. powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Notes "What's new"
-#   3. Upload all six files in dist/<version>/ to a GitHub release tagged v<version> in
+#   3. Upload all the files in dist/<version>/ to a GitHub release tagged v<version> in
 #      sookera/pako-releases (attached to the release, names unchanged):
 #        Pako.exe        the portable Pako, and the file Pako's own updates download (both kinds)
 #        Pako-Setup.exe  the installer (per user, no admin): same Pako.exe inside
@@ -15,11 +15,27 @@
 #        LICENSE         the GNU GPL version 3, and NOTICE.md: the copyright and Sookera's
 #        NOTICE.md       additional terms (they go with every copy; the installer puts them next to
 #                        Pako.exe too, from bundle.resources in tauri.conf.json)
+#        pako-firefox-<extension version>.xpi
+#                        the Firefox extension signed by Mozilla (scripts/sign-firefox.ps1; the
+#                        same file is built into Pako.exe)
+#        pako-firefox.xpi
+#                        the same file under a fixed name, for the website's one-click link
+#                        (releases/latest/download/pako-firefox.xpi)
+#        firefox-updates.json
+#                        where Firefox looks for the extension's updates (update_url in
+#                        extension/manifest.firefox.json: releases/latest/download/…), pointing at
+#                        that .xpi in this release
+#
+# The extension changed since the last release? Raise its version (both extension manifests) and
+# run scripts/sign-firefox.ps1 BEFORE this script: a release stops without the signed file for the
+# extension's current version (-WithoutFirefox builds one without, saying Firefox isn't available,
+# and with no Firefox updates).
 #
 # The signing key is in %USERPROFILE%\.pako-signing (made once with: cargo run -- --release keygen
 # in src-tauri). Keep a backup of it: without it, Pako can't take updates any more.
 param(
-    [string]$Notes = ""
+    [string]$Notes = "",
+    [switch]$WithoutFirefox
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -40,6 +56,40 @@ if ($whatsNew -match '(?m)^##\s+Next version\s*$') {
 }
 if ($whatsNew -notmatch "(?m)^##\s+(Pako\s+)?$([regex]::Escape($version))\s*$") {
     throw "docs/help/whats-new.md has no '## $version' section: Pako would show no What's new after this update."
+}
+# Fixes a user would notice go in one "### Fixed" group, the last of the version's section.
+$sectionAt = '(?ms)^##[ \t]+(Pako[ \t]+)?' + [regex]::Escape($version) + '[ \t]*\r?$(.*?)(?=^##[ \t]|\z)'
+$section = [regex]::Match($whatsNew, $sectionAt).Groups[2].Value
+$groups = @([regex]::Matches($section, '(?m)^###[ \t]+(.+?)[ \t]*\r?$') | ForEach-Object { $_.Groups[1].Value })
+if (-not $groups.Count) { throw "docs/help/whats-new.md: the '## $version' section has no '### ...' groups." }
+$fixed = @(for ($i = 0; $i -lt $groups.Count; $i++) { if ($groups[$i] -eq "Fixed") { $i } })
+if ($fixed.Count -gt 1) { throw "docs/help/whats-new.md: the '## $version' section has more than one '### Fixed' group." }
+if ($fixed.Count -eq 1 -and $fixed[0] -ne $groups.Count - 1) { throw "docs/help/whats-new.md: '### Fixed' must be the last group of '## $version'." }
+# The Firefox extension signed by Mozilla, for the extension's current version (src-tauri/build.rs
+# builds the same file into Pako.exe).
+$extManifest = Get-Content (Join-Path $root "extension/manifest.firefox.json") -Raw | ConvertFrom-Json
+$extVersion = $extManifest.version
+$extChromium = (Get-Content (Join-Path $root "extension/manifest.chromium.json") -Raw | ConvertFrom-Json).version
+if ($extVersion -ne $extChromium) {
+    throw "extension/manifest.firefox.json says $extVersion but manifest.chromium.json says ${extChromium}: make them the same first."
+}
+$xpiName = "pako-firefox-$extVersion.xpi"
+$signedXpi = Join-Path $root "dist/extension/signed/$xpiName"
+if (-not (Test-Path $signedXpi) -and -not $WithoutFirefox) {
+    throw "No Firefox extension signed for version $extVersion ($signedXpi): run scripts/sign-firefox.ps1 first (or -WithoutFirefox for a release without Firefox)."
+}
+# The signed file must be the extension as it is now: one signed before the extension changed
+# (same version) would ship the old extension to Firefox, inside Pako.exe and in the release.
+if (Test-Path $signedXpi) {
+    Push-Location $root
+    try {
+        node extension/build.mjs | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "The extension build failed." }
+        node scripts/check-firefox-xpi.mjs $signedXpi (Join-Path $root "dist/extension/firefox")
+        if ($LASTEXITCODE -ne 0) {
+            throw "The signed Firefox extension ($xpiName) isn't the extension as it is now (above). Raise ""version"" in both extension manifests and run scripts/sign-firefox.ps1 again."
+        }
+    } finally { Pop-Location }
 }
 # Pako's Drive key must be built in (it lists public Drive folders): stop before building without it.
 $keyFile = Join-Path $root "signing/drive_api_key.txt"
@@ -94,6 +144,25 @@ try {
     # (A very short user name would also match ordinary text: the folder checks cover it then.)
     if ($env:USERNAME.Length -ge 4) { $personal += $env:USERNAME }
     $bytes = [System.IO.File]::ReadAllBytes($exe)
+    # Pako.exe takes Windows' DLLs from System32 only (src-tauri/build.rs, system_dlls_only): a
+    # file named like one of them next to a portable Pako.exe must never be loaded. Read from the
+    # exe itself (its "load configuration", DependentLoadFlags = 0x800), so a build that lost the
+    # linker setting isn't released.
+    $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+    $opt = $pe + 24
+    $cfgRva = [BitConverter]::ToUInt32($bytes, $opt + 112 + 80)
+    $sec = $opt + [BitConverter]::ToUInt16($bytes, $pe + 20)
+    $cfgAt = -1
+    for ($i = 0; $i -lt [BitConverter]::ToUInt16($bytes, $pe + 6); $i++) {
+        $va = [BitConverter]::ToUInt32($bytes, $sec + 12)
+        if ($cfgRva -ge $va -and $cfgRva -lt $va + [BitConverter]::ToUInt32($bytes, $sec + 8)) {
+            $cfgAt = $cfgRva - $va + [BitConverter]::ToUInt32($bytes, $sec + 20)
+        }
+        $sec += 40
+    }
+    if ([BitConverter]::ToUInt16($bytes, $opt) -ne 0x20B -or $cfgAt -lt 0 -or [BitConverter]::ToUInt16($bytes, $cfgAt + 0x4E) -ne 0x800) {
+        throw "Pako.exe would load DLLs from its own folder (DependentLoadFlags isn't 0x800): check system_dlls_only in src-tauri/build.rs, then build again."
+    }
     $texts = @(
         [System.Text.Encoding]::GetEncoding(28591).GetString($bytes),
         [System.Text.Encoding]::Unicode.GetString($bytes),
@@ -122,6 +191,25 @@ try {
         if (-not (Test-Path $from)) { throw "$legal is missing: a release must carry the licence." }
         Copy-Item $from (Join-Path $out $legal) -Force
     }
+    # Firefox: the signed extension and the update file Firefox reads (Mozilla's update manifest:
+    # https://extensionworkshop.com/documentation/manage/updating-your-extension/), pointing at the
+    # .xpi in this very release, so it keeps working after later releases. (No "applications"
+    # entry: Firefox then checks the extension's own strict_min_version.)
+    if (Test-Path $signedXpi) {
+        Copy-Item $signedXpi (Join-Path $out $xpiName) -Force
+        Copy-Item $signedXpi (Join-Path $out "pako-firefox.xpi") -Force
+        $hash = (Get-FileHash $signedXpi -Algorithm SHA256).Hash.ToLower()
+        $id = $extManifest.browser_specific_settings.gecko.id
+        $update = [ordered]@{
+            version = $extVersion
+            update_link = "https://github.com/sookera/pako-releases/releases/download/v$version/$xpiName"
+            update_hash = "sha256:$hash"
+        }
+        $json = [ordered]@{ addons = [ordered]@{ $id = [ordered]@{ updates = @($update) } } } | ConvertTo-Json -Depth 8
+        [System.IO.File]::WriteAllText((Join-Path $out "firefox-updates.json"), $json + "`n", (New-Object System.Text.UTF8Encoding $false))
+    } else {
+        Remove-Item (Join-Path $out "firefox-updates.json") -ErrorAction SilentlyContinue
+    }
     Write-Host "Signing..."
     Push-Location (Join-Path $root "src-tauri")
     try {
@@ -130,6 +218,9 @@ try {
     } finally { Pop-Location }
     Write-Host ""
     Write-Host "Ready in $out :"
-    Write-Host "  Pako.exe, Pako-Setup.exe, latest.json, help.zip, LICENSE, NOTICE.md"
-    Write-Host "Upload all six to a GitHub release tagged v$version in sookera/pako-releases."
+    $files = @("Pako.exe", "Pako-Setup.exe", "latest.json", "help.zip", "LICENSE", "NOTICE.md")
+    if (Test-Path $signedXpi) { $files += @($xpiName, "pako-firefox.xpi", "firefox-updates.json") }
+    Write-Host ("  " + ($files -join ", "))
+    Write-Host "Upload all $($files.Count) to a GitHub release tagged v$version in sookera/pako-releases."
+    if (-not (Test-Path $signedXpi)) { Write-Host "(No Firefox extension in this release: Firefox users get no extension update from it.)" }
 } finally { Pop-Location }

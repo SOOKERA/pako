@@ -181,6 +181,18 @@ pub fn open(engine: Arc<Engine>, id: String, link: String) {
     });
 }
 
+/// Works through a gate link for My devices › Links (no Links row): the real file's link, or
+/// why not. Waits its turn like the others; a page that needs you shows the same way.
+pub async fn resolve(engine: Arc<Engine>, link: String) -> Result<String, String> {
+    let app = APP.get().cloned().ok_or("Link pages can't be opened here.")?;
+    let _turn = ONE_AT_A_TIME.acquire().await.map_err(|_| "Pako is closing.".to_string())?;
+    let id = format!("pick-{}", uuid::Uuid::new_v4().simple());
+    let result = run(&app, &engine, &id, &link).await;
+    *CURRENT.lock().unwrap() = None;
+    crate::notices::resolve(&app, "needs-you", &id, if result.is_ok() { "Done" } else { "Not finished" });
+    result
+}
+
 /// auto: Pako presses the buttons. captcha: a check is shown. manual: the whole page is yours.
 #[derive(PartialEq)]
 enum Mode {
@@ -247,8 +259,10 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
         .incognito(true)
         .initialization_script(GATE_SCRIPT)
         .on_navigation(move |u| {
+            // A page's own blank and in-memory pages load; any other kind of address (file:,
+            // ms-settings:, an app's link) would hand the page to something outside this window.
             if !matches!(u.scheme(), "http" | "https") {
-                return true;
+                return matches!(u.scheme(), "about" | "blob" | "data");
             }
             if is_file_link(u) {
                 let _ = nav_tx.send(Msg::Final(u.to_string()));

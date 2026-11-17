@@ -23,7 +23,7 @@ The left side filters the list:
 - **All downloads**, **Downloading**, **Waiting**, **Finished** and **Problems**.
 - **Sources**: only Google Drive, only web links, and so on.
 
-Select a download to see its details on the right (**Ctrl+I** shows or hides that panel). You see its parts, where it's saved, whether it can continue after a pause, a **Preview** for an unfinished video file (play a short check before it's all there; types other than MP4 and WebM need **Preview more video types** in **Settings › Features & updates**), and buttons to **Pause**, **Resume** or **Try again** (**Open** once it's finished), open its **Folder**, or **Remove** it.
+Select a download to see its details on the right (**Ctrl+I** shows or hides that panel). You see its parts, where it's saved, whether it can continue after a pause, a **Preview** for an unfinished video file (play a short check before it's all there; types other than MP4 and WebM need **Preview more video types** in **Settings › Features & updates**; a video from YouTube or another site plays a short clip from the site instead), and buttons to **Pause**, **Resume** or **Try again** (**Open** once it's finished), open its **Folder**, or **Remove** it.
 
 **Resume** and **Pause** at the top work on the downloads you selected, or on every one shown when nothing is selected. **Remove** works on the selected ones.
 
@@ -37,10 +37,13 @@ Select a download to see its details on the right (**Ctrl+I** shows or hides tha
 - If the file on the server was replaced since the download started, Pako doesn't mix the two: it stops and says "The file on the server changed since this download started". Use **Start over**.
 - **Start over** (right-click a download) throws away what's done and starts again from zero.
 - If a link answers with a web page (a sign-in page, or "link expired") instead of the file, Pako stops and says "The server sent a web page instead of the file". Open the link in your browser and download it there: Pako catches the download. A browser download that turns out to be a web page stays in the browser.
+- A file you picked in **Links** from several hosts takes the other hosts along as backups. If its host fails for good, or gives no answer for 5 minutes in a row, Pako goes on from the next one by itself: the row shows **from** and the new host, and the details show the **Backups** left and the hosts **Tried**. With the same size on the new host, Pako compares a few small pieces from it with what it already has, and carries on from there when they match. When every host fails, the download stops and its message ends with "All 3 hosts were tried" and their names; **Try again** goes round them once more. See [Same file on several hosts](links-and-tray.md#same-file-on-several-hosts).
 
 ## When everything is done
 
 **When done** (bottom bar) tells Pako what to do once every download has finished (it also waits for uploads and Direct transfers): **Do nothing**, **Sleep** or **Shut down**. Before sleeping or shutting down, Pako shows a short countdown you can cancel. The choice goes back to **Do nothing** after it happens, and each time Pako starts.
+
+Downloads that were running when Pako closed carry on by themselves the next time it starts. To have them wait for **Resume** instead, turn off **Settings › Downloads › Continue downloads when Pako starts**.
 
 With **Settings › Downloads › Keep the PC awake while downloading** on, Windows doesn't go to sleep in the middle of a download, an upload or a Direct transfer.
 

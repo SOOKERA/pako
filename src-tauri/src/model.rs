@@ -44,6 +44,18 @@ pub enum Source {
         /// Streams Pako downloads itself (in parallel parts) and how far each one is.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         streams: Vec<StreamPart>,
+        /// The page a caught stream played on, sent as the referrer (the browser's own rule:
+        /// only "https://site/" when the stream is on another site). None for other videos.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        referrer: Option<String>,
+        /// A stream the browser extension caught playing on a page ("Videos on this page"):
+        /// when yt-dlp can't get it, Pako's own HLS download tries.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        caught: bool,
+        /// "Record this video": the folder holding what the page played (one file per
+        /// track), joined into the video when it runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recording: Option<PathBuf>,
     },
 }
 
@@ -173,6 +185,48 @@ pub struct Download {
     /// ("Notify me" switched off in the Download with Pako window).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quiet: bool,
+    /// The same file on other hosts (grouped in Links), in the order they are tried when the
+    /// host in use fails for good. Lists saved before mirrors existed have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<Mirror>,
+    /// Hosts that already failed for good, in the order they were tried (with why).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tried: Vec<Mirror>,
+    /// Just moved to another host with the same size: the parts on disk came from the host
+    /// before, so a few samples from this host are compared with them before it goes on (else
+    /// it starts over). Set until that check has answered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spot_check: bool,
+    /// The file holds bytes from two hosts (kept after a host change): if the final checksum
+    /// fails, it starts over from zero on this host instead of stopping.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spliced: bool,
+    /// Its link came from another of your PCs (My devices): an answer from this PC itself
+    /// (localhost) is never taken for it, so that PC can't read what only listens here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_device: bool,
+}
+
+/// One host offering a file: a backup of a download (or a host it already tried).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Mirror {
+    pub link: String,
+    pub source: Source,
+    /// What the Links check found on this host.
+    #[serde(default)]
+    pub size: Option<u64>,
+    /// Google Drive's MD5 of the file.
+    #[serde(default)]
+    pub md5: Option<String>,
+    /// Strong ETag (else Last-Modified) the host sent.
+    #[serde(default)]
+    pub validator: Option<String>,
+    #[serde(default)]
+    pub resumable: bool,
+    /// Why this host was left (tried hosts only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 impl Download {
@@ -244,11 +298,35 @@ pub struct FoundItem {
     /// From Pako Light: never asked to yt-dlp, never turned into a video.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_video: bool,
+    /// The host the user picked for this file when the same file is on several hosts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_pick: bool,
+    /// "Download on": the paired PC (its Pako ID) this link is sent to when you press
+    /// Download. None = this PC (left out, so older lists load as they were).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Why it wasn't sent to its PC (offline, refused, no longer allowed), shown on the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_note: Option<String>,
 }
 
 impl FoundItem {
     pub fn new(template: Download, state: FoundState, message: Option<String>, is_folder: bool) -> Self {
-        Self { id: template.id.clone(), template, state, message, folder: None, rel_dir: None, is_folder, dest: None, extract: None, no_video: false }
+        Self {
+            id: template.id.clone(),
+            template,
+            state,
+            message,
+            folder: None,
+            rel_dir: None,
+            is_folder,
+            dest: None,
+            extract: None,
+            no_video: false,
+            host_pick: false,
+            device: None,
+            device_note: None,
+        }
     }
     /// Ready, or still being checked (the download checks again anyway).
     pub fn can_download(&self) -> bool {
@@ -295,6 +373,9 @@ pub struct Settings {
     pub keep_awake: bool,
     /// Quitting while downloads run asks first.
     pub confirm_quit: bool,
+    /// Downloads that were running when Pako closed continue when it starts again (default).
+    /// Off: they're paused, and wait for Resume.
+    pub resume_on_start: bool,
     /// Pako starts when you sign in to Windows.
     pub start_with_windows: bool,
     /// ...straight to the tray (no window).
@@ -343,6 +424,18 @@ pub struct Settings {
     /// Light or dark: "dark" (default), "light" or "system" (follow Windows' app mode). Changed
     /// only through `theme::theme_set` (Settings › Window › Theme and the title bar's button).
     pub theme: String,
+    /// Direct › "Be visible to Pakos on this network": "home" (default: only while every network
+    /// this PC is on is one Windows marks as Private or Domain), "always" or "never". Pako
+    /// always looks for its contacts on the network; this only decides whether it answers.
+    pub direct_visible: String,
+    /// Same file on several hosts: the hosts picked in Links, most recent first (the next
+    /// group picks the first of them that is ready).
+    pub mirror_hosts: Vec<String>,
+    /// The date of the terms of use accepted ("2026-11-18", TERMS.md's "Last updated"). None =
+    /// not accepted yet (settings from before Pako had terms too): Pako asks before anything
+    /// runs (see consent.rs). Once set, never asked again. Not written while unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_accepted: Option<String>,
 }
 
 impl Default for Settings {
@@ -365,6 +458,7 @@ impl Default for Settings {
             preview_quality: 480,
             keep_awake: true,
             confirm_quit: true,
+            resume_on_start: true,
             start_with_windows: false,
             start_in_tray: true,
             browser_connect: false,
@@ -389,6 +483,9 @@ impl Default for Settings {
             tour_offered: false,
             tours_done: Vec::new(),
             theme: "dark".into(),
+            direct_visible: "home".into(),
+            mirror_hosts: Vec::new(),
+            terms_accepted: None,
         }
     }
 }
@@ -450,6 +547,8 @@ pub struct AskView {
     pub running: usize,
     /// "Notify me when it's done", as last chosen.
     pub notify: bool,
+    /// A video caught on a page or a recording: only this PC can make it (no "Download on").
+    pub here_only: bool,
 }
 
 /// The window's answer.
@@ -475,6 +574,66 @@ pub struct AskAnswer {
 mod tests {
     use super::*;
 
+    /// Settings from before the terms of use load (nothing accepted yet) and write nothing new
+    /// for it; an accepted date survives a save.
+    #[test]
+    fn old_settings_load_without_terms() {
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true,"connections":4,"whatsNewSeen":"1.0.1"}"#).expect("loads");
+        assert!(s.terms_accepted.is_none() && s.setup_done && s.connections == 4);
+        assert!(!serde_json::to_string(&s).unwrap().contains("termsAccepted"));
+        let s = Settings { terms_accepted: Some("2026-11-18".into()), ..s };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.terms_accepted.as_deref(), Some("2026-11-18"));
+    }
+
+    /// Lists and settings saved before mirrors existed still load (no backups, no host picked,
+    /// no preferred hosts), and nothing new is written for them.
+    #[test]
+    fn old_lists_load_without_mirrors() {
+        let old = r#"{"id":"a","link":"https://a.example/x.zip","source":{"kind":"http","url":"https://a.example/x.zip"},"name":"x.zip","destDir":"C:/D","size":10,"md5":null,"status":"queued","message":null,"resumable":true,"segments":[],"downloaded":0,"addedAt":1,"finishedAt":null,"group":null,"resolved":false}"#;
+        let d: Download = serde_json::from_str(old).expect("old entry loads");
+        assert!(d.mirrors.is_empty() && d.tried.is_empty());
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(!d.spot_check && !d.spliced);
+        assert!(!json.contains("mirrors") && !json.contains("tried"), "{json}");
+        assert!(!json.contains("spotCheck") && !json.contains("spliced"), "{json}");
+        let f: FoundItem = serde_json::from_str(&format!(r#"{{"id":"a","template":{old},"state":"ready","message":null,"folder":null,"relDir":null,"isFolder":false}}"#)).expect("old Links item loads");
+        assert!(!f.host_pick);
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true}"#).expect("loads");
+        assert!(s.mirror_hosts.is_empty());
+        // A backup survives a save.
+        let mut d = d;
+        d.mirrors.push(Mirror { link: "https://b.example/x.zip".into(), source: Source::Http { url: "https://b.example/x.zip".into() }, size: Some(10), md5: None, validator: Some("\"e1\"".into()), resumable: true, why: None });
+        let back: Download = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back.mirrors, d.mirrors);
+    }
+
+    /// Videos saved by older versions (no referrer, not caught, no recording) still load, and
+    /// a caught stream keeps its page and recording across a save.
+    #[test]
+    fn video_sources_old_and_caught() {
+        let old: Source = serde_json::from_str(r#"{"kind":"video","url":"https://e.example/v","quality":720}"#).unwrap();
+        let Source::Video { referrer, caught, recording, .. } = &old else { panic!() };
+        assert_eq!((referrer, caught, recording), (&None, &false, &None));
+        // Nothing new is written for them either.
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("referrer") && !json.contains("caught") && !json.contains("recording"));
+        let caught = Source::Video {
+            url: "https://cdn.example/m.m3u8".into(),
+            quality: None,
+            audio: None,
+            options: Vec::new(),
+            audio_size: None,
+            duration: None,
+            streams: Vec::new(),
+            referrer: Some("https://page.example/".into()),
+            caught: true,
+            recording: Some(PathBuf::from(r"C:\t\rec-1")),
+        };
+        let back: Source = serde_json::from_str(&serde_json::to_string(&caught).unwrap()).unwrap();
+        assert_eq!(back, caught);
+    }
+
     /// Lists saved before downloads stopped signing in to Google still load: their Drive
     /// entries may carry `exportMime` and `copyId` (the old temporary copy), which are skipped.
     #[test]
@@ -492,6 +651,15 @@ mod tests {
         // Saved again without the old fields.
         let again = serde_json::to_string(&d.source).unwrap();
         assert!(!again.contains("copyId") && !again.contains("exportMime"), "{again}");
+    }
+
+    /// Settings saved before "Continue downloads when Pako starts" existed: it's on.
+    #[test]
+    fn old_settings_continue_downloads_at_start() {
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true}"#).expect("loads");
+        assert!(s.resume_on_start);
+        let off: Settings = serde_json::from_str(r#"{"resumeOnStart":false}"#).expect("loads");
+        assert!(!off.resume_on_start);
     }
 
     /// Settings saved before Help existed still load: What's new is shown once (never seen),

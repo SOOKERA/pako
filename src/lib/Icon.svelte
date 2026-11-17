@@ -31,6 +31,7 @@
     download: "M12 4v11M7 10l5 5 5-5M5 20h14",
     upload: "M12 20V9M7 14l5-5 5 5M5 4h14",
     send: "M21 3L10 14M21 3l-7 18-4-7-7-4z",
+    devices: "M3 5h12v9H3zM6.5 18h5M9 14v4M18 8h3v11h-3z",
     mail: "M4 6h16v12H4zM4 7l8 6 8-6",
     chat: "M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-5 4v-4H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z",
     drive: "M8 4h8l6 10-4 6H6l-4-6zM8 4l8 16M16 4L8 20M2 14h20",

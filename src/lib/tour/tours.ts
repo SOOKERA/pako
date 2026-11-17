@@ -6,8 +6,9 @@
 // the spotlight travels around the window in one direction instead of jumping back and forth.
 import { app } from "../state.svelte";
 import type { Step } from "./tour.svelte";
+import { devices, targets } from "../devices.svelte";
 
-export type TourId = "downloads" | "found" | "send" | "direct" | "dashboard" | "settings" | "full";
+export type TourId = "downloads" | "found" | "send" | "direct" | "devices" | "dashboard" | "settings" | "full";
 
 // Steps that don't always apply say when they do (`when`), from what Pako knows, so the count is
 // right from the first bubble whatever page the tutorial starts from.
@@ -27,10 +28,11 @@ const downloads: Step[] = [
 
 // Centre → left → top → right.
 const found: Step[] = [
-  { view: "found", target: "found-list", side: "inside", title: "Your links", text: "Links you paste land here first, and Pako checks each one: its name, its size and whether it works. Tick the ones you want. Ctrl+A ticks everything shown, Esc unticks." },
+  { view: "found", target: "found-list", side: "inside", title: "Your links", text: "Links you paste land here first, and Pako checks each one: its name, its size and whether it works. Tick the ones you want. Ctrl+A ticks everything shown, Esc unticks. The same file on several hosts is one row: \"on 3 hosts\" picks the host, the others are backups." },
   { view: "found", target: "filters", title: "Show", text: "Only the links that are ready, broken, still being checked, or that only work in the browser." },
   { view: "found", target: ["found-add", "found-dest", "found-download"], title: "Add, Save to, Download", text: "+ pastes more links. The folder picks where they're saved. Download starts the ticked links; when the running ones leave no room it says Add to queue, with Download first next to it." },
-  { view: "found", target: "details", panel: true, title: "Details", text: "Select a link to see what Pako found out about it, and give it its own folder if you like." },
+  { view: "found", target: "found-download-on", when: () => targets.list.length > 0, optional: true, title: "Download on", text: "Download on lets one of your other PCs download the ticked links instead, this time only (it's shown while a device that lets this PC control it is online). Their quality and priority go with them." },
+  { view: "found", target: "details", panel: true, title: "Details", text: "Select a link to see what Pako found out about it, and give it its own folder if you like. Download on sends it to another of your PCs each time you press Download (a PC mark shows on its row)." },
 ];
 
 // Top → centre → down → right.
@@ -44,9 +46,18 @@ const send: Step[] = [
 // Left → right. With no contacts yet, example people are shown during this tutorial.
 const direct: Step[] = [
   { view: "direct", target: "filters", title: "Direct", text: "Send files straight to another Pako, PC to PC, nothing uploaded in between. On the left: show who's online, waiting for you or a favourite, and group people with tags like Work. Right-click a tag to rename or delete it." },
-  { view: "direct", target: "direct-people", when: hasContacts, optional: true, title: "Your contacts", text: "Everyone you've connected with. A green dot means online, an amber one that they haven't accepted yet, and a red ! that something waits for your answer. + Add adds someone with their Pako ID. At the bottom: the name your contacts see, and your Pako ID to share." },
+  { view: "direct", target: "direct-people", when: hasContacts, optional: true, title: "Your contacts", text: "Everyone you've connected with. A green dot means online, a blue one online on your home network, an amber one that they haven't accepted yet, and a red ! that something waits for your answer. + Add adds someone with their Pako ID. At the bottom: the name your contacts see, your Pako ID to share, and whether Pakos on the same network can see you." },
   { view: "direct", target: "direct-chat", when: hasContacts, optional: true, title: "Your history together", text: "Everything you sent each other, with progress and speed. To send, drag and drop files or folders anywhere on this page (from Explorer or your desktop), or use Choose files. They go straight to this person, encrypted." },
   { view: "direct", target: "direct-details", panel: true, when: () => hasContacts() && app.directShown.length > 0, optional: true, title: "Details", text: "Your speeds with this person, what you exchanged, their tags and where their files go. Turn on Can send to me without asking for people you trust." },
+];
+
+// Left → right. Steps about a device show once one is paired (or asks to be).
+const hasDevices = () => (devices.data?.devices.length ?? 0) > 0;
+const devicesSteps: Step[] = [
+  { view: "devices", target: "nav-devices", title: "My devices", text: "Your own PCs, paired once. Files between them go without anyone accepting, and you can see and start downloads on the other PC. Direct stays for other people." },
+  { view: "devices", target: "devices-welcome", when: () => !hasDevices(), optional: true, title: "Pair a PC", text: "Add a device shows this PC's Pako ID. Enter it on your other PC (or that PC's ID here), pick where its files are saved, and confirm on both PCs with the same safety code." },
+  { view: "devices", target: "devices-list", when: hasDevices, optional: true, title: "Your devices", text: "A green dot means online, a blue one online on your home network (the fastest, no internet used), grey offline. Drop files on a device to send them to it. + Add pairs another PC. Under This PC, click its name to rename it: your other PCs see the new name." },
+  { view: "devices", target: "devices-pane", when: hasDevices, optional: true, title: "Files, Links, Downloads, Settings", text: "Files: everything sent between the two PCs, with progress and speed. Links: paste links for that PC to download, with their quality and priority (a playlist opens here first, to pick its videos), and follow each send. Downloads: the other PC's downloads live, pause, resume, change their priority or remove them, and Get this file. Settings: where its files are saved (only there), whether it can control this Pako, and its history." },
 ];
 
 // Top → down the page.
@@ -73,12 +84,13 @@ const full: Step[] = [
   { target: "tutorial", title: "Welcome to Pako", text: "A one-minute look around. Every page has a Tutorial button like this one for its details. Use → and ←, and Esc stops." },
   { target: ["nav-downloads", "nav-found"], title: "Downloads and Links", text: "Paste links anywhere with Ctrl+V. Pako checks them in Links, you pick what you want, and they download in Downloads." },
   { target: ["nav-send", "nav-direct"], title: "Upload and Direct", text: "Upload shares big files with a link anyone can open. Direct sends files straight to another Pako, PC to PC." },
+  { target: "nav-devices", title: "My devices", text: "Your own PCs, paired once: send files between them without asking, and see or start downloads on the other one." },
   { target: "nav-dashboard", title: "Dashboard", text: "Your Pako in numbers: what you moved, how fast, and with whom." },
   { target: ["help", "settings"], title: "Help and Settings", text: "Guides, What's new, every tutorial and Report a problem are in Help (F1). Settings has your download folder, the browser extension and more." },
   { title: "Next to the clock", text: "Pako also lives in the tray: one click on its icon shows today's downloads in a small window. Pin it to keep it on top." },
 ];
 
-export const TOURS: Record<TourId, Step[]> = { downloads, found, send, direct, dashboard, settings, full };
+export const TOURS: Record<TourId, Step[]> = { downloads, found, send, direct, devices: devicesSteps, dashboard, settings, full };
 
 /** Asked before a tutorial starts, for its steps' `when` (the Dashboard: anything counted yet?). */
 export const PREPARE: Partial<Record<TourId, () => Promise<unknown>>> = {
@@ -91,6 +103,7 @@ export const PAGE_TOURS: { id: Exclude<TourId, "full">; label: string }[] = [
   { id: "found", label: "Links" },
   { id: "send", label: "Upload" },
   { id: "direct", label: "Direct" },
+  { id: "devices", label: "My devices" },
   { id: "dashboard", label: "Dashboard" },
   { id: "settings", label: "Settings" },
 ];

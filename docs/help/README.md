@@ -9,6 +9,7 @@ These guides explain what Pako does today, with the names you see in the window.
 5. [Links and the tray window](links-and-tray.md): pick from pasted links, and keep an eye on downloads from the taskbar.
 6. [Upload](upload.md): share big files with a link, through Gofile or your own Google Drive.
 7. [Direct](direct.md): send files straight to people you know, PC to PC.
-8. [Notifications](notifications.md): pop-ups, the bell, and Do not disturb.
-9. [Dashboard](dashboard.md): your Pako in numbers, kept on your PC.
-10. [Help and problems](help-and-problems.md): Help and its tutorials, and reporting a problem with **Send report** or your own email app.
+8. [My devices](devices.md): pair your own PCs, send files between them without Accept, and see or start downloads on the other one.
+9. [Notifications](notifications.md): pop-ups, the bell, and Do not disturb.
+10. [Dashboard](dashboard.md): your Pako in numbers, kept on your PC.
+11. [Help and problems](help-and-problems.md): Help and its tutorials, and reporting a problem with **Send report** or your own email app.

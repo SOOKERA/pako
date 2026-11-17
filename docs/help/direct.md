@@ -2,6 +2,8 @@
 
 Send files straight from your PC to the PC of someone you know, like a messaging app for files. Both of you need Pako.
 
+For your own PCs (your desk PC and your laptop, say), use [My devices](devices.md) instead: files go without Accept, and you can see and start downloads on the other PC.
+
 ## How it works
 
 - Files go from one Pako to the other, encrypted. Nothing is uploaded and stored anywhere in between.
@@ -10,13 +12,14 @@ Send files straight from your PC to the PC of someone you know, like a messaging
 - Nothing goes through a Sookera server. To find each other, Pakos use a public address directory, and when the two PCs can't reach each other straight, a public relay. Both are run by the makers of the connection library Pako uses. The relay only passes on encrypted data.
 - Direct starts the first time you open the **Direct** page (it says "Direct is starting…" for a moment), and with Pako from then on. Until then, Pako makes no Direct connection at all. If you used Direct in an earlier Pako, it starts with Pako as before.
 - Once it runs, your Pako connects to a relay and lists its Pako ID in the directory, so others can find it, also before you have contacts: someone you gave your ID to can ask to connect. Your internet address isn't listed there. Pako may also ask your router to open a port, so two PCs can connect straight.
+- On the same network (the same Wi-Fi or home network), Pakos find each other without the internet, and files go PC to PC over that network: see [On the same Wi-Fi](#on-the-same-wi-fi).
 - Your contacts can tell when your Pako is open: they see you as online, and when they last saw you.
 
 ## Your Pako ID and your name
 
 Every Pako has its own **Pako ID**, a long code. It's at the bottom of the contact list in **Direct** (or in the middle of the page before you have contacts). **Copy** copies it: send it to the people you want to connect with.
 
-**Your name** (just above it) is what your contacts see. They can still give you their own name for you.
+**Your name** (just above it) is what your contacts see. They can still give you their own name for you. Pako asks for it once, before your first contact: when you add someone, or accept someone who wants to connect.
 
 ## Add someone
 
@@ -44,7 +47,10 @@ The contact list shows each person with a dot on their picture:
 
 - **Grey**: offline. Under the name: when you last saw them.
 - **Green**: online, and how you're connected (see [How you're connected](#how-youre-connected)).
+- **Blue**: online on the same network as you ("Local network").
 - **Amber**: waiting for them to accept you.
+
+The dot changes colour by itself, for example when someone joins or leaves your Wi-Fi.
 
 Something waiting for *your* answer is coral, not amber: a **!** on the contact, the dot next to **Waiting for you** on the left, and the count on the **Direct** tab.
 
@@ -63,7 +69,7 @@ Tags are only on your PC: your contacts never see them.
 
 Right-click a contact, or click the gear above the conversation, for:
 
-- **Rename…**: your own name for them. If they call themselves something else, it shows next to their name ("calls themselves …").
+- **Rename…**: your own name for them. If they call themselves something else, it shows next to their name ("calls themselves …"). When they change their name, connected contacts see it at once. A contact you never renamed takes their new name.
 - **Tags…**: tick their tags, or type a new one and click **Add**, then **Save**.
 - **Add to favourites** / **Remove from favourites**: favourites have a star and their own filter.
 - **Can send to me without asking** (see below).
@@ -123,15 +129,39 @@ Press **Ctrl+I**, or click the panel button above the conversation, to see more 
 
 - **Connection**: **Status** (**Online**, **Waiting for them** or **Offline**), the **Route** or when you last saw them, and **Speed now**.
 - **Between you**: how much you **Sent** and **Received**, the number of **Transfers** and the **Last exchange**.
-- **Speed with** them: the **Fastest** and **Average** speeds both ways, and how much went **Direct** and **Via relay**.
+- **Speed with** them: the **Fastest** and **Average** speeds both ways, and a bar of how what you exchanged travelled: **Local network** (over your home network, in blue; shown once something went that way), **Direct** (straight between the PCs over the internet) and **Via relay**.
 - **About them**: their **Pako ID** (with a copy button), **Their name** (the one they chose), **Tags**, **Favourite**, when they were **Added**, **Can send to me without asking**, and **Their files go to**.
 
 ## How you're connected
 
-Next to "Online", Pako says how the two PCs are connected:
+Next to "Online", Pako says how the two PCs are connected. It shows above the conversation, in the details panel's **Route**, and on each transfer too:
 
+- **Local network**: over your home network (the same Wi-Fi, or a cable on the same router). Nothing goes through the internet, and it's usually the fastest by far. The contact's dot is blue.
 - **Direct (IPv6)**: straight between the two PCs, over IPv6. Usually the fastest.
 - **Direct**: straight between the two PCs.
 - **Via relay**: through a relay server, when the two networks don't allow a straight connection. Still encrypted from end to end, often slower.
 
-You don't choose this: Pako takes the best way it can.
+You don't choose this: Pako takes the best way it can. A connection can start **Via relay** and switch to a better way a few seconds later.
+
+## On the same Wi-Fi
+
+When you and a contact are on the same network, for example at home on the same Wi-Fi, your two Pakos find each other on that network and connect without the internet. Files go straight from one PC to the other over the network, often much faster than over the internet, and their dot turns blue: "Online · Local network".
+
+- **Without internet:** Direct keeps working on the network. Contacts on the same network connect as usual. Contacts elsewhere show "Not reachable without internet" until the internet is back; then Pako reaches them by itself.
+- **What your network sees:** when you're visible (below), your Pako tells the other devices on the same network that a Pako is here: its Pako ID, and its address and port on that network. Nothing else: not your name, not your contacts. This stays on the network: your router doesn't pass it on to the internet. Someone on the same network who sees your Pako ID can ask to connect, like someone you gave it to: you're asked first, as always. Only your contacts connect by themselves.
+- **Be visible to Pakos on this network**, under your Pako ID on the **Direct** page:
+  - **On home networks** (the default): only while Windows marks the network you're on as private (or as your company's network). On a network Windows marks as public, like a café or hotel Wi-Fi, nobody there sees your Pako ID. The **Direct** page then says "Not visible on this network (Windows marks it, or another network this PC is on, as public)." When the PC is on several networks at once (a VPN, or a virtual network made by Hyper-V, WSL or VirtualBox), each one counts: one marked public is enough to stay hidden. When you change networks, Pako checks again by itself.
+  - **Always**: visible on every network, public ones too.
+  - **Never**: visible on no network.
+
+  Even when you're not visible, your Pako still finds your contacts on the same network and connects to them (they need to be visible). To make your home Wi-Fi private, see [the Windows firewall question](#the-windows-firewall-question) below.
+- **Guest networks** often keep devices apart: two PCs on a guest Wi-Fi may not see each other. They still connect over the internet.
+
+### The Windows firewall question
+
+The first time Direct starts, Windows may ask whether Pako can use the network ("Windows Security Alert"). Pako says so on the **Direct** page while it starts. Allow it on **Private networks**, so Pakos on your home network can reach you.
+
+If you clicked **Cancel**, or your home Wi-Fi is set as a public network, contacts on the same Wi-Fi may connect only over the internet (or not at all without it), and with **On home networks** they don't see you there. To fix it:
+
+- Make your home Wi-Fi private: **Windows Settings › Network & internet › Wi-Fi ›** your network **› Private network**.
+- Or allow Pako: **Windows Security › Firewall & network protection › Allow an app through firewall**, then tick **Private** next to Pako.

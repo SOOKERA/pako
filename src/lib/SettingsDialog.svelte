@@ -456,6 +456,15 @@
     </div>
     <div class="line">
       <div>
+        <div class="t">Continue downloads when Pako starts</div>
+        <div class="muted">Downloads that were running when Pako closed carry on by themselves. Turned off, they're paused until you click Resume.</div>
+      </div>
+      <div class="ctrl">
+        <button class="switch" class:on={draft.resumeOnStart} role="switch" aria-checked={draft.resumeOnStart} aria-label="Continue downloads when Pako starts" onclick={() => (draft.resumeOnStart = !draft.resumeOnStart)}></button>
+      </div>
+    </div>
+    <div class="line">
+      <div>
         <div class="t">Keep the PC awake while downloading</div>
         <div class="muted">Windows won't go to sleep in the middle of a download. The screen can still turn off.</div>
       </div>

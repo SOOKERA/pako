@@ -7,6 +7,11 @@ import type { DirectState, Download, FoundItem, Part, Progress, SendState, Snaps
 import type { Notice, PopupCard } from "./notices";
 
 export const showcase = typeof location !== "undefined" && new URLSearchParams(location.search).has("showcase");
+/** A scene for one picture, from "?showcase=<scene>": "sets" (Links with split archives),
+ *  "share" (a fresh upload and the same files received in Links), "hosts" (the same file on
+ *  several hosts in Links, and a download that went on from a backup host) or "local" (Direct
+ *  with a contact on the same home network); none = the usual set. */
+const scene = showcase ? new URLSearchParams(location.search).get("showcase") : null;
 
 const now = Date.now();
 const MIN = 60_000;
@@ -53,7 +58,25 @@ function dl(over: Partial<Download> & { name: string }): Download {
 const drive = (fileId: string) => ({ source: { kind: "gDrive", fileId } as const, link: `https://drive.google.com/file/d/${fileId}/view`, md5: "x" });
 const STUDIO = HOME + "\\Studio assets";
 
+/** "?showcase=hosts": a download whose first host failed for good, going on from the next one. */
+const MIRROR_NAME = "Field recordings.zip";
+const mirrorLink = (host: string, path: string) => `https://${host}/${path}/${encodeURIComponent(MIRROR_NAME)}`;
+const switched: Download[] = scene === "hosts"
+  ? [
+      dl({
+        name: "Live set.flac",
+        size: 1.8 * GB,
+        downloaded: 0.74 * GB,
+        link: "https://files.example.com/audio/Live%20set.flac",
+        source: { kind: "http", url: "https://files.example.com/audio/Live%20set.flac" },
+        tried: [{ link: "https://dl.example.net/f/9Qx1/Live%20set.flac", source: { kind: "http", url: "https://dl.example.net/f/9Qx1/Live%20set.flac" }, size: 1.8 * GB, md5: null, why: "File not found on the server (404)." }],
+        mirrors: [{ link: "https://share.example.org/d/Qm4t/Live%20set.flac", source: { kind: "http", url: "https://share.example.org/d/Qm4t/Live%20set.flac" }, size: 1.8 * GB, md5: null }],
+      }),
+    ]
+  : [];
+
 const downloads: Download[] = [
+  ...switched,
   dl({ name: "Holiday photos 2025.zip", size: 6.4 * GB, downloaded: 3.71 * GB, ...drive("1hP7sQ2"), notify: true }),
   dl({ name: "Project final cut.mp4", size: 3.9 * GB, downloaded: 1.21 * GB }),
   dl({ name: "Interview A-cam.mov", size: 4.6 * GB, downloaded: 2.02 * GB, ...drive("1sA9cM4"), group: "Studio assets", destDir: STUDIO }),
@@ -66,6 +89,7 @@ const downloads: Download[] = [
 
 /** Speed (bytes/s) and connections of each running one. */
 const running: Record<string, [number, number]> = {
+  "Live set.flac": [22_300_000, 8],
   "Holiday photos 2025.zip": [26_400_000, 8],
   "Project final cut.mp4": [18_900_000, 8],
   "Interview A-cam.mov": [21_700_000, 6],
@@ -106,6 +130,9 @@ function found(over: { name: string; size?: number | null; source?: Download["so
 const tripLink = "https://drive.google.com/drive/folders/1TrIp9";
 const inTrip = (name: string, size: number, fileId: string) => found({ name, size, source: { kind: "gDrive", fileId }, link: tripLink, folder: "Summer trip" });
 
+/** The sample Home PC's Pako ID (My devices' sample devices, devices.svelte.ts). */
+const HOME_PC = "9c1d7a4e2b6f80135c7e9a2d4f6b8c0e1a3c5e7092b4d6f8a0c2e4f6a8b0c2d4";
+
 /** A video with its qualities (for the quality picker). No site: the link is a plain address. */
 const VIDEO_LINK = "https://media.example.com/watch/sunrise-over-the-lake";
 const foundItems: FoundItem[] = [
@@ -113,7 +140,8 @@ const foundItems: FoundItem[] = [
   inTrip("Drone over the bay.mp4", 2.3 * GB, "1tD2"),
   inTrip("Photos.zip", 860 * MB, "1tP3"),
   inTrip("Itinerary.pdf", 2.4 * MB, "1tI4"),
-  found({ name: "Mountain timelapse 4K.mkv", size: 1.2 * GB, source: { kind: "gDrive", fileId: "1mT5" }, link: "https://drive.google.com/file/d/1mT5/view" }),
+  // Set to download on Home PC (Links › details › Download on): its row shows the PC mark.
+  { ...found({ name: "Mountain timelapse 4K.mkv", size: 1.2 * GB, source: { kind: "gDrive", fileId: "1mT5" }, link: "https://drive.google.com/file/d/1mT5/view" }), device: HOME_PC },
   found({ name: "Brushes and textures.zip", size: 640 * MB }),
   found({ name: "Font collection.zip", size: 96 * MB }),
   found({
@@ -125,17 +153,71 @@ const foundItems: FoundItem[] = [
   found({ name: "Presentation deck.pdf", source: { kind: "gDrive", fileId: "1pD6" }, link: "https://drive.google.com/file/d/1pD6/view", state: "checking" }),
 ];
 
+/** "?showcase=sets": many links at once. A complete split archive, one missing a part, a link
+ *  that was a page to click through (now its file, on the host it led to, and the same file on
+ *  a second host), a file that is
+ *  already downloaded (Course materials.zip, see Downloads) and one link still being checked. */
+const setsItems: FoundItem[] = scene === "sets"
+  ? [
+      ...[1, 2, 3, 4].map((n) => found({ name: `Holiday.part${n}.rar`, size: n < 4 ? 1 * GB : 420 * MB, link: `https://files.example.com/holiday/Holiday.part${n}.rar` })),
+      ...["001", "002", "004"].map((n) => found({ name: `Scans.7z.${n}`, size: n < "004" ? 2 * GB : 760 * MB, link: `https://files.example.com/scans/Scans.7z.${n}` })),
+      found({ name: "Field recordings.zip", size: 318 * MB, link: "https://dl.example.net/f/7Rk2/Field%20recordings.zip" }),
+      // The same file on a second host: one row, "on 2 hosts".
+      found({ name: "Field recordings.zip", size: 318 * MB, link: "https://files.example.com/audio/Field%20recordings.zip" }),
+      found({ name: "Course materials.zip", size: 2.7 * GB, ...drive("1cM8tR3") }),
+      found({ name: "Brushes and textures.zip", size: 640 * MB }),
+      found({ name: "Font collection.zip", size: 96 * MB }),
+      found({ name: "Presentation deck.pdf", source: { kind: "gDrive", fileId: "1pD6" }, link: "https://drive.google.com/file/d/1pD6/view", state: "checking" }),
+    ]
+  : [];
+const setsOf = (prefix: string) => setsItems.filter((f) => f.template.name.startsWith(prefix)).map((f) => f.id);
+
+/** "?showcase=hosts": the same file on three hosts, one row in Links ("on 3 hosts"). */
+const hostsItems: FoundItem[] = scene === "hosts"
+  ? [
+      found({ name: MIRROR_NAME, size: 318 * MB, link: mirrorLink("dl.example.net", "f/7Rk2") }),
+      found({ name: MIRROR_NAME, size: 318 * MB, link: mirrorLink("files.example.com", "audio") }),
+      found({ name: MIRROR_NAME, size: 318 * MB, link: mirrorLink("share.example.org", "d/Pz8w") }),
+    ]
+  : [];
+
+/** "?showcase=share": the upload made in the share pictures ("Wedding", to Google Drive), as
+ *  the person it was sent to sees it after pasting its link into Links. */
+const WEDDING_LINK = "https://drive.google.com/drive/folders/1Wd8Rk";
+const weddingPhotos = Array.from({ length: 214 }, (_, i) => ({ name: `Photo ${String(i + 1).padStart(3, "0")}.jpg`, size: 12_400_000 + ((i * 2_750_000) % 7_300_000) }));
+const weddingFiles = [{ name: "Album masters.zip", size: 840_000_000 }, { name: "Contract final.pdf", size: 2_100_000 }, ...weddingPhotos];
+const shareItems: FoundItem[] = scene === "share"
+  ? weddingFiles.map((f, i) => found({ name: f.name, size: f.size, source: { kind: "gDrive", fileId: "1wD" + i }, link: WEDDING_LINK, folder: "Wedding", relDir: i < 2 ? "" : "Wedding photos" }))
+  : [];
+
 export const showcaseSnapshot: Snapshot = {
   downloads,
-  found: foundItems,
-  foundSets: [],
+  found: scene === "sets" ? setsItems : scene === "share" ? shareItems : scene === "hosts" ? [...foundItems.slice(0, 4), ...hostsItems, ...foundItems.slice(4)] : foundItems,
+  // As the engine would send them (src-tauri/src/split.rs).
+  foundSets:
+    scene === "sets"
+      ? [
+          { key: "PartRar|holiday", base: "Holiday", ids: setsOf("Holiday.part"), missing: [] },
+          { key: "Numbered|scans.7z", base: "Scans.7z", ids: setsOf("Scans.7z."), missing: ["part 003 missing"] },
+        ]
+      : [],
+  // The same file on several hosts, as the engine would send them (src-tauri/src/found.rs).
+  foundMirrors:
+    scene === "sets"
+      ? (() => {
+          const rows = setsItems.filter((f) => f.template.name === "Field recordings.zip");
+          return [{ key: rows[0].id, name: "Field recordings.zip", size: 318 * MB, ids: rows.map((f) => f.id), hosts: ["dl.example.net", "files.example.com"], chosen: rows[0].id, picked: false }];
+        })()
+      : scene === "hosts"
+        ? [{ key: hostsItems[0].id, name: MIRROR_NAME, size: 318 * MB, ids: hostsItems.map((f) => f.id), hosts: ["dl.example.net", "files.example.com", "share.example.org"], chosen: hostsItems[0].id, picked: false }]
+        : [],
   downloadSets: [],
   settings: {
     downloadDir: HOME, autoConnections: true, connections: 8, maxActive: 5, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true,
-    extractDefault: true, minimizeToTray: true, closeToTray: true, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, startWithWindows: true, startInTray: true,
+    extractDefault: true, minimizeToTray: true, closeToTray: true, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: true, startInTray: true,
     videoQuality: 1080, setupDone: true, videoAsked: true, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: true, browserConnect: true,
     sendCompression: "off", sendMode: "files", askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7,
-    whatsNewSeen: "1.0.0", tourOffered: true, toursDone: ["downloads", "found", "send", "direct", "dashboard", "settings", "full"],
+    whatsNewSeen: "1.0.0", tourOffered: true, toursDone: ["downloads", "found", "send", "direct", "devices", "dashboard", "settings", "full"],
   },
   dataDir: "C:\\Users\\Sam\\AppData\\Roaming\\Pako",
   sevenZip: true,
@@ -149,9 +231,25 @@ export const showcaseSnapshot: Snapshot = {
 /** Your Google Drive for uploads, connected (an address that can't belong to anyone). */
 export const showcaseDrive = { configured: true, missingNote: null, signedIn: true, email: "sam@example.com", limit: 15e9, used: 6.1e9, error: null };
 
+/** "?showcase=share": the upload just made, at the top of the list. */
+const justSent: SendState["sent"] = scene === "share"
+  ? [
+      {
+        id: "u0", name: "Wedding", asFiles: true, files: weddingFiles.length, size: weddingFiles.reduce((s, f) => s + f.size, 0), date: now - MIN, link: WEDDING_LINK,
+        folderId: "1Wd8Rk", fileId: null, compressed: false, host: "drive", canDelete: true, account: "sam@example.com",
+        deleteAt: now + 7 * DAY - MIN, secs: 312, peak: 17_200_000,
+        contents: weddingFiles.map((f, i) => ({ name: i < 2 ? f.name : "Wedding photos/" + f.name, size: f.size })),
+      },
+    ]
+  : [];
+
 export const showcaseSend: SendState = {
   jobs: [],
+  // Pako's uploads in the sample Drive (the Drive bar says so).
+  driveSends: 3,
+  driveUsed: 3_900_000_000,
   sent: [
+    ...justSent,
     {
       id: "u1", name: "Holiday clips", asFiles: true, files: 12, size: 2_100_000_000, date: now - 3 * HOUR, link: "https://gofile.io/d/Hc7Kp2",
       folderId: "f1", fileId: "a1", compressed: false, downloads: 5, downloadedAt: now - 35 * MIN, canDelete: true,
@@ -194,8 +292,13 @@ export const showcaseCards: PopupCard[] = [
 
 // ---------- Direct ----------
 
-/** One file on its way to Alex: it moves on each time Direct asks (about 40 MB/s). */
-const SENDING = { size: 3.6e9, from: 1.52e9, rate: 41.5e6, since: now };
+/** "?showcase=local": Alex is on the same home network (the blue dot, "Local network"). */
+const LOCAL = scene === "local";
+/** One file on its way to Alex: it moves on each time Direct asks (about 40 MB/s; on the home
+ *  network about 95 MB/s). */
+const SENDING = { size: 3.6e9, from: 1.52e9, rate: LOCAL ? 94.5e6 : 41.5e6, since: now };
+/** Alex's way: straight over the internet, or over the home network. */
+const ALEX_PATH = LOCAL ? "local" : "direct";
 
 export function showcaseDirect(): DirectState {
   const t = Date.now();
@@ -211,7 +314,7 @@ export function showcaseDirect(): DirectState {
     myName: "Sam",
     tags: ["Friends", "Family", "Work"],
     contacts: [
-      contact(ALEX, "Alex", { online: true, path: "direct", autoAccept: true, favourite: true, tags: ["Friends", "Work"], added: t - 64 * DAY, code: "4821 0937 5512 0386" }),
+      contact(ALEX, "Alex", { online: true, path: ALEX_PATH, autoAccept: true, favourite: true, tags: ["Friends", "Work"], added: t - 64 * DAY, code: "4821 0937 5512 0386" }),
       contact(JO, "Jo", { online: true, path: "relay", tags: ["Work"], added: t - 31 * DAY, code: "3301 8842 1176" }),
       contact(NINA, "Nina", { lastSeen: t - 8 * MIN, tags: ["Family"], added: t - 120 * DAY, code: "1170 6640 2093" }),
       contact(LEO, "Leo", { lastSeen: t - 22 * HOUR, tags: ["Friends"], added: t - 26 * HOUR, code: "6658 2210 9034" }),
@@ -219,13 +322,13 @@ export function showcaseDirect(): DirectState {
     requests: [],
     offers: [],
     transfers: [
-      { id: "x1", contact: ALEX, outgoing: true, name: "Short film final.mov", files: 1, size: SENDING.size, done: Math.min(SENDING.size * 0.97, SENDING.from + ((t - SENDING.since) / 1000) * SENDING.rate), state: "sending", path: "direct", message: null },
+      { id: "x1", contact: ALEX, outgoing: true, name: "Short film final.mov", files: 1, size: SENDING.size, done: Math.min(SENDING.size * 0.97, SENDING.from + ((t - SENDING.since) / 1000) * SENDING.rate), state: "sending", path: ALEX_PATH, message: null },
     ],
     history: [
-      { id: "h1", contact: ALEX, outgoing: false, name: "Photos from Saturday", files: 48, size: 412e6, date: now - 3 * DAY, path: "direct", result: "done", message: null, savedTo: into("Alex") + "\\Photos from Saturday", durationMs: 9000, avgSpeed: 45e6 },
-      { id: "h2", contact: ALEX, outgoing: true, name: "Slides.pdf", files: 1, size: 6.2e6, date: now - 2 * DAY, path: "direct", result: "done", message: null, savedTo: null, durationMs: 300, avgSpeed: 20e6 },
-      { id: "h3", contact: ALEX, outgoing: false, name: "Music for the trailer.zip", files: 1, size: 186e6, date: now - 20 * HOUR, path: "direct", result: "done", message: null, savedTo: into("Alex") + "\\Music for the trailer.zip", durationMs: 4600, avgSpeed: 40e6 },
-      { id: "h4", contact: ALEX, outgoing: true, name: "Colour notes.pdf", files: 1, size: 2.4e6, date: now - 25 * MIN, path: "direct", result: "done", message: null, savedTo: null, durationMs: 200, avgSpeed: 12e6 },
+      { id: "h1", contact: ALEX, outgoing: false, name: "Photos from Saturday", files: 48, size: 412e6, date: now - 3 * DAY, path: ALEX_PATH, result: "done", message: null, savedTo: into("Alex") + "\\Photos from Saturday", durationMs: 9000, avgSpeed: 45e6 },
+      { id: "h2", contact: ALEX, outgoing: true, name: "Slides.pdf", files: 1, size: 6.2e6, date: now - 2 * DAY, path: ALEX_PATH, result: "done", message: null, savedTo: null, durationMs: 300, avgSpeed: 20e6 },
+      { id: "h3", contact: ALEX, outgoing: false, name: "Music for the trailer.zip", files: 1, size: 186e6, date: now - 20 * HOUR, path: ALEX_PATH, result: "done", message: null, savedTo: into("Alex") + "\\Music for the trailer.zip", durationMs: 4600, avgSpeed: 40e6 },
+      { id: "h4", contact: ALEX, outgoing: true, name: "Colour notes.pdf", files: 1, size: 2.4e6, date: now - 25 * MIN, path: ALEX_PATH, result: "done", message: null, savedTo: null, durationMs: 200, avgSpeed: 12e6 },
       { id: "h5", contact: JO, outgoing: true, name: "Report Q3.xlsx", files: 1, size: 1.4e6, date: now - DAY, path: "relay", result: "done", message: null, savedTo: null, durationMs: 900, avgSpeed: 1.5e6 },
       { id: "h6", contact: NINA, outgoing: false, name: "Recipes", files: 36, size: 420e6, date: now - 10 * MIN, path: "direct", result: "done", message: null, savedTo: into("Nina") + "\\Recipes", durationMs: 14000, avgSpeed: 30e6 },
     ],

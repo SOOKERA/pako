@@ -29,3 +29,8 @@ LangString webview2Downloading ${LANG_ENGLISH} "Downloading WebView2 bootstrappe
 LangString webview2InstallError ${LANG_ENGLISH} "Error: Installing WebView2 failed with exit code $1"
 LangString webview2InstallSuccess ${LANG_ENGLISH} "WebView2 installed successfully"
 LangString deleteAppData ${LANG_ENGLISH} "Also delete Pako's settings and lists"
+; [Pako] The "Terms of use" page (installer/installer.nsi).
+LangString pakoTermsTitle ${LANG_ENGLISH} "Terms of use"
+LangString pakoTermsSubtitle ${LANG_ENGLISH} "Please read them before installing Pako."
+LangString pakoTermsTop ${LANG_ENGLISH} "Scroll down to read them all. They are also at sookera.com/terms."
+LangString pakoTermsBottom ${LANG_ENGLISH} "If you accept the terms, click I Agree to install Pako. Pako can only be installed if you accept them."

@@ -164,6 +164,9 @@
     dismiss(c.id);
     await api.popupOpen(c.go, c.id).catch(() => {});
   }
+  /** A click on the card itself. A ready update restarts only from its button (as in the bell):
+   *  the card just opens Pako. */
+  const openCard = (c: PopupCard) => open(c.kind === "update-ready" ? { ...c, go: { page: "" } } : c);
   async function act(c: PopupCard, run: () => Promise<unknown>) {
     busy = { ...busy, [c.id]: true };
     try {
@@ -187,6 +190,8 @@
     if (!inApp) {
       // Design preview (/popup in a browser): a few sample cards ("?showcase": the website's set).
       if (showcase) return add(showcaseCards);
+      if (new URLSearchParams(location.search).get("update") === "ready")
+        return add([{ id: "pu", kind: "update-ready", title: "Pako 1.1.1 is ready", body: "Restart Pako to start using it. Your downloads and lists stay.", go: { page: "update" }, stays: false }]);
       add([
         { id: "p1", kind: "browser", title: "Downloading in Pako", body: "Lofi rain cafe - 3 hours of calm music.mp4", go: { page: "downloads" }, stays: false },
         { id: "p2", kind: "download-done", title: "Download finished", body: "Project files (final).zip", go: { page: "downloads", id: "m1" }, stays: false },
@@ -234,8 +239,8 @@
           class="card"
           role="button"
           tabindex="-1"
-          onclick={() => open(c)}
-          onkeydown={(e) => e.key === "Enter" && open(c)}
+          onclick={() => openCard(c)}
+          onkeydown={(e) => e.key === "Enter" && openCard(c)}
         >
           <span class="chip" style:color={tones[k.tone]}><Icon name={k.icon} size={15} stroke={2} /></span>
           <div class="txt">
@@ -256,6 +261,10 @@
             {:else if c.kind === "direct-request"}
               <div class="acts">
                 <button class="btn small" onclick={(e) => (e.stopPropagation(), open({ ...c, go: { page: "direct" } }))}>Review</button>
+              </div>
+            {:else if c.kind === "update-ready"}
+              <div class="acts">
+                <button class="btn primary small" onclick={(e) => (e.stopPropagation(), open(c))}>Restart now</button>
               </div>
             {:else if c.kind === "upload-done" && c.go.id}
               <div class="acts">

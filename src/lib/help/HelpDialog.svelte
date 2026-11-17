@@ -8,11 +8,11 @@
   import Icon from "../Icon.svelte";
   import Modal from "../Modal.svelte";
   import SegPick from "../SegPick.svelte";
-  import { openWeb, SITE } from "../web";
+  import { openLink, openWeb, SITE } from "../web";
   import { fadeIn, pop, reduced } from "../motion";
   import { tour } from "../tour/tour.svelte";
   import { PAGE_TOURS, type TourId } from "../tour/tours";
-  import { guideByFile, guides, licence, notice, search, whatsNew } from "./content";
+  import { guideByFile, guides, licence, notice, search, terms, whatsNew } from "./content";
   import { help } from "./help.svelte";
   import Markdown from "./Markdown.svelte";
 
@@ -35,7 +35,7 @@
             : guides.findIndex((g) => g.file === (page.kind === "guide" ? page.file : "")) + 1,
   );
   /** About Pako: which legal text shows under the notice. */
-  let legal = $state<"terms" | "licence">("terms");
+  let legal = $state<"use" | "notice" | "licence">("use");
   const pageKey = $derived(q.trim() ? "search" : page.kind === "guide" ? page.file : page.kind);
 
   const versionLabel = (v: string) => (/^\d/.test(v) ? `Pako ${v}` : v);
@@ -66,8 +66,9 @@
   }
 
   function link(href: string) {
-    // Web pages open in the browser, the same way as everywhere in Pako (https only).
-    if (/^https?:\/\//.test(href)) openWeb(href);
+    // Web pages open in the browser, the same way as everywhere in Pako (https only), and
+    // Sookera's support address (in the terms of use) in the email app.
+    if (/^https?:\/\//.test(href) || href.startsWith("mailto:")) openLink(href);
     else if (href.startsWith("#") && page.kind === "guide") {
       help.show(`${page.file}${href}`);
     } else {
@@ -190,7 +191,8 @@
                 small
                 label="Legal text"
                 options={[
-                  { value: "terms", label: "Additional terms" },
+                  { value: "use", label: "Terms of use" },
+                  { value: "notice", label: "Additional terms" },
                   { value: "licence", label: "Licence" },
                 ]}
                 value={legal}
@@ -199,7 +201,10 @@
             </section>
             {#key legal}
               <div class="legal" in:pop={{ duration: 200, from: 1, y: 4 }}>
-                {#if legal === "terms"}
+                {#if legal === "use"}
+                  <p class="sub">Pako's terms of use, as you accepted them. The newest version is always on <button class="lk" onclick={() => openWeb(SITE.terms)}>sookera.com/terms</button>.</p>
+                  <Markdown blocks={terms} onlink={link} />
+                {:else if legal === "notice"}
                   <Markdown blocks={notice} onlink={link} />
                 {:else}
                   <p class="sub">The GNU General Public License version 3, as it comes with Pako. Also on <button class="lk" onclick={() => openWeb(SITE.licence)}>gnu.org</button>.</p>

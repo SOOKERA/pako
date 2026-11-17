@@ -52,8 +52,10 @@ export function browserProfile() {
  * - `links`: what "all links on this page" finds on the page
  * - `profile`: a shared browserProfile() (several extensions in one browser)
  * - `downloadsOnCreated`: a shared list, when several extensions see the same browser downloads
+ * - `videos`: what each <video> of the tab says (playing, locked) when the extension asks
+ * - `closedFrames`: frame IDs the browser refuses to put a script into (gone, or closed to extensions)
  */
-export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }) } = {}) {
+export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [] } = {}) {
   const id = light ? LIGHT_ID : FULL_ID;
   const who = light ? "light" : "full";
   const sent = [];
@@ -62,8 +64,18 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
   const listeners = {};
   const log = [];
   const storage = {};
+  const session = {};
+  const badges = {};
+  const fetched = [];
+  /** The fetch options of each playlist read (credentials, cache). */
+  const fetchedWith = [];
+  /** The recorder's content scripts registered now (by id), and the messages on the native port. */
+  const registered = new Map();
+  const port = [];
+  /** The files put into a page (scripting.executeScript with files): { tabId, frameIds, files }. */
+  const injected = [];
   const ev = (name) => ({ addListener: (f) => (listeners[name] = f) });
-  const tabList = () => Object.entries(tabs).map(([tid, url], i) => ({ id: Number(tid), url, active: i === 0, incognito: false }));
+  const tabList = () => Object.entries(tabs).map(([tid, url], i) => ({ id: Number(tid), url, title: `Page ${tid}`, active: i === 0, incognito: false }));
   const runtime = {
     id,
     lastError: null,
@@ -76,6 +88,19 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       setTimeout(() => cb(reply(m)), 2);
     },
     sendMessage: (toId, msg, cb) => profile.send(id, toId, msg, cb, runtime),
+    onConnect: ev("connect"),
+    connectNative: () => {
+      const onMessage = [];
+      return {
+        onMessage: { addListener: (f) => onMessage.push(f) },
+        onDisconnect: { addListener() {} },
+        postMessage: (m) => {
+          port.push(plain(m));
+          setTimeout(() => onMessage.forEach((f) => f(reply(m))), 2);
+        },
+        disconnect() {},
+      };
+    },
   };
   const chrome = {
     runtime,
@@ -95,7 +120,9 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
     tabs: {
       onActivated: ev("activated"),
       onUpdated: ev("updated"),
+      onRemoved: ev("removed"),
       get: async (tid) => tabList().find((t) => t.id === tid),
+      reload: async () => {},
       query: async (q) => {
         const list = tabList();
         if (q?.windowId != null) return list.filter((t) => t.active);
@@ -103,14 +130,23 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       },
     },
     windows: { WINDOW_ID_NONE: -1, onFocusChanged: ev("focus") },
-    cookies: { getAll: async () => [{ name: "SID", value: "x" }] },
+    cookies: { getAll: async (q) => [{ name: "SID", value: "x", domain: q?.url ? new URL(q.url).hostname : ".example", hostOnly: !!q?.url, path: "/" }] },
+    webRequest: { onHeadersReceived: ev("headers") },
     storage: {
       local: {
         get: async (d) => ({ ...d, ...storage }),
         set: async (o) => Object.assign(storage, o),
       },
+      session: {
+        get: async (k) => (k in session ? { [k]: JSON.parse(JSON.stringify(session[k])) } : {}),
+        set: async (o) => Object.assign(session, JSON.parse(JSON.stringify(o))),
+        remove: async (k) => delete session[k],
+      },
     },
-    action: { setBadgeBackgroundColor() {}, setBadgeText: ({ text }) => (storage.badge = text) },
+    action: {
+      setBadgeBackgroundColor() {},
+      setBadgeText: ({ tabId, text }) => (tabId == null ? (storage.badge = text) : (badges[tabId] = text)),
+    },
     downloads: {
       onCreated: { addListener: (f) => (downloadsOnCreated ? downloadsOnCreated.push(f) : (listeners.download = f)) },
       pause: async () => log.push(`${who} pause`),
@@ -119,10 +155,29 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       erase: async () => log.push(`${who} erase`),
       resume: async () => log.push(`${who} resume`),
     },
-    scripting: { executeScript: async () => [{ result: links }] },
+    scripting: {
+      executeScript: async ({ target, files }) => {
+        if (files) {
+          if (target.frameIds?.some((f) => closedFrames.includes(f))) throw new Error("No frame with id");
+          injected.push(plain({ tabId: target.tabId, frameIds: target.frameIds, files }));
+          return [{ result: undefined }];
+        }
+        return [{ result: target?.allFrames ? videos : links }];
+      },
+      registerContentScripts: async (list) => list.forEach((c) => registered.set(c.id, plain(c))),
+      getRegisteredContentScripts: async ({ ids } = {}) => [...registered.values()].filter((c) => !ids || ids.includes(c.id)),
+      unregisterContentScripts: async ({ ids }) => ids.forEach((i) => registered.delete(i)),
+    },
   };
-  vm.runInContext(backgroundSource(light), vm.createContext({ chrome, console, URL, setTimeout, clearTimeout }), { filename: `${who}/background.js` });
-  const edition = { id, who, sent, menus, updates, listeners, log, storage, chrome };
+  const fakeFetch = async (url, opts) => {
+    fetched.push(url);
+    fetchedWith.push({ credentials: opts?.credentials, cache: opts?.cache });
+    const text = fetch ? fetch(url, opts) : null;
+    return { ok: text != null, text: async () => text ?? "" };
+  };
+  const context = { chrome, console, URL, setTimeout, clearTimeout, AbortController, fetch: fakeFetch, crypto: globalThis.crypto };
+  vm.runInContext(backgroundSource(light), vm.createContext(context), { filename: `${who}/background.js` });
+  const edition = { id, who, sent, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, chrome };
   profile.installed.set(id, edition);
   return edition;
 }

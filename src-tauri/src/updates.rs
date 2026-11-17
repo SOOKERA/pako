@@ -186,6 +186,12 @@ fn ready_version() -> Option<String> {
     new_exe()?.is_file().then_some(m.version).filter(|v| newer(v, current()))
 }
 
+/// The version downloaded and waiting for a restart, if any (read from disk, so a later update
+/// that replaced an earlier waiting one shows as that later version).
+pub fn ready_now() -> Option<String> {
+    ready_version()
+}
+
 fn rolled_back_version() -> Option<String> {
     put_back_note(&std::fs::read_to_string(rolled_back_file()?).ok()?, current())
 }
@@ -985,16 +991,22 @@ fn strip_wait_pid(args: Vec<OsString>) -> Vec<OsString> {
 }
 
 /// The arguments "Restart now" starts Pako with: only the wait (never the browser's or sign-in's
-/// arguments, so the new Pako opens normally and adds nothing again).
-fn restart_args(pid: u32) -> Vec<String> {
-    vec!["--wait-pid".into(), pid.to_string()]
+/// arguments, so the new Pako adds nothing again). `tray`: Pako's window was hidden when Restart
+/// now was clicked (from the pop-up or the bell): the new Pako stays in the tray too, and doesn't
+/// pop up (not even on the terms of use: they show when the user opens Pako).
+fn restart_args(pid: u32, tray: bool) -> Vec<String> {
+    let mut a = vec!["--wait-pid".to_string(), pid.to_string()];
+    if tray {
+        a.push(crate::system::TRAY_ARG.into());
+    }
+    a
 }
 
 /// "Restart now": starts this exe again, told to wait until this process has quit (the update is
 /// put in place then). The caller quits right after.
-pub fn restart() -> Result<()> {
+pub fn restart(tray: bool) -> Result<()> {
     let exe = exe().ok_or_else(|| anyhow!("Can't find where Pako is"))?;
-    std::process::Command::new(exe).args(restart_args(std::process::id())).spawn().context("Couldn't restart Pako")?;
+    std::process::Command::new(exe).args(restart_args(std::process::id(), tray)).spawn().context("Couldn't restart Pako")?;
     Ok(())
 }
 
@@ -1015,6 +1027,19 @@ fn wait_for_exit(pid: u32, limit: Duration) {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+
+    /// A file named like one of Windows' DLLs (dwmapi.dll, uxtheme.dll…) next to a portable
+    /// Pako.exe must never be loaded: the linker setting covers the DLLs Pako.exe names, `main`
+    /// the ones asked for while it runs, and the release script refuses an exe without it.
+    #[test]
+    fn pako_exe_takes_dlls_from_windows_only() {
+        assert!(include_str!("../build.rs").contains(r#"println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");"#));
+        let main = include_str!("main.rs");
+        let call = main.find("    system_dlls_only();").expect("main calls system_dlls_only");
+        assert!(call < main.find("std::env::args_os()").unwrap(), "before anything else");
+        assert!(main.contains("SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS)"));
+        assert!(include_str!("../../scripts/release.ps1").contains("ToUInt16($bytes, $cfgAt + 0x4E) -ne 0x800"));
+    }
 
     #[test]
     fn compares_versions() {
@@ -1109,7 +1134,8 @@ mod tests {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
         assert_eq!(strip_wait_pid(os(&["--tray", "--wait-pid", "42"])), os(&["--tray"]));
-        assert_eq!(restart_args(42), a(&["--wait-pid", "42"]));
+        assert_eq!(restart_args(42, false), a(&["--wait-pid", "42"]));
+        assert_eq!(restart_args(42, true), a(&["--wait-pid", "42", "--tray"]));
     }
 
     fn swap_dir() -> (PathBuf, PathBuf, PathBuf, PathBuf) {

@@ -8,7 +8,7 @@
   import { untrack } from "svelte";
   import { open as pick } from "@tauri-apps/plugin-dialog";
   import { app } from "./state.svelte";
-  import { api, listen, type DirectContact, type DirectHistory, type DirectTransfer } from "./api";
+  import { api, listen, type DirectContact, type DirectHistory, type DirectTransfer, type DirectVisible } from "./api";
   import type { MenuItem } from "./menu";
   import { bytes, shortDate, speed } from "./format";
   import Icon from "./Icon.svelte";
@@ -18,12 +18,15 @@
   import Modal from "./Modal.svelte";
   import DirectDetails from "./DirectDetails.svelte";
   import SegPick from "./SegPick.svelte";
-  import { initial, pathLabel, percent, statusOf, SUGGESTED_TAGS } from "./direct";
+  import { directExtra, initial, isLocal, nearbyNote, pathLabel, percent, statusOf, SUGGESTED_TAGS } from "./direct";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
 
   const d = $derived(app.directView);
+  const extra = $derived(directExtra(d));
+  /** The internet answers (without it, only contacts on the same network can be reached). */
+  const internet = $derived(extra.internet !== false);
   // Direct starts the first time this page is open (until then Pako makes no Direct connection).
   let woken = false;
   $effect(() => {
@@ -183,14 +186,23 @@
 
   // ---------- your ID and name ----------
   let myName = $state("");
-  let nameSeeded = false;
+  // Follows the engine's name whenever it changes (also when it was set elsewhere, like in the
+  // Accept question), so the field never shows an old or empty name that leaving it would save.
+  let seenName: string | null = null;
   $effect(() => {
-    if (!nameSeeded && d?.ready) {
-      myName = d.myName ?? "";
-      nameSeeded = true;
+    if (!d?.ready) return;
+    const n = d.myName ?? "";
+    if (n !== seenName) {
+      seenName = n;
+      myName = n;
     }
   });
   async function saveName() {
+    // An emptied field puts the name back: contacts always see a name once you have one.
+    if (!myName.trim()) {
+      myName = d?.myName ?? "";
+      return;
+    }
     if ((d?.myName ?? "") === myName.trim()) return;
     await app.run(() => api.directSetName(myName.trim()));
   }
@@ -199,13 +211,38 @@
   }
   const shortId = (id: string) => `${id.slice(0, 6)}…${id.slice(-6)}`;
 
+  // ---------- seen by Pakos on the same network ----------
+  const visible = $derived<DirectVisible>(app.settings?.directVisible ?? "home");
+  /** Why Pakos on this network don't see you now (empty: they do, or you chose Never). */
+  const hiddenNote = $derived(visible === "never" ? "" : nearbyNote(extra.nearby));
+  async function setVisible(v: DirectVisible) {
+    if (!app.settings || v === visible) return;
+    const next = { ...app.settings, directVisible: v };
+    app.settings = next;
+    await app.run(() => api.setSettings(next));
+  }
+
   // ---------- add a contact (also asked from the sidebar) ----------
   let newId = $state("");
   let newName = $state("");
   let addError = $state("");
+  /** No name of yours yet: the add window asks for it first (contacts see it). */
+  const nameMissing = $derived(!(d?.myName ?? "").trim());
+  /** Add pressed with no name: said under the field, which takes the focus. */
+  let needName = $state(false);
+  let nameField = $state<HTMLInputElement | null>(null);
+  $effect(() => {
+    if (myName.trim()) needName = false;
+  });
   async function addContact() {
     addError = "";
+    if (nameMissing && !myName.trim()) {
+      needName = true;
+      nameField?.focus();
+      return;
+    }
     try {
+      if (nameMissing) await api.directSetName(myName.trim());
       await api.directAddContact(newId.trim(), newName.trim());
       app.directAdding = false;
       newId = "";
@@ -404,6 +441,24 @@
   });
 </script>
 
+{#snippet seenBy()}
+  <label class="mlabel" for="seenby">Be visible to Pakos on this network</label>
+  <select
+    id="seenby"
+    class="input seenby"
+    value={visible}
+    onchange={(e) => setVisible(e.currentTarget.value as DirectVisible)}
+    title="Pakos on the same Wi-Fi or cable can find you there, even without the internet. Either way, you still find your contacts there."
+  >
+    <option value="home">On home networks</option>
+    <option value="always">Always</option>
+    <option value="never">Never</option>
+  </select>
+  {#if hiddenNote}
+    <p class="seennote" transition:rowSlide={{ duration: 200 }}>{hiddenNote}</p>
+  {/if}
+{/snippet}
+
 <div class="direct" role="presentation" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping && current}
     <div class="dropzone" aria-hidden="true" transition:fadeIn={{ duration: 120 }}>
@@ -419,7 +474,12 @@
   {#if !d}
     <div class="center dim">Starting…</div>
   {:else if !d.ready}
-    <div class="center dim">{d.error ?? "Direct is starting…"}</div>
+    <div class="center dim">
+      {d.error ?? "Direct is starting…"}
+      {#if !d.error && extra.firstStart}
+        <p class="firewall" in:fadeIn={{ duration: 200 }}>Windows may ask whether Pako can use the network. Allow it on private networks, so Pakos on your home network can reach you.</p>
+      {/if}
+    </div>
   {:else}
     <!-- The welcome card and the contacts crossfade in the same place (the tutorial's example
          people going away, your first contact arriving): no jump. -->
@@ -436,6 +496,7 @@
               <span class="mono idtext" title={d.myId}>{d.myId}</span>
               <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />Copy</button>
             </div>
+            {@render seenBy()}
           </div>
           <button class="btn primary" onclick={() => ((app.directAdding = true), (addError = ""))}><Icon name="plus" size={14} stroke={2.2} />Add contact</button>
         </section>
@@ -472,13 +533,13 @@
               transition:rowSlide={{ duration: listMotion }}
               animate:flipIf={{ ...flipOpts, duration: listMotion }}
             >
-              <span class="avatar">{initial(c.name)}<span class="dot" class:online={c.online} class:wait={c.waiting}></span></span>
+              <span class="avatar">{initial(c.name)}<span class="dot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span></span>
               <span class="ptext">
                 <span class="pname">{c.name}{#if c.favourite}<span class="fav" aria-label="Favourite"><Icon name="star" size={11} stroke={2.2} /></span>{/if}</span>
                 {#if m}
                   <span class="pstat live" title={m.count > 1 ? `${m.count} transfers with ${c.name}` : undefined}><Icon name={m.icon} size={11} stroke={2.4} />{m.text}</span>
                 {:else}
-                  <span class="pstat">{statusOf(c)}</span>
+                  <span class="pstat">{statusOf(c, internet)}</span>
                 {/if}
                 {#if c.tags?.length}
                   <span class="ptags">
@@ -510,6 +571,7 @@
             <span class="mono idtext" title={d.myId}>{shortId(d.myId ?? "")}</span>
             <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />Copy</button>
           </div>
+          {@render seenBy()}
         </div>
       </aside>
 
@@ -520,13 +582,13 @@
           </div>
         {:else}
           <header class="chead">
-            <span class="avatar big">{initial(current.name)}<span class="dot" class:online={current.online} class:wait={current.waiting}></span></span>
+            <span class="avatar big">{initial(current.name)}<span class="dot" class:online={current.online} class:local={isLocal(current)} class:wait={current.waiting}></span></span>
             <div class="ctext">
               <div class="cname">
                 {current.name}
                 {#if current.theirName && current.theirName !== current.name}<span class="theirs dim">calls themselves "{current.theirName}"</span>{/if}
               </div>
-              <div class="cstat dim">{statusOf(current)}{#if current.autoAccept}{" · can send without asking"}{/if}</div>
+              <div class="cstat dim">{statusOf(current, internet)}{#if current.autoAccept}{" · can send without asking"}{/if}</div>
             </div>
             <div class="spacer"></div>
             {#if !current.online}
@@ -665,9 +727,15 @@
 {#if app.directAdding}
   <Modal title="Add a contact" width={480} onclose={() => (app.directAdding = false)}>
     <div class="form">
+      {#if nameMissing}
+        <label class="mlabel" for="addmyname">Your name</label>
+        <input id="addmyname" class="input" class:missing={needName} bind:this={nameField} bind:value={myName} placeholder="What your contacts see" maxlength="60" aria-invalid={needName} />
+        {#if needName}<p class="err" role="alert">Fill in your name first: they see it when you add them.</p>{/if}
+        <p class="dim small first">Asked once: your contacts see this name, so they know who's asking. You can change it later under <b>Your name</b>.</p>
+      {/if}
       <label class="mlabel" for="cid">Their Pako ID</label>
       <input id="cid" class="input mono" bind:value={newId} placeholder="Paste the ID they sent you" spellcheck="false" />
-      <label class="mlabel" for="cname">Name</label>
+      <label class="mlabel" for="cname">Their name</label>
       <input id="cname" class="input" bind:value={newName} placeholder="What you call them" maxlength="60" onkeydown={(e) => e.key === "Enter" && addContact()} />
       {#if addError}<p class="err">{addError}</p>{/if}
       <p class="dim small">The first time, they're asked to accept. After that you connect by yourselves whenever both Pakos are open.</p>
@@ -793,6 +861,9 @@
     text-align: center;
     gap: 8px;
     padding: 24px;
+  }
+  .center .firewall {
+    font-size: 12px;
   }
   .center p {
     max-width: 440px;
@@ -1156,6 +1227,10 @@
   .dot.online {
     background: var(--st-done);
   }
+  /* On the same network (blue): only the dot says it, the text stays as it is. */
+  .dot.local {
+    background: var(--st-run);
+  }
   .dot.wait {
     background: var(--st-retry);
   }
@@ -1246,6 +1321,16 @@
     align-items: center;
     gap: 8px;
   }
+  /* "Be visible to Pakos on this network": a little apart from the ID above it. */
+  label[for="seenby"] {
+    margin-top: 4px;
+  }
+  .seennote {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-2);
+  }
   .idtext {
     flex: 1;
     min-width: 0;
@@ -1325,11 +1410,12 @@
     width: min(420px, 82%);
     padding: 10px 12px;
     border-radius: var(--radius-lg);
-    background: var(--panel);
-    border: 1px solid var(--line-soft);
+    background: var(--bubble);
+    border: 1px solid var(--bubble-line);
+    box-shadow: var(--bubble-shadow);
   }
   .msg.out .bubble {
-    background: var(--select);
+    background: var(--bubble-out);
   }
   .msg.bad .bubble {
     opacity: 0.8;
@@ -1347,7 +1433,10 @@
   .mmeta {
     margin: 4px 0 0 26px;
     font-size: 12px;
-    color: var(--text-3);
+    color: var(--bubble-meta);
+  }
+  .mfoot .dim {
+    color: var(--bubble-meta);
   }
   .mfoot {
     display: flex;
@@ -1362,7 +1451,7 @@
     font-weight: 500;
   }
   .res.ok {
-    color: var(--st-done-text);
+    color: var(--delivered-text);
   }
   .acts {
     display: flex;
@@ -1529,6 +1618,15 @@
   .form p {
     margin: 6px 0 0;
     line-height: 1.5;
+  }
+  /* Your name (asked once) stands apart from the contact's own fields. */
+  .form p.first {
+    margin: 2px 0 10px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .input.missing {
+    border-color: var(--st-fail);
   }
   .err {
     color: var(--st-fail-text);

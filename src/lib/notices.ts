@@ -19,6 +19,7 @@ export type NoticeKind =
   | "direct-received"
   | "needs-you"
   | "power"
+  | "update-ready"
   | "other";
 
 /** Colour of a kind's icon: done (mint), problem (red), info (azure), wait (amber), people (violet). */
@@ -50,6 +51,7 @@ export const KINDS: KindInfo[] = [
   { id: "direct-received", label: "Files received", group: "Direct", icon: "check", tone: "done", bell: false },
   { id: "needs-you", label: "Pako needs you", group: "Pako", icon: "bell", tone: "wait", bell: true },
   { id: "power", label: "Sleep and shut down", group: "Pako", icon: "power", tone: "wait", bell: false },
+  { id: "update-ready", label: "New Pako ready", group: "Pako", icon: "download", tone: "done", bell: true },
   { id: "other", label: "Other messages", group: "Pako", icon: "help", tone: "info", bell: false },
 ];
 
@@ -58,7 +60,8 @@ export const kindInfo = (kind: string): KindInfo => KINDS.find((k) => k.id === k
 /** Where a click leads: a page of the window, and the item there when there is one. Direct's
  *  questions also carry the offer (Accept / Decline) or the person asking to connect. */
 export interface Go {
-  page: "" | "downloads" | "found" | "send" | "direct" | "dashboard";
+  /** "update": restart into the new Pako (it asks first while things are moving). */
+  page: "" | "downloads" | "found" | "send" | "direct" | "devices" | "dashboard" | "update";
   id?: string;
   offer?: string;
   peer?: string;

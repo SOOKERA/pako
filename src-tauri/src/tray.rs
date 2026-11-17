@@ -199,6 +199,9 @@ fn saved_mini_pos(app: &AppHandle) -> Option<PhysicalPosition<f64>> {
 /// Opens the small window without taking the focus (a download from the browser just started:
 /// you stay in your browser). Bottom right above the taskbar, or where it was pinned.
 pub fn show_mini_quietly(app: &AppHandle) {
+    if !crate::consent::ok() {
+        return;
+    }
     let Some(w) = mini_window(app) else { return };
     if w.is_visible().unwrap_or(false) {
         return;
@@ -340,12 +343,19 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
 
     let last_double: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
+    // Terms of use still to accept (a Pako just updated in the tray): said quietly here; the
+    // window opens on them when the user opens Pako or the browser sends it something.
     let mut tray = TrayIconBuilder::with_id("pako")
-        .tooltip("Pako")
+        .tooltip(if crate::consent::ok() { "Pako" } else { "Pako: open it to continue" })
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, e| {
             let engine = app.try_state::<Arc<Engine>>();
+            // The terms of use wait: the tray only opens Pako (on them) or quits it.
+            if !crate::consent::ok() && e.id().as_ref() != "quit" {
+                show_main(app);
+                return;
+            }
             match e.id().as_ref() {
                 "open" => show_main(app),
                 "settings" => open_settings(app),
@@ -370,6 +380,11 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
                 // click comes). A double click then opens Pako and the list closes.
                 TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, position, .. } => {
                     if last_double.lock().unwrap().is_some_and(|t| t.elapsed() < DOUBLE_CLICK) {
+                        return;
+                    }
+                    // The terms of use wait: Pako opens on them instead of the list.
+                    if !crate::consent::ok() {
+                        show_main(&app);
                         return;
                     }
                     toggle_mini(&app, position);

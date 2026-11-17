@@ -38,6 +38,7 @@ pub const KINDS: &[Kind] = &[
     Kind { id: "direct-received", label: "Files received", bell: false },
     Kind { id: "needs-you", label: "Pako needs you", bell: true },
     Kind { id: "power", label: "Sleep and shut down", bell: false },
+    Kind { id: "update-ready", label: "New Pako ready", bell: true },
     Kind { id: "other", label: "Other messages", bell: false },
 ];
 
@@ -74,7 +75,7 @@ pub fn pref(s: &Settings, kind: &str) -> Pref {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Go {
-    /// "downloads", "found", "send", "direct", "dashboard", or "" (just open Pako).
+    /// "downloads", "found", "send", "direct", "devices", "dashboard", or "" (just open Pako).
     pub page: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -584,12 +585,13 @@ mod tests {
     use crate::model::NoticePref;
 
     #[test]
-    fn defaults_popup_everywhere_bell_for_questions() {
+    fn defaults_popup_everywhere_bell_for_what_waits() {
         let s = Settings::default();
         for k in KINDS {
             let p = pref(&s, k.id);
             assert!(p.popup, "{} pops up by default", k.id);
-            let bell = matches!(k.id, "direct-request" | "direct-offer" | "needs-you");
+            // Questions, and a new Pako waiting for a restart.
+            let bell = matches!(k.id, "direct-request" | "direct-offer" | "needs-you" | "update-ready");
             assert_eq!(p.bell, bell, "{} bell default", k.id);
         }
         // Unknown kinds are "other".

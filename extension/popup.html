@@ -29,6 +29,18 @@
     </div>
 
     <div id="main">
+      <!-- full-only:start -->
+      <section id="videos" class="caught" hidden>
+        <div class="t">Videos on this page</div>
+        <p id="videos-locked" class="muted" hidden>This video is protected, so it can't be downloaded.</p>
+        <ul id="videos-list" class="caught-list"></ul>
+        <div id="rec" class="rec" hidden>
+          <p id="rec-text" class="muted"></p>
+          <button id="rec-start" class="secondary">Record this video</button>
+          <button id="rec-cancel" class="secondary" hidden>Stop recording</button>
+        </div>
+      </section>
+      <!-- full-only:end -->
       <button id="send" class="primary">Send this page to Pako</button>
       <!-- full-only:start -->
       <p class="hint">Pako asks where to save it (and the quality, for videos), unless you turned that off in Pako.</p>

@@ -6,6 +6,7 @@ import type {
   ContactNumbers,
   Download,
   FoundItem,
+  MirrorView,
   NumbersBucket,
   NumbersPerson,
   NumbersRoute,
@@ -60,6 +61,16 @@ const downloads: Download[] = [
   base({ name: "Brand guidelines.pdf", status: "starting", size: null, source: drive, priority: "first" }),
   base({ name: "ubuntu-24.04-desktop-amd64.iso", priority: "later", status: "paused", size: 5.5 * GB, downloaded: 1.1 * GB, link: "https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso" }),
   base({ name: "setup-tools.exe", status: "failed", size: null, message: "File not found on the server (404)." }),
+  // The same file on several hosts: the first host failed, it goes on from a backup.
+  base({
+    name: "Holiday.zip",
+    size: 2.4 * GB,
+    downloaded: 0.9 * GB,
+    link: "https://mirror.example.net/f/Holiday.zip",
+    source: { kind: "http", url: "https://mirror.example.net/f/Holiday.zip" },
+    tried: [{ link: "https://files.example.com/Holiday.zip", source: { kind: "http", url: "https://files.example.com/Holiday.zip" }, size: 2.4 * GB, md5: null, why: "File not found on the server (404)." }],
+    mirrors: [{ link: "https://dl.example.org/Holiday.zip", source: { kind: "http", url: "https://dl.example.org/Holiday.zip" }, size: 2.4 * GB, md5: null }],
+  }),
   base({ name: "Holiday photos 2025.zip", status: "completed", size: 2.18 * GB, downloaded: 2.18 * GB, source: drive, md5: "x", finishedAt: Date.now() }),
 ];
 
@@ -70,12 +81,13 @@ const found = (over: Partial<FoundItem> & { name: string; size?: number | null; 
 
 const foundItems: FoundItem[] = [
   found({ name: "Big dataset part 2.7z", size: 44.7 * GB, source: drive, link: "https://drive.google.com/file/d/b2/view" }),
-  found({ name: "Mountain timelapse 4K.mkv", size: 1.2 * GB, source: drive, link: "https://drive.google.com/file/d/v1/view" }),
+  // "Download on": one link set to Home PC, one to Office PC (offline: it stayed, noted).
+  found({ name: "Mountain timelapse 4K.mkv", size: 1.2 * GB, source: drive, link: "https://drive.google.com/file/d/v1/view", device: "9c1d7a4e2b6f80135c7e9a2d4f6b8c0e1a3c5e7092b4d6f8a0c2e4f6a8b0c2d4" }),
   found({ name: "Scene_05.uasset", size: 690 * MB, source: drive, folder: "Chanel assets v2", relDir: "", link: "https://drive.google.com/drive/folders/c2" }),
   found({ name: "Scene_06.uasset", size: 782 * MB, source: drive, folder: "Chanel assets v2", relDir: "", link: "https://drive.google.com/drive/folders/c2" }),
   found({ name: "notes.txt", size: 2048, source: drive, folder: "Chanel assets v2", relDir: "", link: "https://drive.google.com/drive/folders/c2" }),
   found({ name: "Google Drive folder", source: drive, state: "needsAccount", isFolder: true, message: "This folder isn't shared with \"anyone with the link\". Open it in your browser and download from there: Pako catches the download.", link: "https://drive.google.com/drive/folders/x9" }),
-  found({ name: "Brand book 2026.pdf", source: drive, state: "checking", link: "https://drive.google.com/file/d/p1/view" }),
+  found({ name: "Brand book 2026.pdf", source: drive, state: "checking", link: "https://drive.google.com/file/d/p1/view", device: "7e5c3a1f9d7b5e3c1a9f7d5b3e1c9a7f5d3b1e9c7a5f3d1b9e7c5a3f1d9b7e5c", deviceNote: "Office PC is offline: not sent. Press Download again once it's on." }),
   found({ name: "old-archive.zip", state: "broken", message: "File not found on the server (404)." }),
   found({
     name: "Big Buck Bunny 60fps 4K.mp4",
@@ -84,10 +96,33 @@ const foundItems: FoundItem[] = [
     source: { kind: "video", url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", quality: null, audio: null, duration: 635, audioSize: 10 * MB, options: [2160, 1440, 1080, 720, 480, 360].map((height, i) => ({ height, size: [2.1 * GB, 1.1 * GB, 512 * MB, 260 * MB, 120 * MB, 70 * MB][i] })) },
   }),
   found({ name: "Lo-fi mix", link: "https://youtu.be/xyz", state: "needsTools", message: "Video downloads need the video tools.", source: { kind: "video", url: "https://youtu.be/xyz" } }),
+  // The same file on three hosts (one of them broken).
+  found({ name: "Holiday video.mp4", size: 2.4 * GB, link: "https://files.example.com/Holiday%20video.mp4", source: { kind: "http", url: "https://files.example.com/Holiday%20video.mp4" } }),
+  found({ name: "Holiday video.mp4", size: 2.4 * GB, link: "https://mirror.example.net/f/Holiday%20video.mp4", source: { kind: "http", url: "https://mirror.example.net/f/Holiday%20video.mp4" } }),
+  found({ name: "Holiday video.mp4", state: "broken", message: "File not found on the server (404).", link: "https://dl.example.org/Holiday%20video.mp4", source: { kind: "http", url: "https://dl.example.org/Holiday%20video.mp4" } }),
   found({ name: "Project_files.part1.rar", size: 4 * GB }),
   found({ name: "Project_files.part2.rar", size: 4 * GB }),
   found({ name: "Project_files.part4.rar", size: 1.2 * GB }),
+  // Two parts of the set on a second host.
+  ...[1, 2].map((n) => found({ name: `Project_files.part${n}.rar`, size: 4 * GB, link: `https://mirror.example.net/Project_files.part${n}.rar`, source: { kind: "http", url: `https://mirror.example.net/Project_files.part${n}.rar` } })),
 ];
+
+/** Groups of the same file on several hosts, as the engine would send them (first ready host chosen). */
+export function mockMirrors(items: FoundItem[], names: string[]): MirrorView[] {
+  return names.map((name) => {
+    const rows = items.filter((f) => f.template.name === name && !f.folder);
+    const chosen = rows.find((f) => f.state === "ready") ?? null;
+    return {
+      key: rows[0].id,
+      name,
+      size: rows.find((f) => f.template.size != null)?.template.size ?? null,
+      ids: rows.map((f) => f.id),
+      hosts: rows.map((f) => (f.template.source.kind === "gDrive" ? "drive.google.com" : new URL(f.template.link).hostname.replace(/^www\./, ""))),
+      chosen: chosen?.id ?? null,
+      picked: false,
+    };
+  });
+}
 
 /** Plausible history for the Dashboard preview (fixed, not random). */
 export function mockStats(): StatsView {
@@ -138,7 +173,8 @@ const demoSnapshot: Snapshot = {
     },
   ],
   downloadSets: [],
-  settings: { downloadDir: "C:\\Users\\me\\Downloads", autoConnections: true, connections: 8, maxActive: 3, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, extractDefault: false, minimizeToTray: false, closeToTray: false, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, startWithWindows: false, startInTray: true, videoQuality: 1080, setupDone: true, videoAsked: false, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: false, browserConnect: false, sendCompression: "off", sendMode: null, askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7, whatsNewSeen: "0.1.1", tourOffered: true, toursDone: [] },
+  foundMirrors: mockMirrors(foundItems, ["Holiday video.mp4", "Project_files.part1.rar", "Project_files.part2.rar"]),
+  settings: { downloadDir: "C:\\Users\\me\\Downloads", autoConnections: true, connections: 8, maxActive: 3, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, extractDefault: false, minimizeToTray: false, closeToTray: false, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: false, startInTray: true, videoQuality: 1080, setupDone: true, videoAsked: false, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: false, browserConnect: false, sendCompression: "off", sendMode: null, askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7, whatsNewSeen: "0.1.1", tourOffered: true, toursDone: [] },
   dataDir: "C:\\Pako\\data",
   sevenZip: false,
   ffmpeg: false,
@@ -318,8 +354,9 @@ function mockEvents(): MockEvent[] {
     for (let i = 0; i < nDirect; i++) {
       const y = r();
       const contact = y < 0.5 ? RADO : y < 0.8 ? MIA : HERY;
-      const route = contact === RADO ? "direct6" : contact === MIA ? "direct" : "relay";
-      const avg = route === "direct6" ? (24 + r() * 20) * MB : route === "direct" ? (12 + r() * 8) * MB : (2 + r() * 2) * MB;
+      // Some of Rado's go over the home network (no extra random number: the rest stays the same).
+      const route = contact === RADO ? (i === 1 ? "local" : "direct6") : contact === MIA ? "direct" : "relay";
+      const avg = route === "direct6" || route === "local" ? (24 + r() * 20) * MB : route === "direct" ? (12 + r() * 8) * MB : (2 + r() * 2) * MB;
       const outgoing = r() < 0.55;
       const bytes = Math.round((0.05 + r() * 3) * GB);
       out.push({ at: at(hourOf()), day, kind: outgoing ? "sent" : "received", name: pick(names.direct), bytes, files: 1 + Math.floor(r() * 3), secs: bytes / avg, peak: avg * (1.15 + r() * 0.35), source: outgoing ? "" : "direct", route, contact, ok: true });
@@ -359,7 +396,7 @@ export function mockNumbers(period: string): NumbersView {
       avg: avgOf(sumBytes(ok), sumSecs(ok)),
       peak: maxPeak(ok),
       people: new Set(ok.filter((e) => e.contact).map((e) => e.contact)).size,
-      directBytes: sumBytes(ok.filter((e) => e.route === "direct6" || e.route === "direct")),
+      directBytes: sumBytes(ok.filter((e) => e.route === "direct6" || e.route === "direct" || e.route === "local")),
     };
   };
 
@@ -473,6 +510,7 @@ export function mockContactNumbers(id: string): ContactNumbers {
     avgSent: avgOf(sumBytes(s), sumSecs(s)),
     avgReceived: avgOf(sumBytes(g), sumSecs(g)),
     directBytes: sumBytes(es.filter((e) => e.route !== "relay")),
+    localBytes: sumBytes(es.filter((e) => e.route === "local")),
     relayBytes: sumBytes(es.filter((e) => e.route === "relay")),
     last: es.length ? Math.max(...es.map((e) => e.at)) : null,
   };
@@ -512,6 +550,9 @@ const demoNotices: Notice[] = [
   },
 ];
 export const mockNotices: Notice[] = showcase ? showcaseNotices : demoNotices;
+if (typeof location !== "undefined" && new URLSearchParams(location.search).get("update") === "ready") {
+  mockNotices.unshift({ id: "n-update", kind: "update-ready", title: "Pako 1.1.1 is ready", body: "Restart Pako to start using it. Your downloads and lists stay.", at: Date.now() - 2 * 60_000, read: false, go: { page: "update" } });
+}
 
 /** Help › Report a problem: what a report would carry (?report=empty: no problems noted yet). */
 export function mockReport(): ReportInfo {

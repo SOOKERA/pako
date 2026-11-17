@@ -46,7 +46,7 @@ fn chromium_origins() -> Vec<String> {
     CHROMIUM_IDS.iter().map(|id| format!("chrome-extension://{id}/")).collect()
 }
 /// Firefox extension ID (manifest.firefox.json).
-pub const FIREFOX_ID: &str = "pako@sookera.com";
+pub const FIREFOX_ID: &str = "extension@pako.sookera.com";
 /// Argument for a Pako started by the native host: stay hidden in the tray.
 pub const FROM_BROWSER: &str = "--from-browser";
 
@@ -65,7 +65,9 @@ const START_WAIT: Duration = Duration::from_secs(30);
 #[serde(default)]
 pub struct Request {
     /// "download" (straight to Downloads), "links" (to Links, to pick from), "video" (the
-    /// player's Download button: one video straight to Downloads in `quality`) or "ping".
+    /// player's Download button: one video straight to Downloads in `quality`), "stream" (a
+    /// video caught playing on the page: see `crate::stream`), "record" (Record this video:
+    /// `record`) or "ping". "stream" and "record" never come from Pako Light.
     pub kind: String,
     pub urls: Vec<String>,
     pub referrer: String,
@@ -85,6 +87,9 @@ pub struct Request {
     /// logged in work). Given to yt-dlp in a temporary file, never on a command line.
     #[serde(rename = "siteCookies")]
     pub site_cookies: Vec<SiteCookie>,
+    /// "record" only: one step of a recording (checked by `crate::stream::validate_record`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record: Option<crate::stream::RecordRequest>,
     /// From Pako Light (set by the native host from the browser's own launch arguments, never
     /// read from the extension's message): no videos, no video lookups for its links.
     #[serde(skip)]
@@ -184,6 +189,11 @@ pub struct Reply {
     /// Pako is still starting: ask again in a moment.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub retry: bool,
+    /// The version of the full extension in Pako's "Load unpacked" folder (added by the native
+    /// host, never for Pako Light): an older copy running in the browser reloads itself to
+    /// pick up the new one after a Pako update, instead of waiting for the browser to restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<String>,
 }
 
 impl Reply {
@@ -191,14 +201,14 @@ impl Reply {
         Reply { ok: true, ..Default::default() }
     }
     pub fn error(e: impl Into<String>) -> Self {
-        Reply { ok: false, error: Some(e.into()), retry: false }
+        Reply { ok: false, error: Some(e.into()), ..Default::default() }
     }
     /// Not taken, nothing wrong (the browser keeps its download, no warning).
     pub fn declined() -> Self {
         Reply::default()
     }
     pub fn not_ready() -> Self {
-        Reply { ok: false, error: Some("Pako is still starting. Try again in a moment.".into()), retry: true }
+        Reply { ok: false, error: Some("Pako is still starting. Try again in a moment.".into()), retry: true, ..Default::default() }
     }
 }
 
@@ -236,7 +246,7 @@ fn light_skips(link: &str) -> bool {
 pub fn light_rules(mut r: Request) -> Result<Request, String> {
     match r.kind.as_str() {
         "ping" => return Ok(r),
-        "video" => return Err(LIGHT_REFUSED.into()),
+        "video" | "stream" | "record" => return Err(LIGHT_REFUSED.into()),
         _ => {}
     }
     r.urls.retain(|u| !crate::video::is_video_site(u) && !light_skips(u));
@@ -265,6 +275,8 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
     match r.kind.as_str() {
         "ping" => return Ok(Request { kind: "ping".into(), ..Default::default() }),
         "video" => return validate_video(r),
+        "stream" => return crate::stream::validate_stream(r),
+        "record" => return validate_record(r),
         "download" | "links" => {}
         _ => return Err("Unknown request.".into()),
     }
@@ -376,6 +388,14 @@ fn validate_video(r: Request) -> Result<Request, String> {
     Ok(Request { kind: "video".into(), urls: vec![url], quality: Some(quality), site_cookies, ..Default::default() })
 }
 
+/// One step of "Record this video": checked (the checked form is made again where it is used),
+/// nothing else travels with it.
+fn validate_record(r: Request) -> Result<Request, String> {
+    let rec = r.record.ok_or("Unknown request.")?;
+    crate::stream::validate_record(rec.clone(), r.light)?;
+    Ok(Request { kind: "record".into(), record: Some(rec), ..Default::default() })
+}
+
 // ---------- message framing (4-byte little-endian length, then JSON) ----------
 
 fn frame_len(len: [u8; 4]) -> std::io::Result<usize> {
@@ -459,6 +479,8 @@ pub fn run_host(args: &[String]) -> i32 {
     let light = is_light_launch(args);
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
+    // Which browser this is, for "Connected" in Settings (noted after each answer is sent).
+    let mut seen = crate::seen::HostNote::default();
     loop {
         let msg = match read_host_message(&mut input) {
             Ok(HostMessage::Request(m)) => Ok(m),
@@ -467,18 +489,23 @@ pub fn run_host(args: &[String]) -> i32 {
             Ok(HostMessage::Closed) => return 0,
             Err(_) => return 1,
         };
+        let version = msg.as_deref().ok().and_then(crate::seen::version_in);
         let checked = msg.and_then(|m| serde_json::from_slice::<Request>(&m).map_err(|_| "Unreadable request.".to_string())).and_then(validate);
-        let reply = match checked.and_then(|r| if light { light_rules(r) } else { Ok(r) }) {
+        let mut reply = match checked.and_then(|r| if light { light_rules(r) } else { Ok(r) }) {
             // "Connected": the browser reached this helper (Pako itself starts when needed).
             Ok(r) if r.kind == "ping" => Reply::ok(),
             Ok(r) => hand_over(&r),
             Err(e) => Reply::error(e),
         };
+        if !light {
+            reply.ext = folder_version();
+        }
         if let Some(e) = reply.error.as_deref().filter(|e| *e != LIGHT_REFUSED) { crate::errorlog::note(crate::errorlog::Area::Extension, e); }
         let json = serde_json::to_vec(&reply).unwrap_or_default();
         if write_message(&mut output, &json).is_err() {
             return 1;
         }
+        seen.note(light, version, unix_now());
     }
 }
 
@@ -673,7 +700,7 @@ fn integrity_level(process: windows_sys::Win32::Foundation::HANDLE) -> Option<u3
 }
 
 /// The program file a process runs.
-fn process_image(process: windows_sys::Win32::Foundation::HANDLE) -> Option<PathBuf> {
+pub(crate) fn process_image(process: windows_sys::Win32::Foundation::HANDLE) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Threading::{PROCESS_NAME_WIN32, QueryFullProcessImageNameW};
     let mut buf = vec![0u16; 32 * 1024];
@@ -947,7 +974,8 @@ pub fn keep_headers(keep: impl Fn(&str) -> bool) {
 
 // ---------- registering Pako with the browsers ----------
 
-/// Where each browser looks for native hosts (per user, no admin needed).
+/// Where each browser looks for native hosts (per user, no admin needed). Opera and Opera GX
+/// have no key of their own: like Chromium, they read Chrome's.
 const CHROMIUM_KEYS: &[&str] = &[
     r"Software\Google\Chrome\NativeMessagingHosts",
     r"Software\Chromium\NativeMessagingHosts",
@@ -1059,14 +1087,22 @@ const FILES: &[(&str, &[u8])] = &[
     ("popup.html", include_bytes!("../../extension/popup.html")),
     ("popup.css", include_bytes!("../../extension/popup.css")),
     ("popup.js", include_bytes!("../../extension/popup.js")),
+    ("pill.js", include_bytes!("../../extension/pill.js")),
     ("player.js", include_bytes!("../../extension/player.js")),
+    ("caught.js", include_bytes!("../../extension/caught.js")),
+    ("recorder.js", include_bytes!("../../extension/recorder.js")),
+    ("recorder-bridge.js", include_bytes!("../../extension/recorder-bridge.js")),
     ("icons/icon16.png", include_bytes!("../../extension/icons/icon16.png")),
     ("icons/icon32.png", include_bytes!("../../extension/icons/icon32.png")),
     ("icons/icon48.png", include_bytes!("../../extension/icons/icon48.png")),
     ("icons/icon128.png", include_bytes!("../../extension/icons/icon128.png")),
 ];
 const CHROMIUM_MANIFEST: &[u8] = include_bytes!("../../extension/manifest.chromium.json");
-const FIREFOX_MANIFEST: &[u8] = include_bytes!("../../extension/manifest.firefox.json");
+/// The Firefox extension signed by Mozilla, built in by build.rs from
+/// dist/extension/signed/pako-firefox-<version>.xpi (scripts/sign-firefox.ps1). Empty in a build
+/// made without it: Pako then says Firefox isn't available.
+const FIREFOX_XPI: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pako-firefox.xpi"));
+const XPI_NAME: &str = "pako-firefox.xpi";
 
 /// After a Pako update: the extension folder a browser already loads from is brought up to date
 /// (the browser picks it up at its next start, or with the reload button). Nothing is written
@@ -1081,14 +1117,28 @@ pub fn refresh_if_outdated() {
     }
 }
 
-/// The folder's scripts and pages are the ones built into this Pako.
+/// The folder's scripts and pages (and the Firefox file) are the ones built into this Pako.
 fn files_match() -> bool {
-    let chromium = crate::paths::data_dir().join("extension").join("chromium");
+    let root = crate::paths::data_dir().join("extension");
+    let chromium = root.join("chromium");
     FILES.iter().all(|(name, bytes)| std::fs::read(chromium.join(name)).is_ok_and(|b| b == *bytes))
+        && (FIREFOX_XPI.is_empty() || std::fs::read(root.join(XPI_NAME)).is_ok_and(|b| b == FIREFOX_XPI))
+}
+
+/// The version of the extension in Pako's "Load unpacked" folder, as written on disk (not the
+/// one built into this exe: the browser reloads from the folder, so only its version counts).
+fn folder_version() -> Option<String> {
+    let path = crate::paths::data_dir().join("extension").join("chromium").join("manifest.json");
+    manifest_version(&std::fs::read(path).ok()?)
+}
+
+fn manifest_version(bytes: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    v.get("version")?.as_str().map(String::from).filter(|s| !s.is_empty() && s.len() <= 32)
 }
 
 /// Writes the extension next to Pako's data (a folder for Chromium browsers' "Load unpacked",
-/// and a zip for Firefox's signing) and returns that folder.
+/// and the signed file Firefox adds, when this Pako has it) and returns that folder.
 pub fn write_files() -> Result<PathBuf, String> {
     let root = crate::paths::data_dir().join("extension");
     let chromium = root.join("chromium");
@@ -1099,28 +1149,24 @@ pub fn write_files() -> Result<PathBuf, String> {
     }
     std::fs::write(chromium.join("manifest.json"), CHROMIUM_MANIFEST).map_err(|e| e.to_string())?;
 
-    let zip_path = root.join("pako-firefox.zip");
-    let file = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let mut add = |name: &str, bytes: &[u8]| -> Result<(), String> {
-        zip.start_file(name, opts).map_err(|e| e.to_string())?;
-        zip.write_all(bytes).map_err(|e| e.to_string())
-    };
-    add("manifest.json", FIREFOX_MANIFEST)?;
-    for (name, bytes) in FILES {
-        add(name, bytes)?;
+    // Firefox: only the copy signed by Mozilla (Firefox refuses any other). A file left by an
+    // older Pako (or the unsigned zip Pako 1.0 wrote for signing by hand) goes.
+    let xpi = root.join(XPI_NAME);
+    if FIREFOX_XPI.is_empty() {
+        let _ = std::fs::remove_file(&xpi);
+    } else {
+        std::fs::write(&xpi, FIREFOX_XPI).map_err(|e| e.to_string())?;
     }
-    zip.finish().map_err(|e| e.to_string())?;
-    // The install and Firefox signing steps, next to the files they talk about.
+    let _ = std::fs::remove_file(root.join("pako-firefox.zip"));
+    // How to add it, next to the files it talks about.
     std::fs::write(root.join("README.md"), include_bytes!("../../extension/README.md")).map_err(|e| e.to_string())?;
     Ok(root)
 }
 
-/// The Firefox version signed by Mozilla, when it was put next to the zip (`root` = the folder
-/// `write_files` returns). Firefox only adds signed extensions.
+/// The Firefox version signed by Mozilla, in the folder `write_files` returns (`root`), when this
+/// Pako has one. Firefox only adds signed extensions.
 pub fn firefox_xpi(root: &std::path::Path) -> Option<PathBuf> {
-    Some(root.join("pako-firefox.xpi")).filter(|p| p.is_file())
+    Some(root.join(XPI_NAME)).filter(|p| !FIREFOX_XPI.is_empty() && p.is_file())
 }
 
 #[cfg(test)]
@@ -1431,6 +1477,14 @@ mod tests {
     }
 
     #[test]
+    fn registers_where_browsers_look() {
+        // Chrome's key is also the one Chromium-based browsers without their own read (Opera, Opera GX).
+        assert_eq!(CHROMIUM_KEYS[0], r"Software\Google\Chrome\NativeMessagingHosts");
+        assert!(CHROMIUM_KEYS.contains(&r"Software\Microsoft\Edge\NativeMessagingHosts"));
+        assert!(CHROMIUM_KEYS.iter().all(|k| k.starts_with(r"Software\") && k.ends_with(r"\NativeMessagingHosts")));
+    }
+
+    #[test]
     fn spots_browser_launches() {
         assert!(is_host_launch(&["chrome-extension://fnaplmfbaccplngclnkchlngpkbcbhod/".into(), "--parent-window=0".into()]));
         assert!(is_host_launch(&[r"C:\x\firefox-host.json".into(), FIREFOX_ID.into()]));
@@ -1630,5 +1684,62 @@ mod tests {
         for name in ["LICENSE", "NOTICE.md"] {
             assert!(FILES.iter().any(|(n, b)| *n == name && !b.is_empty()), "{name}");
         }
+    }
+
+    /// The Firefox file built in (when there is one) is a signed extension of the current version,
+    /// for the ID Pako's native host lets in.
+    #[test]
+    fn the_built_in_firefox_extension_is_this_version() {
+        if FIREFOX_XPI.is_empty() {
+            return; // a build without it: Pako says Firefox isn't available
+        }
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(FIREFOX_XPI)).expect("the .xpi is a zip");
+        let mut text = String::new();
+        zip.by_name("manifest.json").expect("manifest.json").read_to_string(&mut text).unwrap();
+        let signed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let source: serde_json::Value = serde_json::from_slice(include_bytes!("../../extension/manifest.firefox.json")).unwrap();
+        assert_eq!(signed["version"], source["version"]);
+        assert_eq!(signed["browser_specific_settings"]["gecko"]["id"], FIREFOX_ID);
+        // Mozilla's signature.
+        assert!(zip.by_name("META-INF/mozilla.rsa").is_ok() || zip.by_name("META-INF/cose.sig").is_ok());
+    }
+
+    #[test]
+    fn caught_streams_and_recordings_are_checked_and_never_from_light() {
+        // A caught stream: checked the same in the host and again in Pako (through the pipe).
+        let raw = br#"{"kind":"stream","urls":["https://cdn.example.net/v/master.m3u8"],"referrer":"https://watch.example.org/v/1#t","filename":"My clip","siteCookies":[{"domain":"cdn.example.net","path":"/","name":"a","value":"1"},{"domain":"other.example","path":"/","name":"b","value":"2"}]}"#;
+        let r = validate(serde_json::from_slice(raw).unwrap()).unwrap();
+        assert_eq!(r.kind, "stream");
+        assert_eq!(r.referrer, "https://watch.example.org/");
+        assert_eq!(r.filename, "My clip");
+        assert_eq!(r.site_cookies.len(), 1);
+        assert_eq!(parse_pipe_message(&pipe_message(&r)), Ok(r.clone()));
+        assert!(validate(Request { kind: "stream".into(), urls: vec!["ftp://x.example/a.m3u8".into()], ..Default::default() }).is_err());
+        // Record this video: the step travels as it came, once checked.
+        let chunk = br#"{"kind":"record","record":{"action":"chunk","session":"abcdef12-3456","track":0,"mime":"video/mp4","seq":0,"data":"AQID"}}"#;
+        let r = validate(serde_json::from_slice(chunk).unwrap()).unwrap();
+        assert_eq!(r.kind, "record");
+        assert!(r.urls.is_empty() && r.site_cookies.is_empty());
+        assert_eq!(parse_pipe_message(&pipe_message(&r)), Ok(r.clone()));
+        let bad = br#"{"kind":"record","record":{"action":"chunk","session":"abcdef12-3456","track":9,"mime":"video/mp4","seq":0,"data":"AQID"}}"#;
+        assert!(validate(serde_json::from_slice(bad).unwrap()).is_err());
+        assert!(validate(Request { kind: "record".into(), ..Default::default() }).is_err());
+        // Pako Light: neither, whatever it sends.
+        let stream = validate(serde_json::from_slice(raw).unwrap()).unwrap();
+        assert_eq!(light_rules(stream), Err(LIGHT_REFUSED.to_string()));
+        assert_eq!(light_rules(r), Err(LIGHT_REFUSED.to_string()));
+        let open = parse_pipe_message(br#"{"pako":1,"request":{"kind":"stream","urls":["https://cdn.example.net/v.m3u8"]},"light":true}"#);
+        assert_eq!(open, Err(LIGHT_REFUSED.to_string()));
+    }
+
+    /// The folder's version is read from its manifest (what the browser would load).
+    #[test]
+    fn the_folder_version_comes_from_its_manifest() {
+        assert_eq!(manifest_version(br#"{"name":"Pako","version":"1.2.5"}"#).as_deref(), Some("1.2.5"));
+        assert_eq!(manifest_version(CHROMIUM_MANIFEST).is_some(), true);
+        assert_eq!(manifest_version(b"not json"), None);
+        assert_eq!(manifest_version(br#"{"version":""}"#), None);
+        let r = serde_json::to_string(&Reply::ok()).unwrap();
+        assert!(!r.contains("ext"), "no field unless the host adds it: {r}");
     }
 }

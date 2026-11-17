@@ -7,7 +7,7 @@
   import { api, type ContactNumbers, type DirectContact, type DirectTransfer } from "./api";
   import { bytes, shortDate, speed } from "./format";
   import Icon from "./Icon.svelte";
-  import { pathLabel } from "./direct";
+  import { isLocal, pathLabel } from "./direct";
   import { quintOut } from "svelte/easing";
   import type { TransitionConfig } from "svelte/transition";
 
@@ -55,11 +55,30 @@
   const down = $derived(moving.filter((t) => !t.outgoing).reduce((s, t) => s + speedOf(t), 0));
   const plural = (k: number, one: string, many = `${one}s`) => `${k.toLocaleString()} ${k === 1 ? one : many}`;
   const routeTip: Record<string, string> = {
+    local: "Over your home network, PC to PC: nothing goes through the internet. Usually the fastest.",
     direct6: "Straight between the two PCs, over IPv6: usually the fastest.",
     direct: "Straight between the two PCs.",
     relay: "Through a relay server: still encrypted end to end, often slower.",
   };
-  const directPct = $derived(n && n.directBytes + n.relayBytes ? Math.round((n.directBytes / (n.directBytes + n.relayBytes)) * 100) : null);
+  /** How what went between you travelled: over the home network, straight between the PCs
+   *  over the internet, through a relay. Rounded so the three add up to 100. */
+  const share = $derived.by(() => {
+    if (!n) return null;
+    const local = Math.min(n.localBytes ?? 0, n.directBytes);
+    const parts = [
+      { key: "local", label: "Local network", bytes: local, tip: "Over your home network" },
+      { key: "direct", label: "Direct", bytes: n.directBytes - local, tip: "Straight between your PCs" },
+      { key: "relay", label: "Via relay", bytes: n.relayBytes, tip: "Through a relay" },
+    ];
+    const total = parts.reduce((a, p) => a + p.bytes, 0);
+    if (!total) return null;
+    const pct = parts.map((p) => Math.round((p.bytes / total) * 100));
+    // The biggest part takes what rounding left over.
+    const big = parts.reduce((b, p, i) => (p.bytes > parts[b].bytes ? i : b), 0);
+    pct[big] += 100 - pct.reduce((a, x) => a + x, 0);
+    // A part that never happened isn't listed (Direct and Via relay always are).
+    return parts.map((p, i) => ({ ...p, pct: pct[i] })).filter((p) => p.bytes > 0 || p.key !== "local");
+  });
   const added = $derived(new Date(c.added).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }));
   function copyId() {
     app.run(() => api.copyText(c.id)).then(() => app.toast(`${c.name}'s Pako ID is copied.`));
@@ -81,7 +100,7 @@
     <div class="label">Connection</div>
     <dl>
       <dt>Status</dt>
-      <dd><span class="sdot" class:online={c.online} class:wait={c.waiting}></span>{c.online ? "Online" : c.waiting ? "Waiting for them" : "Offline"}</dd>
+      <dd><span class="sdot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span>{c.online ? "Online" : c.waiting ? "Waiting for them" : "Offline"}</dd>
       {#if c.online}
         <dt>Route</dt>
         <dd title={routeTip[c.path ?? ""] ?? ""}>{pathLabel(c.path) || "Connected"}</dd>
@@ -138,12 +157,13 @@
     {:else}
       <p class="none">Speeds show up after your first transfer together.</p>
     {/if}
-    {#if directPct !== null}
-      <div class="share" role="img" aria-label="{directPct}% went straight between your PCs, {100 - directPct}% through a relay">
-        <i class="direct" style="flex: {n!.directBytes}" title="Straight between your PCs: {bytes(n!.directBytes)}"></i>
-        <i class="relay" style="flex: {n!.relayBytes}" title="Through a relay: {bytes(n!.relayBytes)}"></i>
+    {#if share}
+      <div class="share" role="img" aria-label={share.map((p) => `${p.label} ${p.pct}%`).join(", ")}>
+        {#each share as p (p.key)}
+          {#if p.bytes > 0}<i class={p.key} style="flex: {p.bytes}" title="{p.tip}: {bytes(p.bytes)}"></i>{/if}
+        {/each}
       </div>
-      <div class="sharetext"><span><i class="direct"></i>Direct {directPct}%</span><span><i class="relay"></i>Via relay {100 - directPct}%</span></div>
+      <div class="sharetext" class:three={share.length > 2}>{#each share as p (p.key)}<span><i class={p.key}></i>{p.label} {p.pct}%</span>{/each}</div>
     {/if}
   </section>
 
@@ -270,9 +290,14 @@
     height: 7px;
     border-radius: 50%;
     background: var(--st-pause);
+    transition: background var(--mid) ease;
   }
   .sdot.online {
     background: var(--st-done);
+  }
+  /* Blue like the dot on their row: on the same network. */
+  .sdot.local {
+    background: var(--st-run);
   }
   /* Amber like the dot on their row: waiting for them (coral would mean waiting for you). */
   .sdot.wait {
@@ -336,6 +361,10 @@
   .sharetext i {
     min-width: 2px;
   }
+  .share .local,
+  .sharetext .local {
+    background: var(--st-run);
+  }
   .direct {
     background: var(--st-done);
   }
@@ -344,10 +373,16 @@
   }
   .sharetext {
     display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
     justify-content: space-between;
     margin-top: 6px;
     font-size: 11.5px;
     color: var(--text-3);
+  }
+  /* Three parts (the home network too) wrap from the left, like a legend. */
+  .sharetext.three {
+    justify-content: flex-start;
   }
   .sharetext span {
     display: flex;

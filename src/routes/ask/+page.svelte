@@ -12,8 +12,15 @@
   import MiddleText from "$lib/MiddleText.svelte";
   import WinButton from "$lib/WinButton.svelte";
   import { fadeIn, pop } from "$lib/motion";
+  import ContextMenu from "$lib/ContextMenu.svelte";
+  import Icon from "$lib/Icon.svelte";
+  import type { MenuItem } from "$lib/menu";
+  import { devicesApi, downloadOnMenu, targets, type DownloadTarget } from "$lib/devices.svelte";
 
   let view = $state<AskView | null>(null);
+  /** "Download on" another PC: offered while one is online, never for a video caught on a page
+   *  or a recording (only this PC can make those). */
+  const sendable = $derived(targets.list.length > 0 && !view?.hereOnly);
   let stem = $state("");
   let dir = $state("");
   let quality = $state(1080);
@@ -59,7 +66,29 @@
     nameEl?.select();
   }
 
+  // "Download on ▾" (only while one of your devices can take links): the arrow next to the
+  // main button. The main button always downloads on this PC.
+  let onMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  function openOn(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    onMenu = { x: r.right, y: r.top - 6, items: downloadOnMenu(targets.list, () => answer("now"), sendTo, true) };
+  }
+  /** That device downloads it instead, and it leaves this PC (the window moves on). */
+  async function sendTo(t: DownloadTarget) {
+    if (!view || busy) return;
+    busy = true;
+    error = "";
+    try {
+      await devicesApi.sendAsk(view.id, t.id, view.video ? quality : null);
+      if (!inApp) busy = false;
+    } catch (e) {
+      error = `Not sent to ${t.name}: ${String(e)}`;
+      busy = false;
+    }
+  }
+
   onMount(() => {
+    targets.start();
     load();
     if (!inApp) return;
     const un = listen("ask-changed", () => load());
@@ -166,13 +195,22 @@
       <button class="btn ghost" disabled={busy} onclick={() => answer("cancel")}>Cancel</button>
       {#if busyElse}
         <button class="btn" disabled={busy} onclick={() => answer("queue")}>Add to queue</button>
-        <button class="btn primary" disabled={busy} onclick={() => answer("now")}>Download now</button>
+        <button class="btn primary" class:joined={sendable} disabled={busy} onclick={() => answer("now")}>Download now</button>
       {:else}
-        <button class="btn primary" disabled={busy} onclick={() => answer("now")}>Download</button>
+        <button class="btn primary" class:joined={sendable} disabled={busy} onclick={() => answer("now")}>Download</button>
+      {/if}
+      {#if sendable}
+        <button class="btn primary more" disabled={busy} aria-label="Download on" aria-haspopup="menu" title="Download on this PC or on one of your devices" onclick={openOn}>
+          <Icon name="chevron" size={12} stroke={2.6} />
+        </button>
       {/if}
     </div>
   {/if}
 </div>
+
+{#if onMenu}
+  <ContextMenu x={onMenu.x} y={onMenu.y} items={onMenu.items} onclose={() => (onMenu = null)} />
+{/if}
 
 <style>
   .ask {
@@ -340,6 +378,19 @@
   .foot:has(.err) {
     padding-top: 9px;
     padding-bottom: 9px;
+  }
+  /* The main button and its "Download on ▾" arrow, as one. */
+  .btn.primary.joined {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .btn.primary.more {
+    width: 30px;
+    margin-left: -8px;
+    padding: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid rgba(0, 0, 0, 0.22);
   }
   .err {
     flex: 1 0 100%;

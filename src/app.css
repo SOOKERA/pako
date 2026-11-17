@@ -48,6 +48,14 @@
   --card: var(--raise);
   /* the details panel's map of a file's parts */
   --parts-map: #1d2127;
+  /* files sent and received (Direct's conversation, My devices' Files): received, sent, their
+     edge and shadow, their size / date / route, and "Delivered" / "Received" */
+  --bubble: var(--panel);
+  --bubble-out: var(--select);
+  --bubble-line: var(--line-soft);
+  --bubble-shadow: none;
+  --bubble-meta: var(--text-3);
+  --delivered-text: var(--st-done-text);
   /* a contact's round initial (Direct, the Dashboard's people) */
   --avatar-bg: var(--group-head);
   --avatar-ring: transparent;
@@ -178,6 +186,15 @@
   --parts-map: #e4e8ee;
   --avatar-bg: #ffffff;
   --avatar-ring: #cdd4de;
+  /* white cards with a clear edge on the grey conversation; sent ones a touch of azure */
+  --bubble: #ffffff;
+  --bubble-out: #f4f8fe;
+  --bubble-line: #d2d9e4;
+  --bubble-shadow:
+    0 1px 2px rgba(20, 26, 46, 0.06),
+    0 2px 8px rgba(20, 26, 46, 0.04);
+  --bubble-meta: #485166;
+  --delivered-text: #0e6a37;
   --card: #ffffff;
   --underline: #b9c1cd;
   --scroll: #c5ccd6;

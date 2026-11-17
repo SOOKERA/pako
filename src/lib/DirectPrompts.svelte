@@ -54,7 +54,27 @@
       if (answered === key) answered = "";
     }
   }
-  const answerRequest = (peer: string, accept: boolean) => answer(() => api.directAnswerRequest(peer, accept));
+  /** No name of yours yet: accepting asks for it first (they'll see it). */
+  const nameMissing = $derived(!(app.direct?.myName ?? "").trim());
+  let myName = $state("");
+  /** Accept pressed with no name: said under the field, which takes the focus. */
+  let needName = $state(false);
+  let nameField = $state<HTMLInputElement | null>(null);
+  $effect(() => {
+    if (myName.trim()) needName = false;
+  });
+  function answerRequest(peer: string, accept: boolean) {
+    if (accept && nameMissing && !myName.trim()) {
+      if (!armed) return;
+      needName = true;
+      nameField?.focus();
+      return;
+    }
+    return answer(async () => {
+      if (accept && nameMissing) await api.directSetName(myName.trim());
+      await api.directAnswerRequest(peer, accept);
+    });
+  }
   const answerOffer = (id: string, accept: boolean) => answer(() => api.directAnswerOffer(id, accept, accept ? folder : null));
 
   async function change() {
@@ -78,6 +98,11 @@
       </div>
       <p class="dim small">If you know them, check they see the same code (by voice or chat). A different code means it isn't them.</p>
       <p class="dim small">If you decline (or close this), Pako turns {r.name} away without asking you for 7 days.</p>
+      {#if nameMissing}
+        <label class="lbl dim small" for="reqmyname">Your name (what {r.name} sees)</label>
+        <input id="reqmyname" class="input" class:missing={needName} bind:this={nameField} bind:value={myName} placeholder="What your contacts see" maxlength="60" aria-invalid={needName} />
+        {#if needName}<p class="need small" role="alert">Fill in your name first: {r.name} sees it when you accept.</p>{/if}
+      {/if}
     </div>
     {#snippet actions()}
       <button class="btn ghost" title="Decline (Esc)" onclick={() => answerRequest(r.peer, false)}>Decline</button>
@@ -120,6 +145,12 @@
 {/if}
 
 <style>
+  .body p.need {
+    color: var(--st-fail-text);
+  }
+  .input.missing {
+    border-color: var(--st-fail);
+  }
   .body {
     display: flex;
     flex-direction: column;

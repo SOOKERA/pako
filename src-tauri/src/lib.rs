@@ -22,13 +22,18 @@ mod system;
 mod tray;
 mod updates;
 pub mod extension;
+mod seen;
 mod video;
+mod hls;
+mod stream;
 mod send;
 mod filedrop;
 mod ask;
 mod direct;
 mod notices;
 mod theme;
+mod terms;
+mod consent;
 pub mod release;
 pub mod install;
 
@@ -53,6 +58,8 @@ struct Snapshot {
     /// Split archives among the Found links and among the downloads.
     found_sets: Vec<split::SetView>,
     download_sets: Vec<split::SetView>,
+    /// The same file on several hosts among the Found links.
+    found_mirrors: Vec<engine::MirrorView>,
     settings: Settings,
     data_dir: String,
     /// 7-Zip is installed (extracting split archives works).
@@ -63,6 +70,8 @@ struct Snapshot {
     version: String,
     /// Installed with Pako Setup (false = the portable Pako.exe).
     installed: bool,
+    /// The terms of use wait to be accepted: the window shows only them (see consent.rs).
+    terms_needed: bool,
 }
 
 // ---------- Send (files with a link) ----------
@@ -91,9 +100,16 @@ fn direct_set_name(d: Dir<'_>, name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Contacts see your name: without one, everyone would be "someone" to the other side.
+const NAME_FIRST: &str = "Add your name first: it's what your contacts see.";
+
 #[tauri::command]
 fn direct_add_contact(d: Dir<'_>, id: String, name: String) -> Result<(), String> {
-    d.node()?.add_contact(&id, &name)
+    let node = d.node()?;
+    if !node.has_name() {
+        return Err(NAME_FIRST.into());
+    }
+    node.add_contact(&id, &name)
 }
 
 /// Rename, "can send to me without asking", or their save folder (`folder` "" = the default).
@@ -150,7 +166,11 @@ fn direct_answer_request(window: tauri::Window, d: Dir<'_>, peer: String, accept
     if window.label() != "main" {
         return Err("Answer this in Pako's window.".into());
     }
-    d.node()?.answer_request(&peer, accept);
+    let node = d.node()?;
+    if accept && !node.has_name() {
+        return Err(NAME_FIRST.into());
+    }
+    node.answer_request(&peer, accept);
     Ok(())
 }
 
@@ -348,17 +368,21 @@ async fn snapshot(window: tauri::WebviewWindow, engine: Eng<'_>) -> Result<Snaps
         found: engine.found(),
         found_sets: engine.found_sets(),
         download_sets: engine.download_sets(),
+        found_mirrors: engine.found_mirrors(),
         settings: engine.settings(),
         data_dir: paths::data_dir().display().to_string(),
         seven_zip: components::seven_zip().is_some(),
         ffmpeg: components::ffmpeg().is_some(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         installed: paths::is_installed(),
+        terms_needed: !consent::ok(),
     })
 }
 
 #[tauri::command]
 async fn add_links(engine: Eng<'_>, text: String, dest: Option<String>) -> Result<AddResult, String> {
+    // Adding opens and checks the links (network): not before the terms of use are accepted.
+    consent::check()?;
     let dest = dest.filter(|d| !d.trim().is_empty()).map(PathBuf::from);
     Ok(engine.inner().add_links(&text, dest).await)
 }
@@ -366,6 +390,8 @@ async fn add_links(engine: Eng<'_>, text: String, dest: Option<String>) -> Resul
 /// Pasted links go to the Found list first.
 #[tauri::command]
 async fn found_add(engine: Eng<'_>, text: String) -> Result<AddResult, String> {
+    // Links dropped on the window while it shows the terms: nothing is opened or checked.
+    consent::check()?;
     Ok(engine.inner().found_add(&text).await)
 }
 
@@ -401,6 +427,12 @@ fn found_set(
 #[tauri::command]
 fn found_set_video(engine: Eng<'_>, ids: Vec<String>, quality: Option<u32>, audio: Option<String>) {
     engine.found_set_video(&ids, quality, audio);
+}
+
+/// Same file on several hosts: download these rows' hosts (the others become backups).
+#[tauri::command]
+fn found_pick_host(engine: Eng<'_>, ids: Vec<String>) {
+    engine.found_pick_host(&ids);
 }
 
 /// Checks Links rows again (after the video tools were installed).
@@ -520,6 +552,7 @@ async fn components_status() -> Vec<components::Status> {
 /// Settings › Features & updates › Check for new versions (asks GitHub for each tool's latest release).
 #[tauri::command]
 async fn components_check() -> Result<Vec<components::Status>, String> {
+    consent::check()?;
     let http = http_client();
     let mut errors = Vec::new();
     for k in components::ALL {
@@ -560,6 +593,10 @@ fn update_status() -> updates::View {
 /// "Check for updates" (`get` = also download it, ready for a restart).
 #[tauri::command]
 async fn update_check(get: bool) -> updates::View {
+    // Not before the terms of use are accepted: what is known already, nothing asked.
+    if !consent::ok() {
+        return updates::view();
+    }
     updates::mark_checked();
     updates::check(&http_client(), get).await
 }
@@ -567,7 +604,9 @@ async fn update_check(get: bool) -> updates::View {
 /// "Restart now": quits and starts the new version.
 #[tauri::command]
 fn update_restart(app: tauri::AppHandle) -> Result<(), String> {
-    updates::restart().map_err(|e| e.to_string())?;
+    // From the pop-up or the bell with the window hidden in the tray: the new Pako stays there.
+    let hidden = app.get_webview_window("main").map(|w| !w.is_visible().unwrap_or(true)).unwrap_or(true);
+    updates::restart(hidden).map_err(|e| e.to_string())?;
     tray::remember_place(&app);
     app.exit(0);
     Ok(())
@@ -576,6 +615,7 @@ fn update_restart(app: tauri::AppHandle) -> Result<(), String> {
 /// Installs or updates one tool; progress arrives as "component-progress" events.
 #[tauri::command]
 async fn component_install(app: tauri::AppHandle, kind: components::Kind) -> Result<String, String> {
+    consent::check()?;
     let http = http_client();
     let emitter = app.clone();
     let progress = move |stage: &str, done: u64, total: Option<u64>| {
@@ -606,15 +646,26 @@ fn preview_url(
         return Err("Only videos can be previewed.".into());
     }
     let quality = quality.unwrap_or(engine.settings().preview_quality).clamp(240, 720);
+    // A video-site link: a short clip from the site (yt-dlp + ffmpeg), always 480p or lower.
+    if matches!(source, model::Source::Video { .. }) {
+        let url = preview.register_item(Some(&id), source, name, 480, true);
+        return Ok(PreviewInfo { url, converted: true, quality: 480 });
+    }
     if components::ffmpeg().is_some() {
-        let url = preview.register(source, name, quality, true);
+        let url = preview.register_item(Some(&id), source, name, quality, true);
         return Ok(PreviewInfo { url, converted: true, quality });
     }
     if preview::plays_directly(&name) {
-        let url = preview.register(source, name, quality, false);
+        let url = preview.register_item(Some(&id), source, name, quality, false);
         return Ok(PreviewInfo { url, converted: false, quality });
     }
     Err("Install ffmpeg (Settings › Updates) to preview this kind of video.".into())
+}
+
+/// A video-site preview: asks the site for a small stream first, so the window can say why it can't play.
+#[tauri::command]
+async fn preview_check(preview: State<'_, Arc<preview::Preview>>, url: String) -> Result<(), String> {
+    preview.check(&url).await
 }
 
 /// Dashboard history.
@@ -805,6 +856,18 @@ struct SetupChoices {
     browser_connect: Option<bool>,
 }
 
+/// The terms of use, accepted (Agree and continue): their date is saved at once, and
+/// everything that waited for them starts now, no restart (see consent.rs). Settings that can't
+/// be saved (unreadable, or the disk refusing) still let Pako run this time; the error says so.
+#[tauri::command]
+async fn accept_terms(engine: Eng<'_>) -> Result<(), String> {
+    let date = terms::version().ok_or("Pako's terms of use have no date.")?;
+    let saved = engine.change_settings(|s| s.terms_accepted = Some(date));
+    // Off the window's thread: what starts may open windows (the Download with Pako window).
+    tauri::async_runtime::spawn_blocking(consent::open).await.map_err(|e| e.to_string())?;
+    saved.map_err(|e| e.to_string())
+}
+
 /// First-start setup: saves only its own answers, without checking the download folder (so it
 /// closes even with that drive unplugged).
 #[tauri::command]
@@ -852,8 +915,8 @@ fn save_setup(engine: Eng<'_>, choices: SetupChoices) -> Result<(), String> {
     if errors.is_empty() { Ok(()) } else { Err(errors.join(" ")) }
 }
 
-/// Writes the extension's files (a folder for Chromium browsers, a zip for Firefox) next to
-/// Pako's data and returns that folder.
+/// Writes the extension's files (a folder for Chromium browsers, the signed file for Firefox)
+/// next to Pako's data and returns that folder.
 #[tauri::command]
 fn extension_files() -> Result<String, String> {
     extension::write_files().map(|p| p.to_string_lossy().to_string())
@@ -865,6 +928,12 @@ async fn browsers_found() -> Vec<system::Browser> {
     tauri::async_runtime::spawn_blocking(system::installed_browsers).await.unwrap_or_default()
 }
 
+/// The browsers Pako's extension talked to Pako from (Settings shows them as "Connected").
+#[tauri::command]
+fn browsers_connected() -> Vec<seen::Seen> {
+    seen::read(&seen::file())
+}
+
 /// What "Add to <browser>" did, for the steps shown under the button.
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -874,13 +943,14 @@ struct AddedToBrowser {
     copied: bool,
     /// "extensions" = the browser's extensions page opened; "folder" = the browser refused, so
     /// the folder opened instead; "firefox" = Firefox offers to add the signed extension;
-    /// "needsSigning" = no signed Firefox file yet.
+    /// "firefoxFolder" = Firefox didn't start, so the folder opened with the file selected;
+    /// "unavailable" = this Pako was built without the Firefox version.
     opened: String,
 }
 
 /// "Add to <browser>": writes the extension's files and opens the browser where it's added.
 /// Chromium browsers: the folder's path goes on the clipboard and the extensions page opens.
-/// Firefox: the signed .xpi (when there is one) opens in Firefox, which offers to add it.
+/// Firefox: the signed .xpi built into Pako opens in Firefox, which offers to add it.
 #[tauri::command]
 async fn add_to_browser(app: tauri::AppHandle, id: String) -> Result<AddedToBrowser, String> {
     let (browser, root) = tauri::async_runtime::spawn_blocking(move || {
@@ -890,10 +960,13 @@ async fn add_to_browser(app: tauri::AppHandle, id: String) -> Result<AddedToBrow
     .await
     .map_err(|e| e.to_string())??;
     if browser.family == "firefox" {
-        let xpi = extension::firefox_xpi(&root);
-        let opened = match xpi {
+        let opened = match extension::firefox_xpi(&root) {
             Some(xpi) if system::launch_browser(&browser.exe, &xpi.to_string_lossy()) => "firefox",
-            _ => "needsSigning",
+            Some(xpi) => {
+                app.opener().reveal_item_in_dir(&xpi).map_err(|e| e.to_string())?;
+                "firefoxFolder"
+            }
+            None => "unavailable",
         };
         return Ok(AddedToBrowser { folder: root.to_string_lossy().to_string(), opened: opened.into(), ..Default::default() });
     }
@@ -907,13 +980,6 @@ async fn add_to_browser(app: tauri::AppHandle, id: String) -> Result<AddedToBrow
         "folder"
     };
     Ok(AddedToBrowser { folder: path, copied, opened: opened.into() })
-}
-
-/// Shows the steps for signing the Firefox version: the README, selected in its folder.
-#[tauri::command]
-fn extension_steps(app: tauri::AppHandle) -> Result<(), String> {
-    let root = extension::write_files()?;
-    app.opener().reveal_item_in_dir(root.join("README.md")).map_err(|e| e.to_string())
 }
 
 // ---------- pako:// links ----------
@@ -933,6 +999,11 @@ static PENDING_LINK: std::sync::Mutex<Option<LinkResult>> = std::sync::Mutex::ne
 /// A `pako://` link (Pako started with it, or started again with it): does what it asks, shows
 /// the window and tells it (the window picks the result up even if it wasn't loaded yet).
 fn handle_pako_link(app: &tauri::AppHandle, link: system::PakoLink) {
+    // The terms of use wait: Pako only opens (on them), nothing is changed.
+    if !consent::ok() {
+        tray::show_main(app);
+        return;
+    }
     let result = match link {
         system::PakoLink::Connect => {
             let saved = app
@@ -963,8 +1034,38 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
     use extension::Reply;
     // The engine starts with the window: not there yet = the host asks again in a moment.
     let Some(engine) = app.try_state::<Arc<Engine>>().map(|e| e.inner().clone()) else { return Reply::not_ready() };
+    // Nothing from the browser before the terms of use are accepted (see consent.rs).
+    if !consent::ok() {
+        // Something was asked of Pako (not just the toolbar window checking the line): Pako
+        // opens on its terms, even when it was started hidden for this request or sits in the
+        // tray, so the answer isn't only a "!" on the browser's button.
+        if r.kind != "ping" {
+            tray::show_main(&app);
+        }
+        return Reply::error(consent::NOT_YET);
+    }
     if r.kind == "ping" {
         return Reply::ok();
+    }
+    // A video caught playing on the page (checked by stream::validate_stream). Never from
+    // Pako Light (checked when the request came in, and here again).
+    if r.kind == "stream" {
+        if r.light {
+            return Reply::error(extension::LIGHT_REFUSED);
+        }
+        let Some(url) = r.urls.first().cloned() else { return Reply::error("Unknown request.") };
+        return match engine.stream_from_browser(url, r.referrer.clone(), r.filename.clone(), r.site_cookies.clone()).await {
+            Ok(()) => Reply::ok(),
+            Err(e) => Reply::error(e),
+        };
+    }
+    // Record this video: one step (start, a part, end or cancel), checked once more here.
+    if r.kind == "record" {
+        let checked = r.record.clone().ok_or_else(|| "Unknown request.".to_string()).and_then(|rec| stream::validate_record(rec, r.light));
+        return match checked.and_then(|rec| engine.record(rec)) {
+            Ok(()) => Reply::ok(),
+            Err(e) => Reply::error(e),
+        };
     }
     // The player's Download button (in the chosen quality), and "Download video with Pako" on
     // a video page or link (in the usual quality): one video, with the site's login.
@@ -1206,6 +1307,16 @@ fn mini_hide(app: tauri::AppHandle) {
     tray::hide_mini_now(&app);
 }
 
+/// Whether Pako's window opens at start (a pako:// link aside). Not when started by the browser
+/// extension's helper (`browser_request` opens it when something is asked while the terms wait).
+/// Started by Windows at sign-in "to the tray" (also right after an update put in place at that
+/// start): hidden, also while the terms of use wait (user, 2026-11-18: a Pako just updated from
+/// the notification mustn't pop up). The terms show when the user opens Pako, or when the browser
+/// sends it something (`browser_request`), and the tray's tooltip says so meanwhile.
+fn shows_window_at_start(args: &[String], _terms_ok: bool) -> bool {
+    !extension::started_for_browser(args) && !args.iter().any(|a| a == system::TRAY_ARG)
+}
+
 /// Pako was started again while it runs (by this Pako's single-instance check, or handed over
 /// by an older Pako's, see `updates::answer_as_older`). `args`: the exe first, then its arguments.
 fn second_start(app: &tauri::AppHandle, args: Vec<String>) {
@@ -1344,8 +1455,10 @@ pub fn run() {
             // A new version on trial is kept once its window has loaded (see `snapshot`) and it
             // has run a little while.
             let sender = send::Sender::new(app.handle().clone());
-            // "Delete after": uploads whose date came are deleted a little after start, then hourly.
-            sender.start_sweeper();
+            // "Delete after": uploads whose date came are deleted a little after start, then hourly
+            // (once the terms of use are accepted, like everything below that runs by itself).
+            let sweeper = sender.clone();
+            consent::after(move || sweeper.start_sweeper());
             app.manage(sender);
             // Direct (Pako to Pako) starts in the background.
             // Only once Direct was used (contacts, or the Direct page opened before): someone who
@@ -1365,6 +1478,7 @@ pub fn run() {
             // then (for a Pako left running in the tray for days) whenever a day has passed,
             // looked at every hour.
             let handle = app.handle().clone();
+            consent::after(move || {
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                 let http = http_client();
@@ -1380,7 +1494,24 @@ pub fn run() {
                                 let _ = handle.emit("tools-updated", names);
                             }
                         }
+                        let was_ready = updates::ready_now();
                         let (view, worked) = updates::auto_check(&http, auto).await;
+                        // Ready now (downloaded by this check): said once per version, also with
+                        // Pako in the tray (the window's own message would go unseen there). A
+                        // newer one replacing a waiting one is said again.
+                        let now_ready = updates::ready_now().filter(|_| view.ready);
+                        if now_ready.is_some() && now_ready != was_ready {
+                            if let Some(v) = now_ready.as_deref() {
+                                notices::post(
+                                    &handle,
+                                    "update-ready",
+                                    &format!("Pako {v} is ready"),
+                                    "Restart Pako to start using it. Your downloads and lists stay.",
+                                    notices::Go { page: "update".into(), ..Default::default() },
+                                    notices::Pop::Pref,
+                                );
+                            }
+                        }
                         // Only a check that worked counts for the day: with no network yet after
                         // the PC woke up, or a tool in use, it's tried again the next hour.
                         if worked && tools_done {
@@ -1394,6 +1525,7 @@ pub fn run() {
                     first = false;
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                 }
+            });
             });
             // The extension's line to Pako: keep the browsers pointing at this Pako (it may have moved).
             if s.browser_connect {
@@ -1411,14 +1543,15 @@ pub fn run() {
             // Files and folders dropped on the Send tab.
             filedrop::listen(app.handle());
             // The Download with Pako window (and downloads still waiting for it).
-            ask::init(app.handle());
+            let h = app.handle().clone();
+            consent::after(move || ask::init(&h));
             // Light or dark: Pako's window gets the matching background before it shows.
             theme::paint_start(app.handle());
             tray::restore_place(app.handle());
             let args: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
             if let Some(link) = system::pako_link_in(&args) {
                 handle_pako_link(app.handle(), link);
-            } else if !args.iter().any(|a| a == system::TRAY_ARG) && !extension::started_for_browser(&args) {
+            } else if shows_window_at_start(&args, consent::ok()) {
                 tray::show_main(app.handle());
             }
             Ok(())
@@ -1472,6 +1605,27 @@ pub fn run() {
             direct_cancel,
             direct_clear_history,
             direct_open,
+            direct::devices_state,
+            direct::devices_default_folder,
+            direct::devices_add,
+            direct::devices_answer,
+            direct::devices_set_control,
+            direct::devices_set_folder,
+            direct::devices_rename,
+            direct::devices_watch,
+            direct::devices_clear_log,
+            direct::devices_download,
+            direct::devices_item,
+            direct::devices_set_pc_name,
+            direct::devices_targets,
+            direct::devices_choices,
+            direct::devices_pick,
+            direct::devices_clear_sent,
+            direct::devices_found_split,
+            direct::found_set_device,
+            direct::found_device_note,
+            direct::devices_add_links,
+            direct::devices_send_ask,
             snapshot,
             add_links,
             found_add,
@@ -1507,11 +1661,12 @@ pub fn run() {
             quit_now,
             extension_files,
             browsers_found,
+            browsers_connected,
             add_to_browser,
-            extension_steps,
             take_pako_link,
             found_set_video,
             found_recheck,
+            found_pick_host,
             set_when_done,
             cancel_when_done,
             found_existing,
@@ -1524,12 +1679,14 @@ pub fn run() {
             set_extract,
             hide_to_tray,
             preview_url,
+            preview_check,
             components_status,
             components_check,
             component_install,
             component_remove,
             components_remove,
             save_setup,
+            accept_terms,
             update_status,
             update_check,
             update_restart,
@@ -1590,6 +1747,20 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Pako started in the tray at sign-in (also a 1.0.x one just updated) shows its terms of
+    /// use while they wait; otherwise the tray start stays hidden, and a start by the browser's
+    /// helper is never shown at start.
+    #[test]
+    fn terms_waiting_show_the_window_at_start() {
+        let args = |a: &[&str]| -> Vec<String> { std::iter::once("Pako.exe").chain(a.iter().copied()).map(String::from).collect() };
+        assert!(shows_window_at_start(&args(&[]), true));
+        assert!(shows_window_at_start(&args(&[]), false));
+        assert!(!shows_window_at_start(&args(&[system::TRAY_ARG]), true));
+        assert!(!shows_window_at_start(&args(&[system::TRAY_ARG]), false), "terms waiting: a tray start stays quiet until Pako is used");
+        assert!(!shows_window_at_start(&args(&[extension::FROM_BROWSER]), false));
+        assert!(!shows_window_at_start(&args(&[extension::FROM_BROWSER]), true));
+    }
 
     /// "Open in browser": a folder Google wouldn't list opens as the folder; a file (also one
     /// listed from a folder link) opens its own page.

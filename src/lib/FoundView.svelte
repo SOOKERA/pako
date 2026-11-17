@@ -5,7 +5,7 @@
   // Download (or Download first). Switching tabs never interrupts anything.
   import { untrack } from "svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-  import { app, type SortKey } from "./state.svelte";
+  import { app, hostLook, type FoundMirror, type SortKey } from "./state.svelte";
   import { api, canDownload, type Download, type FoundItem, type Priority } from "./api";
   import Modal from "./Modal.svelte";
   import { VIRTUAL_MIN, layout, reveal, visible } from "./virtual";
@@ -15,10 +15,15 @@
   import TutorialButton from "./tour/TutorialButton.svelte";
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
+  import { choices, targets } from "./devices.svelte";
+  import { downloadFoundOn, downloadOnMenu, downloadSplit, sending } from "./downloadOn.svelte";
+  import { pop } from "./motion";
 
   let { onadd, onmenu }: { onadd: () => void; onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
 
   const n = $derived(app.picked.length);
+  /** Ticked rows as shown (a file on several hosts once; Remove takes all its hosts). */
+  const tickedRows = $derived(app.oncePerFile(app.ticked).length);
   /** Spots free right now under the "At once" limit. */
   const free = $derived(Math.max(0, (app.settings?.maxActive ?? 3) - app.runningCount));
   /** "Download" unless downloads are already running and these would have to wait behind them
@@ -28,6 +33,19 @@
   const dest = $derived(app.foundDest ?? app.settings?.downloadDir ?? "");
   const destName = $derived(dest.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dest);
   let busy = $state(false);
+  // "Download on ▾": shown only while one of your devices can take links.
+  targets.start();
+  // The per-link "Download on" (a row's PC marker, its name in the tooltip).
+  choices.start();
+  const deviceName = (id: string) => choices.list.find((c) => c.id === id)?.name ?? "another PC";
+
+  /** "Download on ▾" in the toolbar: This PC (the usual Download) or one of your devices. */
+  function onMenu(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // "This PC" here is for this action only: every picked link downloads here, whatever its
+    // own "Download on" says (and a device picked here overrides it the same way).
+    onmenu(r.left, r.bottom + 6, downloadOnMenu(targets.list, () => download(false, false, app.picked, false, true), (t) => downloadFoundOn(t, app.picked), true));
+  }
 
   async function chooseDest() {
     const picked = await pickFolder({ directory: true, defaultPath: dest || undefined });
@@ -44,7 +62,13 @@
     return d.link === f.template.link && d.name === f.template.name;
   }
 
-  async function download(first: boolean, notify = false, items: FoundItem[] = app.picked, checked = false) {
+  /** `here`: download on this PC whatever each link's own "Download on" says (the menu's
+   *  "Download on this PC"). Else links set to another PC go there (`downloadSplit`). */
+  async function download(first: boolean, notify = false, items: FoundItem[] = app.picked, checked = false, here = false): Promise<void> {
+    if (!here && !checked && items.some((f) => f.device)) {
+      if (busy) return;
+      return downloadSplit(items, first, (rows): Promise<void> => download(first, notify, rows, false, true));
+    }
     const ids = items.filter(canDownload).map((f) => f.id);
     if (!ids.length || busy) return;
     // Busy from the first click: a quick second one doesn't run the check (and the download) twice.
@@ -97,7 +121,8 @@
     const inTicked = row.every((f) => app.isTicked(f)) && app.ticked.length > row.length;
     const items = inTicked ? app.ticked : row;
     const ids = items.map((f) => f.id);
-    const able = items.filter(canDownload);
+    // A file on several hosts downloads once.
+    const able = app.oncePerFile(items.filter(canDownload));
     const count = items.length > 1 ? ` ${items.length}` : "";
     const all = (p: Priority) => items.every((f) => f.template.priority === p);
     const set = (o: Parameters<typeof api.foundSet>[1]) =>
@@ -109,6 +134,7 @@
       { label: able.length > 1 ? `Download ${able.length}` : "Download", icon: "download", disabled: !able.length, action: () => download(false, false, able) },
       { label: "Download first", icon: "up", disabled: !able.length, action: () => download(true, false, able) },
       { label: "Download and notify me", icon: "bell", disabled: !able.length, action: () => download(false, true, able) },
+      ...(targets.list.length && able.length ? [{ separator: true }, ...downloadOnMenu(targets.list, null, (t) => downloadFoundOn(t, able), true)] : []),
       { separator: true },
       { label: "Notify when done", icon: "bell", hint: items.every((f) => f.template.notify) ? "✓" : "", action: () => set({ notify: !items.every((f) => f.template.notify) }) },
       { label: "Priority: First", icon: "up", hint: all("first") ? "✓" : "", action: () => set({ priority: "first" }) },
@@ -142,6 +168,23 @@
       },
     ];
     onmenu(e.clientX, e.clientY, menu);
+  }
+
+  /** The host list of a file on several hosts (its row's "on N hosts" button): pick one. */
+  function hostMenu(e: MouseEvent, m: FoundMirror) {
+    e.stopPropagation();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const items: MenuItem[] = m.items.map((f) => {
+      const h = hostLook(f);
+      return {
+        label: sourceOf(f.template).label,
+        icon: m.chosen?.id === f.id ? "check" : f.template.source.kind === "gDrive" ? "drive" : "globe",
+        hint: f.template.size != null && h.label === "Ready" ? `${h.label} · ${bytes(f.template.size)}` : h.label,
+        disabled: !canDownload(f),
+        action: () => app.pickHost([f.id]),
+      };
+    });
+    onmenu(r.left, r.bottom + 6, items);
   }
 
   /** Click = focus (details panel). Ctrl+click also ticks/unticks the row, Shift+click ticks
@@ -216,10 +259,11 @@
     });
   });
 
-  /** The header's tick box: everything shown ticked, some, or none. */
+  /** The header's tick box: everything shown ticked, some, or none (a file on several hosts
+   *  counts once). */
   const allTick = $derived.by(() => {
-    const n = app.foundVisible.filter((f) => app.isTicked(f)).length;
-    return n === 0 ? "none" : n === app.foundVisible.length ? "all" : "some";
+    const n = app.foundShown.filter((r) => app.isTicked(r.f)).length;
+    return n === 0 ? "none" : n === app.foundShown.length ? "all" : "some";
   });
 
   /** Right-click on empty space in the list. */
@@ -249,6 +293,7 @@
       onadd(); // the clipboard couldn't be read here: the Add links box takes a paste
     }
   }
+
 
   function folderTick(items: FoundItem[]) {
     const able = items.filter(canDownload);
@@ -283,11 +328,16 @@
       </button>
     {/if}
     <button class="btn ghost danger" title="Remove the ticked links" disabled={!app.ticked.length} onclick={remove}>
-      <span class="narrow"><Icon name="trash" size={13} /></span><span class="mid">Remove</span>{app.ticked.length ? ` ${app.ticked.length}` : ""}
+      <span class="narrow"><Icon name="trash" size={13} /></span><span class="mid">Remove</span>{tickedRows ? ` ${tickedRows}` : ""}
     </button>
     {#if n && !startsNow}
       <button class="btn" disabled={busy} title="The downloads that started last step aside (nothing lost) and these start now" onclick={() => download(true)}>
         <Icon name="up" size={13} stroke={2.4} /><span class="wide">Download first</span>
+      </button>
+    {/if}
+    {#if targets.list.length}
+      <button class="btn on" data-tour="found-download-on" disabled={!n || busy || sending.busy} title="Download on this PC or on one of your devices" aria-haspopup="menu" onclick={onMenu} transition:pop={{ duration: 180, from: 0.94, y: 0 }}>
+        <Icon name="devices" size={14} /><span class="wide">Download on</span><span class="ochev"><Icon name="chevron" size={11} stroke={2.4} /></span>
       </button>
     {/if}
     <div class="split" data-tour="found-download">
@@ -372,7 +422,7 @@
               // The second click of a double-click doesn't close it again.
                 if (e.detail <= 1 && !(e.ctrlKey || e.shiftKey || e.metaKey)) app.toggleFoundFolder(r.key);
             }}
-            oncontextmenu={(e) => rowMenu(e, r.items)}
+            oncontextmenu={(e) => rowMenu(e, app.withMirrors(r.items))}
             onkeydown={(e) => e.key === "Enter" && (app.foundFocus = "g:" + r.key)}
           >
             <div class="cell">
@@ -385,7 +435,7 @@
                 aria-label="Pick all files in {r.name}"
                 onclick={(e) => {
                   e.stopPropagation();
-                  app.setTicked(r.items, !t.all);
+                  app.setTicked(app.withMirrors(r.items), !t.all);
                 }}
               >
                 {#if t.some}
@@ -433,6 +483,8 @@
           </div>
         {:else}
           {@const f = r.f}
+          {@const m = r.mirror}
+          {@const all = m ? m.items : [f]}
           {@const able = canDownload(f)}
           {@const on = app.isTicked(f)}
           <div
@@ -447,8 +499,8 @@
             data-key={f.id}
             role="row"
             tabindex="-1"
-            onclick={(e) => rowClick(e, f.id, [f])}
-            oncontextmenu={(e) => rowMenu(e, [f])}
+            onclick={(e) => rowClick(e, f.id, all)}
+            oncontextmenu={(e) => rowMenu(e, all)}
             onkeydown={(e) => e.key === "Enter" && (app.foundFocus = f.id)}
           >
             <div class="cell">
@@ -460,7 +512,7 @@
                 aria-label={on ? `Unpick ${f.template.name}` : `Pick ${f.template.name}`}
                 onclick={(e) => {
                   e.stopPropagation();
-                  app.setTicked([f], !on);
+                  app.setTicked(all, !on);
                 }}
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
@@ -477,10 +529,32 @@
             <div class="cell name">
               {#if r.kind === "child"}<span class="rail" class:end={r.last}></span>{/if}
               <MiddleText text={f.template.name} class="nm" />
+              {#if f.device || f.deviceNote}
+                <span
+                  class="devmark"
+                  class:warn={!!f.deviceNote}
+                  title={f.device ? `Downloads on ${deviceName(f.device)}${f.deviceNote ? ` · ${f.deviceNote}` : ""}` : (f.deviceNote ?? "")}
+                  aria-label={f.device ? `Downloads on ${deviceName(f.device)}` : "Back to this PC"}
+                  transition:pop={{ duration: 160, from: 0.8, y: 0 }}
+                ><Icon name="devices" size={12} stroke={2.1} />{#if f.device}<span class="devname">{deviceName(f.device)}</span>{/if}</span>
+              {/if}
+              {#if m}
+                <button
+                  class="hosts"
+                  data-tour="found-hosts"
+                  title="The same file on {m.items.length} hosts: pick the one to download from (the others are backups)"
+                  aria-label="Pick the host · on {m.items.length} hosts"
+                  aria-haspopup="menu"
+                  ondblclick={(e) => e.stopPropagation()}
+                  onclick={(e) => hostMenu(e, m)}
+                ><span class="hlong">on {m.items.length} hosts</span><span class="hshort"><Icon name="globe" size={11} stroke={2.2} />{m.items.length}</span><Icon name="chevron" size={10} stroke={2.6} /></button>
+              {/if}
             </div>
             <div class="cell src c-src"><span class="dot" style="background: {sourceOf(f.template).color}"></span><span class="ell" title={sourceOf(f.template).label}>{sourceOf(f.template).label}</span></div>
             <div class="cell size c-size mono" title={f.template.source.kind === "video" && f.template.size != null ? "Estimated size for the chosen quality" : ""}>{f.template.size != null ? (f.template.source.kind === "video" ? "≈ " : "") + bytes(f.template.size) : f.state === "checking" || f.state === "opening" ? "…" : "—"}</div>
-            {#if f.state === "ready"}
+            {#if f.deviceNote && able}
+              <div class="cell link needs" title={f.deviceNote}><Icon name="alert" size={12} /><span class="ell">{f.deviceNote}</span></div>
+            {:else if f.state === "ready"}
               <div class="cell link ready" title={f.message ?? ""}>
                 <Icon name="check" size={13} stroke={2.6} /><span class="ell">{f.message ? "Ready · Google limit today" : "Ready"}</span>
               </div>
@@ -670,6 +744,11 @@
   .dchev {
     display: inline-flex;
   }
+  /* "Download on ▾": its arrow stays even when the toolbar keeps only icons. */
+  .ochev {
+    display: inline-flex;
+    color: var(--text-3);
+  }
   .dname {
     min-width: 0;
     overflow: hidden;
@@ -697,6 +776,14 @@
      These come after the base rules above so they win. */
   @container (max-width: 980px) {
     .wide {
+      display: none;
+    }
+    /* "Download on" keeps only its PC icon (its title and menu say the rest). */
+    .toolbar .btn.on {
+      width: 34px;
+      padding: 0;
+    }
+    .ochev {
       display: none;
     }
     .dest {
@@ -996,6 +1083,92 @@
     flex: 0 1 auto;
     color: var(--st-fail-text);
     background: var(--tint-fail);
+  }
+  /* "on 3 hosts": opens the host list. Sized like the chips, a button. */
+  .hosts {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    margin-left: -2px;
+    padding: 0 6px 0 7px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--active);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background var(--fast) ease,
+      color var(--fast) ease,
+      transform var(--fast) var(--ease);
+  }
+  .hosts:hover {
+    background: var(--active-hover);
+    color: var(--text);
+  }
+  .hosts:active {
+    transform: scale(0.97);
+  }
+  .hosts :global(svg) {
+    opacity: 0.7;
+  }
+  .hshort {
+    display: none;
+    align-items: center;
+    gap: 3px;
+  }
+  /* A link set to download on another PC: a small PC mark with its name. */
+  .devmark {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    max-width: 140px;
+    padding: 0 7px 0 6px;
+    border-radius: var(--radius-sm);
+    background: var(--active);
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .devmark.warn {
+    background: var(--tint-limit);
+    color: var(--st-limit-text);
+  }
+  .devname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Small window with the details panel open: the name keeps its room, the button shows the
+     number of hosts only (its tooltip says the rest). */
+  @container (max-width: 600px) {
+    .hlong,
+    .hosts > :global(svg) {
+      display: none;
+    }
+    .hosts {
+      padding: 0 6px;
+    }
+    .devname {
+      display: none;
+    }
+    .devmark {
+      padding: 0 5px;
+    }
+    .hshort {
+      display: inline-flex;
+    }
+    /* A part of a split set: its hosts are picked in the set's details (Hosts). */
+    .child .hosts {
+      display: none;
+    }
   }
   .src {
     gap: 8px;

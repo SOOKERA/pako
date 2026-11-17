@@ -219,6 +219,14 @@ pub fn installed_data_folders() -> Vec<PathBuf> {
     all
 }
 
+/// Pako's folder in Windows' temporary folder for this user (%TEMP%\Pako): the browser's
+/// login for a video while yt-dlp runs (`video::jar_dir`) and "Record this video"'s
+/// recordings until joined (`stream::recordings_dir`). A development build uses its own.
+pub fn temp_folder() -> PathBuf {
+    let name = if cfg!(debug_assertions) { "Pako-dev" } else { "Pako" };
+    std::env::temp_dir().join(name)
+}
+
 /// The app used to be called ZDownloader. If only the old data folder exists, move it to the
 /// new name so the download list, settings and Google login carry over. If the move fails
 /// (e.g. a file in it is open), keep using the old folder rather than starting empty.

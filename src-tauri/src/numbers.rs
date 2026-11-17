@@ -57,7 +57,7 @@ pub struct Event {
     pub site: String,
     /// "video", "audio", "image", "archive", "document", "program" or "other".
     pub ftype: String,
-    /// Uploads: "gofile" or "drive"; Direct: "direct6", "direct" or "relay".
+    /// Uploads: "gofile" or "drive"; Direct: "local" (the home network), "direct6", "direct" or "relay".
     pub route: String,
     /// Direct: the contact's Pako ID.
     pub contact: String,
@@ -208,6 +208,7 @@ fn init(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
+         PRAGMA secure_delete = ON;
          CREATE TABLE IF NOT EXISTS events(
            id INTEGER PRIMARY KEY,
            ext TEXT NOT NULL UNIQUE,
@@ -487,7 +488,8 @@ pub struct Totals {
     pub peak: u64,
     /// Different people (Direct).
     pub people: u64,
-    /// Bytes that went straight between the two PCs (Direct), not through a relay.
+    /// Bytes that went straight between the two PCs (Direct: over the internet or the home
+    /// network), not through a relay.
     pub direct_bytes: u64,
 }
 
@@ -511,7 +513,8 @@ pub struct Bucket {
 #[derive(Serialize, Default, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteRow {
-    /// Uploads: "gofile", "drive", "direct". Downloads: "drive", "video", "web", "direct", "earlier".
+    /// Uploads: "gofile", "drive", "direct", "local". Downloads: "drive", "video", "web", "direct",
+    /// "local", "earlier". "local": Direct over the home network; "direct": Direct over the internet.
     pub route: String,
     pub bytes: u64,
     pub count: u64,
@@ -591,7 +594,10 @@ pub struct ContactNumbers {
     pub peak_received: u64,
     pub avg_sent: Option<u64>,
     pub avg_received: Option<u64>,
+    /// Not through a relay (the home network included).
     pub direct_bytes: u64,
+    /// The part of `direct_bytes` that went over the home network.
+    pub local_bytes: u64,
     pub relay_bytes: u64,
     /// ms
     pub last: Option<i64>,
@@ -636,7 +642,7 @@ fn view_at(conn: &Connection, period: &str, today: NaiveDate) -> rusqlite::Resul
         let mut q = conn.prepare(
             "SELECT kind, SUM(bytes), SUM(files), SUM(count), SUM(failed), SUM(timed_bytes), SUM(secs), MAX(peak),
                     COUNT(DISTINCT CASE WHEN contact != '' AND count > 0 THEN contact END),
-                    SUM(CASE WHEN route IN ('direct6', 'direct') THEN bytes ELSE 0 END)
+                    SUM(CASE WHEN route IN ('local', 'direct6', 'direct') THEN bytes ELSE 0 END)
              FROM totals WHERE period = 'day' AND key BETWEEN ?1 AND ?2 GROUP BY kind",
         )?;
         let rows = q.query_map(params![fk, tk], |r| {
@@ -678,7 +684,8 @@ fn view_at(conn: &Connection, period: &str, today: NaiveDate) -> rusqlite::Resul
         v.buckets = period_buckets(conn, "month", &month_key(from), &month_key(to), &month_keys(from, to))?;
     }
 
-    // Upload speed by route (Direct counted as one route), download speed by source.
+    // Upload speed by route, download speed by source. Direct counts as two: over the home
+    // network ("local") and over the internet ("direct", relayed or not).
     let rows = |sql: &str| -> rusqlite::Result<Vec<RouteRow>> {
         let mut q = conn.prepare(sql)?;
         let out = q
@@ -695,28 +702,29 @@ fn view_at(conn: &Connection, period: &str, today: NaiveDate) -> rusqlite::Resul
         out
     };
     let mut ups = rows(
-        "SELECT CASE WHEN kind = 'sent' THEN 'direct' ELSE route END AS r, SUM(bytes), SUM(count), SUM(timed_bytes), SUM(secs), MAX(peak)
+        "SELECT CASE WHEN kind = 'sent' AND route = 'local' THEN 'local' WHEN kind = 'sent' THEN 'direct' ELSE route END AS r,
+                SUM(bytes), SUM(count), SUM(timed_bytes), SUM(secs), MAX(peak)
          FROM totals WHERE period = 'day' AND key BETWEEN ?1 AND ?2 AND kind IN ('upload', 'sent') GROUP BY r",
     )?;
-    for r in ["gofile", "drive", "direct"] {
+    for r in ["gofile", "drive", "direct", "local"] {
         if !ups.iter().any(|x| x.route == r) {
             ups.push(RouteRow { route: r.into(), ..Default::default() });
         }
     }
-    ups.sort_by_key(|x| ["gofile", "drive", "direct"].iter().position(|r| *r == x.route).unwrap_or(9));
+    ups.sort_by_key(|x| ["gofile", "drive", "direct", "local"].iter().position(|r| *r == x.route).unwrap_or(9));
     v.upload_routes = ups;
     let mut downs = rows(
-        "SELECT CASE WHEN kind = 'received' THEN 'direct' WHEN source = '' THEN 'earlier' ELSE source END AS r,
+        "SELECT CASE WHEN kind = 'received' AND route = 'local' THEN 'local' WHEN kind = 'received' THEN 'direct' WHEN source = '' THEN 'earlier' ELSE source END AS r,
                 SUM(bytes), SUM(count), SUM(timed_bytes), SUM(secs), MAX(peak)
          FROM totals WHERE period = 'day' AND key BETWEEN ?1 AND ?2 AND kind IN ('download', 'received') GROUP BY r",
     )?;
-    for r in ["drive", "video", "web", "direct"] {
+    for r in ["drive", "video", "web", "direct", "local"] {
         if !downs.iter().any(|x| x.route == r) {
             downs.push(RouteRow { route: r.into(), ..Default::default() });
         }
     }
     downs.retain(|x| x.route != "earlier" || x.bytes > 0);
-    downs.sort_by_key(|x| ["drive", "video", "web", "direct", "earlier"].iter().position(|r| *r == x.route).unwrap_or(9));
+    downs.sort_by_key(|x| ["drive", "video", "web", "direct", "local", "earlier"].iter().position(|r| *r == x.route).unwrap_or(9));
     v.download_sources = downs;
 
     // People, most exchanged first.
@@ -959,8 +967,11 @@ fn contact_at(conn: &Connection, id: &str) -> rusqlite::Result<ContactNumbers> {
         out.last = Some(out.last.unwrap_or(0).max(last));
         if route == "relay" {
             out.relay_bytes += bytes;
-        } else if route == "direct6" || route == "direct" {
+        } else if route == "local" || route == "direct6" || route == "direct" {
             out.direct_bytes += bytes;
+            if route == "local" {
+                out.local_bytes += bytes;
+            }
         }
         if kind == SENT {
             out.sent += bytes;
@@ -1112,6 +1123,34 @@ mod tests {
         assert_eq!(period_range("all", today, None), (today, today));
         assert_eq!(month_keys(d(2025, 11, 20), d(2026, 2, 3)), vec!["2025-11", "2025-12", "2026-01", "2026-02"]);
         assert_eq!(day_keys(d(2028, 2, 27), d(2028, 3, 1)).len(), 4); // leap year
+    }
+
+    /// Direct over the home network is its own route ("Local network") in "Sending files" and
+    /// "Getting files", and counts as straight between the PCs (not through a relay).
+    #[test]
+    fn local_network_is_its_own_route() {
+        let mut c = mem();
+        let today = d(2026, 11, 18);
+        let s = direct_event("l1", at(today), true, "Film", 4_000_000_000, 1, Some("local"), "mum", 40_000, 0, 120_000_000);
+        insert(&mut c, &s).unwrap();
+        let s = direct_event("w1", at(today), true, "Photos", 30_000_000, 3, Some("direct"), "mum", 3_000, 0, 12_000_000);
+        insert(&mut c, &s).unwrap();
+        let s = direct_event("l2", at(today), false, "Scans", 500_000_000, 2, Some("local"), "mum", 5_000, 0, 110_000_000);
+        insert(&mut c, &s).unwrap();
+        let v = view_at(&c, "today", today).unwrap();
+        let routes: Vec<&str> = v.upload_routes.iter().map(|r| r.route.as_str()).collect();
+        assert_eq!(routes, ["gofile", "drive", "direct", "local"]);
+        let local = v.upload_routes.iter().find(|r| r.route == "local").unwrap();
+        assert_eq!((local.bytes, local.count, local.avg), (4_000_000_000, 1, Some(100_000_000)));
+        assert_eq!(v.upload_routes.iter().find(|r| r.route == "direct").unwrap().bytes, 30_000_000);
+        let got = v.download_sources.iter().find(|r| r.route == "local").unwrap();
+        assert_eq!(got.bytes, 500_000_000);
+        assert_eq!(v.download_sources.iter().find(|r| r.route == "direct").unwrap().bytes, 0);
+        assert_eq!(v.sent.direct_bytes, 4_030_000_000, "the home network counts as straight between the PCs");
+        assert_eq!(v.received.direct_bytes, 500_000_000);
+        let p = contact_at(&c, "mum").unwrap();
+        assert_eq!((p.direct_bytes, p.relay_bytes), (4_530_000_000, 0));
+        assert_eq!(p.local_bytes, 4_500_000_000, "the home network's share is its own part");
     }
 
     #[test]

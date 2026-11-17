@@ -3,11 +3,13 @@
 <script lang="ts">
   // A small player in the details panel: check a video is the real thing before (or
   // while) downloading it. Plays only when asked, at a low quality (480p by default).
+  // `site`: a video-site link (YouTube...): a short clip at 480p or lower, fetched from the
+  // site only when play is pressed, just to check it's the right video.
   import { app } from "./state.svelte";
   import { api } from "./api";
   import Icon from "./Icon.svelte";
 
-  let { id }: { id: string } = $props();
+  let { id, site = false }: { id: string; site?: boolean } = $props();
 
   let quality = $state(app.settings?.previewQuality ?? 480);
   let src = $state<string | null>(null);
@@ -31,8 +33,19 @@
     loading = true;
     error = null;
     try {
-      const info = await api.previewUrl(id, q);
+      const info = await api.previewUrl(id, site ? 480 : q);
       if (mine !== ticket) return;
+      // A video site: yt-dlp finds the stream first, so a private, age-restricted or live
+      // video is said plainly instead of a player that stays black.
+      if (site) {
+        try {
+          await api.previewCheck(info.url);
+        } catch (e) {
+          // An older Pako without the check: the player tries all the same.
+          if (!String(e).includes("not found")) throw e;
+        }
+        if (mine !== ticket) return;
+      }
       src = info.url;
       converted = info.converted;
     } catch (e) {
@@ -42,12 +55,25 @@
     }
   }
 
-  // The details panel closed (Ctrl+I), or Direct / the Dashboard shown: the panel stays in the
-  // page, hidden, so the video would go on playing out of sight. It pauses instead.
+  // The details panel closed (Ctrl+I), or Direct / My devices / the Dashboard shown: the panel stays in the
+  // page, hidden, so the video would go on playing out of sight. It pauses instead; a
+  // video-site clip stops altogether (ending what fetches it), and plays again on request.
   let video: HTMLVideoElement | undefined = $state();
   $effect(() => {
-    if (video && (!app.panelOpen || app.view === "direct" || app.view === "dashboard")) video.pause();
+    if (!(video && (!app.panelOpen || app.view === "direct" || app.view === "dashboard" || app.view === "devices"))) return;
+    if (site) {
+      ticket++;
+      src = null;
+      loading = false;
+    } else video.pause();
   });
+
+  function failed() {
+    if (site) {
+      src = null;
+      error = "This video can't be previewed. The site didn't send it.";
+    }
+  }
 
   function setQuality(q: number) {
     quality = q;
@@ -58,28 +84,36 @@
 <section class="preview">
   <div class="label">
     Preview
-    {#if src}<span class="muted">{converted ? `${quality}p` : "as it is"}</span>{/if}
+    {#if src}<span class="muted">{site ? "short clip" : converted ? `${quality}p` : "as it is"}</span>{/if}
   </div>
   <div class="screen">
     {#if src}
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video bind:this={video} {src} controls autoplay preload="metadata"></video>
+      <video bind:this={video} {src} controls autoplay preload="metadata" onerror={failed}></video>
     {:else}
       <button class="play" disabled={loading} aria-label="Play a preview" onclick={() => play()}>
         <Icon name="play" size={18} />
       </button>
-      <span class="hint">{loading ? "Starting…" : "Play a short check before downloading"}</span>
+      <span class="hint">
+        {#if loading}{site ? "Asking the site…" : "Starting…"}{:else}{site ? "Play a few seconds to check it's the right video" : "Play a short check before downloading"}{/if}
+      </span>
     {/if}
   </div>
   {#if error}
     <div class="note">{error}</div>
   {/if}
-  <div class="seg" role="radiogroup" aria-label="Preview quality">
-    {#each [360, 480, 720] as q (q)}
-      <button role="radio" aria-checked={quality === q} class:on={quality === q} onclick={() => setQuality(q)}>{q}p</button>
-    {/each}
-  </div>
-  {#if !app.ffmpeg}
+  {#if site}
+    <div class="note">About 20 seconds at 480p, fetched from the site when you press play.</div>
+  {:else}
+    <div class="seg" role="radiogroup" aria-label="Preview quality">
+      {#each [360, 480, 720] as q (q)}
+        <button role="radio" aria-checked={quality === q} class:on={quality === q} onclick={() => setQuality(q)}>{q}p</button>
+      {/each}
+    </div>
+  {/if}
+  {#if site && !app.ffmpeg}
+    <div class="note">Needs the video tools: Settings › Features &amp; updates › Download videos from YouTube and other sites.</div>
+  {:else if !site && !app.ffmpeg}
     <div class="note">MP4 and WebM play as they are. Install ffmpeg (Settings › Features &amp; updates) for other formats and for {quality}p.</div>
   {/if}
 </section>

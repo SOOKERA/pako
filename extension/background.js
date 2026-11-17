@@ -71,9 +71,13 @@ function nativeMessage(message) {
 /** Asks Pako. The answer is `{ ok, error?, detail? }`: `error` in plain words, `detail` = the
  *  browser's own error text when the line to Pako itself failed. */
 async function send(message) {
+  inFlight++;
   try {
     const reply = await nativeMessage(message);
-    if (reply && typeof reply === "object") return reply;
+    if (reply && typeof reply === "object") {
+      newerInFolder(reply.ext);
+      return reply;
+    }
     const detail = `No answer from ${HOST}`;
     console.warn("Pako:", detail);
     return { ok: false, error: "Pako didn't answer.", detail };
@@ -81,7 +85,46 @@ async function send(message) {
     const detail = e?.message || String(e);
     console.warn(`Pako: couldn't reach ${HOST}:`, detail);
     return { ok: false, error: NOT_CONNECTED, detail };
+  } finally {
+    inFlight--;
   }
+}
+
+// ---------- picking up a new version after a Pako update ----------
+// Pako writes its new extension into the "Load unpacked" folder when it updates, but a Chromium
+// browser only reads that folder when it starts. Pako's answers say which version is in the
+// folder (`ext`): when it's newer than this one, the extension reloads itself once nothing is
+// on its way to Pako and nothing is being recorded. Firefox updates its signed copy itself, and
+// Pako Light comes from a store: neither does this. Once per version, so a copy loaded from
+// another folder never reloads in a loop.
+
+/** Messages to Pako not answered yet. */
+let inFlight = 0;
+
+/** "1.2.10" > "1.2.9". */
+function newerVersion(a, b) {
+  const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  }
+  return false;
+}
+
+let reloadPlanned = false;
+async function newerInFolder(ext) {
+  if (LIGHT || globalThis.browser?.runtime || reloadPlanned) return;
+  if (typeof ext !== "string" || !newerVersion(ext, api.runtime.getManifest().version)) return;
+  const { reloadedFor } = await api.storage.local.get({ reloadedFor: "" }).catch(() => ({ reloadedFor: "" }));
+  if (reloadedFor === ext) return;
+  reloadPlanned = true;
+  const tryReload = async () => {
+    const recording = typeof rec !== "undefined" && rec && ["waiting", "recording", "saving"].includes(rec.state);
+    if (inFlight > 0 || recording) return void setTimeout(tryReload, 5000);
+    await api.storage.local.set({ reloadedFor: ext }).catch(() => {});
+    api.runtime.reload();
+  };
+  setTimeout(tryReload, 3000);
 }
 
 /** The cookies the browser would send to this address (so downloads behind a login work), from
@@ -345,12 +388,21 @@ async function pageLinks(tabId) {
 
 api.contextMenus.onClicked.addListener(async (info, tab) => {
   const referrer = info.pageUrl || tab?.url || "";
-  const incognito = !!tab?.incognito;
+  // No tab told (Firefox, outside a tab): taken as private, so no cookies are read for it.
+  const incognito = tab ? !!tab.incognito : true;
   // Firefox containers: the tab's own cookies (Chromium browsers have no such field).
   const storeId = tab?.cookieStoreId;
   let reply;
   // Pako Light: nothing from a frame of a site it leaves alone either (an embedded one).
   if (LIGHT && onSkippedSite(info.frameUrl)) reply = { ok: false, error: LIGHT_SKIPPED };
+  /* full-only:start */
+  // A player built from parts has no address of its own (blob:): its page on a video site,
+  // else what the Pako button offers for this page.
+  else if (info.menuItemId === "pako-media" && /^(video|audio)$/.test(info.mediaType || "") && !/^https?:/i.test(info.srcUrl || "")) {
+    if (tab?.url && isVideoSite(tab.url)) reply = await download(tab.url, "", "", { incognito, storeId });
+    else reply = { ok: false, error: "This player doesn't give its video's address. Click the Pako button: Videos on this page, or Record this video." };
+  }
+  /* full-only:end */
   else if (info.menuItemId === "pako-link") reply = await download(info.linkUrl, referrer, "", { incognito, storeId });
   else if (info.menuItemId === "pako-media") reply = await download(info.srcUrl, referrer, "", { incognito, storeId });
   else if (info.menuItemId === "pako-page") reply = await download(tab?.url, "", "", { incognito, storeId });
@@ -425,6 +477,523 @@ api.downloads.onCreated.addListener(async (item) => {
   }
 });
 
+/* full-only:start */
+// ---------- videos playing on the page ----------
+// The browser itself loads a page's video: its HLS (.m3u8) or DASH (.mpd) playlist, or a plain
+// video file. The extension only looks at those requests (it never changes or blocks them),
+// keeps a short list per tab in memory (gone when the tab goes to another page or closes), and
+// shows how many on the toolbar button. Nothing goes to Pako until you click "Download with Pako".
+
+/** Videos kept per tab. */
+const CAUGHT_MAX = 20;
+/** Plain video files smaller than this are previews, adverts or pieces: left out. */
+const MIN_VIDEO_FILE = 1024 * 1024;
+/** What the page's player loads piece by piece (never a whole video on its own). */
+const PIECE = /\.(ts|m4s|m4f|cmfv|cmfa|aac|vtt|webvtt|key)$/;
+
+/** What kind of video a request is: "hls", "dash", "file", or null (anything else). `type` = the
+ *  browser's request type, `contentType` and `size` from the answer's headers. */
+function mediaKind(url, type, contentType, size) {
+  let path;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    path = u.pathname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const ct = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (path.endsWith(".m3u8") || /^(application|audio)\/(vnd\.apple\.mpegurl|x-mpegurl|mpegurl)$/.test(ct)) return "hls";
+  if (path.endsWith(".mpd") || ct === "application/dash+xml") return "dash";
+  if (PIECE.test(path) || ct === "video/mp2t" || ct === "video/iso.segment") return null;
+  // A whole file is what the page's video element itself loads (a player that builds the video
+  // from pieces fetches them another way).
+  const named = /\.(mp4|m4v|webm|mov|mkv|ogv)$/.test(path);
+  const isVideo = ct.startsWith("video/") || (named && (ct === "" || ct === "application/octet-stream"));
+  if (type === "media" && isVideo && size >= MIN_VIDEO_FILE) return "file";
+  return null;
+}
+
+/** The whole file's size from an answer's headers (a part's answer says it after the "/"). */
+function sizeOf(headers) {
+  const get = (n) => headers?.find((h) => h.name.toLowerCase() === n)?.value || "";
+  const total = /\/(\d+)\s*$/.exec(get("content-range"));
+  return total ? Number(total[1]) : Number(get("content-length")) || 0;
+}
+
+/** Reads a caught HLS playlist again from its server: a master playlist says its qualities and
+ *  which playlists belong to it. `login`: with the browser's cookies for that server (a normal
+ *  window's own); without them (a Firefox container tab: the background page only has the
+ *  default container's), nothing is sent or kept but the request. Never for a private window. */
+async function readPlaylist(url, login) {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const how = login ? { cache: "force-cache", credentials: "include" } : { cache: "no-store", credentials: "omit" };
+    const r = await fetch(url, { ...how, signal: ctrl.signal });
+    const text = r.ok ? (await r.text()).slice(0, 2 * 1024 * 1024) : "";
+    clearTimeout(timer);
+    if (!text.replace(/^﻿/, "").startsWith("#EXTM3U")) return null;
+    if (!text.includes("#EXT-X-STREAM-INF")) return { master: false, parts: [], height: 0 };
+    const parts = [];
+    let height = 0;
+    const lines = text.split(/\r?\n/).map((l) => l.trim());
+    lines.forEach((l, i) => {
+      const uri = /URI="([^"]+)"/.exec(l);
+      if (l.startsWith("#EXT-X-MEDIA:") && uri) parts.push(new URL(uri[1], url).href);
+      if (l.startsWith("#EXT-X-STREAM-INF:")) {
+        const res = /RESOLUTION=\d+x(\d+)/i.exec(l);
+        if (res) height = Math.max(height, Number(res[1]));
+        const next = lines.slice(i + 1).find((x) => x && !x.startsWith("#"));
+        if (next) parts.push(new URL(next, url).href);
+      }
+    });
+    return { master: true, parts, height };
+  } catch {
+    return null;
+  }
+}
+
+/** One tab's list, kept in the browser's memory-only session storage (it outlives the
+ *  background page going to sleep, never the browser). */
+const caughtKey = (tabId) => `caught-${tabId}`;
+async function caughtList(tabId) {
+  try {
+    return (await api.storage.session.get(caughtKey(tabId)))[caughtKey(tabId)] ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** What the popup lists: a master playlist stands for the playlists it names. */
+function visible(list) {
+  const covered = new Set(list.flatMap((v) => v.parts || []));
+  return list.filter((v) => !covered.has(v.url));
+}
+
+async function saveCaught(tabId, list) {
+  try {
+    if (list.length) await api.storage.session.set({ [caughtKey(tabId)]: list });
+    else await api.storage.session.remove(caughtKey(tabId));
+  } catch {
+    // the tab's list can't be kept: the toolbar button still says it
+  }
+  const n = visible(list).length;
+  try {
+    await api.action.setBadgeBackgroundColor({ tabId, color: "#F96263" });
+    await api.action.setBadgeText({ tabId, text: n ? String(n) : "" });
+  } catch {
+    // the tab closed meanwhile
+  }
+}
+
+/** One tab's list changes one step at a time (requests come in together). */
+const caughtWork = new Map();
+function changeCaught(tabId, change) {
+  const next = (caughtWork.get(tabId) ?? Promise.resolve()).then(async () => {
+    const changed = await change(await caughtList(tabId));
+    if (changed) await saveCaught(tabId, changed);
+  });
+  caughtWork.set(tabId, next.catch(() => {}));
+  return next;
+}
+
+/** A request the browser made in a tab: a video is noted, a new page clears the list. */
+function onMediaHeaders(details) {
+  const { tabId, url, type } = details;
+  if (typeof tabId !== "number" || tabId < 0) return;
+  if (type === "main_frame") {
+    changeCaught(tabId, async (list) => (list.length ? [] : null));
+    // The new page gets the pill again once a video is caught on it.
+    forgetPill(tabId);
+    return;
+  }
+  if (details.statusCode >= 400) return;
+  const headers = details.responseHeaders || [];
+  const contentType = headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "";
+  const kind = mediaKind(url, type, contentType, sizeOf(headers));
+  if (!kind || url.length > MAX_LINK) return;
+  // The document that loaded it (an embedded player's frame): the referrer the browser sent.
+  const doc = details.documentUrl || details.initiator || "";
+  let added = false;
+  changeCaught(tabId, async (list) => {
+    if (list.some((v) => v.url === url) || list.length >= CAUGHT_MAX) return null;
+    const item = { url, kind, doc: isWebLink(doc) ? doc : "", height: 0, parts: [] };
+    if (kind === "hls") {
+      // A private window's playlist is never asked for again: the background page would ask with
+      // the normal windows' cookies and keep the answer in their cache. (Firefox says it in the
+      // request; Chromium only in the tab. Not known = private.)
+      const incognito = typeof details.incognito === "boolean" ? details.incognito : ((await api.tabs.get(tabId).catch(() => null))?.incognito ?? true);
+      if (!incognito) {
+        const store = details.cookieStoreId;
+        const p = await readPlaylist(url, !store || store === "firefox-default");
+        if (p?.master) Object.assign(item, { height: p.height, parts: p.parts });
+      }
+    }
+    added = true;
+    return [...list, item];
+  }).then(() => {
+    // The pill goes on the video in the frame that loaded it (that frame's page: Chromium names
+    // its document, Firefox gives its address).
+    if (added) offerPill(tabId, details.frameId, details.documentId || details.documentUrl || "");
+  }, () => {});
+}
+
+api.webRequest?.onHeadersReceived?.addListener(onMediaHeaders, { urls: ["<all_urls>"], types: ["main_frame", "media", "xmlhttprequest"] }, ["responseHeaders"]);
+function forgetTab(tabId) {
+  caughtWork.delete(tabId);
+  Promise.resolve(api.storage.session?.remove(caughtKey(tabId))).catch(() => {});
+  forgetPill(tabId);
+}
+api.tabs.onRemoved?.addListener((tabId) => {
+  forgetTab(tabId);
+  // The recorded tab closed: the recording ends, and its recorder goes from every site.
+  if (rec?.tabId === tabId) stopRecording("This tab is closed.");
+});
+// The browser swapped a tab for another (a discarded tab reloading): the old one's list goes.
+api.tabs.onReplaced?.addListener((_added, removed) => forgetTab(removed));
+
+/** The browser's cookies for the stream's own address only (what the browser itself sends it),
+ *  never from a private window. */
+async function streamCookies(url, incognito, storeId) {
+  if (incognito) return [];
+  try {
+    const query = typeof storeId === "string" && storeId ? { url, storeId } : { url };
+    const list = await api.cookies.getAll(query);
+    const plain = (t) => typeof t === "string" && !/[\u0000-\u001f\u007f]/.test(t);
+    return list
+      .filter((c) => c.name && plain(c.name) && plain(c.value) && plain(c.domain) && plain(c.path || "/"))
+      .slice(0, 300)
+      .map((c) => ({
+        domain: c.hostOnly ? c.domain.replace(/^\./, "") : c.domain.startsWith(".") ? c.domain : "." + c.domain,
+        path: c.path || "/",
+        secure: !!c.secure,
+        expires: c.session || !c.expirationDate ? 0 : Math.floor(c.expirationDate),
+        name: c.name,
+        value: c.value,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/** "Download with Pako" on one of a tab's videos: the stream, the page it played on (as the
+ *  referrer), the page's title (the file's name) and the cookies for the stream's server. */
+async function sendStream(tabId, url) {
+  const item = (await caughtList(tabId)).find((v) => v.url === url);
+  if (!item) return { ok: false, error: "This video isn't on the page any more. Play it again." };
+  const tab = await api.tabs.get(tabId).catch(() => null);
+  if (!tab) return { ok: false, error: "This tab is closed." };
+  // Asked again at the click (the pill's menu or the popup may have been opened before the
+  // page asked for a key system): never a protected video.
+  if ((await videosOf(tabId)).protected) return { ok: false, error: PROTECTED };
+  return send({
+    kind: "stream",
+    urls: [item.url],
+    referrer: item.doc || (isWebLink(tab.url) ? tab.url : ""),
+    filename: String(tab.title || "").slice(0, 300),
+    siteCookies: await streamCookies(item.url, !!tab.incognito, tab.cookieStoreId),
+  });
+}
+
+/** What the popup shows for a tab: its videos, whether a video plays there, and whether it is
+ *  protected (DRM: the page's video uses a key system). */
+async function videosOf(tabId) {
+  const list = visible(await caughtList(tabId)).map((v) => {
+    let host = "";
+    try {
+      host = new URL(v.url).hostname;
+    } catch {
+      // (only web links are kept)
+    }
+    return { url: v.url, kind: v.kind, host, height: v.height || 0 };
+  });
+  let playing = false;
+  let locked = false;
+  try {
+    const results = await api.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () =>
+        [...document.querySelectorAll("video")].map((v) => ({
+          playing: v.readyState >= 2 && (!v.paused || v.currentTime > 0),
+          locked: !!v.mediaKeys,
+        })),
+    });
+    for (const r of results || []) {
+      for (const v of r?.result || []) {
+        playing ||= v.playing;
+        locked ||= v.locked;
+      }
+    }
+  } catch {
+    // a page the browser keeps extensions out of (its own pages, the stores)
+  }
+  return { ok: true, list, playing, protected: locked, recording: recordState(tabId) };
+}
+
+// ---------- the Download pill on a page's video ----------
+// Once a video is caught in a tab, the pill (pill.js + caught.js) is put into the frame that
+// loaded it (else the top frame), once per frame and page. No page where nothing was caught is
+// ever touched, and on the video sites Pako knows, player.js keeps its own pill.
+
+const PILL_FILES = ["pill.js", "caught.js"];
+/** The popup's names for what was caught. */
+const CAUGHT_KINDS = { hls: "HLS stream", dash: "DASH stream", file: "Video file" };
+/** The frames of a tab that have the pill (`frameId|page`), in the same memory-only storage as
+ *  the tab's list (the background page may sleep in between). */
+const pillKey = (tabId) => `pill-${tabId}`;
+const pillWork = new Map();
+
+function forgetPill(tabId) {
+  pillWork.delete(tabId);
+  Promise.resolve(api.storage.session?.remove(pillKey(tabId))).catch(() => {});
+}
+
+/** Whether the pill goes into this frame now: not when the "Download button on videos" switch
+ *  is off, nor a second time into the same frame's page. Notes it as done. */
+async function pillWanted(tabId, frame, page) {
+  const { playerButton } = await api.storage.local.get({ playerButton: true });
+  if (playerButton === false) return false;
+  const key = `${frame}|${page}`;
+  const done = (await api.storage.session.get(pillKey(tabId)))[pillKey(tabId)] ?? [];
+  if (done.includes(key)) return false;
+  await api.storage.session.set({ [pillKey(tabId)]: [...done, key] });
+  return true;
+}
+
+/** Puts the pill into the frame where a video was caught (`frameId` from the request), else
+ *  into the top frame. One tab at a time, so two requests together inject it once. */
+function offerPill(tabId, frameId, page) {
+  const frame = Number.isInteger(frameId) && frameId >= 0 ? frameId : 0;
+  const next = (pillWork.get(tabId) ?? Promise.resolve()).then(async () => {
+    if (!(await pillWanted(tabId, frame, String(page || "")))) return;
+    try {
+      await api.scripting.executeScript({ target: { tabId, frameIds: [frame] }, files: PILL_FILES });
+    } catch {
+      // That frame is gone or closed to extensions: the top frame instead (once too).
+      if (frame !== 0 && (await pillWanted(tabId, 0, ""))) {
+        await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: PILL_FILES }).catch(() => {});
+      }
+    }
+  });
+  pillWork.set(tabId, next.catch(() => {}));
+  return next;
+}
+
+/** The pill's menu for a tab, from what the popup shows there (videosOf): one caught video
+ *  downloads at once, several are listed like in the popup, and Record this video follows the
+ *  popup's rule (a video plays or is listed, never a protected one, not while recording). */
+function pillMenu({ list, playing, protected: locked, recording }) {
+  const items = [{ head: "Download with Pako" }];
+  if (locked) return [...items, { info: PROTECTED }];
+  const upTo = (v) => (v.height ? `up to ${v.height}p` : "");
+  if (list.length === 1) {
+    const v = list[0];
+    items.push({ text: "Download this video", side: upTo(v) || CAUGHT_KINDS[v.kind], send: { type: "pill-send", url: v.url } });
+  } else {
+    for (const v of list) {
+      const text = upTo(v) ? `${CAUGHT_KINDS[v.kind]} · ${upTo(v)}` : CAUGHT_KINDS[v.kind];
+      items.push({ text, side: v.host, send: { type: "pill-send", url: v.url } });
+    }
+  }
+  if (!list.length) items.push({ info: "Pako didn't find this video's address." });
+  const busy = recording && ["waiting", "recording", "saving"].includes(recording.state);
+  if (busy) items.push({ sep: true }, { info: "Recording this video: the Pako button in the toolbar shows how it's going." });
+  else if (playing || list.length) {
+    items.push({ sep: true }, { text: "Record this video", side: "reloads the page", send: { type: "pill-record" }, done: "Recording…" });
+  }
+  return items;
+}
+
+/** Record this video from the pill: only where the pill would offer it. */
+async function recordFromPill(tabId) {
+  const v = await videosOf(tabId);
+  if (v.protected) return { ok: false, error: PROTECTED };
+  if (!v.playing && !v.list.length) return { ok: false, error: "Play the video first, then try again." };
+  return startRecording(tabId);
+}
+
+// ---------- "Record this video" (the last resort) ----------
+// When Pako can't download a video, the extension can copy what the page gives its own player
+// while the video plays (fast and muted when the page allows), and send it to Pako in small
+// parts; Pako makes the video at the end. The page reloads once so nothing is missed. Never a
+// protected (DRM) video: recording stops as soon as the page asks for a key system.
+
+const RECORDER_SCRIPTS = ["pako-rec-main", "pako-rec-bridge"];
+/** How long the reloaded page has to start playing the video. The recorder is added to every
+ *  page opened meanwhile (the browser can't add it to one tab only; it does nothing outside the
+ *  recorded one), so this is kept short, and it is taken away as soon as the video plays. */
+const REC_WAIT = 5 * 60 * 1000;
+const PROTECTED = "This video is protected, so it can't be downloaded.";
+/** The recording going on (one at a time), or the last one's outcome. */
+let rec = null;
+
+function recordState(tabId) {
+  if (!rec || rec.tabId !== tabId) return null;
+  return { state: rec.state, bytes: rec.bytes, error: rec.error || "" };
+}
+
+/** One line to Pako's helper for the whole recording: the parts go one after the other, and the
+ *  answers come back in the same order. */
+function openNative() {
+  const port = api.runtime.connectNative(HOST);
+  const waiting = [];
+  let gone = false;
+  port.onMessage.addListener((reply) => waiting.shift()?.(reply && typeof reply === "object" ? reply : { ok: false, error: "Pako didn't answer." }));
+  port.onDisconnect.addListener(() => {
+    void api.runtime.lastError;
+    gone = true;
+    for (const resolve of waiting.splice(0)) resolve({ ok: false, error: NOT_CONNECTED });
+  });
+  return {
+    ask: (message) =>
+      new Promise((resolve) => {
+        if (gone) return resolve({ ok: false, error: NOT_CONNECTED });
+        waiting.push(resolve);
+        try {
+          port.postMessage(message);
+        } catch {
+          waiting.pop();
+          resolve({ ok: false, error: NOT_CONNECTED });
+        }
+      }),
+    close: () => {
+      gone = true;
+      try {
+        port.disconnect();
+      } catch {
+        // already closed
+      }
+    },
+  };
+}
+
+async function removeRecorder() {
+  try {
+    const ids = (await api.scripting.getRegisteredContentScripts({ ids: RECORDER_SCRIPTS })).map((s) => s.id);
+    if (ids.length) await api.scripting.unregisterContentScripts({ ids });
+  } catch {
+    // none there, or a browser without them
+  }
+}
+
+const recordMessage = (r, action, extra = {}) => ({ kind: "record", record: { action, session: r.session, ...extra } });
+
+/** Ends the recording: `error` = why it stopped (Pako drops what it had then, unless `told`). */
+async function stopRecording(error, told = false) {
+  const r = rec;
+  if (!r || r.state === "done" || r.state === "failed") return;
+  r.state = error ? "failed" : "done";
+  r.error = error || "";
+  clearTimeout(r.timer);
+  try {
+    r.page?.postMessage({ t: "stop" });
+  } catch {
+    // the page is gone
+  }
+  if (error && !told) await r.native.ask(recordMessage(r, "cancel"));
+  r.native.close();
+  await removeRecorder();
+}
+
+/** Starts recording a tab's video: Pako is asked first (it says no when its video tools are
+ *  missing), then the page reloads with the recorder in it. */
+async function startRecording(tabId) {
+  if (rec && ["waiting", "recording", "saving"].includes(rec.state)) {
+    return { ok: false, error: "Pako is already recording a video. Stop that one first." };
+  }
+  const tab = await api.tabs.get(tabId).catch(() => null);
+  if (!tab || !isWebLink(tab.url)) return { ok: false, error: "Pako can't record on this page." };
+  if (tab.incognito) return { ok: false, error: "Pako doesn't record in private windows." };
+  const r = { tabId, session: crypto.randomUUID(), state: "waiting", bytes: 0, error: "", seq: {}, page: null, queue: Promise.resolve() };
+  r.native = openNative();
+  const reply = await r.native.ask(recordMessage(r, "start", { page: tab.url, title: String(tab.title || "").slice(0, 300) }));
+  if (!reply.ok) {
+    r.native.close();
+    return reply;
+  }
+  await removeRecorder();
+  try {
+    const common = { matches: ["<all_urls>"], allFrames: true, runAt: "document_start", persistAcrossSessions: false };
+    await api.scripting.registerContentScripts([
+      { id: "pako-rec-main", js: ["recorder.js"], world: "MAIN", ...common },
+      { id: "pako-rec-bridge", js: ["recorder-bridge.js"], ...common },
+    ]);
+  } catch (e) {
+    await r.native.ask(recordMessage(r, "cancel"));
+    r.native.close();
+    return { ok: false, error: "This browser can't record videos. Update it, then try again.", detail: e?.message || String(e) };
+  }
+  rec = r;
+  r.timer = setTimeout(() => {
+    if (rec === r && r.state === "waiting") stopRecording("The video didn't start playing, so nothing was recorded.");
+  }, REC_WAIT);
+  try {
+    await api.tabs.reload(tabId);
+  } catch {
+    await stopRecording("This tab is closed.");
+  }
+  return { ok: true };
+}
+
+/** The recorder in a page asks whether to record: only in the recorded tab, while it waits. */
+function recorderHello(sender) {
+  return { record: !!rec && rec.state === "waiting" && sender?.tab?.id === rec.tabId };
+}
+
+/** The recorder's line from a page: only the first frame that sends something is recorded. */
+api.runtime.onConnect?.addListener((port) => {
+  if (port.name !== "pako-rec") return;
+  const r = rec;
+  if (!r || !["waiting", "recording"].includes(r.state) || port.sender?.tab?.id !== r.tabId) {
+    port.postMessage({ t: "stop" });
+    port.disconnect();
+    return;
+  }
+  port.onMessage.addListener((m) => {
+    if (rec !== r || (r.page && r.page !== port)) {
+      port.postMessage({ t: "stop" });
+      return;
+    }
+    if (m?.t === "protected") {
+      stopRecording(PROTECTED);
+    } else if (m?.t === "chunk" && Number.isInteger(m.track)) {
+      r.page = port;
+      if (r.state === "waiting") {
+        r.state = "recording";
+        clearTimeout(r.timer);
+        // The recorded page has its recorder: no other page opened from now on gets it.
+        removeRecorder();
+      }
+      const seq = (r.seq[m.track] = (r.seq[m.track] ?? -1) + 1);
+      // In order: each part waits for Pako's answer to the one before.
+      r.queue = r.queue.then(async () => {
+        if (r.state !== "recording") return;
+        const reply = await r.native.ask(recordMessage(r, "chunk", { track: m.track, mime: String(m.mime || ""), seq, data: String(m.data || "") }));
+        if (!reply.ok) return stopRecording(reply.error || "Pako couldn't save the recording.");
+        r.bytes += Number(m.size) || 0;
+        port.postMessage({ t: "ack" });
+      });
+    } else if (m?.t === "end" && r.page === port) {
+      r.queue = r.queue.then(async () => {
+        if (r.state !== "recording") return;
+        r.state = "saving";
+        const reply = await r.native.ask(recordMessage(r, "end"));
+        r.state = "recording";
+        await stopRecording(reply.ok ? "" : reply.error || "Pako couldn't save the recording.", true);
+      });
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    // The page closed or went elsewhere before the video ended.
+    if (rec === r && r.page === port && r.state === "recording") stopRecording("The page closed before the video ended, so nothing was saved.");
+  });
+});
+
+// A recording the background page lost (the browser restarted it): its recorder goes.
+removeRecorder();
+/* full-only:end */
+
 // ---------- the popup asks through here ----------
 
 api.runtime.onMessage.addListener((msg, sender, respond) => {
@@ -446,6 +1015,20 @@ api.runtime.onMessage.addListener((msg, sender, respond) => {
       if (!reply.ok && reply.error) flag(reply.error, reply.detail);
       respond(reply);
     }
+    // The toolbar window's "Videos on this page" (never from a page in a tab).
+    else if (msg?.type === "videos" && !sender?.tab && !LIGHT) respond(await videosOf(Number(msg.tabId)));
+    else if (msg?.type === "send-stream" && !sender?.tab && !LIGHT) respond(await sendStream(Number(msg.tabId), msg.url));
+    else if (msg?.type === "record-start" && !sender?.tab && !LIGHT) respond(await startRecording(Number(msg.tabId)));
+    else if (msg?.type === "record-cancel" && !sender?.tab && !LIGHT) {
+      if (rec?.tabId === Number(msg.tabId)) await stopRecording("Recording stopped.");
+      respond({ ok: true });
+    } else if (msg?.type === "rec-hello" && sender?.tab && !LIGHT) respond(recorderHello(sender));
+    // The Download pill on a page's video (caught.js): only about its own tab, never another.
+    else if (msg?.type === "pill-menu" && sender?.tab && !LIGHT) {
+      const v = await videosOf(sender.tab.id);
+      respond({ ok: true, items: pillMenu(v) });
+    } else if (msg?.type === "pill-send" && sender?.tab && !LIGHT) respond(await sendStream(sender.tab.id, msg.url));
+    else if (msg?.type === "pill-record" && sender?.tab && !LIGHT) respond(await recordFromPill(sender.tab.id));
     /* full-only:end */
     else respond({ ok: false });
   })().catch((e) => respond({ ok: false, error: NOT_CONNECTED, detail: e?.message || String(e) }));

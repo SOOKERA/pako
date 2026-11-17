@@ -142,12 +142,14 @@
     gofile: ["Gofile link", "link"],
     drive: ["Google Drive link", "link"],
     direct: ["Direct", "send"],
+    local: ["Local network", "send"],
   };
   const SOURCE_NAMES: Record<string, [string, string]> = {
     drive: ["Google Drive", "file"],
     video: ["Videos", "video"],
     web: ["Other sites", "file"],
     direct: ["Received in Direct", "transfer"],
+    local: ["Received on local network", "transfer"],
     earlier: ["Earlier downloads", "day"],
   };
   const SOURCE_COLORS: Record<string, string> = {
@@ -155,6 +157,8 @@
     video: "var(--src-video)",
     web: "var(--src-web)",
     direct: "var(--c-recv)",
+    // Direct too, over the home network: a shade of the same colour.
+    local: "color-mix(in srgb, var(--c-recv) 60%, var(--text))",
     earlier: "var(--track)",
   };
   /** The row with the best average, when at least two can be compared. */

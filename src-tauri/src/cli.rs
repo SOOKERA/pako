@@ -16,6 +16,15 @@ use crate::engine::Engine;
 use crate::model::Status;
 
 pub fn main(args: Vec<String>) -> i32 {
+    // Like the window: nothing downloads before the terms of use are accepted, in Pako's own
+    // window (its settings, not this mode's separate folder; see consent.rs).
+    let window_settings = crate::paths::data_dir_override().unwrap_or_else(crate::paths::default_data_dir).join("settings.json");
+    let settings: crate::model::Settings = std::fs::read(&window_settings).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    if crate::consent::needed(&settings) {
+        println!("{} Start Pako and accept them first.", crate::consent::NOT_YET);
+        return 2;
+    }
+    crate::consent::open();
     // Before anything reads paths::data_dir(), which keeps the first answer for good.
     if crate::paths::data_dir_override().is_none() {
         // Nothing else runs yet (no threads), so changing the environment is safe.

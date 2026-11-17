@@ -6,7 +6,7 @@ Your Pako in numbers: what you downloaded, uploaded, sent and received, how fast
 
 Every download, upload and Direct transfer is counted when it ends. Downloads that stopped with an error are counted as stopped. Downloads, uploads and Direct transfers from before the Dashboard existed were read from Pako's lists once, so they're in **All time** too, sometimes without their speed.
 
-Everything stays on your PC. Nothing is sent anywhere.
+Everything stays on your PC. Nothing is sent anywhere. For the records, **Top sites** and the CSV file, Pako keeps a line for each transfer of the last 12 months or so: the file's name, size and site, and for Direct the contact. Removing a download, an upload or a transfer from its list doesn't remove it here: **Reset statistics…** (below) does.
 
 ## Period
 
@@ -16,7 +16,7 @@ Pick the period at the top: **Today**, **This week** (since Monday), **This mont
 
 - **Downloaded**: how much, how many files, and how many stopped with an error.
 - **Uploaded**: how much, how many links, and how often people downloaded them (as Gofile last said; Google Drive doesn't share this).
-- **Sent direct**: how much you sent in [Direct](direct.md), to how many people, and how much of it went straight from your PC to theirs rather than through a relay.
+- **Sent direct**: how much you sent in [Direct](direct.md), to how many people, and how much of it went straight from your PC to theirs (over the internet or your home network) rather than through a relay.
 - **Received direct**: how much you received in Direct, from how many people, in how many transfers.
 
 ## Activity
@@ -29,8 +29,8 @@ The **Average** speed while things were moving, and **Up to the top speed** reac
 
 ## Which way is fastest
 
-- **Sending files**: the average upload speed by the way you sent them: **Gofile link**, **Google Drive link** and **Direct**.
-- **Getting files**: the average download speed by where files came from: **Google Drive**, **Videos**, **Other sites**, **Received in Direct**, and **Earlier downloads** (older ones whose source isn't known).
+- **Sending files**: the average upload speed by the way you sent them: **Gofile link**, **Google Drive link**, **Direct** (over the internet) and **Local network** (Direct over your home network, see [On the same Wi-Fi](direct.md#on-the-same-wi-fi)).
+- **Getting files**: the average download speed by where files came from: **Google Drive**, **Videos**, **Other sites**, **Received in Direct** (over the internet), **Received on local network**, and **Earlier downloads** (older ones whose source isn't known).
 
 Each row shows how many, how much, and the top speed. **Fastest** marks the quickest when at least two can be compared.
 

@@ -14,6 +14,16 @@ Videos need three free tools (yt-dlp, Deno and ffmpeg, about 200 MB). If they're
 
 A playlist link lists every video in it, so you can tick the ones you want.
 
+## Check it's the right video
+
+Before downloading (or while it downloads), you can play a few seconds of the video to make sure it's the one you want:
+
+1. Select the video in **Links** (or the unfinished download in **Downloads**).
+2. Under **Preview** in the details on the right, click the play button.
+3. After a moment, about 20 seconds play at 480p or lower, a few seconds into the video.
+
+Nothing is fetched from the site until you click play. The clip stops when you pick another item or hide the details. It needs the video tools. Live streams can't be previewed, and a private, age-restricted or protected (DRM) video says **This video can't be previewed** and why.
+
 ## Quality and audio
 
 - The **Quality** list offers the sizes the video really has (1080p, 720p…), plus **Audio only (M4A)** and **Audio only (MP3)**.
@@ -22,6 +32,8 @@ A playlist link lists every video in it, so you can tick the ones you want.
 - Click a playlist's header in **Links** to set the same quality for all its videos.
 
 ## The Download button on video players
+
+Download and record only what you have the right to, and follow the rules of the sites you use.
 
 With the full [browser extension](browser-extension.md) (not Pako Light), a **Download** button appears at the top right of a video when you point at it, on YouTube, Vimeo, Twitch, Facebook and Instagram:
 
@@ -39,12 +51,37 @@ You can also right-click a video page › **Download video with Pako**, right-cl
 
 Videos sent from your browser (the button or the right-click menu) use your browser's login for that site, so videos you can watch while signed in can be downloaded too. The login is kept encrypted, used only for that download, and deleted afterwards. While the video downloads, the login sits in a small file only you can read, in Windows' temporary folder (`%TEMP%\Pako`); that file is deleted as soon as the download stops, and when Pako closes. Videos from private windows never get it.
 
+## The video playing on any page
+
+With the full [browser extension](browser-extension.md#videos-on-this-page), you can download the video playing on almost any page, not only on the sites above:
+
+1. Play the video for a moment.
+2. Click the Pako button in the browser's toolbar (it shows how many videos it found on the page).
+3. Under **Videos on this page**, click **Download with Pako** next to the video.
+
+Or point at the video itself: once Pako has found it, the same **Download** button appears at its top right, as on the sites above. Click it, then **Download this video** (when Pako found several videos on the page, it lists them as the small window does: pick one). Its menu also has **Record this video** (below), and it offers nothing for a protected video. The button appears only on pages where Pako found a video; **Download button on videos** in the extension's small window turns it off too.
+
+The video goes to **Downloads**, named after the page's title, in your usual quality (**Settings › Downloads › Video quality**), through the **Download with Pako** window if it's on. Pako gets it the same way the page does: from the same page, with your browser's login for the video's server. When its video tool can't get a video made of small pieces (an HLS stream), Pako tries again by itself, fetching the pieces itself; it continues from the pieces it already has after a pause or a restart.
+
+If it doesn't work, the download says "Pako couldn't get this video." Then try **Record this video**.
+
+## Record this video
+
+The last resort, offered in the extension's small window (full extension), and in the **Download** button's menu on the video, while a video plays or is listed under **Videos on this page**, for when Pako couldn't get it:
+
+1. Click **Record this video**. The page reloads.
+2. Press play if the video doesn't start by itself. Pako records it as it plays, sped up and muted when the page allows it. If the video doesn't start within 5 minutes, recording stops: "The video didn't start playing, so nothing was recorded."
+3. Keep the tab open: **the video has to play to the end**. The small window shows how much is recorded; **Stop recording** stops it and nothing is kept.
+4. At the end, the small window says "Sent to Pako: it makes the video in Downloads." The video appears in **Downloads**, named after the page's title. If the video changed quality while it played, Pako makes it again at the best quality it had, which takes a little longer.
+
+One video is recorded at a time, never in private windows, and never a protected video.
+
 ## Fast downloads
 
 When a site sends a video as one big file (YouTube, Vimeo…), Pako downloads it in parallel parts, then joins picture and sound into one file. When a site sends a video as many small pieces (Twitch and most TV sites), Pako fetches many pieces at once.
 
 ## Good to know
 
-- Sites that lock their videos (Netflix, Disney+, Prime Video and similar) can't be downloaded. Pako says "This site protects its videos (DRM), so they can't be downloaded." and never tries to get around it.
+- Sites that lock their videos (Netflix, Disney+, Prime Video and similar) can't be downloaded. Pako says "This site protects its videos (DRM), so they can't be downloaded." and never tries to get around it. For the video playing on a page, it says "This video is protected, so it can't be downloaded."
 - Sites Pako recognises as video sites include YouTube, Vimeo, Dailymotion, Twitch, TikTok, X, Instagram, Facebook, Reddit, Bilibili, Streamable, Rumble, Odysee, BitChute and SoundCloud. Many others work too.
 - The details panel of a video download shows its quality under **Quality**.

@@ -22,9 +22,11 @@
   import FoundView from "$lib/FoundView.svelte";
   import FoundDetails from "$lib/FoundDetails.svelte";
   import SetupDialog from "$lib/SetupDialog.svelte";
+  import TermsDialog from "$lib/TermsDialog.svelte";
   import DashboardView from "$lib/DashboardView.svelte";
   import SendView from "$lib/SendView.svelte";
   import DirectView from "$lib/DirectView.svelte";
+  import DevicesView from "$lib/DevicesView.svelte";
   import DirectPrompts from "$lib/DirectPrompts.svelte";
   import HelpDialog from "$lib/help/HelpDialog.svelte";
   import WhatsNewDialog from "$lib/help/WhatsNewDialog.svelte";
@@ -115,7 +117,13 @@
    *  would open what was dropped in place of Pako. So it's refused, except text dragged into a
    *  field. */
   function refusedHere(e: DragEvent) {
-    if (app.view !== "send" && app.view !== "direct") return false;
+    // The terms of use wait: nothing dropped is taken (nor opened in place of Pako).
+    if (termsAsk) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+      return true;
+    }
+    if (app.view !== "send" && app.view !== "direct" && app.view !== "devices") return false;
     const files = e.dataTransfer?.types.includes("Files");
     const field = e.target instanceof Element && !!e.target.closest("input, textarea");
     if (!files && field) return true; // text into a field: the field's own business
@@ -269,10 +277,13 @@
     const el = document.activeElement;
     return !!el && !!el.closest("button, a[href], input, textarea, select, [contenteditable], [role='switch']");
   }
+  // The terms of use, before anything else (a new Pako, or once for one used before it had
+  // terms): nothing else shows or runs until they're accepted.
+  const termsAsk = $derived(app.loaded && inApp && app.termsNeeded);
   // First start (or "Run setup again"): the setup window.
-  const trayAsk = $derived(app.loaded && !!app.settings && ((inApp && !app.settings.setupDone) || app.setupOpen));
+  const trayAsk = $derived(!termsAsk && app.loaded && !!app.settings && ((inApp && !app.settings.setupDone) || app.setupOpen));
   /** Video downloading arrived after the first-start setup: offered once. */
-  const videoAsk = $derived(app.loaded && !!app.settings && inApp && app.settings.setupDone && !app.settings.videoAsked);
+  const videoAsk = $derived(!termsAsk && app.loaded && !!app.settings && inApp && app.settings.setupDone && !app.settings.videoAsked);
   async function answerVideo(install: boolean) {
     if (!app.settings) return;
     await app.run(() => api.setSettings({ ...app.settings!, videoAsked: true }));
@@ -287,7 +298,7 @@
   let whatsNewDone = $state(false);
   const whatsNewEntry = $derived(app.version ? whatsNewFor(app.version) : undefined);
   const whatsNewShow = $derived(
-    !whatsNewDone && !!whatsNewEntry && app.loaded && !!app.settings && inApp && app.settings.setupDone && !trayAsk && !videoAsk && app.settings.whatsNewSeen !== app.version,
+    !whatsNewDone && !termsAsk && !!whatsNewEntry && app.loaded && !!app.settings && inApp && app.settings.setupDone && !trayAsk && !videoAsk && app.settings.whatsNewSeen !== app.version,
   );
   function closeWhatsNew() {
     whatsNewDone = true;
@@ -296,7 +307,7 @@
   }
   let tourAskDone = $state(false);
   const tourAsk = $derived(
-    !tourAskDone && app.loaded && !!app.settings && inApp && app.settings.setupDone && !app.settings.tourOffered && !trayAsk && !videoAsk && !whatsNewShow && !help.open && !tour.active,
+    !tourAskDone && !termsAsk && app.loaded && !!app.settings && inApp && app.settings.setupDone && !app.settings.tourOffered && !trayAsk && !videoAsk && !whatsNewShow && !help.open && !tour.active,
   );
   function answerTour(take: boolean) {
     tourAskDone = true;
@@ -307,7 +318,7 @@
 
   /** A dialog or menu is open: the list behind it takes no shortcuts or pastes. */
   function covered() {
-    return app.modals > 0 || addText !== null || !!settingsOpen || !!renaming || !!removing || !!restarting || trayAsk || !!menu || help.open || tour.active || app.bellOpen;
+    return termsAsk || app.modals > 0 || addText !== null || !!settingsOpen || !!renaming || !!removing || !!restarting || trayAsk || !!menu || help.open || tour.active || app.bellOpen;
   }
   function onKey(e: KeyboardEvent) {
     // Already handled (Enter in a menu or the Rename box): don't also open the file.
@@ -375,7 +386,7 @@
   /** Delete in Found: removes the focused link (or the focused folder's files) at once,
    *  and moves the focus to the next row so Delete can be pressed again. */
   async function removeFocusedFound() {
-    const items = app.foundFocusItems;
+    const items = app.withMirrors(app.foundFocusItems);
     if (!items.length) return;
     const gone = new Set(items.map((f) => f.id));
     const keys = app.foundRows
@@ -447,6 +458,8 @@
         <SendView onmenu={(x, y, items) => (menu = { x, y, items })} />
       {:else if app.view === "direct"}
         <DirectView onmenu={(x, y, items) => (menu = { x, y, items })} />
+      {:else if app.view === "devices"}
+        <DevicesView />
       {:else}
       <div class="toolbar">
         <h1>{title}</h1>
@@ -483,15 +496,16 @@
     <aside
       class="side"
       data-tour="details"
-      class:open={app.panelOpen && app.view !== "dashboard" && app.view !== "direct"}
-      aria-hidden={!app.panelOpen || app.view === "dashboard" || app.view === "direct"}
-      inert={!app.panelOpen || app.view === "dashboard" || app.view === "direct"}
+      class:open={app.panelOpen && app.view !== "dashboard" && app.view !== "direct" && app.view !== "devices"}
+      aria-hidden={!app.panelOpen || app.view === "dashboard" || app.view === "direct" || app.view === "devices"}
+      inert={!app.panelOpen || app.view === "dashboard" || app.view === "direct" || app.view === "devices"}
     >
       {#if app.view === "found"}
         <FoundDetails />
       {:else if app.view === "send"}
         <UploadDetails />
-      {:else}
+      {:else if app.view !== "devices"}
+        <!-- Never on My devices, even while the panel slides away: it has no details panel. -->
         <DetailsPanel onremove={askRemove} />
       {/if}
     </aside>
@@ -605,7 +619,9 @@
   </Modal>
 {/if}
 
-{#if trayAsk}
+{#if termsAsk}
+  <TermsDialog />
+{:else if trayAsk}
   <SetupDialog />
 {:else if videoAsk}
   <Modal title="Pako can download videos now" width={460} onclose={() => answerVideo(false)}>

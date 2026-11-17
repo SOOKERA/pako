@@ -67,7 +67,28 @@ test("node extension/build.mjs: both zips are right", () => {
   // Mozilla refuses a new extension that doesn't say what it passes on.
   const gecko = JSON.parse(firefox.find((e) => e.name === "manifest.json").data.toString("utf8")).browser_specific_settings.gecko;
   assert.ok(gecko.data_collection_permissions.required.length > 0);
+  // Firefox takes the extension's updates from Pako's latest release (scripts/release.ps1).
+  assert.equal(gecko.update_url, "https://github.com/sookera/pako-releases/releases/latest/download/firefox-updates.json");
+  // The unpacked folder scripts/sign-firefox.ps1 sends to Mozilla is the zip's twin.
+  const folder = JSON.parse(readFileSync(join(dist, "firefox", "manifest.json"), "utf8"));
+  assert.equal(folder.browser_specific_settings.gecko.id, "extension@pako.sookera.com");
+  // One version for both browser families.
+  const chromium = JSON.parse(readFileSync(join(dist, "chromium", "manifest.json"), "utf8"));
+  assert.equal(folder.version, chromium.version);
   assert.ok(!light.some((e) => e.name === "player.js"));
+  // The Download pill on videos (pill.js, shared by player.js and caught.js): the full extension
+  // only, and pill.js runs before player.js on the video sites.
+  for (const f of ["pill.js", "caught.js"]) {
+    assert.ok(firefox.some((e) => e.name === f), f);
+    assert.ok(!light.some((e) => e.name === f), f);
+  }
+  for (const m of [folder, chromium]) assert.deepEqual(m.content_scripts[0].js, ["pill.js", "player.js"]);
+  // "Videos on this page" and "Record this video": the full extension only.
+  for (const f of ["recorder.js", "recorder-bridge.js"]) {
+    assert.ok(firefox.some((e) => e.name === f), f);
+    assert.ok(!light.some((e) => e.name === f), f);
+  }
+  assert.ok(JSON.parse(firefox.find((e) => e.name === "manifest.json").data.toString("utf8")).permissions.includes("webRequest"));
   for (const e of light) {
     if (e.name === "LICENSE" || !/\.(js|html|css|json|md)$/.test(e.name)) continue;
     assert.ok(!LIGHT_BANNED.test(e.data.toString("utf8")), e.name);
@@ -76,5 +97,6 @@ test("node extension/build.mjs: both zips are right", () => {
   assert.equal(manifest.name, "Pako Light");
   assert.equal(manifest.key, undefined);
   assert.equal(manifest.content_scripts, undefined);
+  assert.ok(!manifest.permissions.includes("webRequest"));
   assert.match(light.find((e) => e.name === "background.js").data.toString("utf8"), /^const LIGHT = true;$/m);
 });

@@ -4,12 +4,12 @@ The Pako extension sends links, videos and downloads from your browser straight 
 
 ## Add Pako to your browser
 
-Pako's extension works in Chrome, Edge, Brave, Vivaldi and Firefox.
+Pako's extension works in Chrome, Edge, Brave, Vivaldi, Opera (Opera GX too) and Firefox.
 
-### Chrome, Edge, Brave, Vivaldi
+### Chrome, Edge, Brave, Vivaldi, Opera
 
 1. In Pako, open **Settings › Browser extension**, turn on **Connect Pako to your browsers** and click **Save**. (The first-start setup does this for you when **Add Pako to my browsers** stays ticked.)
-2. Under **Add Pako to your browser**, click **Add to Chrome** (or **Add to Edge**, **Add to Brave**, **Add to Vivaldi**). Its extensions page opens, and the extension's folder is copied for you (when the steps don't say "the folder is already copied", click **Copy** next to the folder).
+2. Under **Add Pako to your browser**, click **Add to Chrome** (or **Add to Edge**, **Add to Brave**, **Add to Vivaldi**, **Add to Opera**, **Add to Opera GX**). Its extensions page opens, and the extension's folder is copied for you (when the steps don't say "the folder is already copied", click **Copy** next to the folder).
 3. On the extensions page, turn on **Developer mode**.
 4. Click **Load unpacked**.
 5. Click the address box at the top of the window that opens, press **Ctrl+V** and **Enter**, then **Select Folder**.
@@ -18,11 +18,19 @@ If the browser doesn't open its extensions page, Pako opens the folder instead a
 
 ### Firefox
 
-Firefox only accepts the extension once it's signed by Mozilla (free, done once). With the signed file (`pako-firefox.xpi`) in the extension folder, click **Add to Firefox**, then **Add** in Firefox. Without it, Pako says so and **Show the steps** explains how to get it signed. When you add it, Firefox (version 140 and later) lists what the extension passes to Pako on your PC: your login for a download's site, the addresses of downloads and their pages, and the links on a page. So that downloads behind a login work, allow it on all websites: **about:addons › Pako › Permissions**.
+The Firefox version comes with Pako, signed by Mozilla (Firefox only adds signed extensions).
+
+1. In Pako, open **Settings › Browser extension**, turn on **Connect Pako to your browsers** and click **Save** (the first-start setup does this for you, as above).
+2. Under **Add Pako to your browser**, click **Add to Firefox**. Firefox opens and asks to add Pako: click **Add**.
+3. So downloads behind a login work and the **Download** button shows on videos, Pako must be allowed on all websites: in Firefox, open `about:addons` › **Pako** › **Permissions** and turn on **Access your data for all websites** if it is off.
+
+When you add it, Firefox (version 140 and later) also lists what the extension passes to Pako on your PC: your login for a download's site, the addresses of downloads and their pages, and the links on a page.
+
+If Firefox doesn't open, Pako opens the folder with the file `pako-firefox.xpi` selected: drag it into a Firefox window. A copy of Pako built by someone else from the source code may not include the Firefox version: Pako then says so.
 
 ### Pako Light
 
-Pako Light is a smaller edition of the extension, made for the Chrome Web Store, with a teal icon. It takes over your downloads and has the right-click items, but it doesn't download videos: no **Download** button on videos, and **Download with Pako** works on links and pictures only. It also does nothing on video sites: there, **Send this page to Pako** (in its small window and in the right-click menu) and **Send all links on this page to Pako (to pick from)** are greyed out, its small window says "Pako Light doesn't work on this site.", and links to video sites are left out of "all links". Pako itself also refuses videos sent from Pako Light. The full extension, with the **Download** button on videos, comes with Pako (see above).
+Pako Light is a smaller edition of the extension, made for the Chrome Web Store, with a teal icon. It takes over your downloads and has the right-click items, but it doesn't download videos: no **Download** button on videos, no **Videos on this page**, and **Download with Pako** works on links and pictures only. It also does nothing on video sites: there, **Send this page to Pako** (in its small window and in the right-click menu) and **Send all links on this page to Pako (to pick from)** are greyed out, its small window says "Pako Light doesn't work on this site.", and links to video sites are left out of "all links". Pako itself also refuses videos sent from Pako Light. The full extension, with the **Download** button on videos, comes with Pako (see above).
 
 Only one extension takes over your downloads, so a download goes to Pako only once. If the full extension is on in the same browser, Pako Light steps aside: no right-click items of its own, and its small window says **Not in use** and **The full Pako extension is on in this browser**. You can keep both, or remove Pako Light.
 
@@ -32,19 +40,35 @@ Click the Pako icon in the browser's toolbar. The small window says **Connected*
 
 The same window lets you:
 
+- See the **Videos on this page** and download them (full extension only, see below).
 - **Send this page to Pako**.
 - Turn **Let Pako take over downloads** on or off.
 - Turn the **Download button on videos** on or off (full extension only).
 
 The small window follows your browser's light or dark mode.
 
+Pako's own window shows it too: in **Settings › Browser extension** (and in the first-start setup), a browser whose extension talked to Pako in the last 30 days says **Connected** in green, with **Pako Light** when it's that edition and when it was last used ("last used today", "3 days ago"). Instead of a button, it says **Installed**. (To add the extension again after removing it, use **Open the extension folder** and load it in the browser's extensions page.) A browser not used for longer says **Not used lately**, with its **Add to …** button. A browser with no line under its name was never connected. The list updates when you come back to Pako's window, so it says **Connected** right after you add the extension.
+
+## Videos on this page
+
+Download and record only what you have the right to, and follow the rules of the sites you use.
+
+With the full extension, Pako notices the video playing on any page, also inside a player embedded from another site. The Pako button in the toolbar shows how many it found on that page. Click it: the small window lists them under **Videos on this page**, each with its kind (**HLS stream**, **DASH stream** or **Video file**), its server, and the best quality when the page says it (**up to 1080p**). Click **Download with Pako** next to one: Pako names the file after the page's title and downloads it like other videos (see [Videos](videos.md)).
+
+- The list is only for that tab, and is emptied when the tab goes to another page or closes.
+- If the video is protected, the small window says "This video is protected, so it can't be downloaded." and offers nothing.
+- Once Pako has found a video on a page, the **Download** button also appears at the top right of the video when you point at it (see [below](#the-download-button-on-videos)).
+- While a video plays or is listed, the small window also offers **Record this video**, for when Pako can't get it (the download says "Pako couldn't get this video.") (see [Record this video](videos.md#record-this-video)).
+
 ## The Download button on videos
 
 With the full extension, on YouTube, Vimeo, Twitch, Facebook and Instagram, a **Download** button appears at the top right of a video when you point at it. Click it and pick **Up to 1080p**, **Up to 720p**, **Up to 480p** or **Audio only**. See [Videos](videos.md).
 
+On any other page, the same button appears on the video once Pako has found it there (**Videos on this page**, above), in the frame of the player that plays it. Its menu has **Download this video** (or, when Pako found several, the same list as the small window), and **Record this video** while a video plays or is listed. A protected video gets nothing. Pages where Pako found no video are never touched. **Download button on videos** in the small window turns it off on every page.
+
 ## Right-click menu
 
-- On a link, picture, video or sound: **Download with Pako**. It goes straight to **Downloads** (through the **Download with Pako** window, if it's on). A link to a video page downloads the video, in your usual quality. Pako Light has this item on links and pictures only.
+- On a link, picture, video or sound: **Download with Pako**. It goes straight to **Downloads** (through the **Download with Pako** window, if it's on). A link to a video page downloads the video, in your usual quality. A player that streams in pieces has no address of its own: on a video site, its page's video is downloaded; elsewhere, use **Videos on this page** (below) or **Record this video**. Pako Light has this item on links and pictures only.
 - On a page: **Send this page to Pako**. In the full extension, on video sites this item reads **Download video with Pako**: the video downloads in your usual quality, and a playlist goes to **Links** (see [Videos](videos.md)).
 - On a page: **Send all links on this page to Pako (to pick from)**. They land in **Links**, where you tick what you want.
 
@@ -73,11 +97,15 @@ When a download comes from your browser, Pako shows a small **Download with Pako
 
 Click **Download** (or press **Enter**) to start, or **Cancel** (or **Esc**). When other downloads are already running, you get **Download now** and **Add to queue** instead. If several downloads arrive together, the window shows them one after the other ("1 of 3").
 
+With [My devices](devices.md), a small arrow next to **Download** lets another of your PCs download it instead: **Download on Home PC**, for example. It's there only while one of your devices that lets this PC control it is online. That PC gets the link and downloads it into its own download folder, as **First** (like **Download now**), and a video in the quality chosen in this window, at once. The download leaves this PC; the name and folder chosen here aren't sent. If it didn't work, the window says why and the download stays here. Only the link is sent, never your browser's login, so a download that needs you to be signed in on this PC may not work there. **Download** itself always downloads on this PC.
+
 With **Show the small window when a browser download starts** on (**Settings › Browser extension**), the tray window opens at the bottom right so you can watch the download.
 
 ## After a Pako update
 
-Pako refreshes its extension folder by itself when it starts. Your browser picks up the new version the next time it starts, or right away if you click the reload button on Pako in the browser's extensions page.
+Pako refreshes its extension folder by itself when it starts, and the extension picks up the new version by itself the next time it talks to Pako (a few seconds after, once nothing is on its way to Pako and nothing is being recorded). An extension older than Pako 1.1.0's picks it up the next time your browser starts, or right away if you click the reload button on Pako in the browser's extensions page.
+
+Firefox updates Pako's extension by itself, like its other add-ons (to check now: `about:addons`, the gear button, **Check for Updates**).
 
 If the Download button then says "Pako's extension was just updated. Reload this page and try again.", reload the web page.
 
@@ -101,5 +129,7 @@ If it still fails, the Download button's message ends with "(Browser says: …)"
 ## Good to know
 
 - The extension talks to Pako directly on your PC. Nothing goes over the internet.
-- In private windows, the extension never takes over a download and never passes your login. A link goes to Pako only when you click a Pako item yourself (the right-click items, **Send this page to Pako**, the **Download** button on a video).
+- For **Connected** in Settings, Pako keeps only which browser it was, the edition (full or Pako Light), the extension's version when it says one, and the date, on this PC (`browsers_seen.json` in Pako's data folder).
+- In private windows, the extension never takes over a download and never passes your login. A link goes to Pako only when you click a Pako item yourself (the right-click items, **Send this page to Pako**, the **Download** button on a video, **Download with Pako** under **Videos on this page**).
+- For **Videos on this page**, the full extension only looks at the video requests your browser makes (it never changes or blocks them). The list stays in the browser's memory, for that tab only, and nothing goes to Pako until you click. With a video, Pako gets its address, the page it played on, the page's title, and your browser's login for the video's own server only.
 - Your browser's login for a site is passed to Pako only for the downloads it handles (ones you send, and browser downloads it takes over), kept encrypted, and deleted when the download is finished or removed.

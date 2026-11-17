@@ -4,6 +4,7 @@
 import { parse, plain, type Block } from "./markdown";
 import licenceText from "../../../LICENSE?raw";
 import noticeText from "../../../NOTICE.md?raw";
+import termsText from "../../../TERMS.md?raw";
 
 const files = import.meta.glob("../../../docs/help/*.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const byName = new Map(Object.entries(files).map(([path, text]) => [path.split("/").pop()!, text]));
@@ -124,6 +125,10 @@ function snippet(text: string, word: string): string {
 
 /** The GNU GPL version 3, word for word (LICENSE), bundled like the guides. */
 export const licence: string = licenceText;
+
+/** TERMS.md, the terms of use (word for word sookera.com/terms), without its title: the terms
+ *  step and the About page show their own. */
+export const terms: Block[] = parse(termsText).filter((b) => !(b.kind === "heading" && b.level === 1));
 
 /** NOTICE.md (copyright, no warranty, the additional terms), without its title: the About page
  *  shows its own. */

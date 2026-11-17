@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
-// @ts-expect-error type error without @types/node package
+// @ts-ignore: no types without the @types/node package (web-ext, a dev tool, brings it in)
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 

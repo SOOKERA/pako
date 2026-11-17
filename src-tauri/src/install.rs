@@ -34,12 +34,19 @@ pub fn uninstall_cleanup(args: &[String]) -> i32 {
     crate::system::remove_url_protocol_if_mine(&exe);
     crate::system::remove_autostart_if_mine(&exe);
     let other_pako = other_pako_open();
+    if !other_pako {
+        // A browser login a Pako that didn't close normally left in %TEMP%\Pako: no Pako may
+        // start again to sweep it.
+        remove_cookie_files_in(&crate::paths::temp_folder());
+    }
     if args.iter().any(|a| a == DELETE_DATA) {
         if other_pako {
             return KEPT_FOR_OTHER_PAKO;
         }
         let mut all = true;
-        for dir in crate::paths::installed_data_folders() {
+        // %TEMP%\Pako too: recordings not joined yet belong to the lists that go.
+        let temp = crate::paths::temp_folder();
+        for dir in crate::paths::installed_data_folders().into_iter().chain(std::iter::once(temp)) {
             if dir.exists() && std::fs::remove_dir_all(&dir).is_err() {
                 all = false;
             }
@@ -52,6 +59,17 @@ pub fn uninstall_cleanup(args: &[String]) -> i32 {
         crate::paths::hand_webview_data_back();
     }
     0
+}
+
+/// Deletes yt-dlp's cookie files ("yt-cookies-<id>.txt", as `video::cookie_file` names them)
+/// in `dir`; nothing else there is touched.
+fn remove_cookie_files_in(dir: &Path) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("yt-cookies-") && name.ends_with(".txt") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Another Pako runs (a portable copy). The installed one was just closed by the uninstaller:
@@ -103,6 +121,31 @@ mod tests {
         let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let product = conf["productName"].as_str().unwrap();
         assert_eq!(APPS_KEY, format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{product}"));
+    }
+
+    /// Only yt-dlp's cookie files go: a recording's folder and other files stay.
+    #[test]
+    fn uninstall_removes_left_cookie_files_only() {
+        let dir = std::env::temp_dir().join(format!("pako-uninstall-jars-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(dir.join("recordings").join("rec-1")).unwrap();
+        std::fs::write(dir.join("yt-cookies-abc.txt"), b"# Netscape HTTP Cookie File\n").unwrap();
+        std::fs::write(dir.join("other.txt"), b"x").unwrap();
+        remove_cookie_files_in(&dir);
+        assert!(!dir.join("yt-cookies-abc.txt").exists());
+        assert!(dir.join("other.txt").exists() && dir.join("recordings").join("rec-1").is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cookie files' name, as `video::cookie_file` makes it.
+    #[test]
+    fn cookie_file_names_match_the_video_tool() {
+        let src = include_str!("video.rs");
+        assert!(src.contains(r#"const JAR_PREFIX: &str = "yt-cookies-";"#));
+        assert!(src.contains(r#"format!("{JAR_PREFIX}{}.txt""#));
+        // And the same temporary folder.
+        let stream = include_str!("stream.rs");
+        assert!(stream.contains(r#"if cfg!(debug_assertions) { "Pako-dev" } else { "Pako" }"#));
+        assert!(src.contains(r#"if cfg!(debug_assertions) { "Pako-dev" } else { "Pako" }"#));
     }
 
     #[test]

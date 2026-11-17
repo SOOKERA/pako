@@ -2,11 +2,14 @@
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // Builds the extension for both browser families:
 //   dist/extension/chromium/             folder for "Load unpacked" (Vivaldi, Chrome, Edge, Brave)
-//   dist/extension/pako-firefox.zip      file to sign on addons.mozilla.org
+//   dist/extension/firefox/              the Firefox version, unpacked: scripts/sign-firefox.ps1
+//                                        sends this folder to Mozilla for signing
+//   dist/extension/pako-firefox.zip      the same, zipped
 //   dist/extension/pako-light-store.zip  Pako Light, to upload to the Chrome Web Store and Edge Add-ons
 // Run: node extension/build.mjs
-// (Pako itself writes only the full extension, from the same source files: the chromium folder
-// and the Firefox zip, in Settings › Browser extension. It never writes Pako Light.)
+// (Pako itself writes only the full extension, from the same source files: the chromium folder,
+// and the Firefox version signed by Mozilla when one was built into it, in Settings › Browser
+// extension. It never writes Pako Light.)
 import { cpSync, mkdirSync, rmSync, copyFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +19,11 @@ import { makeZip, readZip } from "./zip.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const out = join(root, "dist", "extension");
-const shared = ["background.js", "player.js", "popup.html", "popup.css", "popup.js", "icons"];
+const shared = ["background.js", "pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "popup.html", "popup.css", "popup.js", "icons"];
+/** Only the full extension has these: the Download pill on videos and "Record this video". */
+const FULL_ONLY_FILES = ["pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js"];
+/** Only the full extension asks for these: noticing the videos a page plays. */
+const FULL_ONLY_PERMISSIONS = ["webRequest"];
 /** The licence and its additional terms travel with every copy. */
 const legal = ["LICENSE", "NOTICE.md"];
 
@@ -43,8 +50,8 @@ function entriesOf(dir) {
 }
 
 /** Zips a staged folder with its files at the top of the zip (as the stores expect), checks the
- *  zip reads back the same, then removes the folder. */
-function zipUp(dir, zip) {
+ *  zip reads back the same, then removes the folder (unless `keep`). */
+function zipUp(dir, zip, keep = false) {
   const entries = entriesOf(dir);
   writeFileSync(zip, makeZip(entries));
   const back = readZip(readFileSync(zip));
@@ -52,7 +59,7 @@ function zipUp(dir, zip) {
     throw new Error(`${zip}: the zip doesn't read back the same`);
   }
   if (back.some((e) => e.name.includes("\\"))) throw new Error(`${zip}: an entry name has a "\\"`);
-  rmSync(dir, { recursive: true, force: true });
+  if (!keep) rmSync(dir, { recursive: true, force: true });
 }
 
 mkdirSync(out, { recursive: true });
@@ -60,7 +67,12 @@ stage(join(out, "chromium"), "manifest.chromium.json");
 
 const ff = join(out, "firefox");
 stage(ff, "manifest.firefox.json");
-zipUp(ff, join(out, "pako-firefox.zip"));
+zipUp(ff, join(out, "pako-firefox.zip"), true);
+// Chromium and Firefox are the same extension: one version number for both.
+const versionOf = (f) => JSON.parse(readFileSync(join(here, f), "utf8")).version;
+if (versionOf("manifest.chromium.json") !== versionOf("manifest.firefox.json")) {
+  throw new Error("manifest.chromium.json and manifest.firefox.json have different versions: make them the same");
+}
 
 // Pako Light: the Chrome Web Store / Edge Add-ons edition. Those stores don't allow downloading
 // videos (YouTube above all), so it has none of that: no player.js, the full-only blocks taken
@@ -69,7 +81,7 @@ zipUp(ff, join(out, "pako-firefox.zip"));
 // (cojnnpgiilnbkblckkjnheigiodkdlpl), separate from the full extension's.
 const store = join(out, "chrome-store");
 stage(store, "manifest.chromium.json");
-rmSync(join(store, "player.js"));
+for (const f of FULL_ONLY_FILES) rmSync(join(store, f));
 rmSync(join(store, "icons"), { recursive: true, force: true });
 cpSync(join(here, "icons-light"), join(store, "icons"), { recursive: true });
 for (const f of ["background.js", "popup.js", "popup.html", "popup.css"]) {
@@ -82,6 +94,7 @@ writeFileSync(notice, toLight("NOTICE.md", readFileSync(notice, "utf8").replace(
 const m = JSON.parse(readFileSync(join(store, "manifest.json"), "utf8"));
 delete m.key;
 delete m.content_scripts;
+m.permissions = m.permissions.filter((p) => !FULL_ONLY_PERMISSIONS.includes(p));
 m.name = "Pako Light";
 m.short_name = "Pako Light";
 m.description = "Send downloads and links from your browser to Pako, the download manager for Windows.";
@@ -95,4 +108,4 @@ for (const e of entriesOf(store)) {
 zipUp(store, join(out, "pako-light-store.zip"));
 rmSync(join(out, "pako-chrome-store.zip"), { force: true });
 
-console.log("Ready:", join(out, "chromium"), "·", join(out, "pako-firefox.zip"), "·", join(out, "pako-light-store.zip"));
+console.log("Ready:", join(out, "chromium"), "·", ff, "·", join(out, "pako-firefox.zip"), "·", join(out, "pako-light-store.zip"));

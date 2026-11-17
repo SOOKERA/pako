@@ -17,6 +17,7 @@
     autofocus = true,
     closeLabel = "Close",
     outsideCloses = true,
+    closable = true,
     children,
     actions,
   }: {
@@ -29,6 +30,8 @@
     closeLabel?: string;
     /** A click beside the dialog closes it (off where that would answer for you: first-start setup). */
     outsideCloses?: boolean;
+    /** Off: no ×, and Esc does nothing (the terms of use: only their own buttons answer). */
+    closable?: boolean;
     children: Snippet;
     actions?: Snippet;
   } = $props();
@@ -75,7 +78,7 @@
     if (stack[stack.length - 1] !== me) return;
     if (e.key === "Escape") {
       e.stopPropagation();
-      onclose();
+      if (closable) onclose();
     } else if (e.key === "Tab" && dialog) {
       // Tab cycles inside the dialog instead of wandering into the window behind it.
       const items = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.getClientRects().length > 0);
@@ -101,13 +104,15 @@
 
 <svelte:window onkeydown={key} />
 
-<div class="backdrop" role="presentation" transition:fadeIn onmousedown={(e) => outsideCloses && e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" transition:fadeIn onmousedown={(e) => closable && outsideCloses && e.target === e.currentTarget && onclose()}>
   <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialog} style="width: min({width}px, calc(100vw - 48px))" transition:pop>
-    <header class:line={above}>
+    <header class:line={above} class:bare={!closable}>
       <h2>{title}</h2>
-      <button class="icon-btn" aria-label={closeLabel} title={closeLabel === "Close" ? undefined : closeLabel} onclick={onclose}>
-        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.5" /></svg>
-      </button>
+      {#if closable}
+        <button class="icon-btn" aria-label={closeLabel} title={closeLabel === "Close" ? undefined : closeLabel} onclick={onclose}>
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.5" /></svg>
+        </button>
+      {/if}
     </header>
     <div class="body" bind:this={body} onscroll={edges}>{@render children()}</div>
     {#if actions}<footer class:line={below}>{@render actions()}</footer>{/if}
@@ -143,6 +148,11 @@
     padding: 14px 14px 12px 20px;
     border-bottom: 1px solid transparent;
     transition: border-color var(--fast) ease;
+  }
+  /* No ×: the same height and the title lined up with the body's text. */
+  header.bare {
+    min-height: 55px;
+    padding-right: 20px;
   }
   header.line,
   footer.line {

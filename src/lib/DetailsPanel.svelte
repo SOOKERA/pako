@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
-  import { app } from "./state.svelte";
+  import { app, hostName, hostSwitch } from "./state.svelte";
   import { api, isActive, type Download, type Part } from "./api";
   import { bytes, bytesOf, sourceOf, speed, statusLook, timeLeft, wordColor } from "./format";
   import Icon from "./Icon.svelte";
@@ -24,8 +24,8 @@
   // Refresh the parts map once a second while a download is shown and running.
   $effect(() => {
     const cur = d;
-    // Not on screen (panel closed, or Direct / the Dashboard shown): no asking every second.
-    if (!cur || !app.panelOpen || app.view === "direct" || app.view === "dashboard") {
+    // Not on screen (panel closed, or Direct / My devices / the Dashboard shown): no asking every second.
+    if (!cur || !app.panelOpen || app.view === "direct" || app.view === "dashboard" || app.view === "devices") {
       parts = [];
       partsFor = "";
       return;
@@ -119,6 +119,17 @@
           <span>{d.message}</span>
         </div>
       {/if}
+      {#if hostSwitch(d)}
+        {@const last = d.tried?.[d.tried.length - 1]}
+        <div class="callout">
+          <Icon name="retry" size={14} />
+          <span>
+            Continuing from {hostName(d)}. {last ? `${hostName(last)} didn't work${last.why ? `: ${last.why}` : "."}` : ""}
+            <!-- The spot check's answer (kept where it stopped, or starting over), set while it runs. -->
+            {#if d.message?.startsWith(`${d.name}: `) && d.status !== "retrying" && !d.message.includes("once a few samples")}<br />{d.message.slice(d.name.length + 2).replace(/^./, (c) => c.toUpperCase())}.{/if}
+          </span>
+        </div>
+      {/if}
       {#if d.message && d.status === "completed"}
         <div class="callout" class:ok-note={d.message === "Extracted"}>
           <Icon name={d.message === "Extracted" ? "check" : "alert"} size={14} />
@@ -173,8 +184,8 @@
       </section>
     {/if}
 
-    {#if isVideo(d.name) && d.status !== "completed" && d.source.kind !== "video"}
-      <VideoPreview id={d.id} />
+    {#if isVideo(d.name) && d.status !== "completed"}
+      <VideoPreview id={d.id} site={d.source.kind === "video"} />
     {/if}
 
     {#if d.status !== "completed"}
@@ -193,6 +204,14 @@
       <div class="label">Details</div>
       <dl>
         <dt>Source</dt><dd>{sourceDetail(d)}</dd>
+        {#if d.mirrors?.length || d.tried?.length}
+          {@const left = d.mirrors ?? []}
+          <dt>Backups</dt>
+          <dd title="The same file on other hosts: if this host fails for good, Pako goes on from the next one">
+            {left.length ? `${left.length} left: ${left.map(hostName).join(", ")}` : "None left"}
+          </dd>
+          {#if d.tried?.length}<dt>Tried</dt><dd title={d.tried.map((m) => `${hostName(m)}: ${m.why ?? "didn't work"}`).join("\n")}>{d.tried.map(hostName).join(", ")}</dd>{/if}
+        {/if}
         <dt>Saved to</dt>
         <dd><button class="linkish" onclick={() => app.run(() => api.openItem(d.id, true))} title={d.destDir}>{d.destDir}</button></dd>
         {#if d.md5}<dt>File check</dt><dd title="Compared with Google's own record of the file (MD5)">{d.status === "completed" ? "Passed: the file is complete" : "Checked when it finishes"}</dd>{/if}

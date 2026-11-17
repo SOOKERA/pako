@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Most history entries kept (oldest dropped first).
 const MAX_HISTORY: usize = 2000;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Contact {
     /// Their Pako ID (public key).
@@ -44,6 +44,24 @@ pub struct Contact {
     /// again when you press Connect.
     #[serde(default)]
     pub declined: bool,
+    /// You said "this is my device" (with the safety code): shown in My devices, not in Direct's
+    /// people.
+    #[serde(default)]
+    pub device: bool,
+    /// Their Pako says you're one of its devices too (what it said last).
+    #[serde(default)]
+    pub their_device: bool,
+    /// "This device can control my Pako": it may see your downloads and give orders. Only counts
+    /// for a device paired both ways.
+    #[serde(default)]
+    pub control: bool,
+    /// They let you control their Pako (what their Pako said last).
+    #[serde(default)]
+    pub their_control: bool,
+    /// A device's name for its PC ("Desk PC"), as it said last. Your own name for it (`name`)
+    /// follows it until you rename the device here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub their_pc_name: Option<String>,
 }
 
 /// Someone you declined or removed: until `until` (ms), they're turned away without asking you.
@@ -67,7 +85,7 @@ pub struct HistoryItem {
     pub size: u64,
     /// When it ended (ms).
     pub date: u64,
-    /// "direct6", "direct" or "relay" (how it travelled), if known.
+    /// "local" (the home network), "direct6", "direct" or "relay" (how it travelled), if known.
     #[serde(default)]
     pub path: Option<String>,
     /// "done", "declined", "cancelled" or "failed".
@@ -86,6 +104,79 @@ pub struct HistoryItem {
     /// Best speed over about one second (bytes per second).
     #[serde(default)]
     pub peak_speed: u64,
+}
+
+/// Most device history lines kept (oldest dropped first).
+const MAX_DEVICE_LOG: usize = 1000;
+
+/// One line of a device's history: something one of your devices did on another.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLog {
+    /// The other device's Pako ID.
+    pub device: String,
+    /// ms
+    pub date: u64,
+    /// You did it from this PC on that device (else that device did it here).
+    pub by_me: bool,
+    /// What happened, in plain words ("Added 2 links", "Paused Movie.mkv").
+    pub text: String,
+    pub ok: bool,
+}
+
+/// Sends kept per device in My devices › Links (oldest dropped first).
+pub const MAX_SENT: usize = 200;
+
+/// One link of a send to one of your devices, and the downloads it became there.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SentLink {
+    pub link: String,
+    /// Its name as known here (a playlist's video, a file), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// The downloads it became on that PC (its list's ids). Empty: an older Pako there (no
+    /// live status), or it went to Links there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<String>,
+    /// That PC didn't take it (the row stayed here).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
+}
+
+/// One send of links to one of your devices (a card in My devices › Links).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SentCard {
+    pub id: String,
+    pub device: String,
+    /// ms
+    pub date: u64,
+    pub links: Vec<SentLink>,
+    /// What that PC said ("Added 3 links to the downloads").
+    pub text: String,
+}
+
+/// Keeps the newest `MAX_SENT` sends of each device.
+pub fn trim_sent(list: &mut Vec<SentCard>) {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut keep = vec![false; list.len()];
+    for (i, c) in list.iter().enumerate().rev() {
+        let n = seen.entry(c.device.clone()).or_default();
+        *n += 1;
+        keep[i] = *n <= MAX_SENT;
+    }
+    let mut i = 0;
+    list.retain(|_| {
+        i += 1;
+        keep[i - 1]
+    });
 }
 
 pub struct Store {
@@ -111,6 +202,37 @@ impl Store {
 
     fn blocked_path(&self) -> PathBuf {
         self.dir.join("direct_blocked.json")
+    }
+
+    fn device_log_path(&self) -> PathBuf {
+        self.dir.join("device_log.json")
+    }
+
+    /// What your devices did with each other (orders given and taken, permission changes).
+    pub fn load_device_log(&self) -> Vec<DeviceLog> {
+        read(&self.device_log_path())
+    }
+
+    pub fn save_device_log(&self, list: &mut Vec<DeviceLog>) {
+        if list.len() > MAX_DEVICE_LOG {
+            let extra = list.len() - MAX_DEVICE_LOG;
+            list.drain(..extra);
+        }
+        write(&self.device_log_path(), list);
+    }
+
+    fn sent_path(&self) -> PathBuf {
+        self.dir.join("device_sent.json")
+    }
+
+    /// Links sent to your devices (My devices › Links), oldest first.
+    pub fn load_sent(&self) -> Vec<SentCard> {
+        read(&self.sent_path())
+    }
+
+    pub fn save_sent(&self, list: &mut Vec<SentCard>) {
+        trim_sent(list);
+        write(&self.sent_path(), list);
     }
 
     fn parts_path(&self) -> PathBuf {
@@ -311,6 +433,7 @@ mod tests {
             favourite: false,
             their_name: None,
             declined: false,
+            ..Default::default()
         }
     }
 
@@ -343,6 +466,33 @@ mod tests {
         assert_eq!(tags, vec!["Friends"]);
         assert_eq!(people[0].tags, vec!["Friends"]);
         assert!(people[1].tags.is_empty());
+    }
+
+    /// The sends to each device are kept, the newest 200 per device, and read back as saved.
+    #[test]
+    fn sent_links_are_kept_per_device_and_bounded() {
+        let dir = std::env::temp_dir().join(format!("pako-sent-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.clone());
+        assert!(store.load_sent().is_empty(), "nothing yet");
+        let card = |device: &str, n: u64| SentCard {
+            id: format!("{device}-{n}"),
+            device: device.into(),
+            date: n,
+            links: vec![SentLink { link: "https://a.com/x.zip".into(), ids: vec![format!("d{n}")], ..Default::default() }],
+            text: "Added 1 link to the downloads".into(),
+        };
+        let mut list: Vec<SentCard> = (0..(MAX_SENT as u64 + 10)).map(|n| card("home", n)).collect();
+        list.push(card("laptop", 1));
+        store.save_sent(&mut list);
+        let back = store.load_sent();
+        assert_eq!(back.iter().filter(|c| c.device == "home").count(), MAX_SENT);
+        assert_eq!(back.iter().find(|c| c.device == "home").unwrap().date, 10, "the oldest went first");
+        assert_eq!(back.last().unwrap(), &card("laptop", 1));
+        // Written compactly: what isn't said is left out, and reads back the same.
+        let json = serde_json::to_string(&back[0].links[0]).unwrap();
+        assert_eq!(json, r#"{"link":"https://a.com/x.zip","ids":["d10"]}"#);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -379,6 +529,11 @@ mod tests {
             favourite: true,
             their_name: Some("Rado R.".into()),
             declined: true,
+            device: true,
+            their_device: true,
+            control: true,
+            their_control: false,
+            their_pc_name: Some("Desk PC".into()),
         };
         store.save_contacts(&[c.clone()]);
         assert_eq!(store.load_contacts(), vec![c]);

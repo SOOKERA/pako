@@ -1,6 +1,6 @@
 [package]
 name = "pako"
-version = "1.0.1"
+version = "1.1.0"
 description = "Pako - a dependable download manager"
 authors = ["Sookera"]
 license = "GPL-3.0-only"
@@ -29,6 +29,8 @@ anyhow = "1"
 md-5 = "0.10"
 sha2 = "0.10"
 base64 = "0.22"
+# Pako's own HLS download: standard AES-128 pieces (already in the build through iroh).
+aes = "0.8"
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
@@ -47,6 +49,8 @@ semver = "1"
 tauri-plugin-drag = "2.1.1"
 # Direct: Pako-to-Pako transfers (QUIC, hole punching, public relays and address lookup).
 iroh = "1.4"
+# Direct on the same Wi-Fi: Pakos find each other on the home network (mDNS), without the internet.
+iroh-mdns-address-lookup = "0.6"
 blake3 = "1"
 # The Dashboard's numbers: events and running totals in one local file (data/numbers.sqlite).
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -58,6 +62,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
+# Direct: whether Windows marks the networks this PC is on as Public, Private or Domain
+# (Network List Manager), so Pako announces itself on the local network only at home.
+windows = { version = "0.62", features = ["Win32_Networking_NetworkListManager", "Win32_System_Com"] }
 
 [profile.release]
 codegen-units = 1

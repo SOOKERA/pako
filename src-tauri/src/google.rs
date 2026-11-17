@@ -356,7 +356,7 @@ impl Google {
                     if st.login.as_ref().map(|l| l.refresh_token == login.refresh_token).unwrap_or(false) {
                         st.login = None;
                         st.access = None;
-                        let _ = std::fs::remove_file(login_path(self.account));
+                        forget_login_files(self.account);
                     }
                     bail!("Your Google login expired. Connect Google Drive again in Settings.");
                 }
@@ -485,7 +485,7 @@ impl Google {
         let login = {
             let mut st = self.state.lock().await;
             st.access = None;
-            let _ = std::fs::remove_file(login_path(self.account));
+            forget_login_files(self.account);
             st.login.take()
         };
         if let Some(login) = login {
@@ -580,6 +580,13 @@ div{{background:#fff;padding:32px 40px;border-radius:12px;box-shadow:0 2px 12px 
 h1{{font-size:20px;margin:0 0 8px}}p{{margin:0;color:#5b6475}}</style></head>\
 <body><div><h1>{title}</h1><p>{text}</p></div></body></html>"
     )
+}
+
+/// The saved login and its backup copy (`write_atomic` keeps one while saving).
+fn forget_login_files(account: Account) {
+    let path = login_path(account);
+    let _ = std::fs::remove_file(path.with_extension("bak"));
+    let _ = std::fs::remove_file(path);
 }
 
 #[cfg(test)]

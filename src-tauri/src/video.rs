@@ -100,6 +100,29 @@ pub fn is_video_site(link: &str) -> bool {
     false
 }
 
+/// A video site's link that is clearly a playlist (or an album, a set): its videos are picked
+/// in Links before anything is sent to another PC. A video watched inside a playlist
+/// ("watch?v=…&list=…") is one video.
+pub fn is_playlist_link(link: &str) -> bool {
+    if !is_video_site(link) {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(link) else { return false };
+    let host = host_of(&url);
+    let path = url.path();
+    let on = |d: &str| host == d || host.ends_with(&format!(".{d}"));
+    if on("youtube.com") || on("youtube-nocookie.com") {
+        return path.starts_with("/playlist");
+    }
+    if on("vimeo.com") {
+        return path.contains("/album/") || path.contains("/showcase/") || path.starts_with("/channels/");
+    }
+    if on("soundcloud.com") {
+        return path.contains("/sets/");
+    }
+    false
+}
+
 /// What yt-dlp says a link is.
 #[derive(Debug, Default)]
 pub struct Probe {
@@ -479,12 +502,21 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, data)
 }
 
+/// The page a caught stream played on, sent the way the browser did (`--referer`).
+fn add_referrer(cmd: &mut tokio::process::Command, referrer: Option<&str>) {
+    if let Some(r) = referrer.filter(|r| r.starts_with("http://") || r.starts_with("https://")) {
+        cmd.arg("--referer").arg(r);
+    }
+}
+
 fn base_command(t: &Tools) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&t.yt_dlp);
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     cmd.arg("--no-config").arg("--encoding").arg("utf-8");
     if let Some(deno) = &t.deno {
         cmd.arg("--js-runtimes").arg(format!("deno:{}", deno.display()));
+        // Deno's cache next to Pako's tools (else %LOCALAPPDATA%\deno, left after uninstalling).
+        cmd.env("DENO_DIR", crate::components::dir().join("deno-cache"));
     }
     if let Some(ff) = &t.ffmpeg {
         cmd.arg("--ffmpeg-location").arg(ff);
@@ -624,12 +656,23 @@ pub async fn probe(link: &str, limit: Duration) -> Result<Probe, (String, bool)>
 
 /// `probe` with the browser's cookies for the site (videos that need you to be logged in).
 pub async fn probe_with(link: &str, limit: Duration, cookies: &[crate::extension::SiteCookie]) -> Result<Probe, (String, bool)> {
+    probe_from_page(link, limit, cookies, None).await
+}
+
+/// `probe_with` for a stream caught on a page: the page goes along as the referrer.
+pub async fn probe_from_page(
+    link: &str,
+    limit: Duration,
+    cookies: &[crate::extension::SiteCookie],
+    referrer: Option<&str>,
+) -> Result<Probe, (String, bool)> {
     let Some(t) = tools() else { return Err((NEEDS_TOOLS.into(), false)) };
     let jar = cookie_file(cookies).map_err(|e| (format!("Couldn't prepare your browser login for the video tool: {e}"), false))?;
     let mut cmd = base_command(&t);
     if let Some(j) = &jar {
         cmd.arg("--cookies").arg(j.path());
     }
+    add_referrer(&mut cmd, referrer);
     cmd.args(["-J", "--flat-playlist", "--no-playlist", "--no-warnings", "--skip-download"]).arg("--").arg(link);
     let json = run_json(cmd, limit).await;
     drop(jar);
@@ -642,14 +685,20 @@ async fn run_json(mut cmd: tokio::process::Command, limit: Duration) -> Result<S
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = spawn(&mut cmd).map_err(|e| (format!("Couldn't start the video tool: {e}"), false))?;
     let pid = child.id();
-    let out = match tokio::time::timeout(limit, child.wait_with_output()).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err((format!("The video tool stopped: {e}"), false)),
-        Err(_) => {
-            // Not just yt-dlp's launcher: what it started too (its Python part, Deno).
+    // The wait stays alive past the time limit: the launcher must still be running when its
+    // process tree is ended, or what it started (its Python part, Deno) is left behind.
+    let wait = child.wait_with_output();
+    tokio::pin!(wait);
+    let out = tokio::select! {
+        r = &mut wait => match r {
+            Ok(o) => o,
+            Err(e) => return Err((format!("The video tool stopped: {e}"), false)),
+        },
+        _ = tokio::time::sleep(limit) => {
             if let Some(pid) = pid {
                 let _ = tokio::task::spawn_blocking(move || kill_tree(pid)).await;
             }
+            drop(wait);
             return Err(("The site took too long to answer.".into(), false));
         }
     };
@@ -743,8 +792,10 @@ pub fn download_command(
     fragments: u32,
     cookies: Option<&Path>,
     rate: Option<u64>,
+    referrer: Option<&str>,
 ) -> tokio::process::Command {
     let mut cmd = base_command(t);
+    add_referrer(&mut cmd, referrer);
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
         // yt-dlp hands cookies to ffmpeg on its command line when ffmpeg downloads a stream
@@ -908,6 +959,12 @@ pub fn is_leftover(file: &str, stem: &str) -> bool {
                     || first.strip_prefix('f').is_some_and(|id| id_ok(id) && (unfinished || id.chars().any(|c| c.is_ascii_digit()))))
         }
     }
+}
+
+/// Deletes a leftover piece: a file, or the folder Pako's own HLS download keeps its parts in
+/// (see `crate::hls::work_dir`).
+pub fn remove_piece(p: &Path) {
+    let _ = if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) };
 }
 
 /// yt-dlp's unfinished pieces for a download (deleted when the download is removed or started
@@ -1089,9 +1146,18 @@ pub fn classify(json: &str) -> anyhow::Result<Result<Plan, String>> {
 
 /// Asks yt-dlp which streams make up this quality, with their addresses (nothing downloaded).
 /// `cookies`: the download's cookie file, if it came from the browser.
-pub async fn select(link: &str, quality: u32, audio: Option<&str>, limit: Duration, cookies: Option<&Path>) -> Result<Plan, (String, bool)> {
+/// `referrer`: the page a caught stream played on.
+pub async fn select(
+    link: &str,
+    quality: u32,
+    audio: Option<&str>,
+    limit: Duration,
+    cookies: Option<&Path>,
+    referrer: Option<&str>,
+) -> Result<Plan, (String, bool)> {
     let Some(t) = tools() else { return Err((NEEDS_TOOLS.into(), false)) };
     let mut cmd = base_command(&t);
+    add_referrer(&mut cmd, referrer);
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }
@@ -1288,6 +1354,11 @@ mod tests {
         assert!(is_video_site("https://youtu.be/dQw4w9WgXcQ"));
         assert!(is_video_site("https://www.youtube.com/shorts/abc123"));
         assert!(is_video_site("https://www.youtube.com/playlist?list=PL123"));
+        assert!(is_playlist_link("https://www.youtube.com/playlist?list=PL123"));
+        assert!(is_playlist_link("https://soundcloud.com/artist/sets/mix"));
+        assert!(!is_playlist_link("https://www.youtube.com/watch?v=abc&list=PL123"), "one video of a playlist");
+        assert!(!is_playlist_link("https://vimeo.com/123456"));
+        assert!(!is_playlist_link("https://example.com/playlist/a.zip"));
         assert!(is_video_site("https://vimeo.com/123456"));
         assert!(is_video_site("https://x.com/user/status/123"));
         assert!(!is_video_site("https://www.youtube.com/@channel"));
@@ -1466,18 +1537,24 @@ mod tests {
     #[test]
     fn sorts_by_height() {
         let t = Tools { yt_dlp: PathBuf::from("yt-dlp.exe"), deno: None, ffmpeg: None };
-        let cmd = download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", 0, None, None);
+        let cmd = download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", 0, None, None, None);
         let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert!(args.iter().any(|a| a == "height:720,ext:mp4:m4a"));
         assert!(!args.iter().any(|a| a == "--limit-rate" || a == "--downloader"));
         // The link comes after "--": never read as one of yt-dlp's options.
         assert!(args.ends_with(&["--".to_string(), "https://x.com/v".to_string()]), "{args:?}");
         // A speed limit share, and the browser's login kept off ffmpeg's command line.
-        let cmd = download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", 0, Some(Path::new("j.txt")), Some(250_000));
+        let cmd = download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", 0, Some(Path::new("j.txt")), Some(250_000), Some("https://page.example/watch"));
         let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert!(args.windows(2).any(|w| w == ["--limit-rate", "250000"]));
         assert!(args.windows(2).any(|w| w == ["--downloader", "m3u8:native"]));
         assert!(args.windows(2).any(|w| w == ["--cookies", "j.txt"]));
+        // A caught stream: the page it played on goes along as the referrer.
+        assert!(args.windows(2).any(|w| w == ["--referer", "https://page.example/watch"]));
+        assert!(!download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", 0, None, None, Some("javascript:x"))
+            .as_std()
+            .get_args()
+            .any(|a| a == "--referer"));
     }
 
     // ---------- fast downloads ----------
@@ -1708,7 +1785,7 @@ mod tests {
     fn many_pieces_at_once_only_when_asked() {
         let t = Tools { yt_dlp: PathBuf::from("yt-dlp.exe"), deno: None, ffmpeg: None };
         let args = |n: u32| -> Vec<String> {
-            download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", n, None, None)
+            download_command(&t, "https://x.com/v", 720, None, Path::new("C:\\D"), "V.mp4", n, None, None, None)
                 .as_std()
                 .get_args()
                 .map(|a| a.to_string_lossy().to_string())
