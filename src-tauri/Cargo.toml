@@ -1,6 +1,6 @@
 [package]
 name = "pako"
-version = "1.1.0"
+version = "1.2.0"
 description = "Pako - a dependable download manager"
 authors = ["Sookera"]
 license = "GPL-3.0-only"
@@ -36,7 +36,7 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 percent-encoding = "2"
 trash = "5"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Power", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Media_Audio", "Win32_Graphics_Dwm"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Send: the ZIP is written by Pako itself as a stream (zip only writes to seekable files).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

@@ -54,11 +54,17 @@ export function browserProfile() {
  * - `downloadsOnCreated`: a shared list, when several extensions see the same browser downloads
  * - `videos`: what each <video> of the tab says (playing, locked) when the extension asks
  * - `closedFrames`: frame IDs the browser refuses to put a script into (gone, or closed to extensions)
+ * - `naming`: the browser has Chromium's file-name step (downloads.onDeterminingFilename)
+ * - `restartFails`: downloads.download (the extension starting a download itself) is refused
+ * - `privateAllowed`: the browser lets the extension work in private windows
  */
-export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [] } = {}) {
+export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false } = {}) {
   const id = light ? LIGHT_ID : FULL_ID;
   const who = light ? "light" : "full";
   const sent = [];
+  const pings = [];
+  /** How many times the extension reloaded itself (runtime.reload). */
+  const reloads = [];
   const menus = new Map();
   const updates = [];
   const listeners = {};
@@ -67,6 +73,12 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
   const session = {};
   const badges = {};
   const fetched = [];
+  /** Downloads the extension started itself (downloads.download options). */
+  const restarted = [];
+  /** What downloads.search says about each browser download (by id), over the defaults. */
+  const items = {};
+  /** The cookie stores asked for (cookies.getAll's storeId, or "default"). */
+  const cookieStores = [];
   /** The fetch options of each playlist read (credentials, cache). */
   const fetchedWith = [];
   /** The recorder's content scripts registered now (by id), and the messages on the native port. */
@@ -84,10 +96,15 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
     onMessage: ev("message"),
     onMessageExternal: ev("external"),
     sendNativeMessage: (_host, m, cb) => {
-      sent.push(plain(m));
+      // A "ping" only checks the line (the extension says hello when installed): kept apart, so
+      // `sent` holds what was really asked of Pako.
+      if (m?.kind === "ping") pings.push(plain(m));
+      else sent.push(plain(m));
       setTimeout(() => cb(reply(m)), 2);
     },
     sendMessage: (toId, msg, cb) => profile.send(id, toId, msg, cb, runtime),
+    getManifest: () => ({ version: "1.0.0" }),
+    reload: () => reloads.push(Date.now()),
     onConnect: ev("connect"),
     connectNative: () => {
       const onMessage = [];
@@ -130,7 +147,13 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       },
     },
     windows: { WINDOW_ID_NONE: -1, onFocusChanged: ev("focus") },
-    cookies: { getAll: async (q) => [{ name: "SID", value: "x", domain: q?.url ? new URL(q.url).hostname : ".example", hostOnly: !!q?.url, path: "/" }] },
+    cookies: {
+      getAll: async (q) => {
+        cookieStores.push(q?.storeId ?? "default");
+        return [{ name: "SID", value: q?.storeId === "1" ? "private" : "x", domain: q?.url ? new URL(q.url).hostname : ".example", hostOnly: !!q?.url, path: "/" }];
+      },
+    },
+    extension: { isAllowedIncognitoAccess: async () => privateAllowed },
     webRequest: { onHeadersReceived: ev("headers") },
     storage: {
       local: {
@@ -149,11 +172,22 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
     },
     downloads: {
       onCreated: { addListener: (f) => (downloadsOnCreated ? downloadsOnCreated.push(f) : (listeners.download = f)) },
-      pause: async () => log.push(`${who} pause`),
-      search: async ({ id: did }) => [{ id: did, totalBytes: 50e6, mime: "application/zip", filename: "C:\\Downloads\\big.zip" }],
-      cancel: async () => log.push(`${who} cancel`),
-      erase: async () => log.push(`${who} erase`),
-      resume: async () => log.push(`${who} resume`),
+      // (The download the extension started itself, id 99, is named in the log.)
+      pause: async (did) => log.push(did === 99 ? `${who} pause 99` : `${who} pause`),
+      search: async ({ id: did }) => [
+        { id: did, totalBytes: 50e6, mime: "application/zip", filename: "C:\\Downloads\\big.zip", state: "in_progress", bytesReceived: 0, ...items[did] },
+      ],
+      cancel: async (did) => log.push(did === 99 ? `${who} cancel 99` : `${who} cancel`),
+      erase: async ({ id: did } = {}) => log.push(did === 99 ? `${who} erase 99` : `${who} erase`),
+      resume: async (did) => log.push(did === 99 ? `${who} resume 99` : `${who} resume`),
+      onChanged: ev("changed"),
+      download: async (o) => {
+        log.push(`${who} download`);
+        if (restartFails) throw new Error("Invalid URL");
+        restarted.push(plain(o));
+        return 99;
+      },
+      ...(naming ? { onDeterminingFilename: { addListener: (f) => (listeners.naming = f) } } : {}),
     },
     scripting: {
       executeScript: async ({ target, files }) => {
@@ -177,7 +211,7 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
   };
   const context = { chrome, console, URL, setTimeout, clearTimeout, AbortController, fetch: fakeFetch, crypto: globalThis.crypto };
   vm.runInContext(backgroundSource(light), vm.createContext(context), { filename: `${who}/background.js` });
-  const edition = { id, who, sent, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, chrome };
+  const edition = { id, who, sent, pings, reloads, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, restarted, items, cookieStores, chrome };
   profile.installed.set(id, edition);
   return edition;
 }

@@ -77,6 +77,7 @@
     if (t.state === "offered") return "Starting…";
     if (t.state === "preparing") return "Getting ready…";
     if (t.state === "checking") return "Checking the files…";
+    if (t.state === "waiting") return `Waiting for ${x.name} to continue · ${percent(t.done, t.size)}% done`;
     return `${percent(t.done, t.size)}% · ${bytes(t.done)} of ${bytes(t.size)}`;
   }
   async function openReceived(id: string) {
@@ -213,7 +214,7 @@
               <div class="msg" class:out={h.outgoing} class:bad={h.result !== "done"} in:pop={{ duration: 240, from: 0.98, y: 8, origin: h.outgoing ? "right bottom" : "left bottom" }}>
                 <div class="bubble">
                   <div class="mtop"><FileIcon name={h.name} kind={h.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={h.name} class="mname" /></div>
-                  <div class="mmeta">{plural(h.files, "file")} · {bytes(h.size)}</div>
+                  <div class="mmeta">{plural(h.files, "file")} · {bytes(h.size)}{#if h.relayTo}{` · for ${h.relayTo}`}{/if}</div>
                   <div class="mfoot">
                     <span class="res" class:ok={h.result === "done"}>{resultText(h)}</span>
                     <span class="dim">{shortDate(h.date)}{#if h.path}{" · " + pathLabel(h.path)}{/if}</span>
@@ -231,8 +232,8 @@
               <div class="msg live" class:out={t.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: t.outgoing ? "right bottom" : "left bottom" }}>
                 <div class="bubble">
                   <div class="mtop"><FileIcon name={t.name} kind={t.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={t.name} class="mname" /></div>
-                  <div class="mmeta">{plural(t.files, "file")} · {bytes(t.size)}</div>
-                  <div class="bar"><i style:transform="scaleX({Math.min(1, t.done / Math.max(1, t.size))})"></i></div>
+                  <div class="mmeta">{plural(t.files, "file")} · {bytes(t.size)}{#if t.relayTo}{` · for ${t.relayTo}`}{/if}</div>
+                  <div class="bar" class:waiting={t.state === "waiting"}><i style:transform="scaleX({Math.min(1, t.done / Math.max(1, t.size))})"></i></div>
                   <div class="mfoot">
                     <span class="dim">{movingText(t)}{#if t.state === "sending" || t.state === "receiving"}{" · " + speed(speedOf(t))}{/if}{#if t.path}{" · " + pathLabel(t.path)}{/if}</span>
                     <button class="link end" onclick={() => app.run(() => api.directCancel(t.id))}>Cancel</button>
@@ -572,8 +573,26 @@
   .link.end {
     margin-left: auto;
   }
-  .bar,
-  .bar i,
+  .bar {
+    height: 4px;
+    margin: 8px 0 0 26px;
+    border-radius: 2px;
+    background: var(--track);
+    overflow: hidden;
+  }
+  .bar i {
+    display: block;
+    height: 100%;
+    background: var(--st-run);
+    transform-origin: left;
+    transition:
+      transform var(--mid) var(--ease-out),
+      background-color var(--mid) var(--ease-out);
+  }
+  /* Cut short, waiting for the other PC: the bar rests in the paused colour. */
+  .bar.waiting i {
+    background: var(--st-pause);
+  }
   .compose {
     flex: none;
     display: flex;

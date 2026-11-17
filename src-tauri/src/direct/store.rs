@@ -62,6 +62,101 @@ pub struct Contact {
     /// follows it until you rename the device here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub their_pc_name: Option<String>,
+    /// "Mute": no pop-up, chime or bell line for what they do (their offers still wait in
+    /// their conversation). Never for My devices.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+    /// "Check this contact": how Pako calls them in the background (see `pace.rs`).
+    #[serde(default, skip_serializing_if = "Check::is_auto")]
+    pub check: Check,
+    /// Often ends here (ms) and they're Automatic again. Often never lasts for good: Often
+    /// without an end (from a development build before 1.2) reads as Automatic (`settle_checks`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_until: Option<u64>,
+    /// While Often runs: the choice it goes back to when it ends (None = Automatic). Left out
+    /// when empty; older files have none (back to Automatic, as before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_before: Option<Check>,
+    /// One of your devices that lets you control it and can relay to its Direct contacts (it
+    /// said so last): the name its contacts see and how many it has. None: it can't (an older
+    /// Pako) or doesn't let this PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub their_relay: Option<super::proto::RelayFrom>,
+    /// Last thing that happened with them (ms): a transfer either way, you sending, them
+    /// calling us, Check now. Automatic stops calling a contact after 30 days without any.
+    /// Seeded for older files from the history, else the date they were added
+    /// (`seed_activity`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<u64>,
+}
+
+/// "Check this contact".
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Check {
+    /// For a while (until `check_until`): called every round, ahead of the others, never
+    /// backed off, and their connection isn't closed for being quiet (still within the
+    /// connections' cap).
+    Often,
+    /// Only when you ask: never called in the background.
+    Ask,
+    /// Called less and less often when they don't answer; not at all after 30 days with
+    /// nothing happening (My devices count as Often; favourites and people who can send
+    /// without asking never stop). Also a choice from a later Pako this one doesn't know (else
+    /// the whole contacts file would be unreadable here and set aside). (Last: serde wants
+    /// that for "other".)
+    #[default]
+    #[serde(other)]
+    Auto,
+}
+
+impl Check {
+    pub fn is_auto(&self) -> bool {
+        *self == Check::Auto
+    }
+}
+
+/// Often that ran out (or never had an end: an older file) goes back to the choice it had before
+/// (`check_before`: When I ask, else Automatic). True when
+/// something changed. An end more than a week away (the PC's clock was set back, or a file
+/// edited by hand) is brought back to a week from now: Often never lasts longer than that.
+pub fn settle_checks(contacts: &mut [Contact], now: u64) -> bool {
+    let mut changed = false;
+    let latest = now.saturating_add(super::pace::OFTEN_LONGEST_MS);
+    for c in contacts.iter_mut() {
+        if c.check == Check::Often && c.check_until.is_some_and(|t| now < t) {
+            if c.check_until.is_some_and(|t| t > latest) {
+                c.check_until = Some(latest);
+                changed = true;
+            }
+            continue;
+        }
+        if c.check == Check::Often {
+            c.check = back_from_often(c.check_before);
+            changed = true;
+        }
+        changed |= c.check_until.take().is_some();
+        changed |= c.check_before.take().is_some();
+    }
+    changed
+}
+
+/// The choice Often goes back to when it ends: the one before it (never Often itself), else
+/// Automatic.
+pub fn back_from_often(before: Option<Check>) -> Check {
+    before.filter(|b| *b != Check::Often).unwrap_or(Check::Auto)
+}
+
+/// Gives contacts from an older file (no `last_activity`) one: their last transfer, else the
+/// date they were added (`now` when that isn't known either).
+pub fn seed_activity(contacts: &mut [Contact], history: &[HistoryItem], now: u64) -> bool {
+    let mut changed = false;
+    for c in contacts.iter_mut().filter(|c| c.last_activity.is_none()) {
+        let last = history.iter().filter(|h| h.contact == c.id).map(|h| h.date).max();
+        c.last_activity = Some(last.unwrap_or(if c.added > 0 { c.added } else { now }));
+        changed = true;
+    }
+    changed
 }
 
 /// Someone you declined or removed: until `until` (ms), they're turned away without asking you.
@@ -104,6 +199,78 @@ pub struct HistoryItem {
     /// Best speed over about one second (bytes per second).
     #[serde(default)]
     pub peak_speed: u64,
+    /// A send passed on for another of your PCs: its name ("from Laptop"). Left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// The first leg of a relay (between your devices): who it's for ("for Rado"). Left out
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_to: Option<String>,
+}
+
+/// Most relays kept (ended ones go first).
+const MAX_RELAYS: usize = 200;
+
+/// A Direct relay through one of your devices. On the PC that asked (`mine`), how it's going;
+/// on the PC that passes the files on, also where its copy is (`dir`, made by that PC, never
+/// named by the other) and its files.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Relay {
+    /// The first leg's transfer id (also the relay's).
+    pub id: String,
+    /// This PC asked for it (else this PC passes the files on).
+    pub mine: bool,
+    /// The other PC (a device).
+    pub device: String,
+    /// The contact it's for (their Pako ID on the relaying PC) and their name there.
+    pub to: String,
+    pub to_name: String,
+    pub name: String,
+    pub files: u32,
+    pub size: u64,
+    /// When it started, and when it ended (ms).
+    pub date: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<u64>,
+    /// Keep the copy on the relaying PC once delivered.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
+    /// leg1 (on its way to the relaying PC; "receiving" there), waiting (for the contact),
+    /// offered, sending, paused (the second leg), delivered, declined, failed, cancelled,
+    /// expired.
+    pub state: String,
+    /// The second leg: how far it is.
+    pub done: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Relaying PC: the second leg's transfer id, the relay folder, the files there (each
+    /// with its place in the send), and offers tried.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leg2: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub list: Vec<RelayFile>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tries: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// One file of a relay's copy: where it is on the relaying PC, and its place in the send.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RelayFile {
+    pub at: String,
+    pub file: super::proto::OfferFile,
+}
+
+impl Relay {
+    pub fn is_open(&self) -> bool {
+        self.ended.is_none()
+    }
 }
 
 /// Most device history lines kept (oldest dropped first).
@@ -235,6 +402,29 @@ impl Store {
         write(&self.sent_path(), list);
     }
 
+    fn relays_path(&self) -> PathBuf {
+        self.dir.join("direct_relays.json")
+    }
+
+    /// Relays through your devices (open ones, and ended ones for 7 days).
+    pub fn load_relays(&self) -> Vec<Relay> {
+        read(&self.relays_path())
+    }
+
+    pub fn save_relays(&self, list: &mut Vec<Relay>) {
+        while list.len() > MAX_RELAYS {
+            match list.iter().position(|r| !r.is_open()) {
+                Some(i) => {
+                    list.remove(i);
+                }
+                None => {
+                    list.remove(0);
+                }
+            }
+        }
+        write(&self.relays_path(), list);
+    }
+
     fn parts_path(&self) -> PathBuf {
         self.dir.join("direct_parts.json")
     }
@@ -277,8 +467,11 @@ impl Store {
         write(&self.tags_path(), tags);
     }
 
+    /// The contacts, Often that ran out (or an older file's Often for good) read as Automatic.
     pub fn load_contacts(&self) -> Vec<Contact> {
-        read(&self.contacts_path())
+        let mut list: Vec<Contact> = read(&self.contacts_path());
+        settle_checks(&mut list, super::node::now_ms());
+        list
     }
 
     pub fn save_contacts(&self, list: &[Contact]) {
@@ -511,6 +704,73 @@ mod tests {
         assert!(old[0].tags.is_empty() && !old[0].favourite && old[0].their_name.is_none());
     }
 
+    /// An older contacts file: not muted, checked automatically, and given a last activity
+    /// from the history (else the date added); what's at its default isn't written back.
+    #[test]
+    fn an_older_contacts_file_loads_with_the_check_defaults() {
+        let mut old: Vec<Contact> = serde_json::from_str(
+            r#"[{"id":"a","name":"Rado","trusted":true,"added":100},{"id":"b","name":"Mia","trusted":true,"added":200},{"id":"c","name":"Old","trusted":true}]"#,
+        )
+        .unwrap();
+        assert!(old.iter().all(|c| !c.muted && c.check == Check::Auto && c.last_activity.is_none()));
+        let hist: Vec<HistoryItem> = serde_json::from_str(
+            r#"[{"id":"t1","contact":"a","outgoing":true,"name":"x","files":1,"size":10,"date":5000,"result":"done"},
+                {"id":"t2","contact":"a","outgoing":false,"name":"y","files":1,"size":10,"date":3000,"result":"declined"}]"#,
+        )
+        .unwrap();
+        assert!(seed_activity(&mut old, &hist, 9999));
+        let seeded: Vec<Option<u64>> = old.iter().map(|c| c.last_activity).collect();
+        assert_eq!(seeded, [Some(5000), Some(200), Some(9999)], "the last transfer, else added, else now");
+        assert!(!seed_activity(&mut old, &hist, 1), "only once");
+        let json = serde_json::to_string(&Contact { id: "x".into(), name: "X".into(), ..Default::default() }).unwrap();
+        assert!(!json.contains("muted") && !json.contains("check") && !json.contains("lastActivity"), "{json}");
+        let json = serde_json::to_string(&Contact { muted: true, check: Check::Often, check_until: Some(42), ..Default::default() }).unwrap();
+        assert!(json.contains(r#""muted":true"#) && json.contains(r#""check":"often""#) && json.contains(r#""checkUntil":42"#), "{json}");
+        // A choice from a later Pako: read as Automatic, the rest of the file still loads.
+        let later: Vec<Contact> = serde_json::from_str(r#"[{"id":"a","name":"Rado","check":"rarely"},{"id":"b","name":"Mia","check":"ask"}]"#).unwrap();
+        assert_eq!(later.iter().map(|c| c.check).collect::<Vec<_>>(), [Check::Auto, Check::Ask]);
+    }
+
+    /// Often for good (development builds before 1.2) no longer exists: an older file's "often" with no end loads as
+    /// Automatic, as does an Often whose time is up; one still running stays.
+    #[test]
+    fn an_older_often_loads_as_automatic() {
+        let dir = std::env::temp_dir().join(format!("pako-often-old-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.clone());
+        let later = super::super::node::now_ms() + 3_600_000;
+        std::fs::write(
+            dir.join("contacts.json"),
+            format!(
+                r#"[{{"id":"a","name":"Rado","check":"often"}},{{"id":"b","name":"Mia","check":"often","checkUntil":1000}},{{"id":"c","name":"Jo","check":"often","checkUntil":{later}}},{{"id":"d","name":"Leo","check":"ask","checkUntil":{later}}}]"#
+            ),
+        )
+        .unwrap();
+        let back = store.load_contacts();
+        let got: Vec<(Check, Option<u64>)> = back.iter().map(|c| (c.check, c.check_until)).collect();
+        assert_eq!(got, [(Check::Auto, None), (Check::Auto, None), (Check::Often, Some(later)), (Check::Ask, None)]);
+        // An end more than a week away (the clock was set back, or the file edited): a week
+        // from now at most, so Often still ends by itself.
+        let now = super::super::node::now_ms();
+        let week = super::super::pace::OFTEN_LONGEST_MS;
+        let mut far = vec![Contact { check: Check::Often, check_until: Some(now + 400 * week), ..Default::default() }];
+        assert!(settle_checks(&mut far, now));
+        assert_eq!((far[0].check, far[0].check_until), (Check::Often, Some(now + week)));
+        assert!(!settle_checks(&mut far, now + 1000), "settled once, not on every round");
+        assert!(settle_checks(&mut far, now + week) && far[0].check == Check::Auto);
+        // Often given to a When I ask contact goes back to When I ask; an older file (no
+        // checkBefore) to Automatic, as before.
+        let mut ask = vec![Contact { check: Check::Often, check_until: Some(now + 1000), check_before: Some(Check::Ask), ..Default::default() }];
+        let json = serde_json::to_string(&ask[0]).unwrap();
+        assert!(json.contains(r#""checkBefore":"ask""#), "{json}");
+        assert_eq!(serde_json::from_str::<Contact>(&json).unwrap(), ask[0]);
+        assert!(!settle_checks(&mut ask, now));
+        assert!(settle_checks(&mut ask, now + 1000));
+        assert_eq!((ask[0].check, ask[0].check_until, ask[0].check_before), (Check::Ask, None, None));
+        assert_eq!(back_from_often(Some(Check::Often)), Check::Auto, "never back to Often");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn contacts_and_history_round_trip() {
         let dir = std::env::temp_dir().join(format!("pako-direct-store-{}", std::process::id()));
@@ -534,6 +794,13 @@ mod tests {
             control: true,
             their_control: false,
             their_pc_name: Some("Desk PC".into()),
+            muted: true,
+            check: Check::Often,
+            // (An hour from now: still running when read back.)
+            check_until: Some(super::super::node::now_ms() + 3_600_000),
+            check_before: Some(Check::Ask),
+            last_activity: Some(7),
+            their_relay: Some(super::super::proto::RelayFrom { name: "Sam".into(), contacts: 4 }),
         };
         store.save_contacts(&[c.clone()]);
         assert_eq!(store.load_contacts(), vec![c]);
@@ -562,6 +829,8 @@ mod tests {
                 duration_ms: 0,
                 avg_speed: 0,
                 peak_speed: 0,
+                via: None,
+                relay_to: None,
             })
             .collect();
         store.save_history(&mut h);

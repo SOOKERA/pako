@@ -353,6 +353,13 @@
     text-transform: uppercase;
     color: var(--text-3);
   }
+  /* Each part after the first starts under a line, so they read apart. */
+  h4:not(:first-of-type),
+  .reveal > h4 {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-soft);
+  }
   .opts {
     display: flex;
     flex-direction: column;

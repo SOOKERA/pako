@@ -809,6 +809,8 @@ impl Engine {
 
     // ---------- link gates (see gates.rs) ----------
 
+    // (Only the link-gate window uses it: not in the unit tests, see gates::open.)
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn found_has(&self, id: &str) -> bool {
         self.inner.lock().unwrap().found.iter().any(|f| f.id == id)
     }
@@ -833,6 +835,8 @@ impl Engine {
 
     /// The gate led to the real file: the row becomes that file (or a Drive folder's files),
     /// keeping its own settings (folder, priority, notify).
+    // (Only the link-gate window uses it: not in the unit tests, see gates::open.)
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn gate_done(self: &Arc<Self>, id: &str, file: String) {
         let me = self.clone();
         let id = id.to_string();

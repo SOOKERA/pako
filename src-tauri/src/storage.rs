@@ -71,6 +71,18 @@ impl Store<'_> {
     /// Uploads a send: one file, one ZIP, or several files into one folder. Returns the link and
     /// where it is (folder id, file id).
     pub async fn upload(&self, job: &Arc<Job>, payload: Payload, pack: Pack) -> Result<Done, String> {
+        // In parts: the ZIP is made as part files first, then they go up like several files
+        // (one folder, one link, each part on its own).
+        let payload = match payload {
+            Payload::Zip { name, entries } if job.part_mb > 0 => {
+                if self.host == Host::Drive {
+                    self.s.drive_ready(job).await?;
+                }
+                let parts = self.s.make_parts(job, &entries).await?;
+                Payload::Files { name, entries: parts }
+            }
+            p => p,
+        };
         match self.host {
             Host::Drive => self.s.run_drive(job, payload, pack).await,
             Host::Gofile => {

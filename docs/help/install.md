@@ -9,7 +9,7 @@ Pako comes two ways. Both are the same program and update themselves the same wa
 - **Pako Setup** installs Pako for you, without admin rights, in `%LOCALAPPDATA%\Programs\Pako` (you can pick another folder). It puts Pako in the Start menu (and on the desktop if you like) and in Windows' Apps list, so it can be uninstalled like any app.
 - **Pako Portable** is one file, `Pako.exe`. Put it in any folder and run it. It isn't added to the Start menu or Windows' Apps list. Give it a folder of its own that only you change (not your Downloads folder, where web pages can save files next to it).
 
-**Settings › Features & updates** shows which one you have: **Installed** or **Portable**, next to the version.
+**Settings › Features & updates**, the first tab of Settings, shows which one you have: **Installed** or **Portable**, next to the version.
 
 ### Where your settings and lists are kept
 
@@ -46,7 +46,7 @@ Its source code is on GitHub: [github.com/sookera/pako](https://github.com/sooke
 
 Pako looks for a new version once a day, also while it stays open in the tray for days.
 
-- With **Settings › Features & updates › Update Pako and its tools automatically** on (as it is at first), Pako downloads the new version by itself. A pop-up and the bell say "Pako 0.2.0 is ready" (for example), with **Restart now**, also while Pako waits in the tray. When files are downloading, uploading or moving in Direct, **Restart now** asks first, as Quit does. If you don't restart, the new version starts the next time you start Pako. The tools Pako uses (for videos, for split archives) update quietly too. With it off, they're only updated when you click **Update** next to them.
+- With **Settings › Features & updates › Update Pako and its tools automatically** on (as it is at first), Pako downloads the new version by itself. A pop-up and the bell say "Pako 0.2.0 is ready" (for example), with **Restart now**, also while Pako waits in the tray. When files are downloading, uploading or moving in Direct, **Restart now** asks first, as Quit does. If you don't restart, the new version starts the next time you start Pako. The tools Pako uses (for videos, for split archives) update quietly too. With it off, they're only updated when you click **Update** next to them, under **What Pako can do** (click it to open the list; it opens by itself when a tool has an update).
 - With it off, Pako only tells you: "Pako 0.2.0 is available (Settings › Features & updates)". Click **Update** there, then **Restart now**.
 - **Check for updates** (in **Settings › Features & updates**) looks right away (and, with automatic updates on, downloads the new version).
 

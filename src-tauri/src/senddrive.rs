@@ -514,12 +514,17 @@ impl Sender {
         Ok(())
     }
 
-    /// A whole send into your Drive.
-    pub(super) async fn run_drive(&self, job: &Arc<Job>, payload: Payload, pack: Pack) -> Result<Done, String> {
+    /// Connected, and the send fits (said before anything is made or uploaded).
+    pub(super) async fn drive_ready(&self, job: &Arc<Job>) -> Result<(), String> {
         if !self.store(Host::Drive).connected().await {
             return Err("Connect your Google Drive first (Upload › Google Drive).".into());
         }
-        self.check_room(job.total.unwrap_or(job.input)).await?;
+        self.check_room(job.total.unwrap_or(job.input)).await
+    }
+
+    /// A whole send into your Drive.
+    pub(super) async fn run_drive(&self, job: &Arc<Job>, payload: Payload, pack: Pack) -> Result<Done, String> {
+        self.drive_ready(job).await?;
         *job.account.lock().unwrap() = self.send_google.email().await;
         let parent = self.drive().sends_folder().await.map_err(|f| f.msg)?;
         let src = match payload {
@@ -550,7 +555,9 @@ impl Sender {
             if entries.is_empty() {
                 return Err("There are no files to upload.".into());
             }
-            let (id, link) = self.store(Host::Drive).create_folder(&job.name, parent).await?;
+            // In parts: the folder is named after the ZIP, without ".zip".
+            let name = if job.part_mb > 0 { job.name.strip_suffix(".zip").unwrap_or(&job.name) } else { &job.name };
+            let (id, link) = self.store(Host::Drive).create_folder(name, parent).await?;
             *job.folder.lock().unwrap() = Some((id.clone(), link.clone()));
             // On the Sent list at once (marked not finished): Cancel, Dismiss or closing Pako
             // never leaves files in your Drive that Pako can't delete.
@@ -567,9 +574,7 @@ impl Sender {
                 async move {
                     let src = Arc::new(Source::File(e.clone()));
                     match self.drive_upload_retrying(job, src, &e.name, Some(e.size), &folder_id).await {
-                        Ok(_) => {
-                            job.files_done.fetch_add(1, Ordering::Relaxed);
-                        }
+                        Ok(_) => self.file_up(job, &e.name),
                         Err(m) if m == "cancelled" => {}
                         Err(_) => failed.lock().unwrap().push(e),
                     }

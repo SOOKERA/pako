@@ -32,6 +32,11 @@
   });
 
   const d = $derived(devices.data);
+  /** Direct relays going through this device (or for it, on the PC passing them on): one
+   *  small line each ("Relaying 2 files to Rado"). */
+  function relayLines(id: string) {
+    return (d?.relays ?? []).filter((r) => r.device === id && !r.ended).map((r) => `Relaying ${r.files === 1 ? "1 file" : `${r.files} files`} to ${r.toName}`);
+  }
   const list = $derived.by(() => {
     const rank = (x: Device) => (x.asksToPair ? 0 : x.online ? 1 : 2);
     return [...(d?.devices ?? [])].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
@@ -345,6 +350,9 @@
                     {:else}
                       <span class="pstat">{status(x)}</span>
                     {/if}
+                    {#each relayLines(x.id) as line (line)}
+                      <span class="pstat relay" transition:rowSlide={{ duration: 200 }}><Icon name="send" size={10} stroke={2.4} />{line}</span>
+                    {/each}
                   </span>
                   {#if x.asksToPair}<span class="badge" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>!</span>{/if}
                   {#if m.length}<span class="rowbar" aria-hidden="true" transition:fadeIn={{ duration: 200 }}><i style:transform="scaleX({rowPct(x.id) / 100})"></i></span>{/if}
@@ -739,6 +747,16 @@
   }
   .pstat.live :global(svg) {
     color: var(--st-run);
+  }
+  .pstat.relay {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+  }
+  .pstat.relay :global(svg) {
+    flex: none;
+    color: var(--accent-text);
   }
   .rowbar {
     position: absolute;

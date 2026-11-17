@@ -27,11 +27,13 @@ Select a download to see its details on the right (**Ctrl+I** shows or hides tha
 
 **Resume** and **Pause** at the top work on the downloads you selected, or on every one shown when nothing is selected. **Remove** works on the selected ones.
 
+A row marked **Via browser** is a file only your browser could get: the browser downloads it, in one piece (none of Pako's faster download in parts), and Pako follows it and moves it to your folder when it's done. Its **Pause**, **Resume** and **Remove** act on the browser's download. See [Browser extension](browser-extension.md#via-browser).
+
 ## Fast and steady
 
 - Pako splits a big file into several parts and downloads them at the same time. The details panel shows the parts filling in.
 - **At once** (bottom bar) sets how many downloads run together, up to 20. Use **−** and **+** to change it. The rest wait their turn.
-- **Settings › Downloads** also has **Connections per file** and a **Speed limit**. With **Auto** on (the default), a file starts with 4 connections and Pako adds more while it makes the file faster, up to 16 (8 for Google Drive files). Turn **Auto** off to set a fixed number from 1 to 32.
+- **Settings › Downloads** also has a **Speed limit**, and under **Advanced** at the bottom of the tab, **Connections per file**. With **Auto** on (the default), a file starts with 4 connections and Pako adds more while it makes the file faster, up to 16 (8 for Google Drive files). Turn **Auto** off to set a fixed number from 1 to 32.
 - If the connection drops, Pako waits and carries on where it stopped. Status shows **Reconnecting** or **No internet** meanwhile.
 - **Pause** keeps what's done. **Resume** continues from there, even after closing Pako or restarting the PC, when the site allows it. The details panel says so under **After a pause**.
 - If the file on the server was replaced since the download started, Pako doesn't mix the two: it stops and says "The file on the server changed since this download started". Use **Start over**.
@@ -43,7 +45,7 @@ Select a download to see its details on the right (**Ctrl+I** shows or hides tha
 
 **When done** (bottom bar) tells Pako what to do once every download has finished (it also waits for uploads and Direct transfers): **Do nothing**, **Sleep** or **Shut down**. Before sleeping or shutting down, Pako shows a short countdown you can cancel. The choice goes back to **Do nothing** after it happens, and each time Pako starts.
 
-Downloads that were running when Pako closed carry on by themselves the next time it starts. To have them wait for **Resume** instead, turn off **Settings › Downloads › Continue downloads when Pako starts**.
+Downloads that were running when Pako closed carry on by themselves the next time it starts. To have them wait for **Resume** instead, turn off **Settings › Downloads › Advanced › Continue downloads when Pako starts**.
 
 With **Settings › Downloads › Keep the PC awake while downloading** on, Windows doesn't go to sleep in the middle of a download, an upload or a Direct transfer.
 
@@ -55,7 +57,7 @@ You don't need to sign in to anything.
 
 - **A shared file** ("anyone with the link"): paste its link. Pako downloads it straight from Google, in parallel parts.
 - **A shared folder** ("anyone with the link"): paste its link. Pako lists every file inside, sub-folders included, in **Links**. Tick what you want and click **Download**. There's no waiting for Google to make a zip.
-- After a Drive download, Pako compares the file with Google's own record (**Settings › Downloads › Check Drive files when finished**). The details panel's **File check** says "Passed: the file is complete" when it matches.
+- After a Drive download, Pako compares the file with Google's own record (**Settings › Downloads › Advanced › Check Drive files when finished**). The details panel's **File check** says "Passed: the file is complete" when it matches.
 
 ### "Google limit": too many downloads today
 
@@ -87,7 +89,7 @@ The same goes for a folder Google won't list: open it in your browser and downlo
 - **Download first** puts it ahead of the others, even outside the set hours.
 - **Pause**, **Resume**, or **Try again** for one that stopped.
 - **Priority: First**, **Normal** or **Later**, and **Move to top of queue** / **Move to bottom of queue**.
-- **Notify when done** shows a pop-up at the bottom right of the screen when it finishes, or if it stops.
+- **Notify when done** shows a pop-up at the bottom right of the screen when it finishes, or if it stops, and plays a short chime when it finishes (see [Notifications](notifications.md)).
 - **Open file**, **Show in folder**, **Open link in browser**, **Copy link**, **Rename…**
 - **Remove**. For a finished download Pako asks whether to **Remove from list** only, or **Delete file too** (to the Recycle Bin). Unfinished parts are always deleted.
 
@@ -118,5 +120,5 @@ In **Settings › Window › Theme**, pick **Dark**, **Light** or **Match Window
 - A download's folder can be changed until it starts (details panel, **Save to**).
 - While a file downloads, it sits in its folder with `.pakopart` added to its name (`film.mp4.pakopart`), and gets its real name once it's complete. Downloads left unfinished by an older Pako carry on from what they have.
 - Drag finished downloads out of the list into any folder.
-- Split archives (.part1.rar, .7z.001…) are extracted when all parts are done (**Settings › Downloads › Extract split archives**, or **Extract when all parts are done** in the set's details). This needs 7-Zip: install it in **Settings › Features & updates**. A file of the same name already in the folder is kept: the extracted one gets a new name.
+- Split archives (.part1.rar, .7z.001, .zip.001…) are extracted when all parts are done (**Settings › Downloads › Extract split archives**, or **Extract when all parts are done** in the set's details). This needs 7-Zip: install it in **Settings › Features & updates**. A file of the same name already in the folder is kept: the extracted one gets a new name.
 - Everything Pako knows about your downloads stays on your PC.

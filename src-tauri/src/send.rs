@@ -144,6 +144,22 @@ pub enum Mode {
     Zip,
     /// One ZIP, compressed where it helps.
     Compress,
+    /// One ZIP (stored), cut into numbered parts ("Name.zip.001", ".002"…) that upload one by one
+    /// into one folder: a cut connection only sends the part in progress again.
+    Parts,
+}
+
+/// "ZIP in parts": the usual part size (MB), and what a typed-in size may be.
+pub const PART_DEFAULT_MB: u32 = 500;
+pub const PART_MIN_MB: u32 = 50;
+pub const PART_MAX_MB: u32 = 10 * 1024;
+/// 7-Zip and Pako's Links read three-digit part numbers (.001 to .999).
+const MAX_PARTS: u64 = 999;
+const MB: u64 = 1024 * 1024;
+
+/// A part size Pako accepts (50 MB to 10 GB).
+pub fn part_mb_ok(mb: u32) -> bool {
+    (PART_MIN_MB..=PART_MAX_MB).contains(&mb)
 }
 
 impl Mode {
@@ -153,6 +169,7 @@ impl Mode {
         match mode {
             Some("zip") => Mode::Zip,
             Some("compress") => Mode::Compress,
+            Some("parts") => Mode::Parts,
             Some(_) => Mode::AsTheyAre,
             None if matches!(old_compression, "auto" | "max") => Mode::Compress,
             None => Mode::AsTheyAre,
@@ -170,6 +187,7 @@ impl Mode {
             Mode::AsTheyAre => "files",
             Mode::Zip => "zip",
             Mode::Compress => "compress",
+            Mode::Parts => "parts",
         }
     }
 }
@@ -311,9 +329,9 @@ pub fn gather(paths: &[PathBuf], mode: Mode) -> Result<Payload> {
     if paths.is_empty() {
         bail!("Nothing was picked.");
     }
-    // One file goes as it is, unless "Compressed ZIP" was picked for it (a plain ZIP of one
-    // file would only add a step for the receiver).
-    if paths.len() == 1 && paths[0].is_file() && mode != Mode::Compress {
+    // One file goes as it is, unless "Compressed ZIP" or "ZIP in parts" was picked for it (a
+    // plain ZIP of one file would only add a step for the receiver).
+    if paths.len() == 1 && paths[0].is_file() && !matches!(mode, Mode::Compress | Mode::Parts) {
         let m = std::fs::metadata(&paths[0])?;
         return Ok(Payload::File(Entry {
             path: paths[0].clone(),
@@ -826,6 +844,240 @@ impl Write for ToUpload {
     }
 }
 
+// ---------- ZIP in parts ----------
+//
+// The ZIP is written straight into numbered part files ("Name.zip.001", ".002"…), plain byte
+// splits that 7-Zip (and Pako's Links) put back together: no whole ZIP on the disk first, so it
+// takes about one copy of room. Each part is flushed to the disk when it's full, so a power cut
+// leaves whole parts.
+
+/// Where the parts of uploads wait until they're all up (one folder per upload, by its id).
+fn parts_root() -> PathBuf {
+    data_dir().join("upload-parts")
+}
+
+/// "Name.zip" → "Name.zip.001".
+fn part_name(zip: &str, n: usize) -> String {
+    format!("{zip}.{n:03}")
+}
+
+/// Writes what it gets into part files of `part_size` bytes each (the last one shorter). A part
+/// is only made once a byte goes into it: a ZIP that fills its last part exactly gets no empty one.
+struct PartWriter {
+    dir: PathBuf,
+    zip: String,
+    part_size: u64,
+    cur: Option<io::BufWriter<File>>,
+    cur_len: u64,
+    made: Vec<(PathBuf, u64)>,
+    /// Bytes written so far (the "Making the parts" progress).
+    written: Arc<AtomicU64>,
+}
+
+impl PartWriter {
+    fn new(dir: &Path, zip: &str, part_size: u64, written: Arc<AtomicU64>) -> Self {
+        PartWriter { dir: dir.to_path_buf(), zip: zip.to_string(), part_size: part_size.max(1), cur: None, cur_len: 0, made: Vec::new(), written }
+    }
+
+    /// Closes the part being written: on the disk for good before the next one starts.
+    fn close(&mut self) -> io::Result<()> {
+        if let Some(w) = self.cur.take() {
+            let f = w.into_inner().map_err(|e| e.into_error())?;
+            f.sync_all()?;
+            if let Some(last) = self.made.last_mut() {
+                last.1 = self.cur_len;
+            }
+        }
+        self.cur_len = 0;
+        Ok(())
+    }
+
+    /// The parts made: (path, size), in order.
+    fn finish(mut self) -> io::Result<Vec<(PathBuf, u64)>> {
+        self.close()?;
+        Ok(self.made)
+    }
+}
+
+impl Write for PartWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if data.is_empty() {
+            return Ok(0);
+        }
+        if self.cur.is_some() && self.cur_len >= self.part_size {
+            self.close()?;
+        }
+        if self.cur.is_none() {
+            if self.made.len() as u64 >= MAX_PARTS {
+                return Err(io::Error::other(format!("That makes more than {MAX_PARTS} parts. Pick a bigger part size.")));
+            }
+            let path = self.dir.join(part_name(&self.zip, self.made.len() + 1));
+            self.cur = Some(io::BufWriter::with_capacity(1024 * 1024, File::create(&path)?));
+            self.made.push((path, 0));
+        }
+        let room = (self.part_size - self.cur_len).min(data.len() as u64) as usize;
+        let k = self.cur.as_mut().expect("opened above").write(&data[..room])?;
+        self.cur_len += k as u64;
+        self.written.fetch_add(k as u64, Ordering::Relaxed);
+        Ok(k)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self.cur.as_mut() {
+            Some(w) => w.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Makes the ZIP of `entries` as parts in `dir` (stored, the same ZIP "One ZIP" uploads).
+fn write_parts(entries: &[Entry], dir: &Path, zip: &str, part_size: u64, stop: &AtomicBool, written: Arc<AtomicU64>, z64_at: u64) -> io::Result<Vec<(PathBuf, u64)>> {
+    let mut w = PartWriter::new(dir, zip, part_size, written);
+    write_zip(entries, Pack::Off, &mut w, stop, z64_at)?;
+    w.finish()
+}
+
+/// What's left of an upload in parts, kept with its Uploaded entry until every part is up, so
+/// "Try again" (after a restart or a power cut too) sends only the parts not up yet.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PartsLeft {
+    /// The folder the parts are in.
+    pub dir: PathBuf,
+    /// Every part (name, size), in order.
+    pub parts: Vec<SentFile>,
+    /// The parts already up.
+    pub done: Vec<String>,
+    /// What was picked, and the part size (MB): "Try again" without the parts starts over with these.
+    pub paths: Vec<String>,
+    pub part_mb: u32,
+}
+
+impl PartsLeft {
+    /// The parts not up yet, as files to upload. None when one of them isn't on the disk any
+    /// more as it was made (then they can't be sent on).
+    fn left(&self) -> Option<Vec<Entry>> {
+        self.parts
+            .iter()
+            .filter(|p| !self.done.contains(&p.name))
+            .map(|p| {
+                // A plain file name in its folder, never a path elsewhere.
+                let plain = matches!(Path::new(&p.name).components().collect::<Vec<_>>()[..], [std::path::Component::Normal(_)]);
+                if !plain {
+                    return None;
+                }
+                let path = self.dir.join(&p.name);
+                let m = std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() == p.size)?;
+                Some(Entry { path, name: p.name.clone(), size: p.size, mtime: m.modified().unwrap_or(UNIX_EPOCH), dir: false })
+            })
+            .collect()
+    }
+}
+
+/// Said on an upload in parts that Pako was closed during (or the PC lost power).
+const PARTS_STOPPED: &str = "Pako was closed before every part was up. Try again to upload the parts left (the link stays the same).";
+
+/// A send in parts, back from its Uploaded entry after Pako restarts: failed, with the parts
+/// not up yet left for "Try again", into the same folder with the same key and account. None
+/// when it has no parts waiting, or they aren't on the disk any more as they were made.
+fn parts_job(item: &SentItem) -> Option<Job> {
+    let pl = item.parts_left.as_ref()?;
+    let left = pl.left()?;
+    let (folder, key) = (item.folder_id.clone()?, item.key.as_deref().and_then(unprotect_key));
+    // Gofile needs the upload's own key to add to its folder.
+    if left.is_empty() || (!item.on_drive() && key.is_none()) {
+        return None;
+    }
+    let total: u64 = pl.parts.iter().map(|p| p.size).sum();
+    let up: u64 = pl.parts.iter().filter(|p| pl.done.contains(&p.name)).map(|p| p.size).sum();
+    let host = if item.on_drive() { Host::Drive } else { Host::Gofile };
+    let mut job = Job::new(item.name.clone(), item.files, total, Some(total), pl.paths.clone(), Mode::Parts, false, host);
+    job.id = item.id.clone();
+    job.part_mb = pl.part_mb;
+    job.contents = item.contents.clone();
+    job.produced.store(up, Ordering::Relaxed);
+    job.files_done.store(pl.done.len(), Ordering::Relaxed);
+    *job.phase.lock().unwrap() = Phase::Failed(PARTS_STOPPED.into());
+    *job.folder.lock().unwrap() = Some((folder, item.link.clone()));
+    *job.left.lock().unwrap() = left;
+    *job.key.lock().unwrap() = key;
+    *job.account.lock().unwrap() = item.account.clone();
+    *job.parts.lock().unwrap() = Some(pl.clone());
+    // What earlier runs put up stays if it's cancelled now.
+    job.resumed.store(true, Ordering::Relaxed);
+    Some(job)
+}
+
+/// Restored uploads in parts that carry on by themselves when Pako starts: all of them with
+/// "Continue unfinished uploads when Pako starts" on, none with it off (they wait for "Try again").
+/// Only ones still stopped by the restart, with parts left and their folder known (on Gofile
+/// that means the first part is up).
+fn to_continue(on: bool, restored: &[String], jobs: &[Arc<Job>]) -> Vec<String> {
+    if !on {
+        return Vec::new();
+    }
+    jobs.iter()
+        .filter(|j| restored.contains(&j.id))
+        .filter(|j| matches!(&*j.phase.lock().unwrap(), Phase::Failed(m) if m == PARTS_STOPPED))
+        .filter(|j| j.view().can_resume)
+        .map(|j| j.id.clone())
+        .collect()
+}
+
+/// Waits between tries while carrying on a restored upload: 2 s, 4 s … then every minute (as
+/// downloads do).
+fn retry_wait(attempt: u32) -> Duration {
+    Duration::from_secs(2u64.saturating_pow(attempt.min(6)).min(60))
+}
+
+/// Tries at carrying on a restored upload once its service answers (each send itself already
+/// tries every part three times).
+const AUTO_TRIES: u32 = 5;
+
+/// Try `n` (from 1) of carrying on by itself is quiet (no pop-up when it fails), except the last.
+fn quiet_try(n: u32) -> bool {
+    n < AUTO_TRIES
+}
+
+/// The sends in parts on the Uploaded list that can go on (see `parts_job`). The others lose
+/// their waiting parts (their files stay listed as "Not all uploaded").
+fn restore_parts(sent: &mut [SentItem]) -> Vec<Arc<Job>> {
+    let mut jobs = Vec::new();
+    for s in sent.iter_mut().filter(|s| s.parts_left.is_some()) {
+        match parts_job(s) {
+            Some(j) => jobs.push(Arc::new(j)),
+            None => s.parts_left = None,
+        }
+    }
+    jobs
+}
+
+/// A folder right inside `root`, by a plain name: "root\..", "root\." or a name with a slash
+/// in it are not (`Path::parent` of "root\.." is "root", so checking the parent alone isn't enough).
+fn in_parts_root(dir: &Path, root: &Path) -> bool {
+    dir.parent() == Some(root) && matches!(dir.components().next_back(), Some(std::path::Component::Normal(_)))
+}
+
+/// Deletes an upload's parts folder (in the background: it can be several GB).
+fn delete_parts(dir: PathBuf) {
+    // Only ever a folder inside Pako's own parts folder (the path comes from sent.json).
+    if !in_parts_root(&dir, &parts_root()) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// Parts folders no upload needs any more (Pako closed while making them, or before the first
+/// part was up): deleted when Pako starts.
+fn stale_part_dirs(root: &Path, keep: &[PathBuf]) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(root) else { return Vec::new() };
+    rd.filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && !keep.iter().any(|k| crate::names::path_key(k) == crate::names::path_key(p)))
+        .collect()
+}
+
 // ---------- Gofile ----------
 
 #[derive(Deserialize)]
@@ -970,6 +1222,13 @@ pub struct SentItem {
     /// The Google account a Drive upload went into: deleting it needs that account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// "ZIP in parts": how many parts (0 = not sent in parts, older items too).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub parts: u32,
+    /// "ZIP in parts" not all up yet: the parts on this PC and which are up ("Try again", also
+    /// after Pako restarts). Gone once every part is up, or the upload is cancelled or removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts_left: Option<PartsLeft>,
 }
 
 /// One file inside a sent item.
@@ -1042,6 +1301,10 @@ fn removal_soon(s: &SentItem, now: u64) -> bool {
 fn apply_to(s: &mut SentItem, remote: Remote, now: u64) {
     match remote {
         Remote::Found(n) => {
+            // A ZIP in parts: someone who downloads it takes every part, which Gofile counts
+            // once per part. Shown as whole downloads (rounded up: a part taken on its own
+            // still counts).
+            let n = if s.parts > 1 { n.div_ceil(s.parts as u64) } else { n };
             // Only a count Pako saw go up says when the last download was.
             if s.downloads.is_some_and(|old| n > old) {
                 s.downloaded_at = Some(now);
@@ -1180,6 +1443,15 @@ struct Job {
     account: Mutex<Option<String>>,
     /// Carried on with "Try again": Cancel then keeps what the earlier runs put up.
     resumed: AtomicBool,
+    /// "ZIP in parts": the part size (MB; 0 = not in parts).
+    part_mb: u32,
+    /// The parts, once made (where, which are up).
+    parts: Mutex<Option<PartsLeft>>,
+    /// The parts are being made (before anything uploads), and how many bytes of them so far.
+    making: AtomicBool,
+    made: Arc<AtomicU64>,
+    /// Carried on by itself after a restart: a failure doesn't pop up (it's tried again quietly).
+    quiet: AtomicBool,
 }
 
 #[derive(Clone, Serialize)]
@@ -1203,12 +1475,18 @@ pub struct JobView {
     pub link: Option<String>,
     /// "Try again" sends only the files that didn't upload.
     pub can_resume: bool,
-    /// "files" / "zip" / "compress": how "Try again" sends it again.
+    /// "files" / "zip" / "compress" / "parts": how "Try again" sends it again.
     pub mode: &'static str,
     /// "gofile" or "drive".
     pub host: &'static str,
     /// Its "Delete after" (days; 0 = keep): "Try again" keeps it.
     pub delete_days: u32,
+    /// "ZIP in parts": the part size (MB; 0 = not in parts), how many parts, and while they're
+    /// being made (before uploading), how many bytes of them so far.
+    pub part_mb: u32,
+    pub parts: usize,
+    pub making: bool,
+    pub made: u64,
 }
 
 #[derive(Serialize)]
@@ -1283,6 +1561,8 @@ pub struct Sender {
     /// Uploads being deleted or getting a new date right now.
     changing: Claims,
     checks: Mutex<Checks>,
+    /// Uploads in parts brought back when Pako started (see `continue_restored`).
+    restored: Mutex<Vec<String>>,
 }
 
 /// One change at a time per upload (deleting it, giving it a new date): a second one is turned
@@ -1487,6 +1767,21 @@ impl Inner {
     }
 }
 
+/// Counts one more file of a send as up; in parts, notes which. True when it's a part.
+fn mark_up(job: &Job, name: &str) -> bool {
+    job.files_done.fetch_add(1, Ordering::Relaxed);
+    let mut parts = job.parts.lock().unwrap();
+    match parts.as_mut() {
+        Some(p) => {
+            if !p.done.iter().any(|d| d == name) {
+                p.done.push(name.to_string());
+            }
+            true
+        }
+        None => false,
+    }
+}
+
 fn link_from(data: &UploadData) -> Result<String, String> {
     data.download_page
         .clone()
@@ -1532,7 +1827,22 @@ impl Job {
             contents: Vec::new(),
             account: Mutex::new(None),
             resumed: AtomicBool::new(false),
+            part_mb: 0,
+            parts: Mutex::new(None),
+            making: AtomicBool::new(false),
+            made: Arc::new(AtomicU64::new(0)),
+            quiet: AtomicBool::new(false),
         }
+    }
+
+    /// How many parts it's cut into (0 = not in parts, or not made yet).
+    fn part_count(&self) -> usize {
+        self.parts.lock().unwrap().as_ref().map_or(0, |p| p.parts.len())
+    }
+
+    /// Takes its parts off it, for deleting them (it can't be sent on after that).
+    fn take_parts(&self) -> Option<PathBuf> {
+        self.parts.lock().unwrap().take().map(|p| p.dir)
     }
 
     fn view(&self) -> JobView {
@@ -1545,6 +1855,7 @@ impl Job {
         let link = self.folder.lock().unwrap().as_ref().map(|f| f.1.clone());
         let any_left = !self.left.lock().unwrap().is_empty();
         let speed = self.sample.lock().unwrap().2 as u64;
+        let parts = self.part_count();
         JobView {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -1563,6 +1874,10 @@ impl Job {
             mode: self.mode.as_str(),
             host: if self.host == Host::Drive { "drive" } else { "gofile" },
             delete_days: self.delete_days,
+            part_mb: self.part_mb,
+            parts,
+            making: self.making.load(Ordering::Relaxed),
+            made: self.made.load(Ordering::Relaxed),
         }
     }
 
@@ -1585,17 +1900,34 @@ impl Sender {
             .and_then(|b| String::from_utf8(b).ok())
             .filter(|t| !t.is_empty());
         let send_google = Arc::new(Google::for_account(http.clone(), crate::google::SENDING));
-        Arc::new(Self {
+        // Uploads in parts that didn't finish (Pako closed, the PC lost power): back on the
+        // Uploading list with "Try again" for the parts not up yet. Parts folders no upload
+        // needs any more are deleted.
+        let mut sent = loaded.items;
+        let jobs = restore_parts(&mut sent);
+        let keep: Vec<PathBuf> = sent.iter().filter_map(|s| s.parts_left.as_ref().map(|p| p.dir.clone())).collect();
+        for dir in stale_part_dirs(&parts_root(), &keep) {
+            delete_parts(dir);
+        }
+        let restored = !jobs.is_empty();
+        let restored_ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+        let me = Arc::new(Self {
             app,
             http,
             send_google,
-            inner: Mutex::new(Inner { jobs: Vec::new(), sent: loaded.items, token, ticking: false }),
+            inner: Mutex::new(Inner { jobs, sent, token, ticking: false }),
             save: Mutex::new(()),
             locked: AtomicBool::new(loaded.locked),
             list_note: Mutex::new(loaded.note),
             changing: Claims::default(),
             checks: Mutex::new(Checks::default()),
-        })
+            restored: Mutex::new(restored_ids),
+        });
+        if restored && !loaded.locked {
+            // Parts that went missing meanwhile are no longer listed as waiting.
+            me.save_sent();
+        }
+        me
     }
 
     pub fn state(&self) -> SendState {
@@ -1614,7 +1946,7 @@ impl Sender {
                 .map(|s| SentView {
                     can_delete: !s.gone && (s.on_drive() || s.key.is_some() || shared) && (s.folder_id.is_some() || s.file_id.is_some()),
                     soon: removal_soon(s, now),
-                    item: SentItem { key: None, ..s.clone() },
+                    item: SentItem { key: None, parts_left: None, ..s.clone() },
                 })
                 .collect(),
             can_delete: shared || inner.sent.iter().any(|s| s.key.is_some()),
@@ -1698,6 +2030,15 @@ impl Sender {
         }
     }
 
+    /// "ZIP in parts": the part size asked for (MB), else the setting. Err when it's out of range.
+    fn part_mb(&self, asked: Option<u32>) -> Result<u32> {
+        let mb = asked.unwrap_or_else(|| self.app.try_state::<Arc<Engine>>().map(|e| e.settings().send_part_mb).unwrap_or(PART_DEFAULT_MB));
+        if !part_mb_ok(mb) {
+            bail!("The part size must be between {PART_MIN_MB} MB and 10 GB.");
+        }
+        Ok(mb)
+    }
+
     /// How several files are sent: the one-off choice, else the setting.
     fn mode(&self, choice: Option<&str>) -> Mode {
         let s = self.app.try_state::<Arc<Engine>>().map(|e| e.settings());
@@ -1711,9 +2052,11 @@ impl Sender {
     /// `choice` = "files" / "zip" / "compress" for this send only (None = the setting). `name` =
     /// the name you gave it (the folder or ZIP name; None or empty = Pako's usual name).
     /// `host` = "gofile" / "drive" for this send only ("Try again" keeps where it went; None = the setting).
-    pub fn start(self: &Arc<Self>, paths: Vec<String>, choice: Option<String>, name: Option<String>, delete_days: Option<u32>, host: Option<String>) -> Result<String> {
+    /// `part_mb` = "ZIP in parts"' part size for this send (None = the setting).
+    pub fn start(self: &Arc<Self>, paths: Vec<String>, choice: Option<String>, name: Option<String>, delete_days: Option<u32>, host: Option<String>, part_mb: Option<u32>) -> Result<String> {
         let picked: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         let mode = self.mode(choice.as_deref());
+        let part_mb = if mode == Mode::Parts { self.part_mb(part_mb)? } else { 0 };
         let mut payload = gather(&picked, mode)?;
         if let Some(n) = name.as_deref().and_then(clean_send_name) {
             payload.rename(&n);
@@ -1729,6 +2072,7 @@ impl Sender {
         let mut job = Job::new(payload.name().to_string(), payload.files(), payload.input_size(), total, paths, mode, as_files, host.as_deref().map(Host::from_setting).unwrap_or_else(|| self.host()));
         job.delete_days = delete_days.filter(|d| DELETE_CHOICES.contains(d)).unwrap_or_else(|| self.delete_days());
         job.contents = contents_of(&payload);
+        job.part_mb = part_mb;
         let job = Arc::new(job);
         let id = job.id.clone();
         self.inner.lock().unwrap().jobs.push(job.clone());
@@ -1850,6 +2194,74 @@ impl Sender {
         Ok(data)
     }
 
+    /// "ZIP in parts": makes the ZIP as part files in its own folder (checking there's room on
+    /// this PC first), and keeps them on the send. Returns them as files to upload.
+    async fn make_parts(&self, job: &Arc<Job>, entries: &[Entry]) -> Result<Vec<Entry>, String> {
+        let size = zip_size(entries, Pack::Off, Z64_AT).ok_or("Pako couldn't work out the ZIP's size.")?;
+        let part = job.part_mb as u64 * MB;
+        let count = size.div_ceil(part.max(1));
+        if count > MAX_PARTS {
+            return Err(format!("That would make {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size."));
+        }
+        let dir = parts_root().join(&job.id);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Pako couldn't make a folder for the parts ({e})."))?;
+        // The parts take as much room as the ZIP (plus a little to spare).
+        if let Some(free) = crate::system::free_space(&dir) {
+            let need = size + 64 * MB;
+            if free < need {
+                let _ = std::fs::remove_dir_all(&dir);
+                let drive = dir.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
+                return Err(format!(
+                    "Making the parts needs {} free on {drive}, and it has {}. Free some space, or pick One ZIP (it needs no room on this PC).",
+                    drivesend::human(need),
+                    drivesend::human(free)
+                ));
+            }
+        }
+        job.making.store(true, Ordering::Relaxed);
+        self.changed();
+        let stop = Arc::new(AtomicBool::new(false));
+        // Cancel stops the making too.
+        let watch = {
+            let (cancel, stop) = (job.cancel.clone(), stop.clone());
+            tauri::async_runtime::spawn(async move {
+                cancel.cancelled().await;
+                stop.store(true, Ordering::Relaxed);
+            })
+        };
+        let made = {
+            let (entries, dir, zip, stop, written) = (entries.to_vec(), dir.clone(), job.name.clone(), stop.clone(), job.made.clone());
+            tauri::async_runtime::spawn_blocking(move || write_parts(&entries, &dir, &zip, part, &stop, written, Z64_AT)).await
+        };
+        watch.abort();
+        job.making.store(false, Ordering::Relaxed);
+        let made = match made {
+            Ok(Ok(m)) => m,
+            other => {
+                let _ = std::fs::remove_dir_all(&dir);
+                if job.cancel.is_cancelled() {
+                    return Err("cancelled".into());
+                }
+                return Err(match other {
+                    Ok(Err(e)) if e.kind() == io::ErrorKind::StorageFull => "This PC's drive got full while Pako made the parts. Free some space, then try again.".into(),
+                    Ok(Err(e)) => format!("Pako couldn't make the parts: {e}"),
+                    _ => "Making the parts stopped unexpectedly. Try again.".into(),
+                });
+            }
+        };
+        let mut list = Vec::with_capacity(made.len());
+        let mut files = Vec::with_capacity(made.len());
+        for (path, size) in made {
+            let name = file_name(&path);
+            list.push(SentFile { name: name.clone(), size });
+            files.push(Entry { path, name, size, mtime: SystemTime::now(), dir: false });
+        }
+        let paths = job.paths.clone();
+        *job.parts.lock().unwrap() = Some(PartsLeft { dir, parts: list, done: Vec::new(), paths, part_mb: job.part_mb });
+        self.changed();
+        Ok(files)
+    }
+
     /// One file with two more tries after a short wait (a cut connection, Gofile busy). Not
     /// when Gofile said it's too big or refused it: that would send the whole file again for
     /// the same answer.
@@ -1887,7 +2299,7 @@ impl Sender {
             let id = data.parent_folder.clone().ok_or_else(|| "Gofile didn't say which folder it made.".to_string())?;
             let link = link_from(&data)?;
             *job.folder.lock().unwrap() = Some((id.clone(), link.clone()));
-            job.files_done.fetch_add(1, Ordering::Relaxed);
+            mark_up(job, &first.name);
             // Files are on Gofile from now on: the send goes on the Sent list at once (marked
             // not finished), so Cancel, Dismiss or closing Pako never leaves files online that
             // Pako can't delete.
@@ -1903,9 +2315,7 @@ impl Sender {
                 let failed = &failed;
                 async move {
                     match self.upload_retrying(job, &e, Some(&folder_id)).await {
-                        Ok(_) => {
-                            job.files_done.fetch_add(1, Ordering::Relaxed);
-                        }
+                        Ok(_) => self.file_up(job, &e.name),
                         Err(m) if m == "cancelled" => {}
                         Err(_) => failed.lock().unwrap().push(e),
                     }
@@ -1935,12 +2345,19 @@ impl Sender {
     /// nothing to resume, or its Sent item is gone (then the whole send is started again by the
     /// window). A second click while it's already going again does nothing (true).
     pub fn resume(self: &Arc<Self>, id: &str) -> bool {
+        self.resume_as(id, false)
+    }
+
+    /// `quiet`: carried on by itself (a failure doesn't pop up). Set only on the run this
+    /// starts, so "Try again" by hand (or a run already going) is never made quiet.
+    fn resume_as(self: &Arc<Self>, id: &str, quiet: bool) -> bool {
         let go = self.inner.lock().unwrap().begin_resume(id);
         let (job, left) = match go {
             Resume::Running => return true,
             Resume::Nothing => return false,
             Resume::Go(job, left) => (job, left),
         };
+        job.quiet.store(quiet, Ordering::Relaxed);
         job.resumed.store(true, Ordering::Relaxed);
         let me = self.clone();
         let up = Uploading::start(&crate::engine::UPLOADS_RUNNING);
@@ -1954,15 +2371,83 @@ impl Sender {
         true
     }
 
+    /// Uploads in parts brought back at start carry on by themselves when "Continue unfinished uploads
+    /// when Pako starts" is on (called once the terms of use are accepted). Each waits until its
+    /// service answers (Gofile, or Google with your Drive connected), then sends the parts left;
+    /// a try that fails is tried again quietly, a few times, on the usual schedule.
+    pub fn continue_restored(self: &Arc<Self>) {
+        let on = self.app.try_state::<Arc<Engine>>().map(|e| e.settings().resume_uploads_on_start).unwrap_or(false);
+        let restored = std::mem::take(&mut *self.restored.lock().unwrap());
+        let ids = {
+            let inner = self.inner.lock().unwrap();
+            to_continue(on, &restored, &inner.jobs)
+        };
+        for id in ids {
+            let me = self.clone();
+            tauri::async_runtime::spawn(async move { me.carry_on(&id).await });
+        }
+    }
+
+    /// Still a stopped restored send, waiting (not dismissed, removed or started by hand).
+    fn stopped(&self, id: &str) -> Option<Arc<Job>> {
+        let job = self.inner.lock().unwrap().jobs.iter().find(|j| j.id == id).cloned()?;
+        (!job.uploading() && job.view().can_resume).then_some(job)
+    }
+
+    /// The service a send goes to answers (any answer: it's reachable).
+    async fn reachable(&self, host: Host) -> bool {
+        let url = match host {
+            Host::Gofile => "https://api.gofile.io/",
+            Host::Drive => {
+                if !self.store(Host::Drive).connected().await {
+                    return false;
+                }
+                "https://www.googleapis.com/"
+            }
+        };
+        self.http.get(url).timeout(Duration::from_secs(10)).send().await.is_ok()
+    }
+
+    async fn carry_on(self: &Arc<Self>, id: &str) {
+        let mut wait = 0u32;
+        let mut tries = 0u32;
+        while tries < AUTO_TRIES {
+            tokio::time::sleep(retry_wait(wait)).await;
+            wait += 1;
+            let Some(job) = self.stopped(id) else { return };
+            if !self.reachable(job.host).await {
+                continue;
+            }
+            tries += 1;
+            // Quiet, except the last try: if that fails too, it pops up like any failed upload.
+            if !self.resume_as(id, quiet_try(tries)) {
+                return;
+            }
+            // Until this try ends.
+            while self.inner.lock().unwrap().jobs.iter().any(|j| j.id == id && j.uploading()) {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            if self.stopped(id).is_none() {
+                return;
+            }
+            // The wait keeps growing between failed tries (not back to a second each time).
+        }
+    }
+
     /// Puts a send on the Sent list, or brings its entry up to date (first on the list).
     fn record(&self, job: &Job, link: &str, folder_id: Option<String>, file_id: Option<String>, compressed: bool, incomplete: bool) {
         let key = job.key.lock().unwrap().as_deref().and_then(protect_key);
         let account = job.account.lock().unwrap().clone();
         let now = now_millis();
         let (busy, peak) = *job.timing.lock().unwrap();
+        // In parts: what's left waits with the entry until every part is up.
+        let parts_left = job.parts.lock().unwrap().clone();
+        let parts = parts_left.as_ref().map_or(0, |p| p.parts.len() as u32);
+        let parts_left = parts_left.filter(|_| incomplete);
         {
             let mut inner = self.inner.lock().unwrap();
             let old = inner.sent.iter().position(|s| s.id == job.id).map(|i| inner.sent.remove(i));
+            let parts = if parts > 0 { parts } else { old.as_ref().map_or(0, |o| o.parts) };
             let (delete_at, expiry_on_host, delete_error, delete_tries) = expiry_fields(old.as_ref(), now, job.delete_days);
             inner.sent.insert(
                 0,
@@ -1970,8 +2455,9 @@ impl Sender {
                     id: job.id.clone(),
                     name: job.name.clone(),
                     size: job.produced.load(Ordering::Relaxed),
-                    // Not finished: what is on Gofile so far.
-                    files: if incomplete { job.files_done.load(Ordering::Relaxed) } else { job.files },
+                    // Not finished: what is on Gofile so far (in parts: the files are all in the
+                    // ZIP, only some of its parts are up).
+                    files: if incomplete && job.part_mb == 0 { job.files_done.load(Ordering::Relaxed) } else { job.files },
                     date: now,
                     link: link.to_string(),
                     folder_id,
@@ -1994,10 +2480,21 @@ impl Sender {
                     peak: (peak > 0.0).then_some(peak),
                     count_history: old.as_ref().map(|o| o.count_history.clone()).unwrap_or_default(),
                     account: account.or(old.as_ref().and_then(|o| o.account.clone())),
+                    parts,
+                    parts_left,
                 },
             );
         }
         self.save_sent();
+    }
+
+    /// One more file of a several-files send is up. In parts, its entry notes it at once (on the
+    /// disk), so after a power cut "Try again" doesn't send that part again.
+    fn file_up(&self, job: &Job, name: &str) {
+        if mark_up(job, name) {
+            self.record_partial(job);
+            self.changed();
+        }
     }
 
     /// The Sent entry of a several-files send that stopped part-way, with what is up by now.
@@ -2013,6 +2510,10 @@ impl Sender {
             Ok((link, folder_id, file_id)) => {
                 self.inner.lock().unwrap().jobs.retain(|j| j.id != job.id);
                 self.record(job, &link, folder_id, file_id, compressed, false);
+                // Every part is up: they leave this PC.
+                if let Some(dir) = job.take_parts() {
+                    delete_parts(dir);
+                }
                 // Its date (if it has one: maybe changed while it uploaded) goes to the service.
                 let (me, id) = (self.clone(), job.id.clone());
                 tauri::async_runtime::spawn(async move { me.push_expiry(&id).await });
@@ -2038,7 +2539,11 @@ impl Sender {
                 // You cancelled: what already went up is deleted too, and the entry goes with it.
                 // Recorded first, so if deleting fails it stays on the list (unfinished) to retry.
                 // A send carried on with "Try again" keeps what its earlier runs put up: it
-                // stays on the list, not finished, for you to delete or keep.
+                // stays on the list, not finished, for you to delete or keep. Its parts on this
+                // PC are deleted either way.
+                if let Some(dir) = job.take_parts() {
+                    delete_parts(dir);
+                }
                 self.record_partial(job);
                 let folder = job.folder.lock().unwrap().is_some();
                 if folder && !job.resumed.load(Ordering::Relaxed) {
@@ -2053,8 +2558,18 @@ impl Sender {
             Err(msg) => {
                 crate::errorlog::note(crate::errorlog::Area::Upload, &msg);
                 *job.phase.lock().unwrap() = Phase::Failed(msg.clone());
+                // Parts that can't be sent on (nothing is up yet: "Try again" starts over) leave
+                // this PC; the others wait for "Try again".
+                let goes_on = job.folder.lock().unwrap().is_some() && !job.left.lock().unwrap().is_empty();
+                if !goes_on {
+                    if let Some(dir) = job.take_parts() {
+                        delete_parts(dir);
+                    }
+                }
                 self.record_partial(job);
-                if let Some(e) = self.app.try_state::<Arc<Engine>>() {
+                if job.quiet.load(Ordering::Relaxed) {
+                    // Carrying on by itself after a restart: tried again quietly.
+                } else if let Some(e) = self.app.try_state::<Arc<Engine>>() {
                     let pop = if self.window_in_view() { Pop::Skip } else { Pop::Pref };
                     e.notify_pop("upload-failed", "Couldn't upload a file", &format!("{}: {msg}", job.name), Go::item("send", job.id.clone()), pop);
                 }
@@ -2124,7 +2639,19 @@ impl Sender {
 
     /// Takes a failed send off the list (files already up stay on the Sent list).
     pub fn dismiss(&self, id: &str) {
-        self.inner.lock().unwrap().jobs.retain(|j| j.id != id || j.uploading());
+        let gone: Vec<Arc<Job>> = {
+            let mut inner = self.inner.lock().unwrap();
+            let (gone, kept) = std::mem::take(&mut inner.jobs).into_iter().partition(|j| j.id == id && !j.uploading());
+            inner.jobs = kept;
+            gone
+        };
+        // Its parts on this PC go too (it can't be sent on any more).
+        for job in gone {
+            if let Some(dir) = job.take_parts() {
+                delete_parts(dir);
+                self.record_partial(&job);
+            }
+        }
         self.changed();
     }
 
@@ -2239,7 +2766,19 @@ impl Sender {
                 bail!("{msg} It's still on the list.");
             }
         }
-        self.inner.lock().unwrap().sent.retain(|s| s.id != id);
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.sent.retain(|s| s.id != id);
+            // Its parts on this PC go with it (a failed send of it can only start over now).
+            if let Some(job) = inner.jobs.iter().find(|j| j.id == id && !j.uploading()) {
+                if let Some(dir) = job.take_parts() {
+                    delete_parts(dir);
+                }
+            }
+        }
+        if let Some(dir) = item.parts_left.map(|p| p.dir) {
+            delete_parts(dir);
+        }
         self.save_sent();
         self.changed();
         Ok(())
@@ -2576,6 +3115,46 @@ mod tests {
         assert_eq!(s.count_history, vec![(1, 0), (3, 2)]);
     }
 
+    /// A ZIP in 3 parts downloaded whole by two people: Gofile counts 6 (each part twice), Pako
+    /// shows 2. A part taken on its own still shows as one.
+    #[test]
+    fn a_zip_in_parts_counts_whole_downloads() {
+        let mut s = SentItem { parts: 3, ..item("x", None) };
+        apply_to(&mut s, Remote::Found(6), 1);
+        assert_eq!(s.downloads, Some(2));
+        apply_to(&mut s, Remote::Found(7), 2);
+        assert_eq!(s.downloads, Some(3));
+        let mut one = SentItem { parts: 1, ..item("y", None) };
+        apply_to(&mut one, Remote::Found(4), 1);
+        assert_eq!(one.downloads, Some(4));
+    }
+
+    /// Parts folders are only ever deleted right inside Pako's own: never its parent through
+    /// "..", the folder itself through ".", or anything else.
+    #[test]
+    fn parts_are_only_deleted_inside_their_folder() {
+        let root = Path::new("C:/Data/upload-parts");
+        assert!(in_parts_root(&root.join("abc"), root));
+        assert!(!in_parts_root(&root.join(".."), root), "the data folder");
+        assert!(!in_parts_root(&root.join("."), root));
+        assert!(!in_parts_root(root, root));
+        assert!(!in_parts_root(&root.join("abc").join("def"), root));
+        assert!(!in_parts_root(Path::new("C:/Data/other/abc"), root));
+        // And a part's name from sent.json is a plain name in its folder.
+        let d = tmp_dir("plainname");
+        std::fs::write(d.join("A.zip.001"), [1u8; 3]).unwrap();
+        let pl = |name: &str| PartsLeft { dir: d.clone(), parts: vec![SentFile { name: name.into(), size: 3 }], done: vec![], paths: vec![], part_mb: 500 };
+        assert_eq!(pl("A.zip.001").left().map(|l| l.len()), Some(1));
+        assert!(pl("../plainname/A.zip.001").left().is_none());
+        assert!(pl("C:/Windows/notepad.exe").left().is_none());
+    }
+
+    #[test]
+    fn only_the_last_automatic_try_pops_up() {
+        assert!((1..AUTO_TRIES).all(quiet_try));
+        assert!(!quiet_try(AUTO_TRIES));
+    }
+
     #[test]
     fn qr_code_is_an_svg() {
         let svg = qr_svg("https://gofile.io/d/abc123").unwrap();
@@ -2688,6 +3267,159 @@ mod tests {
                 assert_eq!(data, std::fs::read(&e.path).unwrap(), "{name}");
             }
         }
+    }
+
+    #[test]
+    fn zip_in_parts_joins_back_byte_for_byte() {
+        let d = tmp_dir("parts");
+        let Payload::Zip { name, entries } = gather(&[d.join("Photos"), d.join("note.txt")], Mode::Parts).unwrap() else { panic!() };
+        let mut whole = Vec::new();
+        write_zip(&entries, Pack::Off, &mut whole, &AtomicBool::new(false), Z64_AT).unwrap();
+        assert_eq!(zip_size(&entries, Pack::Off, Z64_AT), Some(whole.len() as u64));
+        let out = d.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let written = Arc::new(AtomicU64::new(0));
+        let parts = write_parts(&entries, &out, &name, 10_000, &AtomicBool::new(false), written.clone(), Z64_AT).unwrap();
+        // Numbered names, every part full but the last (shorter, not empty).
+        let n = (whole.len() as u64).div_ceil(10_000) as usize;
+        assert!(n > 2);
+        assert_eq!(parts.len(), n);
+        for (i, (path, size)) in parts.iter().enumerate() {
+            assert_eq!(file_name(path), format!("{name}.{:03}", i + 1));
+            assert_eq!(std::fs::metadata(path).unwrap().len(), *size);
+            if i + 1 < n {
+                assert_eq!(*size, 10_000);
+            } else {
+                assert!(*size > 0 && *size < 10_000);
+            }
+        }
+        assert_eq!(file_name(&parts[0].0), "Photos and 1 more.zip.001");
+        // Joined, they're the ZIP exactly.
+        let joined: Vec<u8> = parts.iter().flat_map(|(p, _)| std::fs::read(p).unwrap()).collect();
+        assert_eq!(joined, whole);
+        assert_eq!(written.load(Ordering::Relaxed), whole.len() as u64);
+        assert_eq!(read_back(joined), read_back(whole.clone()));
+        // A ZIP that fills its last part exactly gets no empty part after it.
+        let exact = d.join("exact");
+        std::fs::create_dir_all(&exact).unwrap();
+        let one = write_parts(&entries, &exact, &name, whole.len() as u64, &AtomicBool::new(false), Arc::new(AtomicU64::new(0)), Z64_AT).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(std::fs::read_dir(&exact).unwrap().count(), 1);
+        // One file in parts is zipped too (not sent as it is).
+        assert!(matches!(gather(&[d.join("note.txt")], Mode::Parts).unwrap(), Payload::Zip { .. }));
+        // Cancel stops it.
+        let stopped = d.join("stopped");
+        std::fs::create_dir_all(&stopped).unwrap();
+        assert!(write_parts(&entries, &stopped, &name, 10_000, &AtomicBool::new(true), Arc::new(AtomicU64::new(0)), Z64_AT).is_err());
+    }
+
+    #[test]
+    fn part_size_range() {
+        assert!(!part_mb_ok(0));
+        assert!(!part_mb_ok(49));
+        assert!(part_mb_ok(50));
+        assert!(part_mb_ok(PART_DEFAULT_MB));
+        assert!(part_mb_ok(10 * 1024));
+        assert!(!part_mb_ok(10 * 1024 + 1));
+    }
+
+    /// An upload in parts that stopped (Pako closed, power cut) is back after a restart with only
+    /// the parts not up yet; a missing part means it can't go on (and isn't kept waiting).
+    #[test]
+    fn resume_skips_the_parts_already_up() {
+        let d = tmp_dir("resume");
+        let dir = d.join("parts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut parts = Vec::new();
+        for (i, n) in [100u64, 100, 40].iter().enumerate() {
+            let name = format!("Photos.zip.{:03}", i + 1);
+            std::fs::write(dir.join(&name), vec![1u8; *n as usize]).unwrap();
+            parts.push(SentFile { name, size: *n });
+        }
+        let pl = PartsLeft { dir: dir.clone(), parts, done: vec!["Photos.zip.001".into()], paths: vec!["C:/Photos".into()], part_mb: 500 };
+        let item = SentItem {
+            id: "up1".into(),
+            name: "Photos.zip".into(),
+            files: 3,
+            link: "https://drive.google.com/drive/folders/f1".into(),
+            folder_id: Some("f1".into()),
+            incomplete: true,
+            host: Some("drive".into()),
+            account: Some("me@example.com".into()),
+            parts: 3,
+            parts_left: Some(pl.clone()),
+            ..Default::default()
+        };
+        // Saved and read back the same (sent.json).
+        let back: SentItem = serde_json::from_str(&serde_json::to_string(&item).unwrap()).unwrap();
+        assert_eq!(back.parts_left.as_ref(), Some(&pl));
+        let mut sent = vec![item.clone()];
+        let jobs = restore_parts(&mut sent);
+        assert_eq!(jobs.len(), 1);
+        let job = &jobs[0];
+        assert_eq!(job.id, "up1");
+        assert_eq!(job.produced.load(Ordering::Relaxed), 100);
+        assert_eq!(job.total, Some(240));
+        let v = job.view();
+        assert!(v.can_resume && v.status == "failed" && v.mode == "parts" && v.parts == 3 && v.files_done == 1);
+        // "Try again" sends only the two parts not up.
+        let inner = Inner { jobs: jobs.clone(), sent: sent.clone(), token: None, ticking: false };
+        let Resume::Go(job, left) = inner.begin_resume("up1") else { panic!("should go on") };
+        let names: Vec<&str> = left.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Photos.zip.002", "Photos.zip.003"]);
+        assert_eq!(*job.account.lock().unwrap(), Some("me@example.com".into()));
+        // Each part noted once as it goes up.
+        assert!(mark_up(&job, "Photos.zip.002"));
+        assert!(mark_up(&job, "Photos.zip.002"));
+        assert_eq!(job.parts.lock().unwrap().as_ref().unwrap().done, ["Photos.zip.001", "Photos.zip.002"]);
+        // A part gone from the disk: nothing to go on with, and it no longer waits.
+        std::fs::remove_file(dir.join("Photos.zip.003")).unwrap();
+        let mut sent = vec![item];
+        assert!(restore_parts(&mut sent).is_empty());
+        assert!(sent[0].parts_left.is_none());
+        // Its folder is no longer needed: deleted at the next start.
+        assert_eq!(stale_part_dirs(&d, &[d.join("Photos")]).len(), 1);
+        assert!(stale_part_dirs(&d, &[d.join("Photos"), dir.clone()]).is_empty());
+    }
+
+    /// Restored uploads in parts carry on by themselves only with "Continue unfinished uploads when Pako
+    /// starts" on; off, they wait for "Try again". One started meanwhile isn't touched.
+    #[test]
+    fn restored_parts_carry_on_only_with_the_setting() {
+        let d = tmp_dir("carry");
+        let dir = d.join("parts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("A.zip.001"), [1u8; 10]).unwrap();
+        std::fs::write(dir.join("A.zip.002"), [1u8; 5]).unwrap();
+        let pl = PartsLeft {
+            dir,
+            parts: vec![SentFile { name: "A.zip.001".into(), size: 10 }, SentFile { name: "A.zip.002".into(), size: 5 }],
+            done: vec!["A.zip.001".into()],
+            paths: vec![],
+            part_mb: 500,
+        };
+        let item = SentItem { id: "a".into(), name: "A.zip".into(), link: "l".into(), folder_id: Some("f".into()), incomplete: true, host: Some("drive".into()), parts: 2, parts_left: Some(pl), ..Default::default() };
+        let mut sent = vec![item];
+        let jobs = restore_parts(&mut sent);
+        let ids = vec!["a".to_string()];
+        assert_eq!(to_continue(true, &ids, &jobs), ["a"]);
+        assert!(to_continue(false, &ids, &jobs).is_empty());
+        // Started by hand meanwhile (or failing for another reason): left alone.
+        *jobs[0].phase.lock().unwrap() = Phase::Uploading;
+        assert!(to_continue(true, &ids, &jobs).is_empty());
+        assert_eq!(retry_wait(0), Duration::from_secs(1));
+        assert_eq!(retry_wait(1), Duration::from_secs(2));
+        assert_eq!(retry_wait(5), Duration::from_secs(32));
+        assert_eq!(retry_wait(9), Duration::from_secs(60));
+    }
+
+    /// Uploads listed before "ZIP in parts" load without parts, and write nothing new.
+    #[test]
+    fn older_items_have_no_parts() {
+        let s: SentItem = serde_json::from_str(r#"{"id":"a","name":"x.zip","size":1,"files":1,"date":1,"link":"l","folderId":null,"fileId":"f","compressed":false}"#).unwrap();
+        assert_eq!((s.parts, s.parts_left.is_none()), (0, true));
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("parts"), "{json}");
     }
 
     #[test]
@@ -2958,6 +3690,9 @@ mod tests {
         assert_eq!(Mode::from_settings(None, "max"), Mode::Compress);
         assert_eq!(Mode::from_settings(Some("zip"), "max"), Mode::Zip);
         assert_eq!(Mode::from_settings(Some("files"), "max"), Mode::AsTheyAre);
+        assert_eq!(Mode::from_settings(Some("parts"), "off"), Mode::Parts);
+        assert_eq!(Mode::Parts.as_str(), "parts");
+        assert_eq!(Mode::Parts.pack(), Pack::Off);
         assert_eq!(flat_name("a/b/c.txt", false), "a - b - c.txt");
         assert_eq!(flat_name("a/c.txt", true), "c.txt");
         assert_eq!(flat_name("c.txt", true), "c.txt");

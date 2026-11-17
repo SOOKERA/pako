@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Seen {
-    /// "chrome", "edge", "brave", "vivaldi", "opera", "operagx" or "firefox" (as `browsers_found`).
+    /// "chrome", "edge", "brave", "vivaldi", "opera", "operagx", "firefox", "zen", "librewolf",
+    /// "waterfox" or "floorp" (as `browsers_found`).
     pub browser: String,
     /// "full" or "light" (Pako Light, from a store).
     pub edition: String,
@@ -29,7 +30,7 @@ struct SeenFile {
     browsers: Vec<Seen>,
 }
 
-const IDS: &[&str] = &["chrome", "edge", "brave", "vivaldi", "opera", "operagx", "firefox"];
+const IDS: &[&str] = &["chrome", "edge", "brave", "vivaldi", "opera", "operagx", "firefox", "zen", "librewolf", "waterfox", "floorp"];
 const EDITIONS: &[&str] = &["full", "light"];
 /// A busy page sends many messages: the file is written at most once a minute per browser.
 const WRITE_EVERY: u64 = 60;
@@ -49,6 +50,10 @@ pub fn browser_id(exe: &Path) -> Option<&'static str> {
         "brave.exe" => "brave",
         "vivaldi.exe" => "vivaldi",
         "firefox.exe" => "firefox",
+        "zen.exe" => "zen",
+        "librewolf.exe" => "librewolf",
+        "waterfox.exe" => "waterfox",
+        "floorp.exe" => "floorp",
         "opera.exe" if exe.to_string_lossy().to_lowercase().contains("opera gx") => "operagx",
         "opera.exe" => "opera",
         _ => return None,
@@ -203,6 +208,14 @@ mod tests {
         assert_eq!(id(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"), Some("brave"));
         assert_eq!(id(r"C:\Users\a\AppData\Local\Vivaldi\Application\vivaldi.exe"), Some("vivaldi"));
         assert_eq!(id(r"C:\Program Files\Mozilla Firefox\firefox.exe"), Some("firefox"));
+        assert_eq!(id(r"C:\Program Files\Zen Browser\zen.exe"), Some("zen"));
+        assert_eq!(id(r"C:\Program Files\LibreWolf\LibreWolf.exe"), Some("librewolf"));
+        assert_eq!(id(r"C:\Program Files\Waterfox\waterfox.exe"), Some("waterfox"));
+        assert_eq!(id(r"C:\Program Files\Ablaze Floorp\floorp.exe"), Some("floorp"));
+        // Every browser Pako lists is one the host can name.
+        for b in ["firefox", "zen", "librewolf", "waterfox", "floorp"] {
+            assert!(IDS.contains(&b), "{b}");
+        }
         assert_eq!(id(r"C:\Users\a\AppData\Local\Programs\Opera GX\opera.exe"), Some("operagx"));
         assert_eq!(id(r"C:\Users\a\AppData\Local\Programs\Opera GX\120.0\opera.exe"), Some("operagx"));
         assert_eq!(id(r"C:\Users\a\AppData\Local\Programs\Opera\opera.exe"), Some("opera"));

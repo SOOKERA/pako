@@ -3,7 +3,7 @@
 // The showcase set: sample data for the website's screenshots (scripts/screenshots.mjs), used only
 // in the design preview (a normal browser, never inside the app) and only with "?showcase" in the
 // address. Everything going well; plain made-up names, no brands, no real people.
-import type { DirectState, Download, FoundItem, Part, Progress, SendState, Snapshot } from "./api";
+import type { DirectFrom, DirectHistory, DirectState, Download, FoundItem, Part, Progress, RemoteBook, RemoteTalk, SendState, Snapshot } from "./api";
 import type { Notice, PopupCard } from "./notices";
 
 export const showcase = typeof location !== "undefined" && new URLSearchParams(location.search).has("showcase");
@@ -26,6 +26,8 @@ export const ALEX = "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3
 export const NINA = "f0e1d2c3b4a5968778695a4b3c2d1e0f1f2e3d4c5b6a79881726354a3b2c1d0e";
 export const JO = "5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f";
 const LEO = "7c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d";
+/** Not checked lately: nothing with Maya for 45 days. */
+const MAYA = "2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c";
 
 // ---------- Downloads ----------
 
@@ -75,8 +77,26 @@ const switched: Download[] = scene === "hosts"
     ]
   : [];
 
+/** "?showcase=browser": a file only the browser could get ("Via browser"), and a private
+ *  window's finished download. */
+const viaBrowser: Download[] = scene === "browser"
+  ? [
+      dl({
+        name: "Annual report 2025.pdf",
+        size: 412 * MB,
+        downloaded: 167 * MB,
+        resumable: false,
+        link: "https://reports.example.org/get?id=Q4-2025&t=8f2c",
+        source: { kind: "http", url: "https://reports.example.org/get?id=Q4-2025&t=8f2c" },
+        viaBrowser: { browserId: 41, path: HOME + "\\Annual report 2025.pdf", canResume: true, light: false },
+      }),
+      dl({ name: "Boarding pass.pdf", status: "completed", size: 2.6 * MB, downloaded: 2.6 * MB, private: true, finishedAt: now - 2 * MIN }),
+    ]
+  : [];
+
 const downloads: Download[] = [
   ...switched,
+  ...viaBrowser,
   dl({ name: "Holiday photos 2025.zip", size: 6.4 * GB, downloaded: 3.71 * GB, ...drive("1hP7sQ2"), notify: true }),
   dl({ name: "Project final cut.mp4", size: 3.9 * GB, downloaded: 1.21 * GB }),
   dl({ name: "Interview A-cam.mov", size: 4.6 * GB, downloaded: 2.02 * GB, ...drive("1sA9cM4"), group: "Studio assets", destDir: STUDIO }),
@@ -95,6 +115,7 @@ const running: Record<string, [number, number]> = {
   "Interview A-cam.mov": [21_700_000, 6],
   "Interview B-cam.mov": [16_800_000, 6],
   "Wallpapers 4K.zip": [9_600_000, 4],
+  "Annual report 2025.pdf": [3_100_000, 1],
 };
 
 export const showcaseProgress: Progress[] = downloads
@@ -213,10 +234,10 @@ export const showcaseSnapshot: Snapshot = {
         : [],
   downloadSets: [],
   settings: {
-    downloadDir: HOME, autoConnections: true, connections: 8, maxActive: 5, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true,
+    downloadDir: HOME, autoConnections: true, connections: 8, maxActive: 5, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, playDoneSound: true,
     extractDefault: true, minimizeToTray: true, closeToTray: true, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: true, startInTray: true,
     videoQuality: 1080, setupDone: true, videoAsked: true, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: true, browserConnect: true,
-    sendCompression: "off", sendMode: "files", askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7,
+    sendCompression: "off", sendMode: "files", sendPartMb: 500, sendPartCustom: false, resumeUploadsOnStart: true, askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7,
     whatsNewSeen: "1.0.0", tourOffered: true, toursDone: ["downloads", "found", "send", "direct", "devices", "dashboard", "settings", "full"],
   },
   dataDir: "C:\\Users\\Sam\\AppData\\Roaming\\Pako",
@@ -315,14 +336,18 @@ export function showcaseDirect(): DirectState {
     tags: ["Friends", "Family", "Work"],
     contacts: [
       contact(ALEX, "Alex", { online: true, path: ALEX_PATH, autoAccept: true, favourite: true, tags: ["Friends", "Work"], added: t - 64 * DAY, code: "4821 0937 5512 0386" }),
-      contact(JO, "Jo", { online: true, path: "relay", tags: ["Work"], added: t - 31 * DAY, code: "3301 8842 1176" }),
+      // Checked often for an hour, picked a quarter of an hour ago.
+      contact(JO, "Jo", { online: true, path: "relay", tags: ["Work"], added: t - 31 * DAY, code: "3301 8842 1176", check: "often", checkUntil: t + 45 * MIN, checkAs: "often" }),
       contact(NINA, "Nina", { lastSeen: t - 8 * MIN, tags: ["Family"], added: t - 120 * DAY, code: "1170 6640 2093" }),
-      contact(LEO, "Leo", { lastSeen: t - 22 * HOUR, tags: ["Friends"], added: t - 26 * HOUR, code: "6658 2210 9034" }),
+      contact(LEO, "Leo", { lastSeen: t - 22 * HOUR, tags: ["Friends"], added: t - 26 * HOUR, code: "6658 2210 9034", muted: true }),
+      contact(MAYA, "Maya", { lastSeen: t - 45 * DAY, lastActivity: t - 45 * DAY, added: t - 200 * DAY, code: "5402 7719 3368", unchecked: true }),
     ],
     requests: [],
     offers: [],
     transfers: [
       { id: "x1", contact: ALEX, outgoing: true, name: "Short film final.mov", files: 1, size: SENDING.size, done: Math.min(SENDING.size * 0.97, SENDING.from + ((t - SENDING.since) / 1000) * SENDING.rate), state: "sending", path: ALEX_PATH, message: null },
+      // Cut short when Nina's laptop went to sleep: it continues once she's back.
+      { id: "x2", contact: NINA, outgoing: false, name: "Holiday videos", files: 14, size: 2.8e9, done: 1.74e9, state: "waiting", path: null, message: null },
     ],
     history: [
       { id: "h1", contact: ALEX, outgoing: false, name: "Photos from Saturday", files: 48, size: 412e6, date: now - 3 * DAY, path: ALEX_PATH, result: "done", message: null, savedTo: into("Alex") + "\\Photos from Saturday", durationMs: 9000, avgSpeed: 45e6 },
@@ -332,5 +357,67 @@ export function showcaseDirect(): DirectState {
       { id: "h5", contact: JO, outgoing: true, name: "Report Q3.xlsx", files: 1, size: 1.4e6, date: now - DAY, path: "relay", result: "done", message: null, savedTo: null, durationMs: 900, avgSpeed: 1.5e6 },
       { id: "h6", contact: NINA, outgoing: false, name: "Recipes", files: 36, size: 420e6, date: now - 10 * MIN, path: "direct", result: "done", message: null, savedTo: into("Nina") + "\\Recipes", durationMs: 14000, avgSpeed: 30e6 },
     ],
+    // Sent from this PC to Rado through Home PC: there already, on its way to Rado.
+    relays: [
+      {
+        id: "rl1", mine: true, device: HOME_PC, deviceName: "Home PC", to: RADO, toName: "Rado", name: "Wedding photos", files: 3, size: 860e6, date: now - 4 * MIN, ended: null,
+        state: "sending", message: null, leg1Done: 860e6, leg1State: null, done: Math.min(860e6 * 0.92, 860e6 * 0.45 + ((t - now) / 1000) * 6e6), keep: false, reached: true,
+      },
+    ],
   };
+}
+
+// ---------- Direct › From: Home PC (sample devices that pass files on to their contacts) ----------
+
+const LAPTOP_PC = "2f4a6c8e0b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a";
+const OFFICE_PC = "7e5c3a1f9d7b5e3c1a9f7d5b3e1c9a7f5d3b1e9c7a5f3d1b9e7c5a3f1d9b7e5c";
+const RADO = "3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c";
+const MIA = "4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d";
+const HERY = "6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f";
+const TINA = "8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a";
+
+/** The "From" menu: Home PC (it calls itself Living room PC), the laptop, and the office PC
+ *  (offline, greyed). */
+export function mockFromChoices(): DirectFrom[] {
+  return [
+    { id: HOME_PC, name: "Home PC", pcName: "Living room PC", directName: "Sam", contacts: 4, online: true },
+    { id: LAPTOP_PC, name: "Laptop", pcName: null, directName: "Sam", contacts: 2, online: true },
+    { id: OFFICE_PC, name: "Office PC", pcName: null, directName: "Sam Rakoto", contacts: 9, online: false },
+  ];
+}
+
+/** Home PC's contacts, as this PC sees them. */
+export function mockRemoteBook(device: string): RemoteBook {
+  const t = Date.now();
+  const c = (id: string, name: string, more: Partial<RemoteBook["contacts"][number]> = {}) => ({ id, name, online: false, lastSeen: t - 3 * HOUR, favourite: false, trusted: true, declined: false, ...more });
+  if (device === LAPTOP_PC) return { me: { id: LAPTOP_PC, name: "Sam" }, contacts: [c(NINA, "Nina", { online: true, path: "direct" }), c(JO, "Jo")] };
+  return {
+    me: { id: device, name: "Sam" },
+    contacts: [
+      c(RADO, "Rado", { online: true, path: "direct", favourite: true }),
+      c(MIA, "Mia", { online: true, path: "local" }),
+      c(HERY, "Hery", { lastSeen: t - 2 * DAY }),
+      c(TINA, "Tina", { lastSeen: t - 40 * MIN, theirName: "Tina R." }),
+    ],
+  };
+}
+
+/** Home PC's history with one of its contacts, read live: Rado's has a relayed card. */
+export function mockRemoteTalk(device: string, contact: string): RemoteTalk {
+  const h = (id: string, outgoing: boolean, name: string, files: number, size: number, ago: number, more: Partial<DirectHistory> = {}): DirectHistory => ({
+    id, contact, outgoing, name, files, size, date: now - ago, path: "direct", result: "done", message: null, savedTo: null, ...more,
+  });
+  if (device !== HOME_PC) return { history: [], moving: [] };
+  if (contact === RADO)
+    return {
+      history: [
+        h("rh1", false, "Band rehearsal.mp3", 1, 48e6, 3 * DAY),
+        h("rh2", true, "Flat keys.jpg", 1, 2.1e6, 2 * DAY),
+        h("rh3", true, "Trip budget.xlsx", 1, 640e3, 26 * HOUR, { via: "Desk PC" }),
+        h("rh4", false, "Concert tickets.pdf", 1, 380e3, 5 * HOUR),
+      ],
+      moving: [],
+    };
+  if (contact === MIA) return { history: [h("mh1", true, "Garden plans", 6, 24e6, DAY, { path: "local" })], moving: [] };
+  return { history: [], moving: [] };
 }

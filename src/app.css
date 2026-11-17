@@ -211,7 +211,7 @@
     0 24px 60px rgba(20, 26, 46, 0.16),
     0 2px 8px rgba(20, 26, 46, 0.08);
   --shadow-knob: 0 1px 3px rgba(20, 26, 46, 0.25);
-  --scrim: rgba(20, 26, 46, 0.32);
+  --scrim: rgba(15, 20, 36, 0.45);
   --drop-scrim: rgba(246, 247, 249, 0.72);
   --tour-dim: rgba(15, 20, 36, 0.52);
   --danger-fill-hover: #b53131;

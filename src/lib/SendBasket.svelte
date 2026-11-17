@@ -10,9 +10,10 @@
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
   import SegPick from "./SegPick.svelte";
+  import PartSize from "./PartSize.svelte";
   import { fade } from "svelte/transition";
   import { rowSlide } from "./motion";
-  import { DELETE_CHOICES } from "./uploads";
+  import { DELETE_CHOICES, PARTS_NOTE, PART_DEFAULT_MB, partOk } from "./uploads";
 
   let {
     onaddfiles,
@@ -22,8 +23,9 @@
   }: {
     onaddfiles: () => void;
     onaddfolder: () => void;
-    /** `mode` null = the setting; `name` null = Pako's usual name; `deleteDays` 0 = keep. */
-    onsend: (mode: SendMode | null, name: string | null, deleteDays: number) => Promise<void>;
+    /** `mode` null = the setting; `name` null = Pako's usual name; `deleteDays` 0 = keep;
+     *  `partMb` = "ZIP in parts"' part size (null when not in parts). */
+    onsend: (mode: SendMode | null, name: string | null, deleteDays: number, partMb: number | null) => Promise<void>;
     /** "Make room…" in your Google Drive. */
     onroom: () => void;
   } = $props();
@@ -32,11 +34,14 @@
     ["files", "As they are"],
     ["zip", "One ZIP"],
     ["compress", "Compressed ZIP"],
+    ["parts", "ZIP in parts"],
   ];
-  /** One file: as it is, or compressed into a ZIP (a plain ZIP of one file adds nothing). */
+  /** One file: as it is, compressed into a ZIP (a plain ZIP of one file adds nothing), or a ZIP
+   *  in parts (a big file over a shaky connection). */
   const SINGLE_MODES: [SendMode, string][] = [
     ["files", "As it is"],
     ["compress", "Compressed ZIP"],
+    ["parts", "ZIP in parts"],
   ];
   /** The setting (older compression setting carried over until a choice is saved). */
   const settingMode = $derived<SendMode>(
@@ -56,14 +61,21 @@
   /** One file on its own: no folder or ZIP to name, no "several files" choice. */
   const single = $derived(items.length === 1 && !items[0].dir);
   const several = $derived(!single && (totalFiles > 1 || items.some((b) => b.dir)));
-  /** One file goes as it is unless "Compressed ZIP" is picked for it here (the usual setting for
+  /** One file goes as it is unless "Compressed ZIP" or "ZIP in parts" is picked for it here (the usual setting for
    *  several files doesn't apply to a single one). */
-  const singleMode = $derived<SendMode>(picked === "compress" ? "compress" : "files");
+  const singleMode = $derived<SendMode>(picked === "compress" || picked === "parts" ? picked : "files");
+  /** "ZIP in parts" is the way this upload goes. */
+  const inParts = $derived(single ? singleMode === "parts" : several && mode === "parts");
+  /** Its part size: the setting, changed here for this upload only. */
+  let partMb = $state(partOk(app.settings?.sendPartMb) ? app.settings!.sendPartMb : PART_DEFAULT_MB);
+  let partCustom = $state(app.settings?.sendPartCustom ?? false);
+  let partValid = $state(true);
+  const blocked = $derived(inParts && !partValid);
 
   /** The name Pako would use (shown as the name field's hint). */
   const usualName = $derived.by(() => {
     if (!items.length) return "";
-    if (mode === "files") return items.length === 1 && items[0].dir ? items[0].name : `${totalFiles.toLocaleString()} files`;
+    if ((single ? singleMode : mode) === "files") return items.length === 1 && items[0].dir ? items[0].name : `${totalFiles.toLocaleString()} files`;
     if (items.length === 1) return `${items[0].name}.zip`;
     const stem = items[0].name.includes(".") ? items[0].name.replace(/\.[^.]+$/, "") : items[0].name;
     return `${stem} and ${items.length - 1} more.zip`;
@@ -90,7 +102,7 @@
     // Asked again when the basket, the way it's sent or the destination changes.
     const host = app.sendHost;
     const paths = items.filter((b) => !b.error).map((b) => b.path);
-    const m = mode;
+    const m = single ? singleMode : mode;
     void measured;
     clearTimeout(timer);
     need = null;
@@ -119,13 +131,14 @@
   const fits = $derived(need == null || free == null ? null : need <= free);
 
   async function send() {
-    if (sending || !items.length || unreadable.length) return;
+    if (sending || !items.length || unreadable.length || blocked) return;
     sending = true;
     try {
       // A single file always says how it goes; several files use the choice or the setting.
       const how = single ? singleMode : picked && picked !== settingMode ? picked : null;
-      const named = single && singleMode !== "compress" ? null : name.trim() || null;
-      await onsend(how, named, app.uploadDeleteDays);
+      const named = single && singleMode === "files" ? null : name.trim() || null;
+      // In parts, the part size always goes with it (the one shown here).
+      await onsend(inParts ? "parts" : how, named, app.uploadDeleteDays, inParts ? partMb : null);
       if (!app.basket.length) {
         name = "";
         picked = null;
@@ -188,9 +201,9 @@
       <span class="lbl">Compression</span>
       <SegPick label="How the file is uploaded" options={SINGLE_MODES.map(([value, label]) => ({ value, label }))} value={singleMode} onpick={(v) => (picked = v)} />
       {#key singleMode}
-        <span class="note dim" in:fade={{ duration: 160 }}>{singleMode === "compress" ? "Packed into a smaller ZIP file (helps documents, not videos or photos)" : "Uploaded as it is"}</span>
+        <span class="note dim" in:fade={{ duration: 160 }}>{singleMode === "compress" ? "Packed into a smaller ZIP file (helps documents, not videos or photos)" : singleMode === "parts" ? "Packed into a ZIP, cut into numbered parts" : "Uploaded as it is"}</span>
       {/key}
-      {#if singleMode === "compress"}
+      {#if singleMode !== "files"}
         <span class="lbl">Name</span>
         <input class="input" bind:value={name} placeholder={usualName} maxlength="120" spellcheck="false" aria-label="Name of this upload" />
         <span class="note dim">The ZIP file's name, optional</span>
@@ -201,12 +214,20 @@
       <span class="lbl">Several files</span>
       <SegPick label="How several files are uploaded" options={MODES.map(([value, label]) => ({ value, label }))} value={mode} onpick={(v) => (picked = v)} />
       {#key mode}
-        <span class="note dim" in:fade={{ duration: 160 }}>{mode === "files" ? "One link to a folder with the files as they are" : mode === "zip" ? "Packed into one ZIP file, not compressed (fastest)" : "Packed into one smaller ZIP file (takes longer)"}</span>
+        <span class="note dim" in:fade={{ duration: 160 }}>{mode === "files" ? "One link to a folder with the files as they are" : mode === "zip" ? "Packed into one ZIP file, not compressed (fastest)" : mode === "parts" ? "Packed into one ZIP, cut into numbered parts" : "Packed into one smaller ZIP file (takes longer)"}</span>
       {/key}
 
       <span class="lbl">Name</span>
       <input class="input" bind:value={name} placeholder={usualName} maxlength="120" spellcheck="false" aria-label="Name of this upload" />
       <span class="note dim">{mode === "files" ? "The folder's name" : "The ZIP file's name"}, optional</span>
+    {/if}
+
+    {#if inParts}
+      <span class="lbl top" transition:fade={{ duration: 160 }}>Part size</span>
+      <div class="partsize" transition:fade={{ duration: 160 }}>
+        <PartSize bind:mb={partMb} bind:custom={partCustom} bind:valid={partValid} label="Size of each part" />
+      </div>
+      <span class="explain dim" transition:fade={{ duration: 160 }}>{PARTS_NOTE}</span>
     {/if}
   </div>
 
@@ -234,7 +255,7 @@
     {/if}
     <span class="grow"></span>
     <button class="btn ghost" disabled={sending} onclick={() => app.clearBasket()}>Clear</button>
-    <button class="btn primary" data-tour="send-go" disabled={sending || !items.length || unreadable.length > 0} onclick={send}>
+    <button class="btn primary" data-tour="send-go" disabled={sending || !items.length || unreadable.length > 0 || blocked} onclick={send}>
       <Icon name="upload" size={14} stroke={2.2} />{sending ? "Starting…" : "Upload"}
     </button>
   </footer>
@@ -336,6 +357,12 @@
     font-size: 12.5px;
     color: var(--text-2);
   }
+  /* Next to a control that can grow below (the part size's range note): lined up with its
+     first row, so it doesn't move when the note shows. */
+  .lbl.top {
+    align-self: start;
+    margin-top: 8.5px;
+  }
   .note {
     font-size: 12px;
     min-width: 0;
@@ -343,9 +370,21 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .opts .input {
+  .opts > .input {
     width: 280px;
     height: 30px;
+  }
+  /* The part size spans the control and note columns (its Custom field and range note sit in
+     it); the explanation goes under it, in the same columns. */
+  .partsize {
+    grid-column: 2 / -1;
+    min-width: 0;
+  }
+  .explain {
+    grid-column: 2 / -1;
+    margin-top: -4px;
+    font-size: 12px;
+    line-height: 1.45;
   }
   .fit {
     display: flex;
@@ -391,13 +430,13 @@
     .note {
       display: none;
     }
-    .opts .input {
+    .opts > .input {
       width: 100%;
     }
   }
-  /* The smallest window with the details panel open: each label sits above its choices, so
-     the widest row of choices fits inside the card. */
-  @container (max-width: 480px) {
+  /* A small window (or the details panel open): each label sits above its choices, so the
+     widest row of choices (Several files, four of them) fits inside the card. */
+  @container (max-width: 580px) {
     .basket {
       padding: 12px 12px 14px;
     }
@@ -407,6 +446,16 @@
     }
     .opts .lbl:not(:first-child) {
       margin-top: 6px;
+    }
+    .opts .lbl.top {
+      align-self: auto;
+    }
+    .partsize,
+    .explain {
+      grid-column: 1;
+    }
+    .explain {
+      margin-top: 0;
     }
   }
 </style>

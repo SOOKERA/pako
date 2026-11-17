@@ -64,9 +64,9 @@
   const downloaded = $derived(sentList.filter((s) => (s.host ?? "gofile") === "gofile" && (s.downloads ?? 0) > 0 && deletable(s)));
 
   /** Starts one send of these paths (the basket's). The basket empties once it has started. */
-  async function startSend(paths: string[], m: SendMode | null, name: string | null, days: number) {
+  async function startSend(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null) {
     try {
-      await api.sendStart(paths, m, name, days);
+      await api.sendStart(paths, m, name, days, null, partMb);
       // Only what was sent leaves the basket: files added while it started stay for the next one.
       const sent = new Set(paths);
       app.basket = app.basket.filter((b) => !sent.has(b.path));
@@ -76,18 +76,18 @@
     }
   }
   /** The basket's Send: everything in it (but what can't be read), one send, one link. */
-  async function sendBasket(m: SendMode | null, name: string | null, days: number) {
+  async function sendBasket(m: SendMode | null, name: string | null, days: number, partMb: number | null) {
     const paths = app.basket.filter((b) => !b.error).map((b) => b.path);
     if (!paths.length) return;
-    if (app.sendHost === "drive" && !(await fitsDrive(paths, m, name, days))) return;
-    await startSend(paths, m, name, days);
+    if (app.sendHost === "drive" && !(await fitsDrive(paths, m, name, days, partMb))) return;
+    await startSend(paths, m, name, days, partMb);
   }
 
   /** The send doesn't fit in your Google Drive: what it needs and what's free. */
-  let noRoom = $state<{ need: number; free: number; paths: string[]; mode: SendMode | null; name: string | null; days: number } | null>(null);
+  let noRoom = $state<{ need: number; free: number; paths: string[]; mode: SendMode | null; name: string | null; days: number; partMb: number | null } | null>(null);
   let driveBar = $state<{ openRoom: () => void } | null>(null);
   /** Before a Google Drive send: connected, and it fits (said either way). */
-  async function fitsDrive(paths: string[], m: SendMode | null, name: string | null, days: number): Promise<boolean> {
+  async function fitsDrive(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null): Promise<boolean> {
     try {
       const st = await api.sendDriveStatus();
       if (!st.configured) {
@@ -102,7 +102,7 @@
       const need = await api.sendMeasure(paths, m);
       const free = Math.max(0, st.limit - st.used);
       if (need > free) {
-        noRoom = { need, free, paths, mode: m, name, days };
+        noRoom = { need, free, paths, mode: m, name, days, partMb };
         return false;
       }
       app.toast(`This upload needs ${bytes(need)}, ${bytes(free)} free in your Google Drive`);
@@ -113,10 +113,10 @@
     }
   }
   /** "Upload to Gofile instead": switches (remembered) and uploads these files. */
-  async function sendWithGofile(paths: string[], m: SendMode | null, name: string | null, days: number) {
+  async function sendWithGofile(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null) {
     noRoom = null;
     await app.setSendHost("gofile");
-    await startSend(paths, m, name, days);
+    await startSend(paths, m, name, days, partMb);
   }
   /** Where a sent item is, in words. */
   const where = (s: SentItem) => (s.host === "drive" ? "your Google Drive" : "Gofile");
@@ -140,7 +140,7 @@
         if (j.canResume && (await api.sendResume(j.id))) return;
         await api.sendDismiss(j.id);
         // The same way and with the same name as the first time (a one-off ZIP stays a ZIP).
-        await app.send(j.paths, j.mode ?? (j.asFiles ? "files" : null), j.name, j.deleteDays ?? null, j.host ?? null);
+        await app.send(j.paths, j.mode ?? (j.asFiles ? "files" : null), j.name, j.deleteDays ?? null, j.host ?? null, j.partMb || null);
       });
     } finally {
       retrying = retrying.filter((id) => id !== j.id);
@@ -157,6 +157,13 @@
   }
   function what(n: number, size: number) {
     return `${n === 1 ? "1 file" : `${n.toLocaleString()} files`} · ${bytes(size)}`;
+  }
+  /** " · ZIP in 7 parts" after an upload sent in parts. */
+  const inParts = (n: number | undefined) => (n ? ` · ZIP in ${n} parts` : "");
+  /** How far making the parts is (before they upload). */
+  function madePct(j: SendJob) {
+    const of = j.total ?? j.size;
+    return of ? Math.min(100, ((j.made ?? 0) / of) * 100) : 0;
   }
 
   function sentMenu(e: MouseEvent, s: SentItem) {
@@ -357,9 +364,15 @@
               <div class="main">
                 <div class="top">
                   <MiddleText text={j.name} class="nm" />
-                  <span class="meta">{what(j.files, j.size)}</span>
+                  <span class="meta">{what(j.files, j.size)}{inParts(j.parts)}</span>
                 </div>
-                {#if j.status === "uploading"}
+                {#if j.status === "uploading" && j.making}
+                  {@const m = madePct(j)}
+                  <div class="bar"><div class="fill making" style="width: {m}%"></div></div>
+                  <div class="sub mono">
+                    <span>Making the parts · {Math.floor(m)}% · {bytes(j.made ?? 0)} of {bytes(j.total ?? j.size)}</span>
+                  </div>
+                {:else if j.status === "uploading"}
                   <div class="bar"><div class="fill" style="width: {p}%"></div></div>
                   <div class="sub mono">
                     {#if j.total}
@@ -371,6 +384,8 @@
                   </div>
                   {#if j.asFiles}
                     <div class="sub mono"><span>{j.filesDone.toLocaleString()} of {j.files.toLocaleString()} files</span></div>
+                  {:else if j.parts}
+                    <div class="sub mono"><span>{j.filesDone.toLocaleString()} of {j.parts.toLocaleString()} parts up</span></div>
                   {/if}
                 {:else}
                   <div class="err"><Icon name="alert" size={13} /><span>{j.message}</span></div>
@@ -410,7 +425,6 @@
             <span></span>
             <span>Name</span>
             <span>Uploaded to</span>
-            <span>Downloads</span>
             <span class="h-link">Link</span>
             <span></span>
           </div>
@@ -435,18 +449,18 @@
               <div class="ficon"><FileIcon name={s.name} kind={s.asFiles ? "folder" : undefined} size={20} /></div>
               <div class="sname">
                 <MiddleText text={s.name} class="nm" />
-                <span class="meta">{#if s.soon && s.deleteAt == null}<span class="soon" title="10 days without a download and Gofile may remove it">May be removed by Gofile soon</span>{" · "}{/if}{#if s.incomplete}<span class="partial" title="Only these files are in {where(s)}. The link works for them.">{busy(s) ? "Uploading" : "Not all uploaded"}</span>{" · "}{/if}{what(s.files, s.size)} · {shortDate(s.date)}</span>
+                <span class="meta">{#if s.soon && s.deleteAt == null}<span class="soon" title="10 days without a download and Gofile may remove it">May be removed by Gofile soon</span>{" · "}{/if}{#if s.incomplete}<span class="partial" title={s.parts ? `Only some parts are in ${where(s)}. People need all of them to open it.` : `Only these files are in ${where(s)}. The link works for them.`}>{busy(s) ? "Uploading" : "Not all uploaded"}</span>{" · "}{/if}{what(s.files, s.size)} · {shortDate(s.date)}{inParts(s.parts)}</span>
               </div>
               <div class="hostcol">
                 <div class="host" class:drive={s.host === "drive"} title={s.host === "drive" ? "In your Google Drive" : "On Gofile"}>
                   <Icon name={s.host === "drive" ? "drive" : "globe"} size={13} />{s.host === "drive" ? "Google Drive" : "Gofile"}
+                  <!-- Gofile counts downloads (Drive doesn't): next to the host, not a column of its own,
+                       so the link keeps its room in a narrow window (user, 2026-11-18). -->
+                  {#if look}<span class="dl" style:color={look.text} title={s.gone ? "Deleted or expired on Gofile: the link doesn't work any more" : `${look.label}. Gofile counts downloads, not who downloaded`}><span class="dot" style:background={look.dot}></span><span class="dltext">{look.label}</span></span>{/if}
                 </div>
                 {#if exp}
                   {#key exp.label}<span class="exp {exp.tone}" title={exp.title} in:fade={{ duration: 180 }}>{exp.label}</span>{/key}
                 {/if}
-              </div>
-              <div class="dl" style:color={look?.text} title={s.gone ? "Deleted or expired on Gofile: the link doesn't work any more" : look ? "Gofile counts downloads, not who downloaded" : undefined}>
-                {#if look}<span class="dot" style:background={look.dot}></span>{look.label}{/if}
               </div>
               <button class="slink mono" title="Open the download page" onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
               <div class="sact">
@@ -483,7 +497,7 @@
     <p class="msg">This upload needs {bytes(r.need)}, and your Google Drive has {bytes(r.free)} free. Make room by deleting older uploads, or upload it to Gofile.</p>
     {#snippet actions()}
       <button class="btn ghost" onclick={() => (noRoom = null)}>Cancel</button>
-      <button class="btn" onclick={() => sendWithGofile(r.paths, r.mode, r.name, r.days)}>Upload to Gofile instead</button>
+      <button class="btn" onclick={() => sendWithGofile(r.paths, r.mode, r.name, r.days, r.partMb)}>Upload to Gofile instead</button>
       <button class="btn primary" onclick={() => { noRoom = null; driveBar?.openRoom(); }}><Icon name="trash" size={13} />Make room…</button>
     {/snippet}
   </Modal>
@@ -682,6 +696,10 @@
     background: var(--st-run);
     transition: width var(--mid) var(--ease-out);
   }
+  /* Making the parts (before uploading): the "checking" colour, like a link being checked. */
+  .fill.making {
+    background: var(--st-check);
+  }
   .sub {
     display: flex;
     flex-wrap: wrap;
@@ -764,7 +782,7 @@
   .shead,
   .srow {
     display: grid;
-    grid-template-columns: 26px minmax(0, 1fr) 136px 136px minmax(120px, 210px) 172px;
+    grid-template-columns: 26px minmax(150px, 1fr) 216px minmax(120px, 230px) 172px;
     align-items: center;
     gap: 12px;
     height: 52px;
@@ -787,10 +805,13 @@
     padding-left: 8px;
   }
   .host {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 7px;
     min-width: 0;
+    /* Never into the next column: a long count ("Downloaded 1,234 times") ends in "…" (its
+       title and the details panel have it whole). */
+    overflow: hidden;
     font-size: 12px;
     color: var(--text-2);
     white-space: nowrap;
@@ -855,9 +876,16 @@
   .dl {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: 6px;
+    min-width: 0;
+    margin-left: 8px;
     font-size: 12px;
     white-space: nowrap;
+  }
+  .dltext {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .dot {
     width: 6px;
@@ -906,10 +934,10 @@
     gap: 6px;
   }
   /* The link column gives way first (Copy link and the details panel have it too). */
-  @container (max-width: 940px) {
+  @container (max-width: 800px) {
     .shead,
     .srow {
-      grid-template-columns: 26px minmax(0, 1fr) 136px 136px 172px;
+      grid-template-columns: 26px minmax(0, 1fr) 216px 172px;
     }
     .slink,
     .h-link {
@@ -920,19 +948,19 @@
   @container (max-width: 700px) {
     .shead,
     .srow {
-      grid-template-columns: 26px minmax(0, 1fr) 124px 132px 76px;
+      grid-template-columns: 26px minmax(0, 1fr) 206px 76px;
     }
     .sact .lbl {
       display: none;
     }
   }
+  /* The download count hides (it's in the details panel): the host column narrows again. */
   @container (max-width: 540px) {
     .shead,
     .srow {
       grid-template-columns: 26px minmax(0, 1fr) 124px 76px;
     }
-    .dl,
-    .shead > span:nth-child(4) {
+    .dl {
       display: none;
     }
   }

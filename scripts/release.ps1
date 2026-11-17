@@ -5,8 +5,9 @@
 #
 #   1. Raise the version in src-tauri/Cargo.toml, src-tauri/tauri.conf.json AND package.json (same number).
 #   2. powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Notes "What's new"
-#   3. Upload all the files in dist/<version>/ to a GitHub release tagged v<version> in
-#      sookera/pako-releases (attached to the release, names unchanged):
+#   3. Upload all the files in dist/<version>/ to a DRAFT GitHub release tagged v<version> in
+#      sookera/pako-releases (names unchanged), check it has every file, THEN publish it: the repo
+#      has immutable releases (since 2026-11-18), so no file can be added or changed once published:
 #        Pako.exe        the portable Pako, and the file Pako's own updates download (both kinds)
 #        Pako-Setup.exe  the installer (per user, no admin): same Pako.exe inside
 #        latest.json     what Pako's update check reads (version, SHA-256, signatures)
@@ -221,6 +222,7 @@ try {
     $files = @("Pako.exe", "Pako-Setup.exe", "latest.json", "help.zip", "LICENSE", "NOTICE.md")
     if (Test-Path $signedXpi) { $files += @($xpiName, "pako-firefox.xpi", "firefox-updates.json") }
     Write-Host ("  " + ($files -join ", "))
-    Write-Host "Upload all $($files.Count) to a GitHub release tagged v$version in sookera/pako-releases."
+    Write-Host "Upload all $($files.Count) to a DRAFT release tagged v$version in sookera/pako-releases, check them, then publish it."
+    Write-Host "(Immutable releases: once published, no file can be added or changed.)"
     if (-not (Test-Path $signedXpi)) { Write-Host "(No Firefox extension in this release: Firefox users get no extension update from it.)" }
 } finally { Pop-Location }

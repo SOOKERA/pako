@@ -293,6 +293,30 @@ $("player").addEventListener("click", async () => {
 });
 /* full-only:end */
 
+// Private windows: the browser's own switch for Pako decides ("Allow in Incognito", "Allow in
+// InPrivate", Firefox's "Run in Private Windows"). Only said here, with a way to that switch.
+async function showPrivate() {
+  const r = await api.runtime.sendMessage({ type: "private" }).catch(() => null);
+  if (!r) return;
+  const firefox = !!globalThis.browser?.runtime?.getBrowserInfo;
+  const edge = /Edg\//.test(navigator.userAgent);
+  $("private-state").textContent = r.allowed ? "on" : "off";
+  $("private-text").textContent = r.allowed
+    ? "Pako keeps no trace of those downloads beyond the file."
+    : firefox
+      ? "To use Pako there: Firefox menu › Add-ons and themes › Pako › Run in Private Windows › Allow."
+      : `To use Pako there, turn on "${edge ? "Allow in InPrivate" : "Allow in Incognito"}" on this extension's page.`;
+  // Firefox doesn't let an extension open its add-ons page.
+  $("private-open").hidden = r.allowed || firefox;
+  $("private-line").hidden = false;
+}
+$("private-open").addEventListener("click", () => {
+  const edge = /Edg\//.test(navigator.userAgent);
+  api.tabs.create({ url: `${edge ? "edge" : "chrome"}://extensions/?id=${api.runtime.id}` });
+  window.close();
+});
+showPrivate();
+
 $("take").addEventListener("click", async () => {
   const on = $("take").getAttribute("aria-checked") !== "true";
   $("take").setAttribute("aria-checked", String(on));

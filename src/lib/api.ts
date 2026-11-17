@@ -3,7 +3,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockContactNumbers, mockNotices, mockNumbers, mockParts, mockProgress, mockQr, mockReport, mockSend, mockSnapshot, mockStats } from "./mock";
-import { showcase, showcaseDirect, showcaseDrive } from "./showcase";
+import { showcase, showcaseDirect, showcaseDrive, mockFromChoices, mockRemoteBook, mockRemoteTalk } from "./showcase";
 import type { Go, Notice, NoticePref, PopupCard } from "./notices";
 
 /** False when the page is opened in a normal browser for a design preview. */
@@ -80,8 +80,9 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
       { id: "chrome", name: "Google Chrome", family: "chromium" },
       { id: "edge", name: "Microsoft Edge", family: "chromium" },
       { id: "firefox", name: "Firefox", family: "firefox" },
+      { id: "zen", name: "Zen", family: "firefox" },
     ] as T);
-  // Chrome connected a moment ago; Edge's Pako Light not used for two months; Firefox never.
+  // Chrome connected a moment ago; Edge's Pako Light not used for two months; Firefox and Zen never.
   if (cmd === "browsers_connected")
     return Promise.resolve([
       { browser: "chrome", edition: "full", version: "1.4.0", lastSeen: Math.floor(Date.now() / 1000) - 3600 },
@@ -89,7 +90,7 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     ] as T);
   if (cmd === "add_to_browser")
     return Promise.resolve(
-      (args?.id === "firefox"
+      (["firefox", "zen", "librewolf", "waterfox", "floorp"].includes(String(args?.id))
         ? { folder: "C:\\Pako\\data\\extension", copied: false, opened: "firefox" }
         : { folder: "C:\\Pako\\data\\extension\\chromium", copied: true, opened: "extensions" }) as T,
     );
@@ -99,7 +100,10 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (cmd === "preview_check") return new Promise((ok, no) => setTimeout(() => (showcase ? ok(undefined as T) : no("Preview mode: nothing is fetched from the site.")), 900));
   if (cmd === "send_state") return Promise.resolve(structuredClone(mockSend) as T);
   if (cmd === "direct_state") return Promise.resolve(mockDirect() as T);
-  if (cmd === "direct_send") return Promise.reject("Preview mode: nothing is sent");
+  if (cmd === "direct_send" || cmd === "direct_relay_send") return Promise.reject("Preview mode: nothing is sent");
+  if (cmd === "direct_from_choices") return Promise.resolve(mockFromChoices() as T);
+  if (cmd === "direct_remote_contacts") return Promise.resolve(mockRemoteBook(String(args?.device ?? "")) as T);
+  if (cmd === "direct_remote_talk") return Promise.resolve(mockRemoteTalk(String(args?.device ?? ""), String(args?.contact ?? "")) as T);
   if (cmd.startsWith("direct_")) return Promise.resolve(undefined as T);
   if (cmd === "send_start") return Promise.reject("Preview mode: nothing is uploaded");
   if (cmd === "sent_check") return Promise.resolve(true as T);
@@ -112,6 +116,12 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     return Promise.resolve(undefined as T);
   }
   if (cmd === "sent_qr") return Promise.resolve(mockQr(String(args?.id ?? "")) as T);
+  // Design preview: a private row's ✕ takes it off until the page reloads.
+  if (cmd === "forget_private") {
+    const i = mockSnapshot.downloads.findIndex((d) => d.id === args?.id && d.private && d.status === "completed");
+    if (i >= 0) mockSnapshot.downloads.splice(i, 1);
+    return Promise.resolve(undefined as T);
+  }
   // Design preview: the bell's lines (changes stay until the page reloads).
   if (cmd === "notices_list") return Promise.resolve(structuredClone(mockNotices) as T);
   if (cmd === "notices_read") {
@@ -262,6 +272,23 @@ export interface Download {
   mirrors?: Mirror[];
   /** Hosts that already failed for good, in the order tried. */
   tried?: Mirror[];
+  /** Pako couldn't get it itself: the browser downloads it and Pako follows it ("Via browser"). */
+  viaBrowser?: ViaBrowser;
+  /** Its name was picked by you (kept when the browser's file comes in). */
+  named?: boolean;
+  /** From a private browser window: no trace beyond the file, off the list soon after it's done. */
+  private?: boolean;
+}
+
+/** A download the browser makes for Pako ("Via browser"). */
+export interface ViaBrowser {
+  /** The browser's id for it (-1 = not reported yet). */
+  browserId: number;
+  /** Where the browser saves it. */
+  path: string;
+  /** The browser can pause and resume it. */
+  canResume: boolean;
+  light: boolean;
 }
 
 /** One host offering a file: a backup of a download, or a host it already tried. */
@@ -292,6 +319,8 @@ export interface Settings {
   quiet: boolean;
   /** No pop-ups while Windows says not now (full screen, presenting, Windows' Do not disturb). */
   followWindowsQuiet: boolean;
+  /** A short chime when a download with its own "Notify when done" finishes (not at quiet times). */
+  playDoneSound: boolean;
   /** Split archives: extract when all parts are done (the default for new sets). */
   extractDefault: boolean;
   /** Minimize hides Pako in the taskbar tray. */
@@ -316,8 +345,16 @@ export interface Settings {
   browserConnect: boolean;
   /** Send (older setting, only carried over): "off", "auto" or "max". */
   sendCompression: "off" | "auto" | "max";
-  /** Send, several files: as they are (default), one ZIP, or a compressed ZIP. null = not chosen yet. */
+  /** Send, several files: as they are (default), one ZIP, a compressed ZIP, or one ZIP in parts. null = not chosen yet. */
   sendMode: SendMode | null;
+  /** "ZIP in parts": each part's size in MB (500 by default; 50 MB to 10 GB). */
+  sendPartMb: number;
+  /** The part size was typed in (Custom), so 1024 shows as Custom, not "1 GB". */
+  sendPartCustom: boolean;
+  /** A ZIP in parts upload that stopped carries on by itself when Pako starts (off: waits for Try again). */
+  resumeUploadsOnStart: boolean;
+  /** When a finished private download ("Done · private") leaves the list by itself (missing = "10m"). */
+  privateKeep?: PrivateKeep;
   /** Where Send uploads to: Gofile (default, no account) or your Google Drive. */
   sendHost: SendHost;
   /** "Delete after" in the New upload basket (days; 0 = keep). The last choice is remembered. */
@@ -365,6 +402,9 @@ export interface Settings {
 /** Direct › "Be visible to Pakos on this network": "home" only while Windows marks every network
  *  this PC is on as Private (or Domain), or always, or never. */
 export type DirectVisible = "home" | "always" | "never";
+
+/** Settings › Downloads › Advanced: 10 minutes after it finished, an hour after, or when Pako closes. */
+export type PrivateKeep = "10m" | "1h" | "close";
 
 /** Settings › Window › Theme: "system" follows Windows' app mode. */
 export type ThemeChoice = "dark" | "light" | "system";
@@ -475,9 +515,9 @@ export interface SetupChoices {
 
 /** A browser the Pako extension can be added to. */
 export interface Browser {
-  id: "chrome" | "edge" | "brave" | "vivaldi" | "opera" | "operagx" | "firefox";
+  id: "chrome" | "edge" | "brave" | "vivaldi" | "opera" | "operagx" | "firefox" | "zen" | "librewolf" | "waterfox" | "floorp";
   name: string;
-  /** "chromium": Load unpacked. "firefox": the signed .xpi. */
+  /** "chromium": Load unpacked. "firefox": the signed .xpi (Firefox, Zen, LibreWolf, Waterfox, Floorp). */
   family: "chromium" | "firefox";
 }
 
@@ -673,7 +713,7 @@ export interface Part {
 }
 
 /** How several files are sent. */
-export type SendMode = "files" | "zip" | "compress";
+export type SendMode = "files" | "zip" | "compress" | "parts";
 export type SendHost = "gofile" | "drive";
 /** A picked file or folder in the Send basket, measured: folders count all their files. */
 export interface PathSize {
@@ -712,6 +752,12 @@ export interface SendJob {
   host?: SendHost;
   /** Its "Delete after" (days; 0 = keep): "Try again" keeps it. */
   deleteDays?: number;
+  /** "ZIP in parts": the part size (MB; 0 = not in parts), how many parts (once made), and
+   *  while they're being made (before uploading), how many bytes of them so far. */
+  partMb?: number;
+  parts?: number;
+  making?: boolean;
+  made?: number;
 }
 
 /** Something sent before, with its link. */
@@ -731,6 +777,8 @@ export interface SentItem {
   host?: "drive" | null;
   /** Not all files are up (cancelled, failed or Pako closed): the ones that are stay listed. */
   incomplete?: boolean;
+  /** "ZIP in parts": how many parts (missing = not sent in parts). */
+  parts?: number;
   /** Pako has the Gofile key for it, so it can be deleted from Gofile. */
   canDelete?: boolean;
   /** Times downloaded, as Gofile said at the last check (missing = not known). */
@@ -825,7 +873,30 @@ export interface DirectContact {
   theirName: string | null;
   /** They declined connecting (or removed you): Pako only asks again when you press Connect. */
   declined?: boolean;
+  /** Not connected because nothing was happening (with many contacts, quiet connections
+   *  close): they were there a moment ago, and opening their conversation calls them again. */
+  idle?: boolean;
+  /** Mute: no pop-up, chime or bell line from them (their offers still wait). */
+  muted?: boolean;
+  /** "Check this contact" as chosen (missing = "auto"). */
+  check?: DirectCheck;
+  /** ms: when Often ends (then it goes back to `checkBefore`, else Automatic). */
+  checkUntil?: number | null;
+  /** While Often runs: the choice it goes back to ("ask"); left out for Automatic. */
+  checkBefore?: DirectCheck | null;
+  /** The same, Automatic resolved ("often" for My devices). */
+  checkAs?: DirectCheck;
+  /** "Not checked lately": not called in the background (30 days with nothing, or only when
+   *  you ask) and not connected. */
+  unchecked?: boolean;
+  /** ms: the last transfer, send, call from them or Check now. */
+  lastActivity?: number | null;
 }
+
+/** "Check this contact": Often (for a while), Automatic, or only when you ask. */
+export type DirectCheck = "often" | "auto" | "ask";
+/** How long "Often for…" lasts: an hour, until midnight, a week. */
+export type OftenFor = "hour" | "today" | "week";
 
 export interface DirectRequest {
   peer: string;
@@ -856,10 +927,80 @@ export interface DirectTransfer {
   files: number;
   size: number;
   done: number;
-  /** offered, preparing, sending, receiving, checking */
+  /** offered, preparing, sending, receiving, checking, or waiting (cut short: continues when
+   *  both PCs are connected again) */
   state: string;
   path: string | null;
   message: string | null;
+  /** A send passed on for another of your PCs: its name ("from Laptop"). */
+  via?: string | null;
+  /** The first leg of a relay (between your devices): who it's for ("for Rado"). */
+  relayTo?: string | null;
+}
+
+/** A Direct relay through one of your devices (Direct › From: Home PC). `mine`: this PC asked;
+ *  else this PC passes the files on. */
+export interface DirectRelay {
+  id: string;
+  mine: boolean;
+  device: string;
+  deviceName: string;
+  /** The contact (their Pako ID on the relaying PC) and their name there. */
+  to: string;
+  toName: string;
+  name: string;
+  files: number;
+  size: number;
+  date: number;
+  ended: number | null;
+  /** sending (to the device), waiting (for the contact), offered, sending (to the contact),
+   *  paused, delivered, declined, failed, cancelled, expired */
+  state: string;
+  message: string | null;
+  /** The first leg: bytes there, and its state while it runs. */
+  leg1Done: number;
+  leg1State: string | null;
+  /** The second leg: bytes at the contact. */
+  done: number;
+  keep: boolean;
+  /** The first leg got there (the relaying PC has the files). */
+  reached: boolean;
+}
+
+/** One of your devices Direct can send from (the "From" menu). */
+export interface DirectFrom {
+  id: string;
+  /** Your name for it. */
+  name: string;
+  /** The name it gives itself, when different. */
+  pcName: string | null;
+  /** The name its Direct contacts see. */
+  directName: string;
+  contacts: number;
+  online: boolean;
+}
+
+/** One of that PC's Direct contacts (shown only). */
+export interface RemoteContact {
+  id: string;
+  name: string;
+  theirName?: string | null;
+  online: boolean;
+  path?: string | null;
+  lastSeen?: number | null;
+  favourite: boolean;
+  trusted: boolean;
+  declined: boolean;
+}
+
+export interface RemoteBook {
+  me: { id: string; name: string };
+  contacts: RemoteContact[];
+}
+
+export interface RemoteTalk {
+  history: DirectHistory[];
+  moving: (Omit<DirectTransfer, "contact"> & { via?: string | null })[];
 }
 
 export interface DirectHistory {
@@ -880,6 +1021,10 @@ export interface DirectHistory {
   durationMs?: number;
   avgSpeed?: number;
   peakSpeed?: number;
+  /** A send passed on for another of your PCs: its name ("from Laptop"). */
+  via?: string | null;
+  /** The first leg of a relay: who it's for ("for Rado"). */
+  relayTo?: string | null;
 }
 
 export interface DirectState {
@@ -898,6 +1043,8 @@ export interface DirectState {
   firstStart?: boolean;
   /** A relay answered lately; false = offline (contacts elsewhere aren't reachable). */
   internet?: boolean;
+  /** Direct relays through your devices, both ways. */
+  relays?: DirectRelay[];
 }
 
 /** Design preview: two contacts (one online) and a short history. */
@@ -1002,6 +1149,7 @@ export const api = {
   sendDriveSignOut: () => invoke<void>("send_drive_sign_out"),
   /** How much a send of these files would upload. */
   sendMeasure: (paths: string[], mode: SendMode | null = null) => invoke<number>("send_measure", { paths, mode }),
+  /** `partMb`: "ZIP in parts"' part size for this upload (null = the setting). */
   /** `name` = the folder or ZIP name you gave the send (null = Pako's usual name). */
   /** `deleteDays`: "Delete after" for this upload (0 = keep; null = the setting). */
   /** `host`: where this upload goes ("Try again" keeps it; null = the setting). */
@@ -1011,7 +1159,8 @@ export const api = {
     name: string | null = null,
     deleteDays: number | null = null,
     host: SendHost | null = null,
-  ) => invoke<string>("send_start", { paths, mode, name, deleteDays, host }),
+    partMb: number | null = null,
+  ) => invoke<string>("send_start", { paths, mode, name, deleteDays, host, partMb }),
   /** Sizes of the files and folders in the Send basket. */
   sendSizes: (paths: string[]) => invoke<PathSize[]>("send_sizes", { paths }),
   sendResume: (id: string) => invoke<boolean>("send_resume", { id }),
@@ -1105,6 +1254,8 @@ export const api = {
   /** Agree and continue: saves the terms' date, and everything that waited for it starts. */
   acceptTerms: () => invoke<void>("accept_terms"),
   openItem: (id: string, reveal: boolean) => invoke<void>("open_item", { id, reveal }),
+  /** The ✕ on a "Done · private" row: off the list now (the file stays). */
+  forgetPrivate: (id: string) => invoke<void>("forget_private", { id }),
   openLink: (id: string) => invoke<void>("open_link", { id }),
   openFolder: (path: string) => invoke<void>("open_folder", { path }),
   extensionFiles: () => invoke<string>("extension_files"),
@@ -1123,16 +1274,30 @@ export const api = {
     invoke<void>("direct_edit_contact", { id, name: change.name ?? null, autoAccept: change.autoAccept ?? null, folder: change.folder ?? null }),
   directRemoveContact: (id: string) => invoke<void>("direct_remove_contact", { id }),
   directSetFavourite: (id: string, on: boolean) => invoke<void>("direct_set_favourite", { id, on }),
+  directSetMuted: (id: string, on: boolean) => invoke<void>("direct_set_muted", { id, on }),
+  directSetCheck: (id: string, check: DirectCheck, span?: OftenFor) => invoke<void>("direct_set_check", { id, check, span: span ?? null }),
   directSetTags: (id: string, tags: string[]) => invoke<void>("direct_set_tags", { id, tags }),
   directAddTag: (name: string) => invoke<string>("direct_add_tag", { name }),
   directRenameTag: (old: string, newName: string) => invoke<void>("direct_rename_tag", { old, new: newName }),
   directDeleteTag: (name: string) => invoke<void>("direct_delete_tag", { name }),
   directConnect: (id: string) => invoke<void>("direct_connect", { id }),
+  /** The conversation shown (null: none): Pako keeps it connected and calls them at once. */
+  directShown: (id: string | null) => invoke<void>("direct_shown", { id }),
   directAnswerRequest: (peer: string, accept: boolean) => invoke<void>("direct_answer_request", { peer, accept }),
   directAnswerOffer: (id: string, accept: boolean, folder: string | null = null) => invoke<void>("direct_answer_offer", { id, accept, folder }),
   directSend: (contact: string, paths: string[], compress: boolean, name: string | null) =>
     invoke<string>("direct_send", { contact, paths, compress, name }),
   directCancel: (id: string) => invoke<void>("direct_cancel", { id }),
+  /** Direct › From: your devices Direct can send from (online or not). */
+  directFromChoices: () => invoke<DirectFrom[]>("direct_from_choices"),
+  /** That PC's Direct contacts, read live. */
+  directRemoteContacts: (device: string) => invoke<RemoteBook>("direct_remote_contacts", { device }),
+  /** That PC's history with one of its contacts, read live. */
+  directRemoteTalk: (device: string, contact: string) => invoke<RemoteTalk>("direct_remote_talk", { device, contact }),
+  /** Sends to one of that PC's contacts, through it. `keep`: keep a copy there once delivered. */
+  directRelaySend: (device: string, contact: string, contactName: string, paths: string[], compress: boolean, name: string | null, keep: boolean) =>
+    invoke<string>("direct_relay_send", { device, contact, contactName, paths, compress, name, keep }),
+  directRelayCancel: (id: string) => invoke<void>("direct_relay_cancel", { id }),
   directClearHistory: (contact: string | null) => invoke<void>("direct_clear_history", { contact }),
   /** True: it's a program or script, so it was shown in its folder instead of opened. */
   directOpen: (id: string, reveal: boolean) => invoke<boolean>("direct_open", { id, reveal }),

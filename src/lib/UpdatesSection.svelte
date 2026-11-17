@@ -10,6 +10,8 @@
   import { bytes } from "./format";
   import Icon from "./Icon.svelte";
   import { rowSlide } from "./motion";
+  import Collapse from "./Collapse.svelte";
+  import AdvancedFold from "./AdvancedFold.svelte";
 
   let { autoUpdate = $bindable(), onsetup }: { autoUpdate: boolean; onsetup: () => void } = $props();
 
@@ -42,6 +44,16 @@
   let list = $state<ComponentStatus[]>([]);
   let checking = $state(false);
   let open = $state<Record<string, boolean>>({});
+  /** "What Pako can do": folded by default, opened by hand, or by itself when a tool has an update. */
+  let toolsOpen = $state(false);
+  /** Ready = every tool it needs is in place (one waiting for an update still works). */
+  const readyCount = $derived(FEATURES.filter((f) => !f.soon && f.kinds.every((k) => tool(k)?.installed)).length);
+  /** The tools' state arrived (until then the summary says nothing, rather than "0 of 3 ready"). */
+  let loaded = $state(false);
+  const updateCount = $derived(FEATURES.filter((f) => featureState(f) === "update").length);
+  $effect(() => {
+    if (updateCount > 0) toolsOpen = true;
+  });
   let removing = $state<string | null>(null);
 
   onMount(() => {
@@ -55,7 +67,12 @@
   });
 
   async function reload() {
-    list = await api.componentsStatus().catch(() => list);
+    try {
+      list = await api.componentsStatus();
+      loaded = true;
+    } catch {
+      // Kept as it was.
+    }
   }
 
   const tool = (k: ComponentKind) => list.find((c) => c.kind === k);
@@ -108,6 +125,7 @@
     checking = true;
     try {
       list = await api.componentsCheck();
+      loaded = true;
     } catch (e) {
       app.toast(String(e), "error");
     } finally {
@@ -167,24 +185,23 @@
       <button class="switch" class:on={autoUpdate} role="switch" aria-checked={autoUpdate} aria-label="Update Pako and its tools automatically" onclick={() => (autoUpdate = !autoUpdate)}></button>
     </div>
   </div>
-  <div class="line">
-    <div>
-      <div class="t">First-start setup</div>
-      <div class="muted">Go through the welcome questions again.</div>
-    </div>
-    <div class="ctrl">
-      <button class="btn" onclick={onsetup}>Run setup again</button>
-    </div>
-  </div>
 
+  <div data-fold>
   <div class="fhead">
-    <div>
-      <div class="t">What Pako can do</div>
-      <div class="muted">Some features use free tools that Pako downloads from their official sources and checks that each one arrived intact.</div>
-    </div>
+    <button class="fold" data-fold-toggle aria-expanded={toolsOpen} aria-controls="set-tools" onclick={() => (toolsOpen = !toolsOpen)}>
+      <span class="chev" class:on={toolsOpen}><Icon name="chevron" size={12} stroke={2.6} /></span>
+      <span>
+        <span class="t">What Pako can do</span>
+        <span class="muted sum">
+          {#if loaded}{readyCount} of {FEATURES.filter((f) => !f.soon).length} ready{:else}&nbsp;{/if}{#if updateCount}<span class="upd">{" · "}{updateCount} {updateCount === 1 ? "update" : "updates"}</span>{/if}
+        </span>
+      </span>
+    </button>
     <button class="btn" disabled={checking} onclick={checkTools}>{checking ? "Checking…" : "Check for new versions"}</button>
   </div>
 
+  <Collapse open={toolsOpen} id="set-tools">
+  <div class="muted fnote">Some features use free tools that Pako downloads from their official sources and checks that each one arrived intact.</div>
   <div class="feats">
     {#each FEATURES as f (f.id)}
       {@const st = featureState(f)}
@@ -246,19 +263,32 @@
       </div>
     {/each}
   </div>
+  </Collapse>
+  </div>
+
+  <AdvancedFold tab="updates" hint="First-start setup">
+    <div class="line">
+      <div>
+        <div class="t">First-start setup</div>
+        <div class="muted">Go through the welcome questions again.</div>
+      </div>
+      <div class="ctrl">
+        <button class="btn" onclick={onsetup}>Run setup again</button>
+      </div>
+    </div>
+  </AdvancedFold>
 </section>
 
 <style>
-  /* The same raised card as the other sections of Settings (SettingsDialog.svelte). */
+  /* The same raised card as the other tabs of Settings (SettingsDialog.svelte). */
   section {
-    margin-top: 14px;
     padding: 16px 18px 18px;
     background: var(--card);
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
   }
   h3 {
-    margin: 0 0 4px;
+    margin: -2px 0 4px;
     font-size: 14px;
     font-weight: 600;
     letter-spacing: 0;
@@ -279,6 +309,41 @@
   }
   .fhead .btn {
     flex: none;
+  }
+  .fold {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .fold > span:last-child {
+    display: flex;
+    flex-direction: column;
+  }
+  .fold .t {
+    margin-bottom: 2px;
+  }
+  .chev {
+    display: inline-flex;
+    color: var(--text-3);
+    transform: rotate(-90deg);
+    transition: transform 0.16s ease;
+  }
+  .chev.on {
+    transform: none;
+  }
+  .sum .upd {
+    color: var(--st-done-text);
+  }
+  .fnote {
+    margin: 10px 0 0 20px;
   }
   .t {
     font-weight: 500;

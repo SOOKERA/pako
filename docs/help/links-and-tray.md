@@ -41,10 +41,10 @@ Once that PC took them, they leave **Links** here, and a message says so: "Added
 
 - **Folders**: a Drive folder or a playlist shows as a block. Click it to open or close it, and tick the box on its header to pick every file in it.
 - **Added on**: when each link was added. Click a column title to sort by it.
-- **Split archive** sets (.part1.rar, .7z.001…) are grouped, and **Incomplete set** warns when parts are missing.
+- **Split archive** sets (.part1.rar, .7z.001, .zip.001…) are grouped, and **Incomplete set** warns when parts are missing.
 - **Ready · Google limit today**: a Drive file that can be downloaded, but Google's daily limit for it is reached. See [Google limit](downloading.md#google-limit-too-many-downloads-today).
 - Select a link to see its details on the right: type, size, and for videos the **Quality**. You can also set its **Save to** folder, **Priority**, **Notify when done** and (with My devices) **Download on** there, before it downloads.
-- A link to a video file (.mp4, .mkv…) also gets a **Preview** in its details: play a short check that it's the right video before downloading it (**Settings › Downloads › Video preview quality**). MP4 and WebM play as they are; other types, and the preview quality, need **Preview more video types** in **Settings › Features & updates**.
+- A link to a video file (.mp4, .mkv…) also gets a **Preview** in its details: play a short check that it's the right video before downloading it (**Settings › Downloads › Advanced › Video preview quality**). MP4 and WebM play as they are; other types, and the preview quality, need **Preview more video types** in **Settings › Features & updates**.
 - A YouTube (or other video site) link gets a **Preview** too: click play for about 20 seconds at 480p, just to check it's the right video (see [Videos](videos.md)).
 
 ### Same file on several hosts
@@ -62,7 +62,7 @@ Sometimes the same file is offered on several sites. When links in **Links** poi
   - the same size, and the new host can send a file part-way: Pako first downloads a few small pieces from the new host (near the start, the middle and the end of what it has) and compares them with the file so far. All the same: it carries on where A stopped. Any difference: it starts again from zero and says why, for example "B has a different version of the file: starting over". A piece it can't get right now (no connection, a busy server) is asked again a little later, and what it has stays; if B gives up for good meanwhile, or doesn't answer for 5 minutes, Pako goes on to the next host and compares there;
   - another size, or a host that can't send a file part-way: it starts again from zero.
 
-  Bytes from two hosts are never mixed on a guess. A Google Drive file is still checked as a whole at the end (when **Check Drive files when finished** is on in Settings); if that check fails after changing host, Pako starts that file again from zero on the same host and says so.
+  Bytes from two hosts are never mixed on a guess. A Google Drive file is still checked as a whole at the end (when **Check Drive files when finished** is on, in **Settings › Downloads › Advanced**); if that check fails after changing host, Pako starts that file again from zero on the same host and says so.
 - After Google's daily limit, Pako tries again by itself on the same host every few hours; **Try again** goes round all the hosts again.
 - A split archive on several hosts stays one set: its parts on several hosts show **on 2 hosts**, and **Hosts** in the set's details picks one host for all of them.
 
@@ -102,5 +102,7 @@ Pako lives in the taskbar's tray, next to the clock. Its icon gives you a small 
 - **Always on top** (the pin) keeps the window open where you put it, even when you click somewhere else. Drag it anywhere; Pako remembers the spot.
 - Without the pin, the window closes when you click somewhere else.
 - **Minimize** and **Close** hide it. One click on the tray icon brings it back.
+
+While the window is open, a finished download doesn't get a **Download finished** pop-up too: you see it finish here (see [Notifications](notifications.md)).
 
 With **Settings › Browser extension › Show the small window when a browser download starts** on, it opens by itself when a download arrives from your browser (at the bottom right, or where you pinned it), without taking you away from the browser.

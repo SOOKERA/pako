@@ -20,7 +20,9 @@
 mod local;
 mod netkind;
 mod node;
+mod pace;
 mod proto;
+mod resume;
 mod store;
 
 use std::path::{Path, PathBuf};
@@ -35,6 +37,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub use node::{Node, State};
 use node::devices::{self, Added, Host, ToAdd};
+use node::relay::{RelayChoice, RemoteBook, RemoteTalk};
 pub(crate) use node::devices::open_here_first;
 use proto::{LinkOpts, Order, RemoteItem};
 pub use proto::runs_code;
@@ -298,7 +301,7 @@ fn begin(app: AppHandle) {
         // network answer (the ones found there are called at once, above).
         let _ = tokio::time::timeout(Duration::from_secs(20), node.ep.online()).await;
         tokio::spawn(node.clone().internet_loop(OFFLINE_AFTER));
-        tokio::spawn(node.clone().presence_loop(PRESENCE_EVERY));
+        tokio::spawn(node.clone().presence_loop());
         let _ = app.emit("direct-changed", ());
         // Progress to the window twice a second while files move.
         loop {
@@ -511,6 +514,19 @@ fn with_quality(mut l: LinkOpts, default_quality: u32) -> LinkOpts {
         l.quality = None;
     }
     l
+}
+
+/// "Check this contact" as the window says it: "often" with how long ("hour", "today",
+/// "week"), "auto" or "ask".
+pub fn parse_check(s: &str, span: Option<&str>) -> Result<(pace::Check, Option<pace::OftenFor>), String> {
+    match (s, span) {
+        ("often", Some("hour")) => Ok((pace::Check::Often, Some(pace::OftenFor::Hour))),
+        ("often", Some("today")) => Ok((pace::Check::Often, Some(pace::OftenFor::Today))),
+        ("often", Some("week")) => Ok((pace::Check::Often, Some(pace::OftenFor::Week))),
+        ("auto", _) => Ok((pace::Check::Auto, None)),
+        ("ask", _) => Ok((pace::Check::Ask, None)),
+        _ => Err("Unknown choice.".into()),
+    }
 }
 
 fn engine_of(app: &AppHandle) -> Option<Arc<crate::engine::Engine>> {
@@ -811,6 +827,40 @@ pub async fn devices_item(d: Dir<'_>, id: String, item: String, action: String) 
         _ => return Err("Unknown action.".into()),
     };
     d.node()?.device_order(&id, order).await
+}
+
+// ---------- Direct relay: sending from another of your PCs ----------
+
+/// Your devices Direct can send from (the "From" menu): online or not, by name.
+#[tauri::command]
+pub fn direct_from_choices(d: Dir<'_>) -> Vec<RelayChoice> {
+    d.node().map(|n| n.relay_choices()).unwrap_or_default()
+}
+
+/// That PC's Direct contacts, read live.
+#[tauri::command]
+pub async fn direct_remote_contacts(d: Dir<'_>, device: String) -> Result<RemoteBook, String> {
+    d.node()?.remote_book(&device).await
+}
+
+/// That PC's history with one of its contacts, read live.
+#[tauri::command]
+pub async fn direct_remote_talk(d: Dir<'_>, device: String, contact: String) -> Result<RemoteTalk, String> {
+    d.node()?.remote_talk(&device, &contact).await
+}
+
+/// Sends files to one of that PC's contacts, through that PC. `keep`: keep a copy there.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn direct_relay_send(d: Dir<'_>, device: String, contact: String, contact_name: String, paths: Vec<String>, compress: bool, name: Option<String>, keep: bool) -> Result<String, String> {
+    let node = d.node()?;
+    node.relay_send(&device, &contact, &contact_name, paths.into_iter().map(PathBuf::from).collect(), compress, name, keep).await
+}
+
+/// Stops a relay this PC asked for.
+#[tauri::command]
+pub fn direct_relay_cancel(d: Dir<'_>, id: String) -> Result<(), String> {
+    d.node()?.relay_cancel(&id)
 }
 
 #[cfg(test)]

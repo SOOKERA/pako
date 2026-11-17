@@ -15,7 +15,7 @@
   import BottomBar from "$lib/BottomBar.svelte";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import AddDialog from "$lib/AddDialog.svelte";
-  import SettingsDialog from "$lib/SettingsDialog.svelte";
+  import SettingsDialog, { type SettingsTab } from "$lib/SettingsDialog.svelte";
   import RenameDialog from "$lib/RenameDialog.svelte";
   import Modal from "$lib/Modal.svelte";
   import Toasts from "$lib/Toasts.svelte";
@@ -39,7 +39,7 @@
 
   let titleBar: ReturnType<typeof TitleBar> | undefined = $state();
   let addText = $state<string | null>(null);
-  let settingsOpen = $state<false | "general" | "accounts" | "browser" | "notices">(false);
+  let settingsOpen = $state<false | "general" | SettingsTab>(false);
   /** The extension's "Open Pako" button (a pako:// link): how connecting went. */
   let linkResult = $state<PakoLinkResult | null>(null);
 
@@ -161,8 +161,12 @@
   });
   const sel = $derived(app.selectedDownloads);
   const selSize = $derived(sel.reduce((s, d) => s + (d.size ?? 0), 0));
-  const canResume = (d: Download) => d.status === "paused" || d.status === "failed" || d.status === "quotaExceeded" || d.status === "needsAccount";
-  const canPause = (d: Download) => isActive(d.status) || d.status === "queued";
+  // A "Via browser" one: the browser pauses and resumes it (through the extension), when it can.
+  const canResume = (d: Download) =>
+    d.viaBrowser
+      ? d.viaBrowser.browserId >= 0 && (d.status === "paused" || (d.status === "failed" && d.viaBrowser.canResume))
+      : d.status === "paused" || d.status === "failed" || d.status === "quotaExceeded" || d.status === "needsAccount";
+  const canPause = (d: Download) => (d.viaBrowser ? d.status === "downloading" : isActive(d.status) || d.status === "queued");
   // Nothing selected: the downloads shown under the current filter/search, never hidden ones.
   const resumeTargets = $derived((sel.length ? sel : app.visible).filter(canResume));
   const pauseTargets = $derived((sel.length ? sel : app.visible).filter(canPause));
@@ -218,7 +222,10 @@
     const one = ds.length === 1 ? ds[0] : null;
     const count = ds.length > 1 ? ` ${ds.length}` : "";
     const idsOf = (pred: (d: Download) => boolean) => ds.filter(pred).map((d) => d.id);
-    const startable = idsOf((d) => d.status !== "completed" && !isActive(d.status));
+    const startable = idsOf((d) => d.status !== "completed" && !isActive(d.status) && !d.viaBrowser);
+    // Downloads the browser makes for Pako ("Via browser"): Pako's queue and parts don't apply.
+    const browserOnly = ds.every((d) => d.viaBrowser);
+    const NOT_HERE = "browser";
     const pausable = idsOf(canPause);
     const resumable = idsOf(canResume);
     const anyFailed = ds.some((d) => d.status === "failed" || d.status === "quotaExceeded" || d.status === "needsAccount");
@@ -229,16 +236,18 @@
           app.run(() => api.downloadFirst(startable)).then(() => {
             if (!scheduleOpen(app.settings)) app.toast("Starting now, outside the scheduled download hours");
           }) });
+    else if (browserOnly && ds.some((d) => d.status !== "completed")) items.push({ label: "Download first", icon: "up", hint: NOT_HERE, disabled: true });
     if (pausable.length) items.push({ label: `Pause${count}`, icon: "pause", action: () => app.run(() => api.pause(pausable)) });
     if (resumable.length)
       items.push({ label: anyFailed ? `Try again${count}` : `Resume${count}`, icon: anyFailed ? "retry" : "play", action: () => app.run(() => api.resume(resumable)) });
-    items.push({ label: "Start over", icon: "restart", action: () => askStartOver(ds) });
+    if (browserOnly) items.push({ label: "Start over", icon: "restart", hint: NOT_HERE, disabled: true });
+    else items.push({ label: "Start over", icon: "restart", action: () => askStartOver(ds.filter((d) => !d.viaBrowser)) });
     items.push({ separator: true });
     if (one?.status === "completed") items.push({ label: "Open file", icon: "open", hint: "Enter", action: () => app.run(() => api.openItem(one.id, false)) });
     items.push({ label: "Show in folder", icon: "folder", disabled: !one, action: () => one && app.run(() => api.openItem(one.id, true)) });
     if (one) items.push({ label: "Open link in browser", icon: "globe", action: () => app.run(() => api.openLink(one.id)) });
     items.push({ label: ds.length > 1 ? `Copy ${ds.length} links` : "Copy link", icon: "link", action: () => copyLinks(ds) });
-    if (one) items.push({ label: "Rename…", icon: "pencil", hint: "F2", disabled: isActive(one.status), action: () => (renaming = one) });
+    if (one) items.push({ label: "Rename…", icon: "pencil", hint: "F2", disabled: isActive(one.status) && !one.viaBrowser, action: () => (renaming = one) });
     // Google only gives it in the browser, or today's limit is reached: its page in Drive
     // (download there, or make a copy in your Drive: Pako catches that download).
     if (one?.status === "needsAccount" || one?.status === "quotaExceeded") {
@@ -252,9 +261,10 @@
       const notifying = unfinished.every((d) => d.notify);
       items.push({ label: "Notify when done", icon: "bell", hint: notifying ? "✓" : "", action: () => app.run(() => api.setNotify(ids, !notifying)) });
       const all = (p: Priority) => unfinished.every((d) => d.priority === p);
-      items.push({ label: "Priority: First", icon: "up", hint: all("first") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "first")) });
-      items.push({ label: "Priority: Normal", icon: "minus", hint: all("normal") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "normal")) });
-      items.push({ label: "Priority: Later", icon: "down", hint: all("later") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "later")) });
+      const off = browserOnly ? { hint: NOT_HERE, disabled: true } : {};
+      items.push({ label: "Priority: First", icon: "up", hint: all("first") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "first")), ...off });
+      items.push({ label: "Priority: Normal", icon: "minus", hint: all("normal") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "normal")), ...off });
+      items.push({ label: "Priority: Later", icon: "down", hint: all("later") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "later")), ...off });
       items.push({ separator: true });
     }
     items.push({ label: "Move to top of queue", icon: "top", action: () => app.run(() => api.moveInQueue(ds.map((d) => d.id), true)).then(() => app.queueHint()) });
@@ -522,7 +532,7 @@
 
 {#if settingsOpen && app.settings}
   <SettingsDialog
-    section={settingsOpen === "accounts" || settingsOpen === "browser" || settingsOpen === "notices" ? settingsOpen : undefined}
+    section={settingsOpen === "general" ? undefined : settingsOpen}
     {linkResult}
     onclose={() => {
       settingsOpen = false;

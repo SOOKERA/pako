@@ -201,6 +201,21 @@ mod tests {
         assert!(sets.iter().all(|s| s.base != "C"));
     }
 
+    /// Pako's own "ZIP in parts" uploads (Name.zip.001, .002...) are one set, opened from .001.
+    #[test]
+    fn zip_parts_are_a_set() {
+        let names = ["Photos and 2 more.zip.002", "Photos and 2 more.zip.001", "Photos and 2 more.zip.003", "readme.txt"];
+        let sets = find_sets(&names);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].base, "Photos and 2 more");
+        assert_eq!(sets[0].members.len(), 3);
+        assert!(sets[0].missing.is_empty());
+        assert_eq!(names[sets[0].first], "Photos and 2 more.zip.001");
+        let gap = find_sets(&["X.zip.001", "X.zip.003"]);
+        assert_eq!(gap[0].missing, vec!["part 002 missing"]);
+        assert_eq!(set_key("x.ZIP.004").as_deref(), Some(gap[0].key.as_str()));
+    }
+
     #[test]
     fn a_later_part_finds_its_set() {
         let sets = find_sets(&["X.part1.rar", "X.part2.rar"]);

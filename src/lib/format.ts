@@ -212,6 +212,19 @@ export function statusLook(s: Status, message?: string | null): StatusLook {
   }
 }
 
+/** A download's look: its status, said the "Via browser" way when the browser downloads it for
+ *  Pako (people expect Pako's multi-part speed, so the list says when the browser is the limit),
+ *  and "Done · private" for a private window's finished download (it leaves the list soon). */
+export function downloadLook(d: Pick<Download, "status" | "message" | "viaBrowser" | "private">): StatusLook {
+  const look = statusLook(d.status, d.message);
+  if (d.status === "completed" && d.private) return { ...look, label: "Done · private" };
+  if (!d.viaBrowser) return look;
+  if (d.message === "Waiting for your browser") return { ...look, label: "Waiting for your browser", text: "var(--text-3)" };
+  if (d.status === "downloading") return { ...look, label: "Via browser" };
+  if (d.status === "paused") return { ...look, label: "Paused · via browser" };
+  return look;
+}
+
 /** A status colour used for words (a headline): its "-text" shade, so it stays readable on light
  *  panels (the plain shades are for dots and bars and are too pale as text there). */
 export function wordColor(look: StatusLook): string {

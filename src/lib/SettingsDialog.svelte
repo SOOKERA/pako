@@ -1,37 +1,62 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
+<script lang="ts" module>
+  /** Settings' tabs, in order: the window's list on the left. */
+  export const SETTINGS_TABS = [
+    { id: "updates", name: "Features & updates", tour: "set-updates" },
+    { id: "browser", name: "Browser extension", tour: "set-browser" },
+    { id: "accounts", name: "Accounts", tour: "set-accounts" },
+    { id: "window", name: "Window", tour: "set-window" },
+    { id: "notices", name: "Notifications", tour: "set-notices" },
+    { id: "downloads", name: "Downloads", tour: "set-downloads" },
+    { id: "upload", name: "Upload", tour: "set-upload" },
+  ] as const;
+  export type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
+</script>
+
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { app } from "./state.svelte";
-  import { api, listen, type Settings, type WhenDone, type SendMode, type PakoLinkResult, type DriveSendStatus } from "./api";
+  import { api, listen, type Settings, type WhenDone, type SendMode, type PakoLinkResult, type DriveSendStatus, type PrivateKeep } from "./api";
   import { hhmm, minutesOf } from "./format";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import UpdatesSection from "./UpdatesSection.svelte";
   import AddToBrowser from "./AddToBrowser.svelte";
+  import AdvancedFold from "./AdvancedFold.svelte";
   import TutorialButton from "./tour/TutorialButton.svelte";
   import HelpLink from "./help/HelpLink.svelte";
+  import { help } from "./help/help.svelte";
   import SegPick from "./SegPick.svelte";
-  import { fadeIn, rowSlide } from "./motion";
+  import PartSize from "./PartSize.svelte";
+  import { PARTS_NOTE, PART_DEFAULT_MB, PART_RANGE_NOTE, partOk } from "./uploads";
+  import { fadeIn, pop, reduced, rowSlide } from "./motion";
   import { KINDS, prefOf, type NoticeKind } from "./notices";
   import { theme } from "./theme.svelte";
+  import { tour, targetsOf } from "./tour/tour.svelte";
   import type { ThemeChoice } from "./api";
 
   let {
     section,
+    row,
     linkResult = null,
     onclose,
   }: {
-    section?: "accounts" | "browser" | "notices";
+    /** The tab to open at (else the first). */
+    section?: SettingsTab;
+    /** A setting to show in that tab: its title, as in the window (scrolled to and lit up briefly). */
+    row?: string;
     /** Opened by the extension's "Open Pako" button: how connecting went. */
     linkResult?: PakoLinkResult | null;
     onclose: () => void;
   } = $props();
 
-  let draft = $state<Settings>({ ...app.settings! });
+  /** Missing from settings saved before it existed: 10 minutes. */
+  const withDefaults = (s: Settings): Settings => ({ ...s, privateKeep: s.privateKeep ?? "10m" });
+  let draft = $state<Settings>(withDefaults({ ...app.settings! }));
   /** The settings as they were when this opened: Save sends only what was changed here. */
-  const opened = $state.snapshot(app.settings!) as Settings;
+  const opened = withDefaults($state.snapshot(app.settings!) as Settings);
   /** Theme: shows at once while picking; Save keeps it, Cancel goes back. */
   const openedTheme = theme.choice;
   let themePick = $state<ThemeChoice>(theme.choice);
@@ -50,58 +75,217 @@
   }
   // Closed some other way (a tutorial ending, the extension's "Open Pako"): back then.
   $effect(() => unpreview);
-  let accountsEl: HTMLElement | undefined = $state();
-  let browserEl: HTMLElement | undefined = $state();
-  let noticesEl: HTMLElement | undefined = $state();
 
-  /** The sections, listed on the left so nothing has to be hunted for by scrolling. */
+  // ---------- tabs ----------
+  // svelte-ignore state_referenced_locally
+  let tab = $state<SettingsTab>(section ?? "updates");
+  /** The tab with the keyboard focus in the list (↑ ↓ move it, Enter or Space opens it). */
+  // svelte-ignore state_referenced_locally
+  let focusTab = $state<SettingsTab>(section ?? "updates");
+  let root: HTMLDivElement | undefined = $state();
+  let tabList: HTMLDivElement | undefined = $state();
   let pane: HTMLDivElement | undefined = $state();
-  let parts = $state<{ name: string; el: HTMLElement }[]>([]);
-  let current = $state(0);
-  let scroller: HTMLElement | null = null;
-  /** While a click on the list is scrolling there, the list doesn't flicker through the sections in between. */
-  let jumping = 0;
 
-  function spot() {
-    if (!scroller || !parts.length || Date.now() < jumping) return;
-    const top = scroller.getBoundingClientRect().top;
-    let at = 0;
-    parts.forEach((p, i) => {
-      if (p.el.getBoundingClientRect().top - top <= 48) at = i;
-    });
-    // At the very end the last section is the one in view, even when it is short.
-    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) at = parts.length - 1;
-    current = at;
+  function show(t: SettingsTab) {
+    focusTab = t;
+    if (t === tab) return;
+    tab = t;
+    // Each tab starts at its top.
+    if (pane) pane.scrollTop = 0;
   }
-  function go(i: number, smooth = true) {
-    const p = parts[i];
-    if (!p || !scroller) return;
-    current = i;
-    // Until the scroll ends ("scrollend" below); a long way can take more than half a second.
-    jumping = Date.now() + (smooth ? 1500 : 0);
-    const top = p.el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
-    const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    scroller.scrollTo({ top: i === 0 ? 0 : top, behavior: smooth && !calm ? "smooth" : "auto" });
+  function tabEl(t: SettingsTab) {
+    return tabList?.querySelector<HTMLElement>(`#set-tab-${t}`) ?? null;
   }
+  function step(by: number, from: SettingsTab) {
+    const i = SETTINGS_TABS.findIndex((x) => x.id === from);
+    return SETTINGS_TABS[(i + by + SETTINGS_TABS.length) % SETTINGS_TABS.length].id;
+  }
+  function tabKey(e: KeyboardEvent) {
+    let to: SettingsTab | null = null;
+    if (e.key === "ArrowDown") to = step(1, focusTab);
+    else if (e.key === "ArrowUp") to = step(-1, focusTab);
+    else if (e.key === "Home") to = SETTINGS_TABS[0].id;
+    else if (e.key === "End") to = SETTINGS_TABS[SETTINGS_TABS.length - 1].id;
+    if (!to) return;
+    e.preventDefault();
+    focusTab = to;
+    tabEl(to)?.focus();
+  }
+  /** Ctrl+Tab / Ctrl+Shift+Tab, anywhere in Settings: the next or previous tab. */
+  function ctrlTab(e: KeyboardEvent) {
+    if (e.key !== "Tab" || !e.ctrlKey || !root) return;
+    const dialog = root.closest<HTMLElement>('[role="dialog"]');
+    const active = document.activeElement;
+    if (!dialog || !(active === dialog || dialog.contains(active))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const to = step(e.shiftKey ? -1 : 1, tab);
+    show(to);
+    tabEl(to)?.focus();
+  }
+  /** Leaving the list: the next Tab into it lands on the open tab. */
+  function tabsLeft(e: FocusEvent) {
+    if (!tabList?.contains(e.relatedTarget as Node | null)) focusTab = tab;
+  }
+
+  /** What Save would change, by tab: a dot on the tab. */
+  const TAB_KEYS: Partial<Record<SettingsTab, (keyof Settings)[]>> = {
+    updates: ["autoUpdate"],
+    browser: ["browserConnect", "askBrowser", "miniOnBrowser"],
+    window: ["minimizeToTray", "closeToTray", "confirmQuit", "startWithWindows", "startInTray"],
+    notices: ["quiet", "followWindowsQuiet", "notices", "notifyDone", "playDoneSound"],
+    downloads: [
+      "downloadDir", "autoConnections", "connections", "maxActive", "speedLimitKb", "extractDefault", "videoQuality", "previewQuality",
+      "verifyChecksum", "resumeOnStart", "keepAwake", "scheduleOn", "scheduleStart", "scheduleEnd", "catchClipboard", "privateKeep",
+    ],
+    upload: ["sendHost", "sendMode", "sendPartMb", "sendPartCustom", "resumeUploadsOnStart"],
+  };
+  // A number field emptied and typed again ("8" vs 8) is no change.
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b) || (typeof a !== "object" && typeof b !== "object" && a !== "" && String(a) === String(b));
+  const unsaved = $derived(
+    Object.fromEntries(
+      SETTINGS_TABS.map((t) => [
+        t.id,
+        (TAB_KEYS[t.id] ?? []).some((k) => !same(draft[k], opened[k])) || (t.id === "window" && themePick !== openedTheme),
+      ]),
+    ) as Record<SettingsTab, boolean>,
+  );
+
+  // ---------- showing one setting: its tab, its fold, scrolled to and lit up ----------
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  let flashed: HTMLElement | null = null;
+  /** `focus`: the keyboard goes to the setting's own control too (picked from the search), so
+   *  Tab, Space or a screen reader carry on from there instead of from the search box. */
+  async function reach(el: HTMLElement, focus = false) {
+    const t = el.closest<HTMLElement>("[data-tab]")?.dataset.tab as SettingsTab | undefined;
+    if (t) show(t);
+    await tick();
+    // Opens the folds it is in (Advanced, What Pako can do), then waits for them to slide open.
+    let opening = false;
+    for (let f = el.closest<HTMLElement>("[data-fold]"); f; f = f.parentElement?.closest<HTMLElement>("[data-fold]") ?? null) {
+      const b = [...f.querySelectorAll<HTMLElement>("[data-fold-toggle]")].find((x) => x.closest("[data-fold]") === f);
+      if (b?.getAttribute("aria-expanded") === "false") {
+        b.click();
+        opening = true;
+      }
+    }
+    if (opening) await new Promise((r) => setTimeout(r, reduced() ? 0 : 340));
+    el.scrollIntoView({ block: "center", behavior: reduced() ? "auto" : "smooth" });
+    if (focus) {
+      // Its switch, box or button first (not the help link in its title); a greyed one can't
+      // take the focus, which then stays in the search.
+      const ok = ":is(button, input, select):not(:disabled)";
+      (el.querySelector<HTMLElement>(`.ctrl ${ok}, .col ${ok}`) ?? el.querySelector<HTMLElement>(ok))?.focus({ preventScroll: true });
+    }
+    clearTimeout(flashTimer);
+    flashed?.classList.remove("set-flash");
+    // Again from the start, also on the same row twice in a row.
+    void el.offsetWidth;
+    el.classList.add("set-flash");
+    flashed = el;
+    flashTimer = setTimeout(() => el.classList.remove("set-flash"), 1800);
+  }
+  $effect(() => () => clearTimeout(flashTimer));
+
+  // ---------- search ----------
+  type Hit = { el: HTMLElement | null; tab: SettingsTab; title: string; advanced: boolean };
+  let query = $state("");
+  let hits = $state<Hit[]>([]);
+  let hitAt = $state(0);
+  let listOpen = $state(false);
+  /** The words searched, kept while the list fades out after Esc. */
+  let searched = $state("");
+  const norm = (t: string) =>
+    t
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[’‘]/g, "'")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  /** Every setting as it shows in the window, read from the rows themselves (titles and their
+   *  muted lines), in every tab and fold: the search can't drift from what's on screen. */
+  const ROWS = ".line, .krow, .account, .feat, [data-search]";
+  const TITLES = ".t, .klabel, .acc-name, .fname";
+  const titleOf = (el: HTMLElement) => (el.dataset.search || el.querySelector(TITLES)?.textContent || "").replace(/\s+/g, " ").trim();
+  function find(q: string): Hit[] {
+    const words = norm(q).split(" ").filter(Boolean);
+    if (!words.length || !root) return [];
+    const found: { hit: Hit; score: number; order: number }[] = [];
+    let order = 0;
+    for (const t of SETTINGS_TABS) {
+      const name = norm(t.name);
+      if (words.every((w) => name.includes(w))) found.push({ hit: { el: null, tab: t.id, title: t.name, advanced: false }, score: 0, order: order++ });
+    }
+    for (const el of root.querySelectorAll<HTMLElement>(ROWS)) {
+      const tabId = el.closest<HTMLElement>("[data-tab]")?.dataset.tab as SettingsTab | undefined;
+      const title = titleOf(el);
+      if (!tabId || !title) continue;
+      const t = norm(title);
+      const said = norm([...el.querySelectorAll(".muted")].map((m) => m.textContent ?? "").join(" "));
+      if (!words.every((w) => t.includes(w) || said.includes(w))) continue;
+      // Titles first (the ones that start with it before the others), then explanations.
+      const score = t.startsWith(words.join(" ")) ? 1 : words.every((w) => t.includes(w)) ? 2 : 3;
+      found.push({ hit: { el, tab: tabId, title, advanced: !!el.closest(".adv") }, score, order: order++ });
+    }
+    return found
+      .sort((a, b) => a.score - b.score || a.order - b.order)
+      .slice(0, 8)
+      .map((x) => x.hit);
+  }
+  function typed() {
+    hits = find(query);
+    hitAt = 0;
+    listOpen = !!query.trim();
+    if (listOpen) searched = query.trim();
+  }
+  function pick(h: Hit) {
+    listOpen = false;
+    if (h.el) reach(h.el, true);
+    else {
+      show(h.tab);
+      tabEl(h.tab)?.focus();
+    }
+  }
+  function searchKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && (query || listOpen)) {
+      // Clears the search; the next Esc closes Settings.
+      e.preventDefault();
+      e.stopPropagation();
+      query = "";
+      typed();
+    } else if (e.key === "ArrowDown" && hits.length) {
+      e.preventDefault();
+      if (listOpen) hitAt = (hitAt + 1) % hits.length;
+      listOpen = true;
+    } else if (e.key === "ArrowUp" && hits.length) {
+      e.preventDefault();
+      hitAt = (hitAt - 1 + hits.length) % hits.length;
+    } else if (e.key === "Enter" && listOpen && hits[hitAt]) {
+      e.preventDefault();
+      pick(hits[hitAt]);
+    }
+  }
+  const tabName = (t: SettingsTab) => SETTINGS_TABS.find((x) => x.id === t)?.name ?? "";
+
+  // ---------- the tutorial: each Settings step shows its tab ----------
+  const TOUR_TAB = Object.fromEntries(SETTINGS_TABS.map((t) => [t.tour, t.id])) as Record<string, SettingsTab>;
+  $effect(() => {
+    if (!tour.active) return;
+    const s = tour.step;
+    if (s?.view !== "settings") return;
+    const t = targetsOf(s)
+      .map((n) => TOUR_TAB[n])
+      .find(Boolean);
+    if (t) untrack(() => show(t));
+  });
 
   onMount(() => {
-    if (!pane) return;
-    scroller = pane.closest<HTMLElement>(".body");
-    parts = [...pane.querySelectorAll<HTMLElement>("section")].map((el) => ({ name: el.querySelector("h3")?.textContent?.trim() ?? "", el }));
-    scroller?.addEventListener("scroll", spot, { passive: true });
-    // A jump from the list has arrived: the section clicked stays lit, and from here the list
-    // follows the scrolling again.
-    const arrived = () => {
-      jumping = 0;
-    };
-    scroller?.addEventListener("scrollend", arrived);
-    const el = section === "accounts" ? accountsEl : section === "browser" ? browserEl : section === "notices" ? noticesEl : undefined;
-    const i = parts.findIndex((p) => p.el === el);
-    if (i > 0) setTimeout(() => go(i, false), 50);
-    return () => {
-      scroller?.removeEventListener("scroll", spot);
-      scroller?.removeEventListener("scrollend", arrived);
-    };
+    // Opened at one setting (its title, as in the window).
+    if (!row) return;
+    const want = norm(row);
+    const el = [...(root?.querySelectorAll<HTMLElement>(ROWS) ?? [])].find((r) => norm(titleOf(r)) === want);
+    if (el) setTimeout(() => reach(el), 120);
   });
 
   /** Writes the extension's files next to Pako's data and opens that folder. */
@@ -125,6 +309,12 @@
   let saving = false;
   async function save() {
     if (saving) return;
+    if (sendMode === "parts" && !partValid) {
+      app.toast(`Pick a part size ${PART_RANGE_NOTE.toLowerCase()} (Upload › Advanced).`, "error");
+      const el = root?.querySelector<HTMLElement>("[data-part-size]");
+      if (el) reach(el, true);
+      return;
+    }
     saving = true;
     // What wasn't changed here keeps the value it has now, not the one copied at opening: "At
     // once" from the bottom bar, "Don't ask again" ticked in the Download with Pako window, where
@@ -140,6 +330,7 @@
         connections: whole(next.connections, 8, 1, 32),
         maxActive: whole(next.maxActive, 3, 1, 20),
         speedLimitKb: whole(next.speedLimitKb, 0, 0),
+        sendPartMb: partOk(next.sendPartMb) ? next.sendPartMb : PART_DEFAULT_MB,
       });
       if (themePick !== openedTheme) await theme.set(themePick);
       themeKept = true;
@@ -214,23 +405,159 @@
     draft.notices = all;
   }
 
+  /** "ZIP in parts": what's typed in its Custom field is a size Pako takes. */
+  let partValid = $state(true);
+
   /** Several files: the saved choice, else what the older compression setting meant. */
   const sendMode = $derived<SendMode>(
     draft.sendMode ?? (draft.sendCompression === "auto" || draft.sendCompression === "max" ? "compress" : "files"),
   );
 </script>
 
+<svelte:window onkeydowncapture={ctrlTab} />
+
 <Modal title="Settings" width={780} autofocus={false} onclose={cancel}>
-  <div class="set">
-  <nav class="snav" data-tour="settings-nav" aria-label="Settings sections">
-    {#if parts.length}<span class="hl" style="transform: translateY({current * 34}px)" aria-hidden="true"></span>{/if}
-    {#each parts as p, i (p.name)}
-      <button class:on={current === i} aria-current={current === i ? "true" : undefined} onclick={() => go(i)}>{p.name}</button>
-    {/each}
+  <div class="set" bind:this={root}>
+  <nav class="snav" data-tour="settings-nav" aria-label="Settings">
+    <div class="find">
+      <label class="search" class:filled={query}>
+        <Icon name="search" size={13} stroke={2} />
+        <input
+          type="text"
+          placeholder="Search settings"
+          spellcheck="false"
+          autocomplete="off"
+          aria-label="Search settings"
+          role="combobox"
+          aria-expanded={listOpen}
+          aria-controls="set-hits"
+          aria-activedescendant={listOpen && hits.length ? `set-hit-${hitAt}` : undefined}
+          bind:value={query}
+          oninput={typed}
+          onkeydown={searchKey}
+          onfocus={() => (listOpen = !!query.trim())}
+          onblur={() => (listOpen = false)}
+        />
+        {#if query}
+          <button class="clear" aria-label="Clear the search" onmousedown={(e) => e.preventDefault()} onclick={() => ((query = ""), typed())} transition:fadeIn={{ duration: 120 }}><Icon name="x" size={11} stroke={2.2} /></button>
+        {/if}
+      </label>
+      {#if listOpen}
+        <div class="hits" id="set-hits" role="listbox" aria-label="Settings found" tabindex="-1" onmousedown={(e) => e.preventDefault()} transition:pop={{ duration: 160, from: 0.98, y: -4, origin: "top left" }}>
+          {#each hits as h, i (i + h.title + h.tab)}
+            <button class="hit" class:on={i === hitAt} id="set-hit-{i}" role="option" aria-selected={i === hitAt} tabindex="-1" onmouseenter={() => (hitAt = i)} onclick={() => pick(h)}>
+              {#if h.el}
+                <span class="where">{tabName(h.tab)}{h.advanced ? " › Advanced" : ""} ›</span>
+                <span class="what">{h.title}</span>
+              {:else}
+                <span class="what">{h.title}</span>
+                <span class="where">tab</span>
+              {/if}
+            </button>
+          {:else}
+            <div class="none">No setting matches '{searched}'</div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    <div class="tabs" role="tablist" tabindex="-1" aria-orientation="vertical" aria-label="Settings sections" bind:this={tabList} onkeydown={tabKey} onfocusout={tabsLeft}>
+      <span class="hl" style="transform: translateY({SETTINGS_TABS.findIndex((t) => t.id === tab) * 34}px)" aria-hidden="true"></span>
+      {#each SETTINGS_TABS as t (t.id)}
+        <button
+          id="set-tab-{t.id}"
+          role="tab"
+          class:on={tab === t.id}
+          aria-selected={tab === t.id}
+          aria-controls="set-panel-{t.id}"
+          tabindex={focusTab === t.id ? 0 : -1}
+          onclick={() => show(t.id)}
+        >
+          <span class="tname">{t.name}</span>
+          {#if unsaved[t.id]}<span class="dirty" title="Changed, not saved yet" transition:pop={{ duration: 160, from: 0.4, y: 0 }}></span>{/if}
+        </button>
+      {/each}
+    </div>
     <div class="stut"><TutorialButton id="settings" /></div>
   </nav>
+
   <div class="pane" bind:this={pane}>
-  <section data-tour="set-accounts" bind:this={accountsEl}>
+  <!-- Every tab is in the page, the others hidden: search finds settings in all of them. -->
+  <div class="panel" role="tabpanel" id="set-panel-updates" aria-labelledby="set-tab-updates" data-tab="updates" hidden={tab !== "updates"}>
+    <!-- First: what people come to Settings for most (is my Pako up to date?). -->
+    <UpdatesSection
+      bind:autoUpdate={draft.autoUpdate}
+      onsetup={() => {
+        cancel();
+        app.setupOpen = true;
+      }}
+    />
+  </div>
+
+  <!-- Second: adding Pako to the browser, the other thing people look for first. -->
+  <div class="panel" role="tabpanel" id="set-panel-browser" aria-labelledby="set-tab-browser" data-tab="browser" hidden={tab !== "browser"}>
+  <section data-tour="set-browser">
+    <h3>Browser extension</h3>
+    {#if linkResult}
+      <div class="reveal" transition:rowSlide={{ duration: 220 }}>
+      <div class="banner" class:bad={!linkResult.ok} role="status">
+        <Icon name={linkResult.ok ? "check" : "alert"} size={14} />
+        <span>{linkResult.ok ? "Connected. Go back to your browser and open Pako's popup again." : `Couldn't connect: ${linkResult.error ?? "unknown problem"}`}</span>
+      </div>
+      </div>
+    {/if}
+    <div class="line">
+      <div>
+        <div class="t">Connect Pako to your browsers</div>
+        <div class="muted">Lets the Pako extension send downloads, links and videos to Pako. It talks to Pako directly on this PC: nothing goes over the internet.</div>
+      </div>
+      <div class="ctrl">
+        <button class="switch" class:on={draft.browserConnect} role="switch" aria-checked={draft.browserConnect} aria-label="Connect Pako to your browsers" onclick={() => (draft.browserConnect = !draft.browserConnect)}></button>
+      </div>
+    </div>
+    <div class="line">
+      <div>
+        <div class="t">Ask before each browser download</div>
+        <div class="muted">A small window shows the name, folder and quality first. Off: downloads from your browser start right away.</div>
+      </div>
+      <div class="ctrl">
+        <button class="switch" class:on={draft.askBrowser} role="switch" aria-checked={draft.askBrowser} aria-label="Ask before each browser download" onclick={() => (draft.askBrowser = !draft.askBrowser)}></button>
+      </div>
+    </div>
+    <div class="line">
+      <div>
+        <div class="t">Show the small window when a browser download starts</div>
+        <div class="muted">The tray's list opens at the bottom right so you can see your downloads at a glance. Pin it to keep it on top.</div>
+      </div>
+      <div class="ctrl">
+        <button class="switch" class:on={draft.miniOnBrowser} role="switch" aria-checked={draft.miniOnBrowser} aria-label="Show the small window when a browser download starts" onclick={() => (draft.miniOnBrowser = !draft.miniOnBrowser)}></button>
+      </div>
+    </div>
+    <div class="line">
+      <div>
+        <div class="t">Add Pako to your browser <HelpLink to="browser-extension.md#add-pako-to-your-browser" label="How to add Pako to your browser" /></div>
+        <div class="muted">Pick your browser: Pako opens its extensions page and shows the three steps. Then right-click a link › Download with Pako, or use the Download button on YouTube videos.</div>
+      </div>
+    </div>
+    <div class="browsers"><AddToBrowser /></div>
+    <p class="muted unlisted">
+      Browser not listed? <button class="linkish" onclick={() => help.show("browser-extension.md#another-browser")}>How to add Pako to another browser</button>
+    </p>
+    <AdvancedFold tab="browser" hint="The extension's files">
+      <div class="line">
+        <div>
+          <div class="t">The extension's files</div>
+          <div class="muted">For adding Pako to a browser by hand: Pako writes the extension next to its data and opens that folder.</div>
+        </div>
+        <div class="ctrl">
+          <button class="btn" onclick={openExtension}>Open the extension folder</button>
+        </div>
+      </div>
+    </AdvancedFold>
+  </section>
+  </div>
+
+  <div class="panel" role="tabpanel" id="set-panel-accounts" aria-labelledby="set-tab-accounts" data-tab="accounts" hidden={tab !== "accounts"}>
+  <section data-tour="set-accounts">
     <h3>Accounts</h3>
     <div class="account">
       <div class="logo"><Icon name="upload" size={15} /></div>
@@ -256,7 +583,9 @@
     </div>
     <p class="muted small">Only used for uploads: downloads from Drive never need a sign-in. What you uploaded stays in your Drive if you disconnect.</p>
   </section>
+  </div>
 
+  <div class="panel" role="tabpanel" id="set-panel-window" aria-labelledby="set-tab-window" data-tab="window" hidden={tab !== "window"}>
   <section data-tour="set-window">
     <h3>Window</h3>
     <div class="line">
@@ -313,22 +642,22 @@
         <button class="switch" class:on={draft.startWithWindows} role="switch" aria-checked={draft.startWithWindows} aria-label="Start Pako with Windows" onclick={() => (draft.startWithWindows = !draft.startWithWindows)}></button>
       </div>
     </div>
-    {#if draft.startWithWindows}
-      <div class="reveal" transition:rowSlide={{ duration: 220 }}>
-      <div class="line sub">
+    <AdvancedFold tab="window" hint="Start in the tray">
+      <div class="line" class:off={!draft.startWithWindows}>
         <div>
           <div class="t">Start in the tray</div>
-          <div class="muted">No window at sign-in: Pako waits next to the clock.</div>
+          <div class="muted">No window at sign-in: Pako waits next to the clock.{draft.startWithWindows ? "" : " Used with Start Pako with Windows."}</div>
         </div>
         <div class="ctrl">
-          <button class="switch" class:on={draft.startInTray} role="switch" aria-checked={draft.startInTray} aria-label="Start in the tray" onclick={() => (draft.startInTray = !draft.startInTray)}></button>
+          <button class="switch" class:on={draft.startInTray} role="switch" aria-checked={draft.startInTray} aria-label="Start in the tray" disabled={!draft.startWithWindows} onclick={() => (draft.startInTray = !draft.startInTray)}></button>
         </div>
       </div>
-      </div>
-    {/if}
+    </AdvancedFold>
   </section>
+  </div>
 
-  <section data-tour="set-notices" bind:this={noticesEl}>
+  <div class="panel" role="tabpanel" id="set-panel-notices" aria-labelledby="set-tab-notices" data-tab="notices" hidden={tab !== "notices"}>
+  <section data-tour="set-notices">
     <h3>Notifications</h3>
     <p class="muted intro">Pop-ups show at the bottom right of the screen for a few seconds. The bell, at the top of Pako, keeps the important ones for 30 days.</p>
     <div class="line">
@@ -338,15 +667,6 @@
       </div>
       <div class="ctrl">
         <button class="switch" class:on={draft.quiet} role="switch" aria-checked={draft.quiet} aria-label="Do not disturb" onclick={() => (draft.quiet = !draft.quiet)}></button>
-      </div>
-    </div>
-    <div class="line">
-      <div>
-        <div class="t">Follow Windows' Do not disturb</div>
-        <div class="muted">No pop-ups during full-screen games and videos, presentations, or Windows' Do not disturb. The bell still collects.</div>
-      </div>
-      <div class="ctrl">
-        <button class="switch" class:on={draft.followWindowsQuiet} role="switch" aria-checked={draft.followWindowsQuiet} aria-label="Follow Windows' Do not disturb" onclick={() => (draft.followWindowsQuiet = !draft.followWindowsQuiet)}></button>
       </div>
     </div>
     <div class="kinds" class:hushed={draft.quiet} role="table" aria-label="What shows as a pop-up and in the bell">
@@ -373,26 +693,38 @@
         </div>
       {/each}
     </div>
-    <p class="muted small">A download with "Notify when done" still gets its pop-up when Download finished is off (except during Do not disturb).</p>
-  </section>
-
-  <section data-tour="set-downloads">
-    <h3>Downloads</h3>
-    <label class="lbl" for="set-dir">Download folder</label>
-    <div class="row">
-      <input id="set-dir" class="input" bind:value={draft.downloadDir} spellcheck="false" />
-      <button class="btn" onclick={choose}>Change</button>
-    </div>
-
+    <p class="muted small">A download with "Notify when done" still gets its pop-up when Download finished is off (except during Do not disturb). While the small window is open, it shows downloads finishing instead of a Download finished pop-up.</p>
     <div class="line">
       <div>
-        <div class="t">Connections per file</div>
-        <div class="muted">Auto adds connections while it makes the file faster and stops when the server or your internet can't take more.</div>
+        <div class="t">Play a sound when a download you asked about finishes</div>
+        <div class="muted">A short, soft chime for downloads with "Notify when done", also while the small window is open. Silent during Do not disturb, Pako's or Windows'.</div>
       </div>
       <div class="ctrl">
-        <span class="muted">Auto</span>
-        <button class="switch" class:on={draft.autoConnections} role="switch" aria-checked={draft.autoConnections} aria-label="Auto connections" onclick={() => (draft.autoConnections = !draft.autoConnections)}></button>
-        <input class="input num" type="number" min="1" max="32" bind:value={draft.connections} disabled={draft.autoConnections} aria-label="Connections per file" />
+        <button class="switch" class:on={draft.playDoneSound} role="switch" aria-checked={draft.playDoneSound} aria-label="Play a sound when a download you asked about finishes" onclick={() => (draft.playDoneSound = !draft.playDoneSound)}></button>
+      </div>
+    </div>
+    <AdvancedFold tab="notices" hint="Follow Windows' Do not disturb">
+      <div class="line">
+        <div>
+          <div class="t">Follow Windows' Do not disturb</div>
+          <div class="muted">No pop-ups during full-screen games and videos, presentations, or Windows' Do not disturb. The bell still collects.</div>
+        </div>
+        <div class="ctrl">
+          <button class="switch" class:on={draft.followWindowsQuiet} role="switch" aria-checked={draft.followWindowsQuiet} aria-label="Follow Windows' Do not disturb" onclick={() => (draft.followWindowsQuiet = !draft.followWindowsQuiet)}></button>
+        </div>
+      </div>
+    </AdvancedFold>
+  </section>
+  </div>
+
+  <div class="panel" role="tabpanel" id="set-panel-downloads" aria-labelledby="set-tab-downloads" data-tab="downloads" hidden={tab !== "downloads"}>
+  <section data-tour="set-downloads">
+    <h3>Downloads</h3>
+    <div class="folder" data-search="Download folder">
+      <label class="lbl" for="set-dir">Download folder</label>
+      <div class="row">
+        <input id="set-dir" class="input" bind:value={draft.downloadDir} spellcheck="false" />
+        <button class="btn" onclick={choose}>Change</button>
       </div>
     </div>
 
@@ -435,34 +767,7 @@
         </select>
       </div>
     </div>
-    <div class="line">
-      <div>
-        <div class="t">Video preview quality</div>
-        <div class="muted">The small player in the details panel. Lower uses less data; each video can change it.</div>
-      </div>
-      <div class="ctrl">
-        <SegPick label="Video preview quality" options={[360, 480, 720].map((q) => ({ value: q, label: `${q}p` }))} value={draft.previewQuality} onpick={(q) => (draft.previewQuality = q)} />
-      </div>
-    </div>
 
-    <div class="line">
-      <div>
-        <div class="t">Check Drive files when finished</div>
-        <div class="muted">Compares each finished file with Google's own record of it, so a damaged file is caught.</div>
-      </div>
-      <div class="ctrl">
-        <button class="switch" class:on={draft.verifyChecksum} role="switch" aria-checked={draft.verifyChecksum} aria-label="Check Drive files when finished" onclick={() => (draft.verifyChecksum = !draft.verifyChecksum)}></button>
-      </div>
-    </div>
-    <div class="line">
-      <div>
-        <div class="t">Continue downloads when Pako starts</div>
-        <div class="muted">Downloads that were running when Pako closed carry on by themselves. Turned off, they're paused until you click Resume.</div>
-      </div>
-      <div class="ctrl">
-        <button class="switch" class:on={draft.resumeOnStart} role="switch" aria-checked={draft.resumeOnStart} aria-label="Continue downloads when Pako starts" onclick={() => (draft.resumeOnStart = !draft.resumeOnStart)}></button>
-      </div>
-    </div>
     <div class="line">
       <div>
         <div class="t">Keep the PC awake while downloading</div>
@@ -514,8 +819,64 @@
         </select>
       </div>
     </div>
-  </section>
 
+    <AdvancedFold tab="downloads" hint="Connections, checks, continuing at start, previews, private downloads">
+      <div class="line">
+        <div>
+          <div class="t">Connections per file</div>
+          <div class="muted">Auto adds connections while it makes the file faster and stops when the server or your internet can't take more.</div>
+        </div>
+        <div class="ctrl">
+          <span class="muted">Auto</span>
+          <button class="switch" class:on={draft.autoConnections} role="switch" aria-checked={draft.autoConnections} aria-label="Auto connections" onclick={() => (draft.autoConnections = !draft.autoConnections)}></button>
+          <input class="input num" type="number" min="1" max="32" bind:value={draft.connections} disabled={draft.autoConnections} aria-label="Connections per file" />
+        </div>
+      </div>
+      <div class="line">
+        <div>
+          <div class="t">Check Drive files when finished</div>
+          <div class="muted">Compares each finished file with Google's own record of it, so a damaged file is caught.</div>
+        </div>
+        <div class="ctrl">
+          <button class="switch" class:on={draft.verifyChecksum} role="switch" aria-checked={draft.verifyChecksum} aria-label="Check Drive files when finished" onclick={() => (draft.verifyChecksum = !draft.verifyChecksum)}></button>
+        </div>
+      </div>
+      <div class="line">
+        <div>
+          <div class="t">Continue downloads when Pako starts</div>
+          <div class="muted">Downloads that were running when Pako closed carry on by themselves. Turned off, they're paused until you click Resume.</div>
+        </div>
+        <div class="ctrl">
+          <button class="switch" class:on={draft.resumeOnStart} role="switch" aria-checked={draft.resumeOnStart} aria-label="Continue downloads when Pako starts" onclick={() => (draft.resumeOnStart = !draft.resumeOnStart)}></button>
+        </div>
+      </div>
+      <div class="line">
+        <div>
+          <div class="t">Video preview quality</div>
+          <div class="muted">The small player in the details panel. Lower uses less data; each video can change it.</div>
+        </div>
+        <div class="ctrl">
+          <SegPick label="Video preview quality" options={[360, 480, 720].map((q) => ({ value: q, label: `${q}p` }))} value={draft.previewQuality} onpick={(q) => (draft.previewQuality = q)} />
+        </div>
+      </div>
+      <div class="line">
+        <div>
+          <div class="t">Remove private downloads from the list</div>
+          <div class="muted">Downloads from a private browser window (Done · private). Opening one from Pako, or its ✕, removes it at once. The file stays.</div>
+        </div>
+        <div class="ctrl">
+          <select class="input keep" aria-label="Remove private downloads from the list" value={draft.privateKeep ?? "10m"} onchange={(e) => (draft.privateKeep = e.currentTarget.value as PrivateKeep)}>
+            <option value="10m">10 minutes after they finish</option>
+            <option value="1h">1 hour after</option>
+            <option value="close">When you quit Pako</option>
+          </select>
+        </div>
+      </div>
+    </AdvancedFold>
+  </section>
+  </div>
+
+  <div class="panel" role="tabpanel" id="set-panel-upload" aria-labelledby="set-tab-upload" data-tab="upload" hidden={tab !== "upload"}>
   <section data-tour="set-upload">
     <h3>Upload</h3>
     <div class="line">
@@ -544,10 +905,12 @@
             They're packed into one ZIP file: whoever opens the link downloads one file and opens it.
           {:else if sendMode === "compress"}
             One ZIP file, made smaller where it helps (documents, text). Takes longer to upload, and doesn't shrink videos or photos.
+          {:else if sendMode === "parts"}
+            One ZIP file, cut into numbered parts (their size is under Advanced). {PARTS_NOTE}
           {:else}
             Each file is uploaded as it is, a few at a time, into one folder. Whoever opens the link sees the files straight away.
           {/if}
-          A single file goes as it is, unless you pick Compressed ZIP for it in the upload.
+          A single file goes as it is, unless you pick Compressed ZIP or ZIP in parts for it in the upload.
         </div>
       </div>
       <div class="ctrl">
@@ -555,67 +918,32 @@
           <option value="files">As they are</option>
           <option value="zip">One ZIP</option>
           <option value="compress">Compressed ZIP</option>
+          <option value="parts">ZIP in parts</option>
         </select>
       </div>
     </div>
+    <AdvancedFold tab="upload" hint="Part size for ZIP in parts, continuing at start">
+      <div class="line stacked" data-part-size>
+        <div>
+          <div class="t">Size of each part</div>
+          <div class="muted">For ZIP in parts. Smaller parts start over faster when the connection drops; bigger ones make fewer files.</div>
+        </div>
+        <div class="ctrl">
+          <PartSize bind:mb={draft.sendPartMb} bind:custom={draft.sendPartCustom} bind:valid={partValid} />
+        </div>
+      </div>
+      <div class="line">
+        <div>
+          <div class="t">Continue unfinished uploads when Pako starts</div>
+          <div class="muted">A ZIP in parts upload that stopped (Pako closed, PC restarted) carries on with the parts not up yet. Off: it waits for Try again.</div>
+        </div>
+        <div class="ctrl">
+          <button class="switch" class:on={draft.resumeUploadsOnStart} role="switch" aria-checked={draft.resumeUploadsOnStart} aria-label="Continue unfinished uploads when Pako starts" onclick={() => (draft.resumeUploadsOnStart = !draft.resumeUploadsOnStart)}></button>
+        </div>
+      </div>
+    </AdvancedFold>
   </section>
-
-  <section data-tour="set-browser" bind:this={browserEl}>
-    <h3>Browser extension</h3>
-    {#if linkResult}
-      <div class="reveal" transition:rowSlide={{ duration: 220 }}>
-      <div class="banner" class:bad={!linkResult.ok} role="status">
-        <Icon name={linkResult.ok ? "check" : "alert"} size={14} />
-        <span>{linkResult.ok ? "Connected. Go back to your browser and open Pako's popup again." : `Couldn't connect: ${linkResult.error ?? "unknown problem"}`}</span>
-      </div>
-      </div>
-    {/if}
-    <div class="line">
-      <div>
-        <div class="t">Connect Pako to your browsers</div>
-        <div class="muted">Lets the Pako extension send downloads, links and videos to Pako. It talks to Pako directly on this PC: nothing goes over the internet.</div>
-      </div>
-      <div class="ctrl">
-        <button class="switch" class:on={draft.browserConnect} role="switch" aria-checked={draft.browserConnect} aria-label="Connect Pako to your browsers" onclick={() => (draft.browserConnect = !draft.browserConnect)}></button>
-      </div>
-    </div>
-    <div class="line">
-      <div>
-        <div class="t">Ask before each browser download</div>
-        <div class="muted">A small window shows the name, folder and quality first. Off: downloads from your browser start right away.</div>
-      </div>
-      <div class="ctrl">
-        <button class="switch" class:on={draft.askBrowser} role="switch" aria-checked={draft.askBrowser} aria-label="Ask before each browser download" onclick={() => (draft.askBrowser = !draft.askBrowser)}></button>
-      </div>
-    </div>
-    <div class="line">
-      <div>
-        <div class="t">Show the small window when a browser download starts</div>
-        <div class="muted">The tray's list opens at the bottom right so you can see your downloads at a glance. Pin it to keep it on top.</div>
-      </div>
-      <div class="ctrl">
-        <button class="switch" class:on={draft.miniOnBrowser} role="switch" aria-checked={draft.miniOnBrowser} aria-label="Show the small window when a browser download starts" onclick={() => (draft.miniOnBrowser = !draft.miniOnBrowser)}></button>
-      </div>
-    </div>
-    <div class="line">
-      <div>
-        <div class="t">Add Pako to your browser <HelpLink to="browser-extension.md#add-pako-to-your-browser" label="How to add Pako to your browser" /></div>
-        <div class="muted">Pick your browser: Pako opens its extensions page and shows the three steps. Then right-click a link › Download with Pako, or use the Download button on YouTube videos.</div>
-      </div>
-      <div class="ctrl top">
-        <button class="btn" onclick={openExtension}>Open the extension folder</button>
-      </div>
-    </div>
-    <div class="browsers"><AddToBrowser /></div>
-  </section>
-
-  <UpdatesSection
-    bind:autoUpdate={draft.autoUpdate}
-    onsetup={() => {
-      cancel();
-      app.setupOpen = true;
-    }}
-  />
+  </div>
   </div>
   </div>
 
@@ -626,26 +954,145 @@
 </Modal>
 
 <style>
-  /* Sections on the left, the settings themselves on the right. */
+  /* Search and tabs on the left, the open tab on the right, scrolling on its own. One height
+     whatever the tab, so switching tabs never makes the dialog jump: as tall as the window lets
+     the dialog be (174px: its title, buttons and the room around it, Modal.svelte), up to 680px. */
   .set {
     display: flex;
-    align-items: flex-start;
     gap: 24px;
+    height: min(680px, calc(100vh - 174px));
   }
   .snav {
-    position: sticky;
-    top: 0;
-    width: 168px;
+    position: relative;
+    z-index: 3;
+    width: 184px;
     flex: none;
     display: flex;
     flex-direction: column;
-    gap: 2px;
     padding: 2px 0 12px;
   }
-  /* One highlight that slides to the section in view (buttons are 32px with 2px between). */
+
+  /* ---------- search ---------- */
+  .find {
+    position: relative;
+    margin-bottom: 10px;
+  }
+  .search {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 6px 0 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--control);
+    background: var(--panel);
+    color: var(--text-3);
+    font-size: 12.5px;
+    cursor: text;
+    transition:
+      border-color var(--fast) ease,
+      box-shadow var(--fast) ease;
+  }
+  .search:focus-within {
+    border-color: var(--focus);
+    box-shadow: 0 0 0 3px var(--focus-soft);
+  }
+  .search :global(svg) {
+    flex: none;
+  }
+  .search input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+  }
+  .search input::placeholder {
+    color: var(--text-3);
+  }
+  .clear {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--raise);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+  .clear:hover {
+    color: var(--text);
+  }
+  /* The results, over the open tab: wide enough for "Notifications › Play a sound when…". */
+  .hits {
+    position: absolute;
+    z-index: 5;
+    top: calc(100% + 6px);
+    left: 0;
+    width: 420px;
+    max-height: 316px;
+    overflow-y: auto;
+    padding: 5px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--line-strong);
+    background: var(--menu-bg);
+    backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-menu);
+  }
+  .hit {
+    width: 100%;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border: none;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .hit.on {
+    background: var(--raise);
+  }
+  .where {
+    flex: none;
+    color: var(--text-3);
+  }
+  .what {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .none {
+    padding: 9px 10px;
+    font-size: 12.5px;
+    color: var(--text-3);
+    overflow-wrap: anywhere;
+  }
+
+  /* ---------- tabs ---------- */
+  .tabs {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  /* One highlight that slides to the open tab (tabs are 32px with 2px between). */
   .hl {
     position: absolute;
-    top: 2px;
+    top: 0;
     left: 0;
     right: 0;
     height: 32px;
@@ -654,62 +1101,133 @@
     pointer-events: none;
     transition: transform var(--mid) var(--ease);
   }
-  .snav button {
+  .tabs button {
     position: relative;
     height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 0 10px;
     border: none;
     border-radius: var(--radius);
     background: transparent;
     color: var(--text-2);
     text-align: left;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     transition:
       background var(--fast) ease,
       color var(--fast) ease;
   }
-  .snav button:hover:not(.on) {
+  .tname {
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tabs button:hover:not(.on) {
     background: var(--raise);
     color: var(--text);
   }
-  .snav button.on {
+  .tabs button.on {
     color: var(--text);
     font-weight: 600;
+  }
+  /* Changed in this tab, not saved yet. */
+  .dirty {
+    width: 6px;
+    height: 6px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--accent);
   }
   .stut {
     margin: 10px 0 0 4px;
   }
+  /* Its scrollbar sits in the dialog's right margin, not against the card. The scrollbar's room
+     is kept on every tab (scrollbar-gutter), so a tab long enough to scroll and a short one have
+     the card at the same width: switching never moves its right edge (it moved 10px). 6px + the
+     10px scrollbar (app.css) = the 16px pulled into the margin: the card ends in line with Save. */
   .pane {
     flex: 1;
     min-width: 0;
-    /* room to bring the last, short section up to the top */
-    padding-bottom: 8px;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+    margin-right: -16px;
+    padding: 2px 6px 8px 0;
+  }
+  /* The open tab comes in softly (Windows' reduce motion: at once, app.css). */
+  .panel:not([hidden]) {
+    animation: tabIn var(--mid) var(--ease-out);
+  }
+  @keyframes tabIn {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  /* A setting reached from the search (or opened at): lit up for a moment, behind its words. A
+     row's top padding (above its dividing line) stays out of it, and it never reaches further
+     out than a fold lets show (Collapse.svelte). */
+  :global(.set-flash) {
+    position: relative;
+    isolation: isolate;
+  }
+  :global(.set-flash)::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    z-index: -1;
+    border-radius: var(--radius);
+    background: var(--focus-soft);
+    opacity: 0;
+    pointer-events: none;
+    animation: setFlash 1.8s var(--ease-out);
+  }
+  :global(.line.set-flash)::after {
+    inset: 8px -4px -4px;
+  }
+  @keyframes -global-setFlash {
+    0%,
+    35% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  /* Windows' reduce motion: lit up without fading, then off. */
+  @media (prefers-reduced-motion: reduce) {
+    :global(.set-flash)::after {
+      opacity: 1;
+    }
   }
   .vq {
     width: 170px;
+  }
+  select.keep {
+    width: 214px;
   }
   /* Rows that open under a switch slide open; flow-root keeps their top margin inside the slide. */
   .reveal {
     display: flow-root;
   }
-  /* Each section is its own raised card: where one ends and the next begins shows at a glance. */
+  /* Each tab is one raised card. */
   section {
     padding: 16px 18px 18px;
     background: var(--card);
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
   }
-  section + section {
-    margin-top: 14px;
-  }
   h3 {
-    margin: 0 0 4px;
+    margin: -2px 0 4px;
     font-size: 14px;
     font-weight: 600;
     letter-spacing: 0;
     color: var(--text);
+  }
+  .folder {
+    margin-top: 12px;
   }
   .account {
     display: flex;
@@ -795,11 +1313,28 @@
     gap: 10px;
     flex: none;
   }
-  .ctrl.top {
-    align-self: flex-start;
+  /* A control too wide to sit beside its words (the part size with its Custom field): under them. */
+  .line.stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
   .browsers {
     margin-top: 12px;
+  }
+  .unlisted {
+    margin: 10px 0 0;
+  }
+  .linkish {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent-text, var(--accent));
+    font: inherit;
+    cursor: pointer;
+  }
+  .linkish:hover {
+    text-decoration: underline;
   }
   .banner {
     display: flex;
@@ -832,6 +1367,14 @@
   }
   .num:disabled {
     opacity: 0.4;
+  }
+  /* A setting that only matters with another one on ("Start in the tray" without Start Pako with
+     Windows): its words step back with its switch (app.css dims the switch itself). */
+  .line.off > div:first-child {
+    opacity: 0.55;
+  }
+  .line > div:first-child {
+    transition: opacity var(--mid) ease;
   }
   .line.hours {
     justify-content: flex-start;
@@ -868,7 +1411,7 @@
     align-items: center;
   }
   .khead {
-    padding: 0 0 2px;
+    padding: 0 1px 2px 13px;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.06em;
@@ -886,11 +1429,22 @@
     display: grid;
     place-items: center;
   }
+  /* Each group in its own soft box, so Downloads, Upload, Direct and Pako read apart at a glance
+     (user, 2026-11-18). The switch columns still line up with POP-UP and BELL above. */
+  .kgroup {
+    margin-top: 10px;
+    padding: 2px 0 2px 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    background: var(--raise);
+  }
   .kname {
-    padding: 12px 0 4px;
-    font-size: 12px;
+    padding: 10px 0 4px;
+    font-size: 11px;
     font-weight: 600;
-    color: var(--text-2);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-3);
   }
   .krow {
     min-height: 34px;

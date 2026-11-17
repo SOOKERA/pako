@@ -205,6 +205,33 @@ pub struct Download {
     /// (localhost) is never taken for it, so that PC can't read what only listens here.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_device: bool,
+    /// Pako couldn't get this file itself (a site that only lets the browser have it): the
+    /// browser downloads it and Pako follows it ("Via browser"), then moves it to `dest_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_browser: Option<ViaBrowser>,
+    /// Its name was picked by you (Download with Pako window, Rename): kept when a file the
+    /// browser downloaded comes in under another name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
+    /// From a private browser window: never in the Dashboard's numbers or the error log, no
+    /// line kept in the bell, never saved in the list on disk, and off the list soon after it
+    /// finishes (see `Settings::private_keep` and engine `private_keep_for`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+}
+
+/// A download the browser makes, followed by Pako (see `Download::via_browser`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ViaBrowser {
+    /// The browser's own id for it (-1 = not reported yet).
+    pub browser_id: i64,
+    /// Where the browser saves it (known once it reports it).
+    pub path: String,
+    /// The browser can pause and resume it (its server allows continuing).
+    pub can_resume: bool,
+    /// Reported by Pako Light.
+    pub light: bool,
 }
 
 /// One host offering a file: a backup of a download (or a host it already tried).
@@ -359,6 +386,9 @@ pub struct Settings {
     /// No pop-ups while Windows says not now (full-screen game or video, presenting, Windows'
     /// own Do not disturb).
     pub follow_windows_quiet: bool,
+    /// A short chime when a download with its own "Notify when done" finishes (not during Do
+    /// not disturb, nor while Windows says not now when that is followed).
+    pub play_done_sound: bool,
     /// Split archives: extract when every part is downloaded (each set can change it).
     pub extract_default: bool,
     /// Minimize hides Pako in the taskbar tray (it keeps downloading).
@@ -376,6 +406,10 @@ pub struct Settings {
     /// Downloads that were running when Pako closed continue when it starts again (default).
     /// Off: they're paused, and wait for Resume.
     pub resume_on_start: bool,
+    /// When a finished private download ("Done · private") leaves the list by itself: "10m"
+    /// (default, 10 minutes after it finished), "1h", or "close" (when Pako closes). Opening it
+    /// from Pako, or its ✕, takes it off at once. Only the choice is saved, never the rows.
+    pub private_keep: String,
     /// Pako starts when you sign in to Windows.
     pub start_with_windows: bool,
     /// ...straight to the tray (no window).
@@ -398,9 +432,16 @@ pub struct Settings {
     pub video_quality: u32,
     /// Send (older setting, read only to carry it over): "off", "auto" or "max".
     pub send_compression: String,
-    /// Send, several files: "files" (as they are, default), "zip" or "compress". None = not
-    /// chosen yet (then the older `send_compression` decides).
+    /// Send, several files: "files" (as they are, default), "zip", "compress" or "parts" (one ZIP
+    /// cut into numbered parts). None = not chosen yet (then the older `send_compression` decides).
     pub send_mode: Option<String>,
+    /// "ZIP in parts": the size of each part, in MB (500 by default; 50 MB to 10 GB).
+    pub send_part_mb: u32,
+    /// The part size was typed in (Custom), so 1024 shows as Custom, not as "1 GB".
+    pub send_part_custom: bool,
+    /// An upload in parts that stopped (Pako closed, the PC restarted) carries on by itself when
+    /// Pako starts. Off: it waits for "Try again".
+    pub resume_uploads_on_start: bool,
     /// Downloads from the browser open the "Download with Pako" window first.
     pub ask_browser: bool,
     /// That window's "Notify me when it's done" (remembered).
@@ -451,6 +492,7 @@ impl Default for Settings {
             notices: HashMap::new(),
             quiet: false,
             follow_windows_quiet: true,
+            play_done_sound: true,
             extract_default: false,
             minimize_to_tray: false,
             close_to_tray: false,
@@ -459,6 +501,7 @@ impl Default for Settings {
             keep_awake: true,
             confirm_quit: true,
             resume_on_start: true,
+            private_keep: "10m".into(),
             start_with_windows: false,
             start_in_tray: true,
             browser_connect: false,
@@ -472,6 +515,9 @@ impl Default for Settings {
             video_quality: 1080,
             send_compression: "off".into(),
             send_mode: None,
+            send_part_mb: crate::send::PART_DEFAULT_MB,
+            send_part_custom: false,
+            resume_uploads_on_start: true,
             ask_browser: true,
             ask_notify: true,
             mini_on_browser: true,
@@ -653,6 +699,30 @@ mod tests {
         assert!(!again.contains("copyId") && !again.contains("exportMime"), "{again}");
     }
 
+    /// Settings saved before "ZIP in parts" existed load as they were: the same way of sending
+    /// several files, parts of 500 MB if it's picked later; a picked part size survives a save.
+    #[test]
+    fn old_settings_get_part_size_default() {
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true,"sendMode":"zip","sendCompression":"off"}"#).expect("loads");
+        assert_eq!(s.send_mode.as_deref(), Some("zip"));
+        assert_eq!((s.send_part_mb, s.send_part_custom), (500, false));
+        assert_eq!(crate::send::Mode::from_settings(s.send_mode.as_deref(), &s.send_compression), crate::send::Mode::Zip);
+        let s = Settings { send_mode: Some("parts".into()), send_part_mb: 1024, send_part_custom: true, ..s };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.send_mode.as_deref(), back.send_part_mb, back.send_part_custom), (Some("parts"), 1024, true));
+        assert_eq!(crate::send::Mode::from_settings(back.send_mode.as_deref(), ""), crate::send::Mode::Parts);
+    }
+
+    /// Settings saved before "Continue unfinished uploads when Pako starts" existed: it's on;
+    /// turned off, it stays off.
+    #[test]
+    fn old_settings_continue_uploads_at_start() {
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true,"resumeOnStart":false}"#).expect("loads");
+        assert!(s.resume_uploads_on_start && !s.resume_on_start);
+        let off: Settings = serde_json::from_str(r#"{"resumeUploadsOnStart":false}"#).expect("loads");
+        assert!(!off.resume_uploads_on_start);
+    }
+
     /// Settings saved before "Continue downloads when Pako starts" existed: it's on.
     #[test]
     fn old_settings_continue_downloads_at_start() {
@@ -700,5 +770,26 @@ mod tests {
         assert_eq!(s.notices["browser"], NoticePref { popup: Some(false), bell: None });
         let again = serde_json::to_string(&s).unwrap();
         assert!(again.contains(r#""notices":{"browser":{"popup":false}}"#) && again.contains(r#""followWindowsQuiet":true"#), "{again}");
+    }
+
+    /// Settings saved before the finished chime existed load with it on; off is kept.
+    #[test]
+    fn old_settings_play_the_done_sound() {
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true,"notifyDone":true}"#).expect("loads");
+        assert!(s.play_done_sound);
+        let off = serde_json::to_string(&Settings { play_done_sound: false, ..s }).unwrap();
+        assert!(off.contains(r#""playDoneSound":false"#), "{off}");
+        assert!(!serde_json::from_str::<Settings>(&off).expect("loads").play_done_sound);
+    }
+
+    /// Settings saved before "Remove private downloads from the list" existed: 10 minutes; a
+    /// choice is kept.
+    #[test]
+    fn old_settings_keep_private_rows_ten_minutes() {
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true}"#).expect("loads");
+        assert_eq!(s.private_keep, "10m");
+        let again = serde_json::to_string(&Settings { private_keep: "close".into(), ..s }).unwrap();
+        assert!(again.contains(r#""privateKeep":"close""#), "{again}");
+        assert_eq!(serde_json::from_str::<Settings>(&again).expect("loads").private_keep, "close");
     }
 }

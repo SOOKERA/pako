@@ -8,7 +8,7 @@
   import { untrack } from "svelte";
   import { open as pick } from "@tauri-apps/plugin-dialog";
   import { app } from "./state.svelte";
-  import { api, listen, type DirectContact, type DirectHistory, type DirectTransfer, type DirectVisible } from "./api";
+  import { api, listen, type DirectContact, type DirectFrom, type DirectHistory, type DirectRelay, type DirectTransfer, type DirectVisible, type RemoteBook, type RemoteContact, type RemoteTalk } from "./api";
   import type { MenuItem } from "./menu";
   import { bytes, shortDate, speed } from "./format";
   import Icon from "./Icon.svelte";
@@ -18,7 +18,7 @@
   import Modal from "./Modal.svelte";
   import DirectDetails from "./DirectDetails.svelte";
   import SegPick from "./SegPick.svelte";
-  import { directExtra, initial, isLocal, nearbyNote, pathLabel, percent, statusOf, SUGGESTED_TAGS } from "./direct";
+  import { directExtra, initial, isLocal, nearbyNote, pathLabel, percent, sortContacts, statusOf, SUGGESTED_TAGS } from "./direct";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
@@ -37,37 +37,265 @@
   });
   /** Everyone, for "do you have contacts at all". */
   const everyone = $derived(app.directContacts);
+
+  // ---------- From: this PC, or another of your PCs (its contacts, sent to through it) ----------
+  /** Your devices Direct can send from (paired, letting this PC control them, a Pako that can). */
+  let fromChoices = $state<DirectFrom[]>([]);
+  let fromLoaded = $state(false);
+  let fromAsked = 0;
+  function loadFrom() {
+    const n = ++fromAsked;
+    api.directFromChoices().then(
+      (l) => n === fromAsked && ((fromChoices = l ?? []), (fromLoaded = true)),
+      () => n === fromAsked && ((fromChoices = []), (fromLoaded = true)),
+    );
+  }
+  $effect(() => {
+    loadFrom();
+    const a = listen("direct-changed", loadFrom);
+    const b = listen("devices-changed", loadFrom);
+    return () => {
+      a.then((f) => f());
+      b.then((f) => f());
+    };
+  });
+  const from = $derived(app.directFrom ? (fromChoices.find((c) => c.id === app.directFrom) ?? null) : null);
+  // A PC no longer offered (control turned off there, unpaired): back to this PC.
+  $effect(() => {
+    if (fromLoaded && app.directFrom && !from) app.directFrom = null;
+  });
+  /** That PC's Direct side, read live every few seconds while it's shown. */
+  let book = $state<RemoteBook | null>(null);
+  let bookError = $state("");
+  const fromId = $derived(app.directFrom);
+  $effect(() => {
+    const dev = fromId;
+    book = null;
+    bookError = "";
+    if (!dev) return;
+    let alive = true;
+    let busy = false;
+    // One ask at a time, and none while the window is hidden (in the tray): each one reads that
+    // PC's whole list over the network.
+    const load = () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      api
+        .directRemoteContacts(dev)
+        .then(
+          (b) => alive && ((book = b), (bookError = "")),
+          (e) => alive && (bookError = String(e)),
+        )
+        .finally(() => (busy = false));
+    };
+    load();
+    const t = setInterval(load, 4000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  });
+  /** One of that PC's contacts, shaped like this PC's (shown only: nothing to change here). */
+  const asContact = (r: RemoteContact): DirectContact => ({
+    id: r.id,
+    name: r.name,
+    trusted: r.trusted,
+    autoAccept: false,
+    saveFolder: null,
+    lastSeen: r.lastSeen ?? null,
+    added: 0,
+    online: r.online,
+    path: r.path ?? null,
+    waiting: !r.trusted && !r.declined,
+    code: "",
+    note: null,
+    folder: "",
+    tags: [],
+    favourite: r.favourite,
+    theirName: r.theirName ?? null,
+    declined: r.declined,
+  });
+  const remoteAll = $derived(book ? sortContacts(book.contacts.map(asContact)) : []);
+  /** That PC's contacts under the filter on the left (tags and "waiting" are this PC's own). */
+  const remoteShown = $derived(remoteAll.filter((c) => (app.directFilter === "online" ? c.online : app.directFilter === "favourites" ? c.favourite : true)));
+  let remotePicked = $state<string | null>(null);
+  $effect(() => {
+    void fromId;
+    remotePicked = null;
+  });
+
   // Search inside the current filter (shown once the list gets long, or while typing).
   let search = $state("");
-  const searching = $derived(everyone.length > 8 || search.length > 0);
+  const searching = $derived((fromId ? remoteAll.length : everyone.length) > 8 || search.length > 0);
   const contacts = $derived.by(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return app.directShown;
-    return app.directShown.filter((c) => c.name.toLowerCase().includes(q) || (c.theirName ?? "").toLowerCase().includes(q) || (c.tags ?? []).some((t) => t.toLowerCase().includes(q)));
+    const list = fromId ? remoteShown : app.directShown;
+    if (!q) return list;
+    return list.filter((c) => c.name.toLowerCase().includes(q) || (c.theirName ?? "").toLowerCase().includes(q) || (c.tags ?? []).some((t) => t.toLowerCase().includes(q)));
   });
-  const current = $derived(contacts.find((c) => c.id === app.directPicked) ?? contacts[0] ?? null);
+  const picked = $derived(fromId ? remotePicked : app.directPicked);
+  const current = $derived(contacts.find((c) => c.id === picked) ?? contacts[0] ?? null);
+  const currentId = $derived(current?.id ?? null);
+  function pickContact(id: string) {
+    if (fromId) remotePicked = id;
+    else app.directPicked = id;
+  }
   // Nobody picked yet (or the picked one was removed): the first shown is picked for real, so a
   // contact coming online (online sorts first) doesn't swap the conversation under you.
   $effect(() => {
+    if (fromId) {
+      if (current && (!remotePicked || !remoteAll.some((c) => c.id === remotePicked))) remotePicked = current.id;
+      return;
+    }
     if (current && (!app.directPicked || !everyone.some((c) => c.id === app.directPicked))) app.directPicked = current.id;
+  });
+  /** That PC's history with the contact shown, read live (like My devices' Downloads tab). */
+  let talk = $state<RemoteTalk | null>(null);
+  $effect(() => {
+    const dev = fromId;
+    const who = currentId;
+    talk = null;
+    if (!dev || !who) return;
+    let alive = true;
+    let busy = false;
+    const load = () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      api
+        .directRemoteTalk(dev, who)
+        .then((x) => alive && (talk = x), () => {})
+        .finally(() => (busy = false));
+    };
+    load();
+    const t = setInterval(load, 2000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  });
+  /** Relays shown in a conversation: sent from this PC through `fromId` (still going, or ended
+   *  before that PC had them), or passed on by this PC and not offered to them yet. */
+  const relaysHere = $derived.by<DirectRelay[]>(() => {
+    if (!current) return [];
+    return (d?.relays ?? []).filter((r) =>
+      fromId
+        ? r.mine && r.device === fromId && r.to === current.id && (!r.ended || !r.reached)
+        : !r.mine && !r.ended && r.to === current.id && ["receiving", "waiting", "offering"].includes(r.state),
+    );
+  });
+  /** Your name or that PC's, and the ID shown with it. */
+  const shownName = $derived(fromId ? book?.me.name || from?.directName || "" : (d?.myName ?? ""));
+  const shownIdText = $derived(fromId ? (book?.me.id ?? "") : (d?.myId ?? ""));
+  let fromMenu = $state(false);
+  let fromSel = $state<HTMLDivElement | null>(null);
+  /** Where the menu opens: under the button, as wide as it or wider (it may go past the list). */
+  let menuAt = $state({ left: 0, top: 0, width: 300 });
+  function toggleFromMenu() {
+    if (!fromMenu && fromSel) {
+      const r = fromSel.getBoundingClientRect();
+      const width = Math.max(r.width, 340);
+      menuAt = { left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)), top: r.bottom + 6, width };
+    }
+    fromMenu = !fromMenu;
+  }
+  function pickFrom(id: string | null) {
+    fromMenu = false;
+    if (id === app.directFrom) return;
+    search = "";
+    app.directFrom = id;
+  }
+  let renamingMe = $state(false);
+  let meField = $state<HTMLInputElement | null>(null);
+  function startRename() {
+    if (fromId) return;
+    renamingMe = true;
+    queueMicrotask(() => {
+      meField?.focus();
+      meField?.select();
+    });
+  }
+  async function endRename() {
+    renamingMe = false;
+    await saveName();
+  }
+  /** A relay on its way, in a few words: both legs ("To Home PC 100% · To Rado 45%"). */
+  function relayText(r: DirectRelay) {
+    const pc = r.deviceName || "your other PC";
+    if (!r.mine) {
+      if (r.state === "receiving") return `Arriving from ${pc} ${percent(r.leg1Done, r.size)}% · then to ${r.toName}`;
+      return `From ${pc} · Waiting for ${r.toName} to be online`;
+    }
+    const leg1 = `To ${pc} ${r.state === "leg1" ? percent(r.leg1Done, r.size) : 100}%`;
+    const p2 = percent(r.done, r.size);
+    switch (r.state) {
+      case "leg1":
+        return leg1;
+      case "waiting":
+        return `${leg1} · Waiting for ${r.toName}`;
+      case "offered":
+        return `${leg1} · Waiting for ${r.toName} to accept…`;
+      case "sending":
+        return `${leg1} · To ${r.toName} ${p2}%`;
+      case "paused":
+        return `${leg1} · Waiting for ${r.toName} to continue · ${p2}% done`;
+      case "expired":
+        return "Expired: not accepted within 7 days";
+      case "cancelled":
+        return "Cancelled";
+      default:
+        return r.message ?? "Didn't go through";
+    }
+  }
+  /** The bar follows the leg on its way: to the PC first, then to the contact (the last number
+   *  in its text). */
+  const relayPct = (r: DirectRelay) => (r.size > 0 ? Math.min(100, ((r.state === "leg1" || r.state === "receiving" ? r.leg1Done : r.done) / r.size) * 100) : 0);
+  /** A contact of that PC with a relay on its way: what its row says. */
+  function remoteMoving(id: string) {
+    const list = (d?.relays ?? []).filter((r) => r.mine && !r.ended && r.device === fromId && r.to === id);
+    if (!list.length) return null;
+    // The leg on its way, as on its card: to the PC first, then to them.
+    const first = list.some((r) => r.state === "leg1");
+    const size = list.reduce((a, r) => a + r.size, 0);
+    const done = list.reduce((a, r) => a + Math.min(first ? r.leg1Done : r.state === "leg1" ? 0 : r.done, r.size), 0);
+    const pct = percent(done, size);
+    const where = first ? (list[0].deviceName || "your other PC") : list[0].toName;
+    return { text: `To ${where} ${pct}%`, pct, icon: "up", count: list.length };
+  }
+  // The conversation shown stays connected, and is called at once if it closed for being quiet.
+  const shownId = $derived(fromId ? null : (current?.id ?? null));
+  $effect(() => {
+    api.directShown(shownId).catch(() => {});
+  });
+  $effect(() => () => {
+    api.directShown(null).catch(() => {});
   });
   const FILTER_TITLES: Record<string, string> = { all: "All contacts", online: "Online", waiting: "Waiting for you", favourites: "Favourites" };
   const filterTitle = $derived(FILTER_TITLES[app.directFilter] ?? app.directFilter.replace(/^tag:/, ""));
 
   // ---------- the timeline: history plus what's moving, oldest first ----------
-  type Row = { kind: "history"; h: DirectHistory } | { kind: "moving"; t: DirectTransfer };
+  type Row = { kind: "history"; h: DirectHistory } | { kind: "moving"; t: DirectTransfer } | { kind: "relay"; r: DirectRelay };
   const rows = $derived.by<Row[]>(() => {
     if (!current) return [];
+    const relays = relaysHere.map((r) => ({ kind: "relay" as const, r }));
+    if (fromId) {
+      // That PC's own, read live; its send to them that this PC's relay card already shows
+      // (both legs) isn't shown twice.
+      const mineGoing = relays.some((x) => !x.r.ended);
+      const hist = (talk?.history ?? []).map((h) => ({ kind: "history" as const, h }));
+      const moving = (talk?.moving ?? []).filter((t) => !(mineGoing && t.via)).map((t) => ({ kind: "moving" as const, t: { ...t, contact: current.id } }));
+      return [...hist, ...relays, ...moving];
+    }
     const hist = (d?.history ?? []).filter((h) => h.contact === current.id).map((h) => ({ kind: "history" as const, h }));
     const moving = (d?.transfers ?? []).filter((t) => t.contact === current.id).map((t) => ({ kind: "moving" as const, t }));
-    return [...hist, ...moving];
+    return [...hist, ...relays, ...moving];
   });
-  // The details panel (shown or hidden with Ctrl+I, like Downloads').
-  const showDetails = $derived(app.panelOpen && !!current);
+  // The details panel (shown or hidden with Ctrl+I, like Downloads'): this PC's contacts only.
+  const showDetails = $derived(app.panelOpen && !!current && !fromId);
   // A column of its own when there's room; on a narrower window it slides over the conversation.
   let bodyWidth = $state(0);
   const detailsInline = $derived(bodyWidth >= 1040);
-  const movingNow = $derived(current ? (d?.transfers ?? []).filter((t) => t.contact === current.id) : []);
+  // Moving now (one waiting for them to come back isn't).
+  const movingNow = $derived(current ? (d?.transfers ?? []).filter((t) => t.contact === current.id && t.state !== "waiting") : []);
   const endedWithThem = $derived(current ? (d?.history ?? []).filter((h) => h.contact === current.id).length : 0);
   let timeline: HTMLDivElement | undefined = $state();
   /** Whose conversation was last scrolled: a new item glides into view, a new contact opens at the end. */
@@ -181,6 +409,7 @@
     if (t.state === "offered") return "Waiting for them to accept…";
     if (t.state === "preparing") return "Getting ready…";
     if (t.state === "checking") return "Checking the files…";
+    if (t.state === "waiting") return `Waiting for ${current?.name ?? "them"} to continue · ${percent(t.done, t.size)}% done`;
     return `${percent(t.done, t.size)}% · ${bytes(t.done)} of ${bytes(t.size)}`;
   }
 
@@ -208,6 +437,13 @@
   }
   function copyId() {
     if (d?.myId) app.run(() => api.copyText(d.myId!)).then(() => app.toast("Your Pako ID is copied. Send it to the people you want to connect with."));
+  }
+  /** The ID under "You, sending from": this PC's, or that PC's. */
+  function copyShownId() {
+    if (!app.directFrom) return copyId();
+    const id = book?.me.id;
+    const name = fromChoices.find((c) => c.id === app.directFrom)?.name ?? "That PC";
+    if (id) app.run(() => api.copyText(id)).then(() => app.toast(`${name}'s Pako ID is copied.`));
   }
   const shortId = (id: string) => `${id.slice(0, 6)}…${id.slice(-6)}`;
 
@@ -273,6 +509,9 @@
       { label: "Rename…", action: () => ((renaming = c), (renameTo = c.name)) },
       { label: "Tags…", action: () => openTags(c) },
       { label: c.favourite ? "Remove from favourites" : "Add to favourites", action: () => app.run(() => api.directSetFavourite(c.id, !c.favourite)) },
+      { label: c.muted ? "Unmute" : "Mute", action: () => app.run(() => api.directSetMuted(c.id, !c.muted)) },
+      ...(c.unchecked ? [{ label: "Check now", action: () => app.run(() => api.directConnect(c.id)) }] : []),
+      ...(c.check !== "often" && c.checkAs !== "often" ? [{ label: "Check often for 1 hour", action: () => app.run(() => api.directSetCheck(c.id, "often", "hour")) }] : []),
       { separator: true },
       { label: "Can send to me without asking", hint: c.autoAccept ? "✓" : "", action: () => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept })) },
       { label: "Save their files in…", action: () => chooseFolder(c) },
@@ -323,6 +562,11 @@
   }
   let compress = $state(false);
   let sendName = $state("");
+  /** Sending through another PC: keep a copy there once delivered. */
+  let keepCopy = $state(false);
+  /** Send is possible now: they're online here, or (through another PC) that PC is online and
+   *  they said yes to it once (if they're away, it waits for them there). */
+  const canSend = $derived(!current ? false : fromId ? !!from?.online && current.trusted && !current.declined : current.online);
   let sending = $state(false);
   /** The name and the compression choice belong to one person's files too: another conversation
    *  shows its own (a name typed for Alex's files never goes out with Jo's). */
@@ -368,7 +612,8 @@
     const paths = basket;
     sending = true;
     try {
-      await api.directSend(to, paths, compress, sendName.trim() || null);
+      if (fromId) await api.directRelaySend(fromId, to, current.name, paths, compress, sendName.trim() || null, keepCopy);
+      else await api.directSend(to, paths, compress, sendName.trim() || null);
       // Only what was sent leaves: files added for them while it started stay for the next send.
       const sent = new Set(paths);
       setBasket((baskets[to] ?? []).filter((p) => !sent.has(p)), to);
@@ -459,6 +704,8 @@
   {/if}
 {/snippet}
 
+<svelte:window onresize={() => (fromMenu = false)} onblur={() => (fromMenu = false)} />
+
 <div class="direct" role="presentation" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping && current}
     <div class="dropzone" aria-hidden="true" transition:fadeIn={{ duration: 120 }}>
@@ -484,7 +731,7 @@
     <!-- The welcome card and the contacts crossfade in the same place (the tutorial's example
          people going away, your first contact arriving): no jump. -->
     <div class="stage">
-    {#if !everyone.length}
+    {#if !everyone.length && !fromChoices.length && !fromId}
       <div class="body solo" transition:fadeIn={{ duration: 220 }}>
         <section class="card welcome" data-tour="direct-welcome">
           <div class="empty-icon"><Icon name="send" size={26} /></div>
@@ -504,6 +751,69 @@
     {:else}
     <div class="body" class:withdetails={showDetails && detailsInline} bind:clientWidth={bodyWidth} transition:fadeIn={{ duration: 220 }}>
       <aside class="people card" data-tour="direct-people">
+        <!-- You, sending from: your name and the PC, one button (the name renames it, the PC
+             part picks another of your PCs to send from), the Pako ID under it. -->
+        <div class="from" data-tour="direct-me">
+          <span class="mlabel">You, sending from</span>
+          <div class="fromsel" class:solo={!fromChoices.length} class:remote={!!fromId} bind:this={fromSel}>
+            {#if renamingMe}
+              <input
+                class="fname-in"
+                bind:this={meField}
+                bind:value={myName}
+                onblur={endRename}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                  else if (e.key === "Escape") {
+                    myName = d.myName ?? "";
+                    (e.currentTarget as HTMLInputElement).blur();
+                  }
+                }}
+                placeholder="What your contacts see"
+                maxlength="60"
+                aria-label="Your name"
+              />
+            {:else}
+              <button class="fname" class:empty={!shownName} disabled={!!fromId} onclick={startRename} title={fromId ? `The name ${from?.name ?? "that PC"}'s contacts see. Change it on ${from?.name ?? "that PC"}.` : "Your name: what your contacts see. Click to change it."}>{shownName || "Your name"}</button>
+            {/if}
+            <span class="fsep" aria-hidden="true">·</span>
+            {#if fromChoices.length}
+              <button class="fpc" aria-haspopup="menu" aria-expanded={fromMenu} onclick={toggleFromMenu} title="Send from this PC or another of your PCs">
+                <span class="fpcname">{from?.name ?? "This PC"}</span><span class="fchev" class:open={fromMenu}><Icon name="chevron" size={11} stroke={2.4} /></span>
+              </button>
+            {:else}
+              <span class="fpc still">This PC</span>
+            {/if}
+          </div>
+          {#if fromMenu}
+            <div class="fcatch" role="presentation" onmousedown={() => (fromMenu = false)}></div>
+            <div class="frommenu" role="menu" tabindex="-1" style:left="{menuAt.left}px" style:top="{menuAt.top}px" style:width="{menuAt.width}px" transition:pop={{ duration: 160, from: 0.96, y: -4, origin: "top left" }} onkeydown={(e) => e.key === "Escape" && (fromMenu = false)}>
+              <button class="fitem" class:on={!fromId} role="menuitemradio" aria-checked={!fromId} onclick={() => pickFrom(null)}>
+                <span class="fic"><Icon name="devices" size={14} /></span>
+                <span class="ftext">
+                  <span class="ftop">This PC</span>
+                  <span class="fsub">Contacts see "{d.myName || "no name yet"}" · {plural(everyone.length, "contact")}</span>
+                </span>
+                {#if !fromId}<span class="fok"><Icon name="check" size={12} stroke={2.6} /></span>{/if}
+              </button>
+              {#each fromChoices as c (c.id)}
+                <button class="fitem" class:on={fromId === c.id} class:off={!c.online} role="menuitemradio" aria-checked={fromId === c.id} disabled={!c.online} title={c.online ? undefined : `${c.name} is offline`} onclick={() => pickFrom(c.id)}>
+                  <span class="fic"><Icon name="devices" size={14} /></span>
+                  <span class="ftext">
+                    <span class="ftop">{c.name}{#if c.pcName}<span class="fcalls">&nbsp;· calls itself {c.pcName}</span>{/if}</span>
+                    <span class="fsub">{c.online ? "" : "Offline · "}Contacts see "{c.directName || "no name yet"}" · {plural(c.contacts, "contact")}</span>
+                  </span>
+                  {#if fromId === c.id}<span class="fok"><Icon name="check" size={12} stroke={2.6} /></span>{/if}
+                </button>
+              {/each}
+              <p class="fnote">Renaming stays in My devices.</p>
+            </div>
+          {/if}
+          <div class="idrow">
+            <span class="mono idtext" title={shownIdText}>{shownIdText ? shortId(shownIdText) : "…"}</span>
+            <button class="btn small" disabled={!shownIdText} onclick={copyShownId}><Icon name="copy" size={12} />Copy ID</button>
+          </div>
+        </div>
         <div class="phead">
           <span class="ptitle">{filterTitle}</span>
           <span class="pcount mono">{contacts.length}</span>
@@ -511,7 +821,9 @@
             <span class="example" title="Made-up people, only shown during the tutorial" transition:pop={{ duration: 200, from: 0.92, y: 0 }}>Examples</span>
           {/if}
           <div class="spacer"></div>
-          <button class="btn small" data-tour="direct-add" onclick={() => ((app.directAdding = true), (addError = ""))} title="Add a contact by their Pako ID"><Icon name="plus" size={12} stroke={2.2} />Add</button>
+          {#if !fromId}
+            <button class="btn small" data-tour="direct-add" onclick={() => ((app.directAdding = true), (addError = ""))} title="Add a contact by their Pako ID"><Icon name="plus" size={12} stroke={2.2} />Add</button>
+          {/if}
         </div>
         {#if searching}
           <div class="psearch" transition:rowSlide={{ duration: 200 }}>
@@ -522,20 +834,20 @@
         {/if}
         <div class="plist">
           {#each contacts as c (c.id)}
-            {@const mv = movingBy.get(c.id)}
-            {@const m = mv ? rowMoving(c.id, mv) : null}
+            {@const mv = fromId ? undefined : movingBy.get(c.id)}
+            {@const m = fromId ? remoteMoving(c.id) : mv ? rowMoving(c.id, mv) : null}
             <button
               class="person"
               class:on={current?.id === c.id}
               class:moving={!!m}
-              onclick={() => (app.directPicked = c.id)}
-              oncontextmenu={(e) => contactMenu(e, c, true)}
+              onclick={() => pickContact(c.id)}
+              oncontextmenu={(e) => (fromId ? e.preventDefault() : contactMenu(e, c, true))}
               transition:rowSlide={{ duration: listMotion }}
               animate:flipIf={{ ...flipOpts, duration: listMotion }}
             >
               <span class="avatar">{initial(c.name)}<span class="dot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span></span>
               <span class="ptext">
-                <span class="pname">{c.name}{#if c.favourite}<span class="fav" aria-label="Favourite"><Icon name="star" size={11} stroke={2.2} /></span>{/if}</span>
+                <span class="pname">{c.name}{#if c.favourite}<span class="fav" aria-label="Favourite"><Icon name="star" size={11} stroke={2.2} /></span>{/if}{#if c.muted}<span class="mutedmark" aria-label="Muted" title="Muted: no pop-ups or sounds from {c.name}"><Icon name="bell-off" size={11} stroke={2.2} /></span>{/if}</span>
                 {#if m}
                   <span class="pstat live" title={m.count > 1 ? `${m.count} transfers with ${c.name}` : undefined}><Icon name={m.icon} size={11} stroke={2.4} />{m.text}</span>
                 {:else}
@@ -548,7 +860,7 @@
                   </span>
                 {/if}
               </span>
-              {#if app.directWaitingIds.has(c.id)}<span class="badge" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>!</span>{/if}
+              {#if !fromId && app.directWaitingIds.has(c.id)}<span class="badge" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>!</span>{/if}
               {#if m}
                 <span class="rowbar" aria-hidden="true" transition:fadeIn={{ duration: 200 }}><i style:transform="scaleX({m.pct / 100})"></i></span>
               {/if}
@@ -557,20 +869,19 @@
             <div class="noone">
               {#if search}
                 <p>Nobody matches "{search}".</p>
+              {:else if fromId && bookError}
+                <p class="dim">{bookError}</p>
+              {:else if fromId && !book}
+                <p class="dim">Reading {from?.name ?? "that PC"}'s contacts…</p>
+              {:else if fromId}
+                <p class="dim">{from?.name ?? "That PC"} has no contacts here.</p>
               {:else}
                 <p class="dim">Nobody here right now.</p>
               {/if}
             </div>
           {/each}
         </div>
-        <div class="me" data-tour="direct-me">
-          <label class="mlabel" for="myname">Your name</label>
-          <input id="myname" class="input" bind:value={myName} onblur={saveName} onkeydown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()} placeholder="What your contacts see" maxlength="60" />
-          <span class="mlabel">Your Pako ID</span>
-          <div class="idrow">
-            <span class="mono idtext" title={d.myId}>{shortId(d.myId ?? "")}</span>
-            <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />Copy</button>
-          </div>
+        <div class="me">
           {@render seenBy()}
         </div>
       </aside>
@@ -586,13 +897,17 @@
             <div class="ctext">
               <div class="cname">
                 {current.name}
+                {#if current.muted}<span class="mutedmark" aria-label="Muted" title="Muted: no pop-ups or sounds from {current.name}"><Icon name="bell-off" size={12} stroke={2.2} /></span>{/if}
                 {#if current.theirName && current.theirName !== current.name}<span class="theirs dim">calls themselves "{current.theirName}"</span>{/if}
               </div>
-              <div class="cstat dim">{statusOf(current, internet)}{#if current.autoAccept}{" · can send without asking"}{/if}</div>
+              <div class="cstat dim">{statusOf(current, internet)}{#if current.autoAccept}{" · can send without asking"}{/if}{#if fromId}{` · a contact of ${from?.name ?? "that PC"}: files go through it`}{/if}</div>
             </div>
             <div class="spacer"></div>
+            {#if fromId}
+              <!-- That PC's contact: shown only (it's changed on that PC). -->
+            {:else}
             {#if !current.online}
-              <button class="btn small" onclick={() => app.run(() => api.directConnect(current!.id))}><Icon name="retry" size={12} />Connect</button>
+              <button class="btn small" onclick={() => app.run(() => api.directConnect(current!.id))}><Icon name="retry" size={12} />{current.unchecked ? "Check now" : "Connect"}</button>
             {/if}
             <button class="icon-btn" aria-label="More for {current.name}" title="More" onclick={(e) => contactMenu(e, current!)}><Icon name="settings" size={14} /></button>
             <button
@@ -608,9 +923,12 @@
                 {#if app.panelOpen}<path d="M15 5h6v14h-6z" fill="currentColor" stroke="none" />{/if}
               </svg>
             </button>
+            {/if}
           </header>
 
-          {#if current.declined && !current.waiting}
+          {#if fromId}
+            <!-- (The safety code and their answer are between them and that PC.) -->
+          {:else if current.declined && !current.waiting}
             <div class="safety" transition:rowSlide={{ duration: 220 }}>
               <Icon name="alert" size={14} />
               <span>{current.name} declined. For 7 days their Pako turns you away without asking them; after that, press Connect to ask again.</span>
@@ -625,7 +943,7 @@
           <div class="mid">
           {#key current.id}
           <div class="timeline" bind:this={timeline} in:fadeIn={{ duration: 160 }}>
-            {#each rows as r (r.kind === "history" ? `h:${r.h.outgoing ? "out" : "in"}:${r.h.id}` : `t:${r.t.outgoing ? "out" : "in"}:${r.t.id}`)}
+            {#each rows as r (r.kind === "history" ? `h:${r.h.outgoing ? "out" : "in"}:${r.h.id}` : r.kind === "relay" ? `r:${r.r.id}` : `t:${r.t.outgoing ? "out" : "in"}:${r.t.id}`)}
               {#if r.kind === "history"}
                 {@const h = r.h}
                 <div class="msg" class:out={h.outgoing} class:bad={h.result !== "done"} in:pop={{ duration: 240, from: 0.98, y: 8, origin: h.outgoing ? "right bottom" : "left bottom" }}>
@@ -634,7 +952,7 @@
                       <FileIcon name={h.name} kind={h.files > 1 ? "folder" : undefined} size={18} />
                       <MiddleText text={h.name} class="mname" />
                     </div>
-                    <div class="mmeta">{plural(h.files, "file")} · {bytes(h.size)}</div>
+                    <div class="mmeta">{plural(h.files, "file")} · {bytes(h.size)}{#if h.via}<span class="via" title="Sent on for {h.via}">from {h.via}</span>{/if}</div>
                     <div class="mfoot">
                       <span class="res" class:ok={h.result === "done"}>{resultText(h)}</span>
                       <span class="dim">{shortDate(h.date)}{#if h.path}{" · " + pathLabel(h.path)}{/if}</span>
@@ -647,7 +965,7 @@
                     </div>
                   </div>
                 </div>
-              {:else}
+              {:else if r.kind === "moving"}
                 {@const t = r.t}
                 <div class="msg live" class:out={t.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: t.outgoing ? "right bottom" : "left bottom" }}>
                   <div class="bubble">
@@ -655,17 +973,40 @@
                       <FileIcon name={t.name} kind={t.files > 1 ? "folder" : undefined} size={18} />
                       <MiddleText text={t.name} class="mname" />
                     </div>
-                    <div class="mmeta">{plural(t.files, "file")} · {bytes(t.size)}</div>
-                    <div class="bar"><i style:width="{Math.min(100, (t.done / Math.max(1, t.size)) * 100)}%"></i></div>
+                    <div class="mmeta">{plural(t.files, "file")} · {bytes(t.size)}{#if t.via}<span class="via" title="Sent on for {t.via}">from {t.via}</span>{/if}</div>
+                    <div class="bar" class:waiting={t.state === "waiting"}><i style:width="{Math.min(100, (t.done / Math.max(1, t.size)) * 100)}%"></i></div>
                     <div class="mfoot">
                       <span class="dim">{movingText(t)}{#if t.state === "sending" || t.state === "receiving"}{" · " + speed(speedOf(t))}{/if}{#if t.path}{" · " + pathLabel(t.path)}{/if}</span>
-                      <button class="link" onclick={() => app.run(() => api.directCancel(t.id))}>Cancel</button>
+                      {#if !fromId}<button class="link" onclick={() => app.run(() => api.directCancel(t.id))}>Cancel</button>{/if}
+                    </div>
+                  </div>
+                </div>
+              {:else if r.kind === "relay"}
+                {@const x = r.r}
+                <div class="msg out" class:live={!x.ended} class:bad={!!x.ended} in:pop={{ duration: 240, from: 0.98, y: 8, origin: "right bottom" }}>
+                  <div class="bubble">
+                    <div class="mtop">
+                      <FileIcon name={x.name} kind={x.files > 1 ? "folder" : undefined} size={18} />
+                      <MiddleText text={x.name} class="mname" />
+                    </div>
+                    <div class="mmeta">{plural(x.files, "file")} · {bytes(x.size)}<span class="via" title={x.mine ? `Through ${x.deviceName}` : `Sent on for ${x.deviceName}`}>{x.mine ? `through ${x.deviceName}` : `from ${x.deviceName}`}</span></div>
+                    {#if !x.ended}
+                      <div class="bar" class:waiting={x.state === "paused" || x.state === "waiting"}><i style:width="{relayPct(x)}%"></i></div>
+                    {/if}
+                    <div class="mfoot">
+                      {#if x.ended}
+                        <span class="res">{relayText(x)}</span>
+                        <span class="dim">{shortDate(x.ended)}</span>
+                      {:else}
+                        <span class="dim">{relayText(x)}</span>
+                        <button class="link" onclick={() => app.run(() => api.directRelayCancel(x.id))}>Cancel</button>
+                      {/if}
                     </div>
                   </div>
                 </div>
               {/if}
             {:else}
-              <div class="nothing dim">Nothing sent or received with {current.name} yet.</div>
+              <div class="nothing dim">{fromId && !talk ? `Reading ${from?.name ?? "that PC"}'s history with ${current.name}…` : fromId ? `Nothing sent or received between ${from?.name ?? "that PC"} and ${current.name} yet.` : `Nothing sent or received with ${current.name} yet.`}</div>
             {/each}
           </div>
           {/key}
@@ -695,17 +1036,23 @@
                   onpick={(v) => (compress = v === "zip")}
                 />
                 <input class="input name" bind:value={sendName} placeholder="Name (optional)" maxlength="120" aria-label="Name of this send" />
+                {#if fromId}
+                  <span class="keep" title="Once {current.name} has them, a copy stays on {from?.name ?? 'that PC'} (in its folder for files from this PC). Off: the copy there is deleted.">
+                    <button class="switch" class:on={keepCopy} role="switch" aria-checked={keepCopy} aria-label="Keep a copy on {from?.name ?? 'that PC'}" onclick={() => (keepCopy = !keepCopy)}></button>
+                    <span class="keepl">Keep a copy on {from?.name ?? "that PC"}</span>
+                  </span>
+                {/if}
                 <!-- Not enough room on one line: the two buttons go to the next one, still on the right. -->
                 <div class="go">
                   <button class="btn ghost" onclick={() => setBasket([])}>Clear</button>
-                  <button class="btn primary" disabled={!current.online || sending} onclick={send} title="Send to {current.name}"><Icon name="send" size={13} stroke={2.2} /><span class="to">Send to {current.name}</span></button>
+                  <button class="btn primary" disabled={!canSend || sending} onclick={send} title={fromId ? `Send to ${current.name} through ${from?.name ?? "that PC"}` : `Send to ${current.name}`}><Icon name="send" size={13} stroke={2.2} /><span class="to">Send to {current.name}</span></button>
                 </div>
               </div>
               </div>
             {/if}
             <div class="droprow">
               <span class="dim">
-                {#if current.online}Drop files or folders here, or{:else}{current.name} is offline: files go only while you're both online. Drop files or folders here, or{/if}
+                {#if fromId && !from?.online}{from?.name ?? "That PC"} is offline. Drop files or folders here, or{:else if fromId && (!current.trusted || current.declined)}{current.name} hasn't accepted {from?.name ?? "that PC"} yet. Drop files or folders here, or{:else if fromId && !current.online}{from?.name ?? "That PC"} passes them on once {current.name} is back. Drop files or folders here, or{:else if fromId}Drop files or folders here, or{:else if current.online}Drop files or folders here, or{:else}{current.name} is offline: files go only while you're both online. Drop files or folders here, or{/if}
               </span>
               <button class="btn small" onclick={chooseFiles}><Icon name="file" size={12} />Choose files</button>
               <button class="btn small" onclick={chooseDir}><Icon name="folder" size={12} />Choose folder</button>
@@ -731,7 +1078,7 @@
         <label class="mlabel" for="addmyname">Your name</label>
         <input id="addmyname" class="input" class:missing={needName} bind:this={nameField} bind:value={myName} placeholder="What your contacts see" maxlength="60" aria-invalid={needName} />
         {#if needName}<p class="err" role="alert">Fill in your name first: they see it when you add them.</p>{/if}
-        <p class="dim small first">Asked once: your contacts see this name, so they know who's asking. You can change it later under <b>Your name</b>.</p>
+        <p class="dim small first">Asked once: your contacts see this name, so they know who's asking. You can change it later: click it under <b>You, sending from</b>, at the top of the contact list.</p>
       {/if}
       <label class="mlabel" for="cid">Their Pako ID</label>
       <input id="cid" class="input mono" bind:value={newId} placeholder="Paste the ID they sent you" spellcheck="false" />
@@ -1044,6 +1391,12 @@
     color: var(--st-retry);
     vertical-align: -1px;
   }
+  .mutedmark {
+    display: inline-flex;
+    margin-left: 6px;
+    color: var(--text-3);
+    vertical-align: -1px;
+  }
   .ptags {
     display: flex;
     gap: 4px;
@@ -1304,6 +1657,207 @@
   .noone p {
     margin: 0 0 6px;
   }
+  /* ---------- You, sending from ---------- */
+  .from {
+    position: relative;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 12px 11px;
+    border-bottom: 1px solid var(--line);
+  }
+  /* Your name and the PC, one button: the name renames, the PC part opens the menu. */
+  .fromsel {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    height: 32px;
+    padding: 0 3px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--panel);
+    transition: border-color var(--fast) ease;
+  }
+  .fromsel:hover {
+    border-color: var(--control);
+  }
+  .fname,
+  .fpc {
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 7px;
+    border: none;
+    border-radius: calc(var(--radius) - 2px);
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+    white-space: nowrap;
+    transition: background var(--fast) ease;
+  }
+  .fname {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+    cursor: text;
+  }
+  .fname.empty {
+    color: var(--text-3);
+    font-weight: 400;
+  }
+  .fname:disabled {
+    cursor: default;
+    opacity: 1;
+  }
+  .fname:hover:not(:disabled),
+  .fpc:hover {
+    background: var(--raise-hover);
+  }
+  .fname-in {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    padding: 0 7px;
+    border: none;
+    border-radius: calc(var(--radius) - 2px);
+    outline: 1px solid var(--accent);
+    background: var(--raise);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .fsep {
+    flex: none;
+    color: var(--text-3);
+  }
+  .fpc {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: space-between;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .fpc.still {
+    cursor: default;
+  }
+  .fromsel.remote .fpc {
+    color: var(--text);
+  }
+  .fpcname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .fchev {
+    flex: none;
+    display: grid;
+    color: var(--text-3);
+    transition: transform var(--mid) var(--ease);
+  }
+  .fchev.open {
+    transform: rotate(180deg);
+  }
+  .fcatch {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+  }
+  .frommenu {
+    position: fixed;
+    z-index: 31;
+    max-width: calc(100vw - 16px);
+    padding: 5px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--line-strong);
+    background: var(--menu-bg);
+    backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-menu);
+    outline: none;
+  }
+  .fitem {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 8px;
+    border: none;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    transition: background 80ms ease;
+  }
+  .fitem:hover:not(:disabled) {
+    background: var(--active);
+  }
+  .fitem.off {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .fic {
+    flex: none;
+    display: grid;
+    color: var(--text-2);
+  }
+  .ftext {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .ftop {
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .fcalls {
+    font-weight: 400;
+    color: var(--text-3);
+  }
+  .fsub {
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--text-3);
+  }
+  .fok {
+    flex: none;
+    display: grid;
+    color: var(--accent-text);
+  }
+  .fnote {
+    margin: 4px 8px 2px;
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--text-3);
+  }
+  /* "from Laptop" / "through Home PC" on a card. */
+  .via {
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 8px;
+    border: 1px solid var(--line-strong);
+    color: var(--text-2);
+    font-size: 10.5px;
+    line-height: 14px;
+    white-space: nowrap;
+  }
+  .keep {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
   .me {
     flex: none;
     display: flex;
@@ -1321,9 +1875,9 @@
     align-items: center;
     gap: 8px;
   }
-  /* "Be visible to Pakos on this network": a little apart from the ID above it. */
+  /* "Be visible to Pakos on this network": on its own at the bottom now. */
   label[for="seenby"] {
-    margin-top: 4px;
+    margin-top: 0;
   }
   .seennote {
     margin: 0;
@@ -1483,7 +2037,13 @@
     display: block;
     height: 100%;
     background: var(--st-run);
-    transition: width var(--mid) var(--ease-out);
+    transition:
+      width var(--mid) var(--ease-out),
+      background-color var(--mid) var(--ease-out);
+  }
+  /* Cut short, waiting for the other PC: the bar rests in the paused colour. */
+  .bar.waiting i {
+    background: var(--st-pause);
   }
   .compose {
     flex: none;

@@ -54,9 +54,11 @@ folder** in Settings shows it.)
 (Building from the source instead: `node extension/build.mjs` writes the same files to
 `dist/extension/`, plus Pako Light's store zip.)
 
-## 3. Firefox
+## 3. Firefox (and Zen, LibreWolf, Waterfox, Floorp)
 
 The Firefox version comes with Pako, signed by Mozilla (Firefox only adds signed extensions).
+Zen, LibreWolf, Waterfox and Floorp take the same file: **Add to Zen** (…) works the same way,
+and they keep it up to date by themselves too.
 
 1. In Pako: **Settings › Browser extension › Add to Firefox**. Firefox opens
    `pako-firefox.xpi` (in this folder) and asks to add Pako: click **Add**. (If Firefox doesn't
@@ -135,5 +137,6 @@ Pako then says the Firefox version isn't included.
   Chromium (`world: "MAIN"`).
 - `pako://connect` is the only `pako://` link Pako acts on (any other is ignored).
 - Native host name: `app.pako.host`. Pako writes the host files to `data/browser/` and the
-  per-user registry entries (Chrome, Chromium, Edge, Brave, Vivaldi, Firefox) when the switch is
+  per-user registry entries (Chrome, Chromium, Edge, Brave, Vivaldi, Mozilla, which Firefox, Zen,
+  Waterfox, Floorp and LibreWolf read, and LibreWolf's own for its 2022 builds) when the switch is
   on, and removes them when it's off.

@@ -229,3 +229,31 @@ test("The pill only ever asks about its own tab, and only from a page", async ()
   assert.equal((await ask(ext, { type: "pill-menu" })).ok, false);
   assert.deepEqual(ext.sent, []);
 });
+
+test("Installed or updated: the extension says hello to Pako at once (Settings shows it Installed)", async () => {
+  for (const make of [full, (o) => loadEdition({ light: true, ...o })]) {
+    const ext = await make();
+    await ext.listeners.installed?.({ reason: "install" });
+    await settle();
+    assert.equal(ext.pings.length, 1, `${ext.who}: one hello`);
+    assert.deepEqual(ext.sent, [], `${ext.who}: nothing else asked of Pako`);
+  }
+});
+
+test("A hello that finds a newer extension in Pako's folder reloads once, never in a loop", async () => {
+  // Pako's folder says 2.0.0; this copy is 1.0.0 (loaded from another folder, so the reload
+  // brings 1.0.0 back): install → hello → reload → installed again → hello → no second reload.
+  const reply = () => ({ ok: true, ext: "2.0.0" });
+  const first = loadEdition({ reply });
+  await first.listeners.installed?.({ reason: "install" });
+  await settle(3200);
+  assert.equal(first.reloads.length, 1, "reloaded once for 2.0.0");
+  assert.equal(first.storage.reloadedFor, "2.0.0");
+  // The reloaded copy: same storage, fresh page.
+  const again = loadEdition({ reply });
+  Object.assign(again.storage, first.storage);
+  await again.listeners.installed?.({ reason: "update" });
+  await settle(3200);
+  assert.equal(again.pings.length, 1, "it still says hello");
+  assert.equal(again.reloads.length, 0, "but doesn't reload again");
+});

@@ -174,7 +174,7 @@ const demoSnapshot: Snapshot = {
   ],
   downloadSets: [],
   foundMirrors: mockMirrors(foundItems, ["Holiday video.mp4", "Project_files.part1.rar", "Project_files.part2.rar"]),
-  settings: { downloadDir: "C:\\Users\\me\\Downloads", autoConnections: true, connections: 8, maxActive: 3, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, extractDefault: false, minimizeToTray: false, closeToTray: false, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: false, startInTray: true, videoQuality: 1080, setupDone: true, videoAsked: false, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: false, browserConnect: false, sendCompression: "off", sendMode: null, askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7, whatsNewSeen: "0.1.1", tourOffered: true, toursDone: [] },
+  settings: { downloadDir: "C:\\Users\\me\\Downloads", autoConnections: true, connections: 8, maxActive: 3, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, playDoneSound: true, extractDefault: false, minimizeToTray: false, closeToTray: false, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: false, startInTray: true, videoQuality: 1080, setupDone: true, videoAsked: false, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: false, browserConnect: false, sendCompression: "off", sendMode: null, sendPartMb: 500, sendPartCustom: false, resumeUploadsOnStart: true, askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7, whatsNewSeen: "0.1.1", tourOffered: true, toursDone: [] },
   dataDir: "C:\\Pako\\data",
   sevenZip: false,
   ffmpeg: false,
@@ -221,11 +221,18 @@ export function mockQr(seed: string): string {
 /** Send view in the design preview. */
 const demoSend = {
   jobs: [
+    { id: "s4", name: "Site backup.zip", files: 1840, size: 3_300_000_000, total: 3_300_000_000, sent: 0, speed: 0, status: "uploading", message: null, paths: ["D:\Site backup"], asFiles: false, filesDone: 0, link: null, canResume: false, mode: "parts", partMb: 500, parts: 0, making: true, made: 1_420_000_000 },
     { id: "s1", name: "Wedding photos", files: 214, size: 3_400_000_000, total: 3_400_000_000, sent: 1_250_000_000, speed: 11_800_000, status: "uploading", message: null, paths: [], asFiles: true, filesDone: 78, link: "https://gofile.io/d/Wd2Hp8", canResume: false },
     { id: "s3", name: "38 files", files: 38, size: 920_000_000, total: 920_000_000, sent: 870_000_000, speed: 0, status: "failed", message: "2 files didn't upload. Try again to upload just those (the link stays the same).", paths: ["C:\\Clips"], asFiles: true, filesDone: 36, link: "https://gofile.io/d/Kp4Rt1", canResume: true },
     { id: "s2", name: "Project render v3.mp4", files: 1, size: 820_000_000, total: 820_000_000, sent: 310_000_000, speed: 0, status: "failed", message: "No connection to Gofile. Check your internet, then try again.", paths: ["C:\\Video\\Project render v3.mp4"], asFiles: false, filesDone: 0, link: null, canResume: false },
   ],
   sent: [
+    {
+      id: "t0", name: "Site backup.zip", files: 1840, size: 3_300_000_000, date: Date.now() - 3_600_000, link: "https://gofile.io/d/Bk3Pt9",
+      folderId: "f0", fileId: null, compressed: false, parts: 7, downloads: 0, canDelete: true,
+      deleteAt: Date.now() + DAY * 7 - 3_600_000, expiryOnHost: true, secs: 290, peak: 14_200_000,
+      contents: [{ name: "Site backup/index.html", size: 24_000 }, { name: "Site backup/media/hero.mp4", size: 1_900_000_000 }],
+    },
     {
       id: "t1", name: "Holiday clips", asFiles: true, files: 12, size: 2_100_000_000, date: Date.now() - 3_600_000 * 2, link: "https://gofile.io/d/Xy7Kp2",
       folderId: "f1", fileId: "a1", compressed: false, downloads: 0, canDelete: true,

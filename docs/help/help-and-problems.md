@@ -4,6 +4,14 @@
 
 Press **F1** anywhere in Pako, or click **Help** at the bottom left. Help has these guides (with a search box), **What's new**, **About Pako**, and every tutorial: the **Quick tour** shows what each page is for, and each page's own tutorial shows its details.
 
+## Finding a setting
+
+**Settings** has one tab per part of Pako: **Features & updates**, **Browser extension**, **Accounts**, **Window**, **Notifications**, **Downloads** and **Upload**. Click a tab, or use **↑** **↓** and **Enter**; **Ctrl+Tab** goes to the next tab from anywhere in Settings.
+
+- **Search settings**, at the top, finds a setting by its name or its explanation in every tab. Pick one: Pako opens its tab, scrolls to it and lights it up, with the keyboard on its switch or box so you can change it right away. **Esc** clears the search.
+- **Advanced**, at the bottom of a tab, holds what most people never change (like **Connections per file**). Click it to open it; Pako remembers whether it's open, for each tab.
+- **Save** keeps your changes in every tab at once, and **Cancel** leaves everything as it was. A dot next to a tab's name marks changes not saved yet.
+
 ## Report a problem
 
 When something goes wrong, tell Sookera in one click with **Send report**, or with your own email app. Nothing goes until you click: you see everything that goes with your words first.

@@ -231,7 +231,8 @@ pub fn remove_url_protocol_if_mine(exe: &Path) {
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Browser {
-    /// "chrome", "edge", "brave", "vivaldi", "opera", "operagx" or "firefox".
+    /// "chrome", "edge", "brave", "vivaldi", "opera", "operagx", "firefox", "zen", "librewolf",
+    /// "waterfox" or "floorp".
     pub id: &'static str,
     pub name: &'static str,
     /// "chromium" (Load unpacked) or "firefox" (signed .xpi).
@@ -322,6 +323,51 @@ const BROWSERS: &[Known] = &[
             ("ProgramFiles", "Mozilla Firefox"),
             ("ProgramFiles(x86)", "Mozilla Firefox"),
             ("LOCALAPPDATA", "Mozilla Firefox"),
+        ],
+    },
+    // Firefox-based browsers: they take the same signed extension as Firefox. Their installers
+    // (Mozilla's, renamed) put them in "<Program Files or LocalAppData>\<their name>".
+    Known {
+        id: "zen",
+        name: "Zen",
+        family: "firefox",
+        app_path: Some("zen.exe"),
+        files: &["zen.exe"],
+        folders: &[
+            ("ProgramFiles", "Zen Browser"),
+            ("LOCALAPPDATA", "Zen Browser"),
+            ("ProgramFiles", "Zen Twilight"),
+            ("LOCALAPPDATA", "Zen Twilight"),
+        ],
+    },
+    Known {
+        id: "librewolf",
+        name: "LibreWolf",
+        family: "firefox",
+        // Its own installer doesn't fill in App Paths; looked up anyway in case another one did.
+        app_path: Some("librewolf.exe"),
+        files: &["librewolf.exe"],
+        folders: &[("ProgramFiles", "LibreWolf"), ("LOCALAPPDATA", "LibreWolf"), ("LOCALAPPDATA", r"Programs\LibreWolf")],
+    },
+    Known {
+        id: "waterfox",
+        name: "Waterfox",
+        family: "firefox",
+        app_path: Some("waterfox.exe"),
+        files: &["waterfox.exe"],
+        folders: &[("ProgramFiles", "Waterfox"), ("ProgramFiles(x86)", "Waterfox"), ("LOCALAPPDATA", "Waterfox")],
+    },
+    Known {
+        id: "floorp",
+        name: "Floorp",
+        family: "firefox",
+        app_path: Some("floorp.exe"),
+        files: &["floorp.exe"],
+        folders: &[
+            ("ProgramFiles", "Ablaze Floorp"),
+            ("ProgramFiles(x86)", "Ablaze Floorp"),
+            ("LOCALAPPDATA", "Ablaze Floorp"),
+            ("ProgramFiles", "Floorp"),
         ],
     },
 ];
@@ -718,7 +764,7 @@ mod tests {
     #[test]
     fn browser_list() {
         let ids: Vec<_> = BROWSERS.iter().map(|b| b.id).collect();
-        assert_eq!(ids, ["chrome", "edge", "brave", "vivaldi", "opera", "operagx", "firefox"]);
+        assert_eq!(ids, ["chrome", "edge", "brave", "vivaldi", "opera", "operagx", "firefox", "zen", "librewolf", "waterfox", "floorp"]);
         let opera = known("opera");
         assert_eq!((opera.name, opera.family, opera.app_path), ("Opera", "chromium", Some("opera.exe")));
         assert!(opera.folders.contains(&("LOCALAPPDATA", r"Programs\Opera")));
@@ -746,5 +792,26 @@ mod tests {
         // The others: only their own program.
         assert!(fits(known("vivaldi"), &p(r"C:\x\Vivaldi\Application\vivaldi.exe")));
         assert!(!fits(known("vivaldi"), &p(r"C:\x\Vivaldi\Application\launcher.exe")));
+    }
+
+    #[test]
+    fn firefox_based_browsers() {
+        let p = |s: &str| PathBuf::from(s);
+        for (id, name, exe, folder) in [
+            ("zen", "Zen", "zen.exe", "Zen Browser"),
+            ("librewolf", "LibreWolf", "librewolf.exe", "LibreWolf"),
+            ("waterfox", "Waterfox", "waterfox.exe", "Waterfox"),
+            ("floorp", "Floorp", "floorp.exe", "Ablaze Floorp"),
+        ] {
+            let b = known(id);
+            assert_eq!((b.name, b.family, b.app_path), (name, "firefox", Some(exe)));
+            assert!(b.folders.contains(&("ProgramFiles", folder)), "{id}");
+            assert!(fits(b, &p(&format!(r"C:\Program Files\{folder}\{exe}"))), "{id}");
+            assert!(fits(b, &p(&format!(r"C:\Program Files\{folder}\{}", exe.to_uppercase()))), "{id}");
+            // Not Firefox's program, and Firefox doesn't take theirs.
+            assert!(!fits(b, &p(r"C:\Program Files\Mozilla Firefox\firefox.exe")), "{id}");
+            assert!(!fits(known("firefox"), &p(&format!(r"C:\Program Files\{folder}\{exe}"))), "{id}");
+        }
+        assert!(fits(known("zen"), &p(r"C:\Users\me\AppData\Local\Zen Twilight\zen.exe")));
     }
 }

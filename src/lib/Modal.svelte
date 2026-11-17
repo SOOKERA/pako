@@ -127,7 +127,9 @@
     display: grid;
     place-items: center;
     background: var(--scrim);
-    backdrop-filter: blur(2px);
+    /* The blur stays (user, 2026-11-18). Light mode's dim used to be too faint and bluish, so the
+       blurred page behind read as a see-through, washed-out window: --scrim is darker there now. */
+    backdrop-filter: blur(3px);
   }
   .modal {
     max-height: calc(100vh - 48px);

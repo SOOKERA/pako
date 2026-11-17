@@ -3,7 +3,8 @@
 <script lang="ts">
   // "Add Pako to your browser": one button per installed browser. Chromium browsers get their
   // extensions page opened with the extension's folder already copied, and three short steps;
-  // Firefox gets the signed file built into Pako opened (it then offers to add Pako).
+  // Firefox and the browsers built on it (Zen, LibreWolf, Waterfox, Floorp) get the signed file
+  // built into Pako opened (they then offer to add Pako).
   // A browser whose extension talked to Pako lately shows "Connected" (noted by the native host).
   import { app } from "./state.svelte";
   import { api, type AddedToBrowser, type Browser, type BrowserSeen } from "./api";
@@ -16,6 +17,9 @@
   let browsers = $state<Browser[] | null>(null);
   let busy = $state<string | null>(null);
   let added = $state<Record<string, AddedToBrowser>>({});
+  /** When "Add to …" was clicked (unix seconds). Seen since (the extension says hello when it's
+   *  installed): the browser shows Installed again, not "Open again". */
+  let addedAt = $state<Record<string, number>>({});
   let copied = $state(false);
 
   api
@@ -66,7 +70,19 @@
     return months < 24 ? `${months} months ago` : `${Math.floor(days / 365)} years ago`;
   }
 
-  const SHORT: Record<Browser["id"], string> = { chrome: "Chrome", edge: "Edge", brave: "Brave", vivaldi: "Vivaldi", opera: "Opera", operagx: "Opera GX", firefox: "Firefox" };
+  const SHORT: Record<Browser["id"], string> = {
+    chrome: "Chrome",
+    edge: "Edge",
+    brave: "Brave",
+    vivaldi: "Vivaldi",
+    opera: "Opera",
+    operagx: "Opera GX",
+    firefox: "Firefox",
+    zen: "Zen",
+    librewolf: "LibreWolf",
+    waterfox: "Waterfox",
+    floorp: "Floorp",
+  };
   const PAGE: Record<Browser["id"], string> = {
     chrome: "chrome://extensions",
     edge: "edge://extensions",
@@ -75,12 +91,18 @@
     opera: "opera://extensions",
     operagx: "opera://extensions",
     firefox: "about:addons",
+    zen: "about:addons",
+    librewolf: "about:addons",
+    waterfox: "about:addons",
+    floorp: "about:addons",
   };
 
   async function add(b: Browser) {
     busy = b.id;
     try {
+      const at = Math.floor(Date.now() / 1000);
       added = { ...added, [b.id]: await api.addToBrowser(b.id) };
+      addedAt = { ...addedAt, [b.id]: at };
     } catch (e) {
       app.toast(String(e), "error");
     }
@@ -107,14 +129,14 @@
     <div class="empty">Looking for your browsers…</div>
   {:else if browsers.length === 0}
     <div class="empty">
-      No browser found that Pako's extension works in (Chrome, Edge, Brave, Vivaldi, Opera, Firefox).
+      No browser found that Pako's extension works in (Chrome, Edge, Brave, Vivaldi, Opera, Firefox, Zen, LibreWolf, Waterfox, Floorp).
       <button class="link" onclick={openFolder}>Open the extension folder</button>
     </div>
   {:else}
     {#each browsers as b (b.id)}
       {@const r = added[b.id]}
-      {@const again = !!r && r.opened !== "unavailable"}
       {@const s = lastSeen(b.id)}
+      {@const again = !!r && r.opened !== "unavailable" && !(s && s.lastSeen >= (addedAt[b.id] ?? Infinity))}
       {@const connected = !!s && Date.now() / 1000 - s.lastSeen <= RECENT}
       <div class="row">
         <div class="head">
@@ -157,11 +179,11 @@
           <p class="note">This copy of Pako doesn't include the Firefox version. Pako from <span class="mono">pako.sookera.com</span> has it.</p>
         {:else if r}
           {#if r.opened === "firefoxFolder"}
-            <p class="note">Firefox didn't open, so the folder opened instead: drag <span class="mono">pako-firefox.xpi</span> into a Firefox window.</p>
+            <p class="note">{SHORT[b.id]} didn't open, so the folder opened instead: drag <span class="mono">pako-firefox.xpi</span> into a {SHORT[b.id]} window.</p>
           {/if}
           <ol class="steps">
-            <li>Firefox asks to add Pako: click <b>Add</b>.</li>
-            <li>So downloads behind a login work and the Download button shows on videos, check it may use all websites: in Firefox, open <span class="mono">about:addons</span> › Pako › <b>Permissions</b> and turn on <b>Access your data for all websites</b> if it is off.</li>
+            <li>{SHORT[b.id]} asks to add Pako: click <b>Add</b>.</li>
+            <li>So downloads behind a login work and the Download button shows on videos, check it may use all websites: in {SHORT[b.id]}, open <span class="mono">{PAGE[b.id]}</span> › Pako › <b>Permissions</b> and turn on <b>Access your data for all websites</b> if it is off.</li>
           </ol>
         {/if}
       </div>

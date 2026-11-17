@@ -94,6 +94,47 @@ pub struct Request {
     /// read from the extension's message): no videos, no video lookups for its links.
     #[serde(skip)]
     pub light: bool,
+    /// Takeover only, from an extension that can wait for a second answer: Pako answers at once
+    /// with `Reply::held` (the Download with Pako window opens right away) and checks the file
+    /// in the background; the extension then asks for the result with a "held" request. Older
+    /// extensions don't send it: Pako answers only once checked, as before.
+    pub hold: bool,
+    /// "held" only: which takeover's result the extension waits for (`Reply::held`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub held: String,
+    /// "follow" only: a download the browser makes because Pako couldn't get it ("Via
+    /// browser"), as the browser sees it now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow: Option<FollowReport>,
+    /// From a private browser window (the browser lets the extension work there): no trace in
+    /// Pako beyond the file (see `Download::private`). Also on a private takeover's "held"
+    /// requests, so the helper notes none of their problems.
+    pub private: bool,
+    /// Takeover with `hold`: the browser holds its copy paused (a form sent with POST, Pako
+    /// Light, a private window in Chrome): Pako checks the file first and only then asks you, so
+    /// that paused copy never waits on your answer (it may not continue after a long pause).
+    pub paused: bool,
+}
+
+/// A browser download Pako follows ("Via browser"), as the extension reports it (at most about
+/// once a second, and at once when its state changes).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FollowReport {
+    /// Pako's download it belongs to (`Reply::followed`), empty = not known to Pako yet.
+    pub pako: String,
+    /// The browser's id for its download.
+    pub browser_id: i64,
+    /// Where the browser saves it (its full path; may be empty early on).
+    pub path: String,
+    /// Bytes so far and in all (0 = not known).
+    pub bytes: u64,
+    pub total: u64,
+    /// "in_progress", "paused", "complete" or "interrupted".
+    pub state: String,
+    /// "interrupted": the browser's reason ("USER_CANCELED", "NETWORK_FAILED"...).
+    pub error: String,
+    pub can_resume: bool,
 }
 
 /// One browser cookie, as yt-dlp's cookie file needs it.
@@ -194,6 +235,22 @@ pub struct Reply {
     /// pick up the new one after a Pako update, instead of waiting for the browser to restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<String>,
+    /// A takeover asked with `hold`: Pako has it and is checking it. The extension asks for the
+    /// result with `{kind: "held", held}`. (Older extensions never ask with `hold`.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
+    /// This Pako answers takeovers at once when asked with `hold` (added by the native host to
+    /// every answer, so the extension knows before its next takeover). Older Pakos don't say it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub holds: bool,
+    /// The Pako download a browser download belongs to: in a takeover's failure (the browser
+    /// downloads it and reports it with this id) and in answers to "follow".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followed: Option<String>,
+    /// "follow" answers: what you asked Pako to do with that browser download ("pause",
+    /// "resume", "cancel"), done by the extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 impl Reply {
@@ -209,6 +266,14 @@ impl Reply {
     }
     pub fn not_ready() -> Self {
         Reply { ok: false, error: Some("Pako is still starting. Try again in a moment.".into()), retry: true, ..Default::default() }
+    }
+    /// Taken, still being checked: the result comes with a "held" request (see `HELD`).
+    pub fn held(token: &str) -> Self {
+        Reply { ok: true, held: Some(token.to_string()), ..Default::default() }
+    }
+    /// The answer to a "held" request when the result isn't known yet: ask again.
+    pub fn still_held(token: &str) -> Self {
+        Reply { ok: false, held: Some(token.to_string()), ..Default::default() }
     }
 }
 
@@ -246,6 +311,17 @@ fn light_skips(link: &str) -> bool {
 pub fn light_rules(mut r: Request) -> Result<Request, String> {
     match r.kind.as_str() {
         "ping" => return Ok(r),
+        "held" => {
+            r.light = true;
+            return Ok(r);
+        }
+        "follow" => {
+            if r.urls.iter().any(|u| crate::video::is_video_site(u) || light_skips(u)) {
+                return Err(LIGHT_REFUSED.into());
+            }
+            r.light = true;
+            return Ok(r);
+        }
         "video" | "stream" | "record" => return Err(LIGHT_REFUSED.into()),
         _ => {}
     }
@@ -274,6 +350,8 @@ fn web_link(u: &str) -> Option<String> {
 pub fn validate(mut r: Request) -> Result<Request, String> {
     match r.kind.as_str() {
         "ping" => return Ok(Request { kind: "ping".into(), ..Default::default() }),
+        "held" => return validate_held(r),
+        "follow" => return validate_follow(r),
         "video" => return validate_video(r),
         "stream" => return crate::stream::validate_stream(r),
         "record" => return validate_record(r),
@@ -304,6 +382,9 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
     r.filename = clean_filename(&r.filename);
     // Only single browser downloads are held by the browser.
     r.takeover = r.takeover && r.kind == "download" && r.urls.len() == 1;
+    r.hold = r.hold && r.takeover;
+    r.paused = r.paused && r.hold;
+    r.held.clear();
     if !r.takeover {
         r.total_bytes = 0;
     }
@@ -373,6 +454,34 @@ pub fn same_as_browser(r: &Request, size: Option<u64>, html: Option<bool>) -> Re
         return Err("the server gave Pako a web page instead of the file".into());
     }
     Ok(())
+}
+
+/// "follow": one web link (the file's), and the browser's report in sensible bounds.
+fn validate_follow(r: Request) -> Result<Request, String> {
+    let Some(mut f) = r.follow else { return Err("Unknown request.".into()) };
+    let url = r.urls.first().and_then(|u| web_link(u)).ok_or("Pako only takes http and https links.")?;
+    if !matches!(f.state.as_str(), "in_progress" | "paused" | "complete" | "interrupted") {
+        return Err("Unknown request.".into());
+    }
+    let token_ok = f.pako.len() <= 64 && f.pako.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !token_ok {
+        return Err("Unknown request.".into());
+    }
+    if f.path.len() > 4096 || f.path.chars().any(|c| c.is_control()) {
+        f.path.clear();
+    }
+    f.error.truncate(64);
+    f.error.retain(|c| c.is_ascii_alphanumeric() || c == '_');
+    Ok(Request { kind: "follow".into(), urls: vec![url], filename: clean_filename(&r.filename), follow: Some(f), private: r.private, ..Default::default() })
+}
+
+/// "held": only the takeover's token (a download id: letters, digits and dashes).
+fn validate_held(r: Request) -> Result<Request, String> {
+    let ok = !r.held.is_empty() && r.held.len() <= 64 && r.held.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !ok {
+        return Err("Unknown request.".into());
+    }
+    Ok(Request { kind: "held".into(), held: r.held, private: r.private, ..Default::default() })
 }
 
 /// The player's Download button: exactly one link to a video site Pako knows, and one of the
@@ -476,12 +585,14 @@ fn parse_pipe_message(bytes: &[u8]) -> Result<Request, String> {
 /// The native host: answers the browser until it closes the line. `args`: the browser's launch
 /// arguments (they say which extension asked).
 pub fn run_host(args: &[String]) -> i32 {
+    let started = Instant::now();
     let light = is_light_launch(args);
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     // Which browser this is, for "Connected" in Settings (noted after each answer is sent).
     let mut seen = crate::seen::HostNote::default();
     loop {
+        let asked = Instant::now();
         let msg = match read_host_message(&mut input) {
             Ok(HostMessage::Request(m)) => Ok(m),
             // Too big to take: said to the browser, and the line stays open.
@@ -489,8 +600,11 @@ pub fn run_host(args: &[String]) -> i32 {
             Ok(HostMessage::Closed) => return 0,
             Err(_) => return 1,
         };
+        let read = Instant::now();
         let version = msg.as_deref().ok().and_then(crate::seen::version_in);
         let checked = msg.and_then(|m| serde_json::from_slice::<Request>(&m).map_err(|_| "Unreadable request.".to_string())).and_then(validate);
+        // A private window's: none of its problems in the problem list.
+        let private = checked.as_ref().is_ok_and(|r| r.private);
         let mut reply = match checked.and_then(|r| if light { light_rules(r) } else { Ok(r) }) {
             // "Connected": the browser reached this helper (Pako itself starts when needed).
             Ok(r) if r.kind == "ping" => Reply::ok(),
@@ -500,11 +614,20 @@ pub fn run_host(args: &[String]) -> i32 {
         if !light {
             reply.ext = folder_version();
         }
-        if let Some(e) = reply.error.as_deref().filter(|e| *e != LIGHT_REFUSED) { crate::errorlog::note(crate::errorlog::Area::Extension, e); }
+        // This Pako answers takeovers at once (see `Request::hold`).
+        reply.holds = true;
+        if let Some(e) = reply.error.as_deref().filter(|e| *e != LIGHT_REFUSED && !private) { crate::errorlog::note(crate::errorlog::Area::Extension, e); }
         let json = serde_json::to_vec(&reply).unwrap_or_default();
         if write_message(&mut output, &json).is_err() {
             return 1;
         }
+        timing(&format!(
+            "host: reading from {} ms after start, answered {} ms after the message (ok {}, held {})",
+            asked.duration_since(started).as_millis(),
+            read.elapsed().as_millis(),
+            reply.ok,
+            reply.held.is_some()
+        ));
         seen.note(light, version, unix_now());
     }
 }
@@ -552,15 +675,37 @@ enum Connect {
 
 /// Hands a request to the running Pako (starting it if needed) and returns its answer.
 fn hand_over(r: &Request) -> Reply {
-    let deadline = Instant::now() + START_WAIT;
+    let begun = Instant::now();
+    let deadline = begun + START_WAIT;
     let mut started = false;
     loop {
         match connect() {
-            Ok(pipe) => match exchange(pipe, r) {
-                Ok(reply) if reply.retry && Instant::now() < deadline => {}
-                Ok(reply) => return reply,
-                Err(e) => return Reply::error(format!("Pako didn't answer ({e}). The browser keeps the download.")),
-            },
+            Ok(pipe) => {
+                let connected = Instant::now();
+                match exchange(pipe, r) {
+                    Ok(reply) if reply.retry && Instant::now() < deadline => {}
+                    Ok(reply) => {
+                        timing(&format!(
+                            "host: {} pipe reached after {} ms (Pako started: {started}), answer {} ms later",
+                            r.kind,
+                            connected.duration_since(begun).as_millis(),
+                            connected.elapsed().as_millis()
+                        ));
+                        return reply;
+                    }
+                    Err(e) => return Reply::error(format!("Pako didn't answer ({e}). The browser keeps the download.")),
+                }
+            }
+            // The result of a takeover only the running Pako knows: a Pako started now can't
+            // tell it (the browser gets its download back).
+            Err(Connect::NotRunning) if r.kind == "held" => {
+                return Reply::error("Pako closed before it finished checking this download.");
+            }
+            // A browser download's progress never starts Pako (you may have closed it on
+            // purpose): the extension keeps it and reports again once Pako runs.
+            Err(Connect::NotRunning) if r.kind == "follow" => {
+                return Reply::error("Pako isn't running.");
+            }
             Err(Connect::NotRunning) if !started => {
                 if let Err(e) = start_pako() {
                     return Reply::error(e);
@@ -574,7 +719,26 @@ fn hand_over(r: &Request) -> Reply {
         if Instant::now() >= deadline {
             return Reply::error("Pako didn't start in time. Open Pako, then try again.");
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(poll_wait(begun.elapsed()));
+    }
+}
+
+/// How long the host waits before looking for Pako's pipe again: often in the first second
+/// (Pako is usually just finishing its start), then every 250 ms.
+fn poll_wait(waited: Duration) -> Duration {
+    if waited < Duration::from_secs(1) { Duration::from_millis(50) } else { Duration::from_millis(250) }
+}
+
+/// Timings of the browser's requests, for measuring only: written to `pako-timing.log` in the
+/// temp folder when PAKO_TIMING is set, otherwise nothing at all.
+pub fn timing(line: &str) {
+    static ON: LazyLock<bool> = LazyLock::new(|| std::env::var_os("PAKO_TIMING").is_some());
+    if !*ON {
+        return;
+    }
+    let file = std::env::temp_dir().join("pako-timing.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+        let _ = writeln!(f, "{} [{}] {line}", unix_now(), std::process::id());
     }
 }
 
@@ -819,9 +983,11 @@ const SAME_TAKEOVER_WAIT: Duration = Duration::from_secs(50);
 /// Takeovers in flight, by (link, size the browser was told): the first one is worked out, the
 /// same one arriving again within `window` waits for it and gets the same answer (ok stays ok,
 /// anything else becomes "declined", so the browser keeps its copy without a second warning).
+/// A first one answered "held" (still being checked) hands its token on: a second request that
+/// can wait too gets the same token, an older one waits for the check's result.
 pub struct TakeoverGate {
     window: Duration,
-    seen: Mutex<HashMap<(String, u64), (Instant, tokio::sync::watch::Receiver<Option<bool>>)>>,
+    seen: Mutex<HashMap<(String, u64), (Instant, tokio::sync::watch::Receiver<Option<(bool, Option<String>)>>)>>,
 }
 
 impl TakeoverGate {
@@ -830,7 +996,8 @@ impl TakeoverGate {
     }
 
     /// Runs `work` for the first request with this key; an identical one meanwhile waits for it.
-    pub async fn run(&self, key: (String, u64), work: impl std::future::Future<Output = Reply>) -> Reply {
+    /// `hold`: this request can take a "held" answer (see `Request::hold`).
+    pub async fn run(&self, key: (String, u64), hold: bool, work: impl std::future::Future<Output = Reply>) -> Reply {
         let (first, mut follow) = {
             let mut seen = self.seen.lock().unwrap();
             seen.retain(|_, (since, _)| since.elapsed() < self.window);
@@ -845,12 +1012,20 @@ impl TakeoverGate {
         };
         if let Some(tx) = first {
             let reply = work.await;
-            let _ = tx.send(Some(reply.ok));
+            let _ = tx.send(Some((reply.ok, reply.held.clone())));
             return reply;
         }
-        let answer = tokio::time::timeout(SAME_TAKEOVER_WAIT, follow.wait_for(|v| v.is_some())).await;
+        let answer = match tokio::time::timeout(SAME_TAKEOVER_WAIT, follow.wait_for(|v| v.is_some())).await {
+            Ok(Ok(v)) => v.clone(),
+            _ => None,
+        };
         match answer {
-            Ok(Ok(v)) if *v == Some(true) => Reply::ok(),
+            Some((true, Some(token))) if hold => Reply::held(&token),
+            Some((true, Some(token))) => match HELD.wait(&token, HELD_WAIT).await {
+                r if r.ok => Reply::ok(),
+                _ => Reply::declined(),
+            },
+            Some((true, None)) => Reply::ok(),
             _ => Reply::declined(),
         }
     }
@@ -858,6 +1033,140 @@ impl TakeoverGate {
 
 /// Pako's takeovers from every extension in every browser.
 pub static TAKEOVERS: LazyLock<TakeoverGate> = LazyLock::new(|| TakeoverGate::new(SAME_TAKEOVER));
+
+// ---------- takeovers answered at once, checked in the background ----------
+
+/// How long a takeover from an older extension, waiting behind the same held takeover, waits
+/// for its check (see `TakeoverGate`; the native host waits 60 s for any answer).
+pub const HELD_WAIT: Duration = Duration::from_secs(50);
+/// How long the extension's own "held" request waits before it is told "ask again": well under
+/// the 30 s a browser lets an idle extension background run, so the extension is never stopped
+/// while it waits (and with it the browser's fallback).
+pub const HELD_ASK_WAIT: Duration = Duration::from_secs(20);
+/// A finished check's result is kept this long for a late "held" request.
+const HELD_KEEP: Duration = Duration::from_secs(300);
+/// The extension asks again at least every `HELD_ASK_WAIT`: nobody asked for this long = no
+/// extension waits for it any more (the browser closed, or stopped the extension).
+const HELD_LISTEN: Duration = Duration::from_secs(90);
+
+/// A check's result: Ok = Pako has the file (the browser drops its copy), Err = what to tell the
+/// user (the browser downloads it itself).
+pub type HeldOutcome = Result<(), String>;
+
+struct Held {
+    /// When it was opened, then when its result came (what `HELD_KEEP` counts from).
+    since: Instant,
+    /// When the extension last asked for it.
+    asked: Instant,
+    tx: tokio::sync::watch::Sender<Option<HeldOutcome>>,
+}
+
+/// Takeovers Pako answered "held": the result of each one's check, by token. The first result
+/// counts (the check's, or the window's Cancel, or the wait running out); later ones change
+/// nothing. A check still waiting (your answer in the window, however long) is never dropped.
+pub struct HeldChecks {
+    map: Mutex<HashMap<String, Held>>,
+}
+
+impl HeldChecks {
+    pub fn new() -> Self {
+        HeldChecks { map: Mutex::new(HashMap::new()) }
+    }
+
+    /// A takeover answered "held": its check starts now.
+    pub fn open(&self, token: &str) {
+        let mut map = self.map.lock().unwrap();
+        map.retain(|_, h| h.tx.borrow().is_none() || h.since.elapsed() < HELD_KEEP);
+        let now = Instant::now();
+        map.insert(token.to_string(), Held { since: now, asked: now, tx: tokio::sync::watch::channel(None).0 });
+    }
+
+    /// The result, unless one came first. Returns the result that counts (None = not a held
+    /// takeover).
+    pub fn finish(&self, token: &str, outcome: HeldOutcome) -> Option<HeldOutcome> {
+        let mut map = self.map.lock().unwrap();
+        let h = map.get_mut(token)?;
+        let first = h.tx.send_if_modified(|v| {
+            if v.is_none() {
+                *v = Some(outcome);
+                true
+            } else {
+                false
+            }
+        });
+        if first {
+            h.since = Instant::now();
+        }
+        let fin = h.tx.borrow().clone();
+        fin
+    }
+
+    /// Still being checked.
+    pub fn checking(&self, token: &str) -> bool {
+        self.map.lock().unwrap().get(token).is_some_and(|h| h.tx.borrow().is_none())
+    }
+
+    /// An extension still waits for this one's result (it asked lately).
+    pub fn listening(&self, token: &str) -> bool {
+        self.map.lock().unwrap().get(token).is_some_and(|h| h.asked.elapsed() < HELD_LISTEN)
+    }
+
+    /// The extension's "held" request: waits (at most `limit`) for the result. Not known yet
+    /// (it still waits for your answer in the Download with Pako window): `Reply::still_held`,
+    /// and the extension asks again.
+    pub async fn wait(&self, token: &str, limit: Duration) -> Reply {
+        let rx = self.map.lock().unwrap().get_mut(token).map(|h| {
+            h.asked = Instant::now();
+            h.tx.subscribe()
+        });
+        let Some(mut rx) = rx else {
+            return Reply::error("Pako lost track of this download (was it restarted?), so your browser downloads it.");
+        };
+        let got = match tokio::time::timeout(limit, rx.wait_for(|v| v.is_some())).await {
+            Ok(Ok(v)) => v.clone(),
+            _ => None,
+        };
+        match got {
+            Some(Ok(())) => Reply::ok(),
+            Some(Err(e)) => Reply::error(e),
+            None => Reply::still_held(token),
+        }
+    }
+
+    /// For the tests: as if it was opened (or finished) and last asked for `ago`.
+    #[cfg(test)]
+    fn age(&self, token: &str, ago: Duration) {
+        if let Some(h) = self.map.lock().unwrap().get_mut(token) {
+            h.since = Instant::now() - ago;
+            h.asked = Instant::now() - ago;
+        }
+    }
+}
+
+impl Default for HeldChecks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Every held takeover in this Pako.
+pub static HELD: LazyLock<HeldChecks> = LazyLock::new(HeldChecks::new);
+
+/// The server's first answer to a browser download's own first request (its size, and whether
+/// it is a web page), by download id: what a takeover compares with the browser's file.
+static FIRST_ANSWERS: LazyLock<Mutex<HashMap<String, (Instant, Option<u64>, bool)>>> = LazyLock::new(Default::default);
+
+/// Noted by the engine for downloads that came from the browser (kept a few minutes).
+pub fn note_first_answer(download_id: &str, size: Option<u64>, html: bool) {
+    let mut map = FIRST_ANSWERS.lock().unwrap();
+    map.retain(|_, (since, _, _)| since.elapsed() < HELD_KEEP);
+    map.insert(download_id.to_string(), (Instant::now(), size, html));
+}
+
+/// Takes that first answer, once it came.
+pub fn first_answer(download_id: &str) -> Option<(Option<u64>, bool)> {
+    FIRST_ANSWERS.lock().unwrap().remove(download_id).map(|(_, size, html)| (size, html))
+}
 
 // ---------- per-download browser headers (kept encrypted for a restart) ----------
 
@@ -869,6 +1178,9 @@ pub struct BrowserHeaders {
     /// Videos: the site's cookies for yt-dlp (see `SiteCookie`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub site_cookies: Vec<SiteCookie>,
+    /// A private window's: kept in memory only, never in the file.
+    #[serde(skip)]
+    pub private: bool,
 }
 
 /// A download's headers are kept at least this long after they arrive, even before the download
@@ -928,7 +1240,8 @@ impl HeaderStore {
             let _ = std::fs::remove_file(file);
             return;
         }
-        let plain: HashMap<&str, &BrowserHeaders> = self.map.iter().map(|(id, k)| (id.as_str(), &k.headers)).collect();
+        let plain: HashMap<&str, &BrowserHeaders> =
+            self.map.iter().filter(|(_, k)| !k.headers.private).map(|(id, k)| (id.as_str(), &k.headers)).collect();
         let Ok(json) = serde_json::to_vec(&plain) else { return };
         let Ok(sealed) = crate::secure::protect(&json) else { return };
         let tmp = file.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
@@ -983,7 +1296,14 @@ const CHROMIUM_KEYS: &[&str] = &[
     r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts",
     r"Software\Vivaldi\NativeMessagingHosts",
 ];
-const FIREFOX_KEY: &str = r"Software\Mozilla\NativeMessagingHosts";
+/// Firefox and the browsers built on it (Zen, LibreWolf, Waterfox, Floorp) read Mozilla's key on
+/// Windows. LibreWolf builds from 2022 read their own instead; an unused key does no harm.
+const FIREFOX_KEYS: &[&str] = &[r"Software\Mozilla\NativeMessagingHosts", r"Software\LibreWolf\NativeMessagingHosts"];
+
+/// Every key Pako writes its host into (and removes it from).
+fn all_keys() -> impl Iterator<Item = &'static &'static str> {
+    CHROMIUM_KEYS.iter().chain(FIREFOX_KEYS)
+}
 
 fn host_dir() -> PathBuf {
     crate::paths::data_dir().join("browser")
@@ -993,7 +1313,7 @@ fn host_dir() -> PathBuf {
 /// per-user registry entries pointing at them.
 pub fn set_registered(on: bool) -> Result<(), String> {
     if !on {
-        for k in CHROMIUM_KEYS.iter().chain(std::iter::once(&FIREFOX_KEY)) {
+        for k in all_keys() {
             reg_delete(&format!(r"{k}\{HOST_NAME}"));
         }
         let _ = std::fs::remove_dir_all(host_dir());
@@ -1020,7 +1340,10 @@ pub fn set_registered(on: bool) -> Result<(), String> {
     for k in CHROMIUM_KEYS {
         reg_set_default(&format!(r"{k}\{HOST_NAME}"), &chrome.to_string_lossy())?;
     }
-    reg_set_default(&format!(r"{FIREFOX_KEY}\{HOST_NAME}"), &firefox.to_string_lossy())
+    for k in FIREFOX_KEYS {
+        reg_set_default(&format!(r"{k}\{HOST_NAME}"), &firefox.to_string_lossy())?;
+    }
+    Ok(())
 }
 
 /// Uninstalling: disconnects the browsers from this copy only. Each browser's entry is removed
@@ -1040,7 +1363,7 @@ pub fn unregister_if_mine(data_dir: &std::path::Path) {
         return;
     }
     let mine = [dir.join("chromium-host.json"), dir.join("firefox-host.json")].map(|p| p.to_string_lossy().to_lowercase());
-    for k in CHROMIUM_KEYS.iter().chain(std::iter::once(&FIREFOX_KEY)) {
+    for k in all_keys() {
         let key = format!(r"{k}\{HOST_NAME}");
         let points_here = crate::system::reg_get_value(HKEY_CURRENT_USER, &key, None, 0)
             .is_some_and(|v| mine.contains(&v.trim().trim_matches('"').to_lowercase()));
@@ -1482,6 +1805,14 @@ mod tests {
         assert_eq!(CHROMIUM_KEYS[0], r"Software\Google\Chrome\NativeMessagingHosts");
         assert!(CHROMIUM_KEYS.contains(&r"Software\Microsoft\Edge\NativeMessagingHosts"));
         assert!(CHROMIUM_KEYS.iter().all(|k| k.starts_with(r"Software\") && k.ends_with(r"\NativeMessagingHosts")));
+        // Firefox, Zen, Waterfox, Floorp and LibreWolf read Mozilla's; old LibreWolf its own.
+        assert_eq!(FIREFOX_KEYS[0], r"Software\Mozilla\NativeMessagingHosts");
+        assert!(FIREFOX_KEYS.contains(&r"Software\LibreWolf\NativeMessagingHosts"));
+        assert!(FIREFOX_KEYS.iter().all(|k| k.starts_with(r"Software\") && k.ends_with(r"\NativeMessagingHosts")));
+        // Turning off and uninstalling go through every key written.
+        let all: Vec<_> = all_keys().copied().collect();
+        assert_eq!(all.len(), CHROMIUM_KEYS.len() + FIREFOX_KEYS.len());
+        assert!(FIREFOX_KEYS.iter().chain(CHROMIUM_KEYS).all(|k| all.contains(k)));
     }
 
     #[test]
@@ -1658,24 +1989,24 @@ mod tests {
         };
         let key = || ("https://e.org/big.zip".to_string(), 50_000_000u64);
         // Two at once: one add, the same answer.
-        let (a, b) = rt.block_on(async { tokio::join!(gate.run(key(), work(Reply::ok())), gate.run(key(), work(Reply::ok()))) });
+        let (a, b) = rt.block_on(async { tokio::join!(gate.run(key(), false, work(Reply::ok())), gate.run(key(), false, work(Reply::ok()))) });
         assert_eq!((a, b), (Reply::ok(), Reply::ok()));
         assert_eq!(added.load(Ordering::SeqCst), 1);
         // Shortly after: still the same one.
-        assert_eq!(rt.block_on(gate.run(key(), work(Reply::error("x")))), Reply::ok());
+        assert_eq!(rt.block_on(gate.run(key(), false, work(Reply::error("x")))), Reply::ok());
         assert_eq!(added.load(Ordering::SeqCst), 1);
         // The first one failed: the second one is declined (no second warning in the browser).
         let other = || ("https://e.org/other.zip".to_string(), 0u64);
-        let (a, b) = rt.block_on(async { tokio::join!(gate.run(other(), work(Reply::error("no"))), gate.run(other(), work(Reply::ok()))) });
+        let (a, b) = rt.block_on(async { tokio::join!(gate.run(other(), false, work(Reply::error("no"))), gate.run(other(), false, work(Reply::ok()))) });
         assert_eq!((a, b), (Reply::error("no"), Reply::declined()));
         assert_eq!(added.load(Ordering::SeqCst), 2);
         // Another size is another file.
-        rt.block_on(gate.run(("https://e.org/big.zip".to_string(), 1), work(Reply::ok())));
+        rt.block_on(gate.run(("https://e.org/big.zip".to_string(), 1), false, work(Reply::ok())));
         assert_eq!(added.load(Ordering::SeqCst), 3);
         // After the window, the same file is taken again.
         let quick = TakeoverGate::new(Duration::ZERO);
-        rt.block_on(quick.run(key(), work(Reply::ok())));
-        rt.block_on(quick.run(key(), work(Reply::ok())));
+        rt.block_on(quick.run(key(), false, work(Reply::ok())));
+        rt.block_on(quick.run(key(), false, work(Reply::ok())));
         assert_eq!(added.load(Ordering::SeqCst), 5);
     }
 
@@ -1741,5 +2072,176 @@ mod tests {
         assert_eq!(manifest_version(br#"{"version":""}"#), None);
         let r = serde_json::to_string(&Reply::ok()).unwrap();
         assert!(!r.contains("ext"), "no field unless the host adds it: {r}");
+    }
+    /// A takeover answered at once: the extension's "held" request gets the check's result;
+    /// the first result counts (the window's Cancel before a failed check means: drop it).
+    #[test]
+    fn held_takeovers_answer_with_the_checks_result() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let held = HeldChecks::new();
+        // Unknown (Pako restarted): an error, so the browser keeps or restarts its download.
+        let r = rt.block_on(held.wait("nope", Duration::from_millis(10)));
+        assert!(!r.ok && r.error.is_some() && r.held.is_none());
+        // Still waiting (your answer in the window): "ask again".
+        held.open("a");
+        assert!(held.checking("a"));
+        assert_eq!(rt.block_on(held.wait("a", Duration::from_millis(20))), Reply::still_held("a"));
+        // The check's result, also for a request already waiting.
+        let r = rt.block_on(async {
+            let waiting = held.wait("a", Duration::from_secs(5));
+            let finish = async {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                held.finish("a", Ok(()));
+            };
+            tokio::join!(waiting, finish).0
+        });
+        assert_eq!(r, Reply::ok());
+        assert!(!held.checking("a"));
+        // A later result changes nothing.
+        assert_eq!(held.finish("a", Err("late".into())), Some(Ok(())));
+        assert_eq!(rt.block_on(held.wait("a", Duration::from_millis(10))), Reply::ok());
+        // A failed check: its words reach the browser.
+        held.open("b");
+        held.finish("b", Err("Pako couldn't get this download itself (x).".into()));
+        assert_eq!(rt.block_on(held.wait("b", Duration::from_millis(10))), Reply::error("Pako couldn't get this download itself (x)."));
+        // Cancelled in the window first: the failure that follows doesn't count.
+        held.open("c");
+        held.finish("c", Ok(()));
+        assert_eq!(held.finish("c", Err("removed".into())), Some(Ok(())));
+        assert_eq!(held.finish("zzz", Ok(())), None, "not a held takeover");
+    }
+
+    /// The same takeover twice while it is held: a second extension that can wait gets the same
+    /// token; an older one waits for the check's result.
+    #[test]
+    fn the_same_held_takeover_twice() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let gate = TakeoverGate::new(Duration::from_secs(30));
+        let key = || ("https://e.org/held.zip".to_string(), 7u64);
+        HELD.open("tok-gate");
+        let (a, b) = rt.block_on(async {
+            tokio::join!(
+                gate.run(key(), true, async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Reply::held("tok-gate")
+                }),
+                gate.run(key(), true, async { Reply::error("never run") })
+            )
+        });
+        assert_eq!((a, b), (Reply::held("tok-gate"), Reply::held("tok-gate")));
+        let older = rt.block_on(async {
+            let older = gate.run(key(), false, async { Reply::error("never run") });
+            let finish = async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                HELD.finish("tok-gate", Ok(()));
+            };
+            tokio::join!(older, finish).0
+        });
+        assert_eq!(older, Reply::ok());
+    }
+
+    /// Older extensions and older Pakos: the new fields only appear when used, and a request
+    /// without `hold` stays an ordinary takeover.
+    #[test]
+    fn hold_follow_and_old_messages() {
+        assert_eq!(serde_json::to_string(&Reply::ok()).unwrap(), r#"{"ok":true}"#);
+        assert_eq!(serde_json::to_string(&Reply::held("t1")).unwrap(), r#"{"ok":true,"held":"t1"}"#);
+        // An old extension's takeover: no hold.
+        let old: Request = serde_json::from_str(r#"{"kind":"download","urls":["https://e.org/a.zip"],"takeover":true,"totalBytes":5}"#).unwrap();
+        let old = validate(old).unwrap();
+        assert!(old.takeover && !old.hold && !old.private);
+        // hold only for a takeover.
+        let r: Request = serde_json::from_str(r#"{"kind":"download","urls":["https://e.org/a.zip"],"hold":true}"#).unwrap();
+        assert!(!validate(r).unwrap().hold);
+        let r: Request = serde_json::from_str(r#"{"kind":"download","urls":["https://e.org/a.zip"],"takeover":true,"hold":true,"private":true}"#).unwrap();
+        let r = validate(r).unwrap();
+        assert!(r.hold && r.private);
+        // "held": only a plain token.
+        let h = |t: &str| validate(Request { kind: "held".into(), held: t.into(), urls: vec!["https://x.org/".into()], ..Default::default() });
+        let ok = h("0b5e-7a_Z").unwrap();
+        assert_eq!((ok.kind.as_str(), ok.held.as_str(), ok.urls.len()), ("held", "0b5e-7a_Z", 0));
+        assert!(h("").is_err() && h("a/b").is_err() && h(&"x".repeat(65)).is_err());
+        // "follow": one web link, a known state, a plain token, the browser's reason cleaned.
+        let f = |state: &str, pako: &str, url: &str| {
+            validate(Request {
+                kind: "follow".into(),
+                urls: vec![url.into()],
+                follow: Some(FollowReport {
+                    pako: pako.into(),
+                    state: state.into(),
+                    error: "NETWORK_FAILED\r\nX: y".into(),
+                    path: "C:\\D\\a.zip".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        };
+        let ok = f("complete", "abc-1", "https://e.org/a.zip").unwrap();
+        assert_eq!(ok.follow.as_ref().unwrap().error, "NETWORK_FAILEDXy");
+        assert_eq!(ok.follow.as_ref().unwrap().path, "C:\\D\\a.zip");
+        assert!(f("done", "", "https://e.org/a.zip").is_err());
+        assert!(f("paused", "../x", "https://e.org/a.zip").is_err());
+        assert!(f("paused", "", "file:///C:/a.zip").is_err());
+        assert!(validate(Request { kind: "follow".into(), urls: vec!["https://e.org/a".into()], ..Default::default() }).is_err());
+        // Pako Light may report its own, never one of the sites it leaves alone.
+        let light = |u: &str| light_rules(f("paused", "", u).unwrap());
+        assert!(light("https://e.org/a.zip").unwrap().light);
+        assert!(light("https://www.youtube.com/a").is_err());
+    }
+
+    /// Pako just starting: the host looks for its pipe often at first, then less.
+    #[test]
+    fn the_host_looks_for_a_starting_pako_often_at_first() {
+        assert_eq!(poll_wait(Duration::ZERO), Duration::from_millis(50));
+        assert_eq!(poll_wait(Duration::from_millis(999)), Duration::from_millis(50));
+        assert_eq!(poll_wait(Duration::from_secs(1)), Duration::from_millis(250));
+    }
+
+    /// A private window's cookies are never written to the file kept for a restart.
+    #[test]
+    fn private_headers_stay_in_memory() {
+        let dir = std::env::temp_dir().join(format!("pako-headers-private-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("browser-headers.dat");
+        let mut s = HeaderStore::default();
+        s.open(file.clone());
+        s.insert("pub", BrowserHeaders { cookies: "normal=1".into(), ..Default::default() });
+        s.insert("priv", BrowserHeaders { cookies: "incognito=1".into(), private: true, ..Default::default() });
+        assert!(s.map.contains_key("priv"), "used while it runs");
+        let kept = read_kept_headers(&file);
+        assert!(kept.contains_key("pub"));
+        assert!(!kept.contains_key("priv"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A check still waiting (your answer in the window) is never dropped, however long it
+    /// takes and however many takeovers come meanwhile; finished ones go after a while.
+    #[test]
+    fn a_waiting_held_check_is_never_dropped() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let held = HeldChecks::new();
+        held.open("slow");
+        held.open("done");
+        held.finish("done", Ok(()));
+        held.age("slow", Duration::from_secs(3600));
+        held.age("done", Duration::from_secs(3600));
+        assert!(!held.listening("slow"), "nobody asked for an hour");
+        held.open("next");
+        assert!(held.checking("slow"), "still waiting for your answer");
+        assert_eq!(rt.block_on(held.wait("slow", Duration::from_millis(5))), Reply::still_held("slow"));
+        assert!(held.listening("slow"), "asked just now");
+        assert_eq!(held.finish("done", Err("x".into())), None, "a finished one goes after a while");
+        assert_eq!(held.finish("slow", Ok(())), Some(Ok(())));
+    }
+
+    /// "paused" only with "hold"; a private takeover's "held" requests stay private.
+    #[test]
+    fn paused_and_private_held_requests() {
+        let r: Request = serde_json::from_str(r#"{"kind":"download","urls":["https://e.org/a.zip"],"takeover":true,"paused":true}"#).unwrap();
+        assert!(!validate(r).unwrap().paused, "not without hold");
+        let r: Request = serde_json::from_str(r#"{"kind":"download","urls":["https://e.org/a.zip"],"takeover":true,"hold":true,"paused":true}"#).unwrap();
+        assert!(validate(r).unwrap().paused);
+        let h: Request = serde_json::from_str(r#"{"kind":"held","held":"abc","private":true}"#).unwrap();
+        assert!(validate(h).unwrap().private);
     }
 }

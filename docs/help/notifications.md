@@ -21,7 +21,7 @@ Up to three show at once, newest at the bottom. When more are waiting, the stack
 - Questions stay until you answer or close them: files waiting for your answer, someone who wants to connect, and **Pako needs you** (a link page that needs you, such as an "I'm not a robot" check). They also leave by themselves once the question is settled somewhere else: answered in Pako, the link page finished or closed, or the other person gave up.
 - The same link asking again replaces its earlier pop-up.
 
-Some news doesn't pop up when Pako's window shows it already: an upload that finishes or fails while the window is open, and Direct's questions and news while the window is in front.
+Some news doesn't pop up when Pako's window shows it already: an upload that finishes or fails while the window is open, and Direct's questions and news while the window is in front. **Download finished** doesn't pop up while the tray window (the small window from the tray icon) is open on your screen: you see the download finish there. This includes downloads with **Notify when done**. Failed downloads and other news still pop up, and the bell still gets the line if its **Bell** switch is on.
 
 ## The bell
 
@@ -59,9 +59,13 @@ Every kind pops up at first. Click **Save** to keep your changes.
 
 A download with **Notify when done** (right-click it) still gets its pop-up when **Download finished** is off (except during Do not disturb).
 
+### A sound when it's done
+
+**Play a sound when a download you asked about finishes** (on at first): a short, soft chime when a download with **Notify when done** (or **Download and notify me**) finishes, also while the tray window is open. Other downloads finish without a sound. When several finish within about two seconds, it chimes once. A folder chimes once, when its last file is done. It stays silent during Do not disturb, and while Windows says not now when **Follow Windows' Do not disturb** is on.
+
 ### Do not disturb
 
-- **Do not disturb**: no pop-ups at all, also not for downloads with **Notify when done**. The bell still collects (the kinds with their **Bell** switch on).
-- **Follow Windows' Do not disturb** (on at first): no pop-ups during full-screen games and videos, presentations, or Windows' own Do not disturb. The bell still collects.
+- **Do not disturb**: no pop-ups at all, also not for downloads with **Notify when done**, and no sound. The bell still collects (the kinds with their **Bell** switch on).
+- **Follow Windows' Do not disturb** (on at first, under **Advanced** at the bottom of the tab): no pop-ups or sounds during full-screen games and videos, presentations, or Windows' own Do not disturb. The bell still collects.
 
 Pop-ups that would have shown during that time are skipped, not saved for later (the bell has the kinds with their **Bell** switch on). Pop-ups already on screen hide, and come back when it's over with the rest of their time.

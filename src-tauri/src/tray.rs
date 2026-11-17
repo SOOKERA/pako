@@ -158,6 +158,32 @@ pub fn hide_mini_now(app: &AppHandle) {
     hide_mini(app);
 }
 
+/// The small window is on screen right now (shown, not hidden or minimized, and not left on
+/// another of Windows' desktops). Asked of Windows itself: opened without the focus, the window
+/// library still thinks it is hidden. Any thread may ask (these calls only read the window).
+pub(crate) fn mini_showing(app: &AppHandle) -> bool {
+    let Some(w) = app.get_webview_window("mini") else { return false };
+    #[cfg(windows)]
+    if let Ok(h) = w.hwnd() {
+        use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+        let hwnd = h.0 as _;
+        // SAFETY: the window's own handle, valid while `w` lives; `cloaked` is a u32 as
+        // DWMWA_CLOAKED asks, and its size is passed.
+        unsafe {
+            if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+                return false;
+            }
+            // Pinned on another virtual desktop: "visible" to Windows, but hidden ("cloaked")
+            // from you, so a Download finished pop-up is still wanted.
+            let mut cloaked: u32 = 0;
+            let ok = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED as u32, (&mut cloaked as *mut u32).cast(), 4) >= 0;
+            return !(ok && cloaked != 0);
+        }
+    }
+    w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false)
+}
+
 /// Pinned: the small window stays open and on top, wherever it was moved to.
 fn is_pinned(app: &AppHandle) -> bool {
     app.try_state::<Arc<Engine>>().is_some_and(|e| e.settings().mini_pinned)
@@ -198,6 +224,7 @@ fn saved_mini_pos(app: &AppHandle) -> Option<PhysicalPosition<f64>> {
 
 /// Opens the small window without taking the focus (a download from the browser just started:
 /// you stay in your browser). Bottom right above the taskbar, or where it was pinned.
+#[cfg_attr(test, allow(dead_code))]
 pub fn show_mini_quietly(app: &AppHandle) {
     if !crate::consent::ok() {
         return;

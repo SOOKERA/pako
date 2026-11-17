@@ -12,4 +12,4 @@ These guides explain what Pako does today, with the names you see in the window.
 8. [My devices](devices.md): pair your own PCs, send files between them without Accept, and see or start downloads on the other one.
 9. [Notifications](notifications.md): pop-ups, the bell, and Do not disturb.
 10. [Dashboard](dashboard.md): your Pako in numbers, kept on your PC.
-11. [Help and problems](help-and-problems.md): Help and its tutorials, and reporting a problem with **Send report** or your own email app.
+11. [Help and problems](help-and-problems.md): Help and its tutorials, finding a setting, and reporting a problem with **Send report** or your own email app.

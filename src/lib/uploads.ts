@@ -53,3 +53,32 @@ export function took(sec: number): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s`;
   return `${Math.floor(s / 3600)} h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")} min`;
 }
+
+/** "ZIP in parts": the part sizes offered (MB), and what a typed-in size may be. */
+export const PART_CHOICES: { value: number; label: string }[] = [
+  { value: 500, label: "500 MB" },
+  { value: 1024, label: "1 GB" },
+  { value: 2048, label: "2 GB" },
+];
+export const PART_DEFAULT_MB = 500;
+export const PART_MIN_MB = 50;
+export const PART_MAX_MB = 10 * 1024;
+/** Said under a typed-in part size that Pako won't take. */
+export const PART_RANGE_NOTE = "Between 50 MB and 10 GB";
+
+/** A part size Pako takes (whole MB, 50 MB to 10 GB). */
+export function partOk(mb: number | null | undefined): mb is number {
+  return typeof mb === "number" && Number.isInteger(mb) && mb >= PART_MIN_MB && mb <= PART_MAX_MB;
+}
+
+/** "500 MB", "1 GB", "1.5 GB" */
+export function partLabel(mb: number): string {
+  if (mb >= 1024) {
+    const gb = mb / 1024;
+    return `${Number.isInteger(gb) ? gb : gb.toFixed(1).replace(/\.0$/, "")} GB`;
+  }
+  return `${mb} MB`;
+}
+
+/** What people downloading it need, said next to "ZIP in parts". */
+export const PARTS_NOTE = "Each part uploads on its own: if the connection drops, only the part in progress starts over. To open it, people need all the parts and 7-Zip (or Pako).";

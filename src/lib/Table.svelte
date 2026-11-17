@@ -5,7 +5,7 @@
   import { app, hostName, hostSwitch, type Row, type SortKey } from "./state.svelte";
   import { api, inApp, isActive, type Download } from "./api";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
-  import { bytes, bytesOf, extension, sourceOf, speed, statusLook, timeLeft, shortDate, dateTitle } from "./format";
+  import { bytes, bytesOf, downloadLook, extension, sourceOf, speed, statusLook, timeLeft, shortDate, dateTitle } from "./format";
   import { flipIf, flipOpts, rowSlide } from "./motion";
   import { VIRTUAL_MIN, layout, reveal, visible } from "./virtual";
   import Icon from "./Icon.svelte";
@@ -431,7 +431,7 @@
             </div>
           {:else}
             {@const d = r.d}
-            {@const look = statusLook(d.status, d.message)}
+            {@const look = downloadLook(d)}
             {@const sub = subLine(d)}
             <div
               class="row"
@@ -484,6 +484,9 @@
               <div class="cell name">
                 {#if r.kind === "child"}<span class="rail" class:end={r.last}></span>{/if}
                 <MiddleText text={d.name} class="nm" />
+                {#if d.viaBrowser}
+                  <span class="vb" title="This site only lets your browser download this file: the browser downloads it (no multi-part speed) and Pako follows it.">Via browser</span>
+                {/if}
                 {#if hostSwitch(d)}
                   <span class="via" title={hostSwitch(d)}>from {hostName(d)}</span>
                 {/if}
@@ -511,6 +514,23 @@
               <div class="cell status c-status" style="color: {look.text}" title={d.message ?? ""}>
                 <span class="ell">{look.label}{d.status === "completed" && d.md5 && app.settings?.verifyChecksum ? " · checked" : ""}</span>
                 {#if isActive(d.status) && d.status === "downloading"}<span class="live"></span>{/if}
+                {#if d.status === "completed" && d.private}
+                  <!-- A private window's finished download: off the list now (the file stays). -->
+                  <button
+                    class="icon-btn forget"
+                    aria-label="Remove {d.name} from the list"
+                    title="Remove from the list (the file stays)"
+                    onpointerdown={(e) => e.stopPropagation()}
+                    ondblclick={(e) => e.stopPropagation()}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      app.run(async () => {
+                        await api.forgetPrivate(d.id);
+                        await app.refresh();
+                      });
+                    }}><Icon name="x" size={12} /></button
+                  >
+                {/if}
               </div>
               <div class="cell date mono c-date" title={dateTitle(d.date || d.addedAt, d.finishedAt)}>{shortDate(d.date || d.addedAt)}</div>
             </div>
@@ -779,6 +799,19 @@
     place-items: center;
   }
   /* Continuing from a backup host (the first one failed): a quiet note, never red. */
+  /* "Via browser": small, plain, never squeezes the name (its whole word or nothing). */
+  .vb {
+    flex: none;
+    height: 18px;
+    line-height: 18px;
+    padding: 0 7px;
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 550;
+    white-space: nowrap;
+  }
   .via {
     flex: 0 1000 auto;
     min-width: 0;
@@ -957,6 +990,17 @@
     gap: 8px;
     font-size: 12px;
     transition: color var(--mid) ease;
+  }
+  /* The ✕ of a "Done · private" row, right after its status. */
+  .icon-btn.forget {
+    width: 24px;
+    height: 24px;
+    flex: none;
+    margin: -4px 0 -4px -4px;
+    color: var(--text-3);
+  }
+  .icon-btn.forget:hover {
+    color: var(--text);
   }
   .live {
     width: 5px;

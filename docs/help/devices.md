@@ -30,7 +30,7 @@ You can also enter the IDs the other way round: whichever PC enters the other's 
 
 ## This PC's name
 
-At the bottom of the device list, under **This PC**, is the name your other PCs see for this one, like **Desk PC**. It's only for your devices: the name your contacts see in Direct (**Your name**) stays as it is.
+At the bottom of the device list, under **This PC**, is the name your other PCs see for this one, like **Desk PC**. It's only for your devices: the name your contacts see in Direct (your name under **You, sending from**) stays as it is.
 
 - To rename this PC, click its name, type the new one and press **Enter** (or click elsewhere). **Esc** keeps the old name.
 - Your other PCs see the new name at once when they're connected, otherwise the next time they connect.
@@ -54,6 +54,7 @@ Its **Files** tab shows everything sent between the two PCs, with progress, spee
 - **Drop files or folders** anywhere on the device's page, or on the device in the list, or click **Choose files** / **Choose folder**. They go at once.
 - The other PC doesn't ask: files from your own devices come in by themselves, into that device's folder. (If a send is very big for the drive there, it still asks.)
 - **Cancel** stops a file on its way. **Open** and **Folder** show what you received. Programs and scripts are never started from Pako: they're shown in their folder.
+- If the connection drops (a PC sleeps, the Wi-Fi goes, Pako is closed), the file waits: "Waiting for Home PC to continue · 62% done". It continues by itself from where it stopped when both PCs are connected again, as in [Direct](direct.md#your-history-with-someone). **Cancel** deletes what had arrived; after 7 days it's cleared.
 
 ## See and control the other PC's downloads
 
@@ -125,9 +126,13 @@ What a device you allow can do here, and nothing else:
 
 It can never open or run anything on this PC, pick a folder, or reach a file that isn't a finished download of your list. If the other PC doesn't allow this PC, its **Downloads** tab says so and how to turn it on there.
 
+The same permission lets the other PC send to your Direct contacts through this one (see [Send from another of your PCs](direct.md#send-from-another-of-your-pcs)): it may see this PC's Direct contacts and your history with them, and send files that this PC then offers to one of them as a send of its own. Only the files it sends in that send are passed on, kept meanwhile in Pako's own data here (never your folders), and deleted once delivered (or kept in this device's folder, if it asked), declined, or after 7 days. Turning this permission off (or removing the device) stops at once what it asked this PC to pass on, and deletes those files.
+
 ## History
 
-The device's **Settings** tab lists what the two PCs did with each other: links added, downloads paused, removed or given another priority, files asked for, orders refused, and permission changes, with who did it and when. It stays on this PC. **Clear** deletes it from this PC.
+The device's **Settings** tab lists what the two PCs did with each other: links added, downloads paused, removed or given another priority, files asked for, orders refused, permission changes, and files sent to a Direct contact through the other PC ("Relayed 3 files to Rado · delivered"), with who did it and when. It stays on this PC. **Clear** deletes it from this PC.
+
+While files go to a Direct contact through a device, that device's line in the list says so: "Relaying 3 files to Rado". In its **Files** tab, that send says who it's for ("for Rado").
 
 ## Rename or remove a device
 

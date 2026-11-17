@@ -4,8 +4,11 @@
 //! the right-click items, a download the browser started) waits here for your OK, with its name,
 //! folder, quality and "Notify me". Several at once are shown one after another ("1 of 3").
 //! Switched off in Settings (or with "Don't show this again"), they start right away.
+// The unit tests leave the window code out (see `open` / `show`).
+#![cfg_attr(test, allow(dead_code, unused_imports))]
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -19,9 +22,19 @@ const HEIGHT: f64 = 324.0;
 static APP: OnceLock<AppHandle> = OnceLock::new();
 /// Downloads waiting for an answer, in the order they came.
 static ORDER: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Downloads the browser started, with the size the browser was told: shown until Pako's own
+/// first answer from the server says it (Pako asks only once the download starts).
+static BROWSER_SIZE: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
 
+#[cfg(not(test))]
 fn engine() -> Option<Arc<Engine>> {
     APP.get()?.try_state::<Arc<Engine>>().map(|e| e.inner().clone())
+}
+
+/// The unit tests have no window (see `started`): browser downloads start right away there.
+#[cfg(test)]
+fn engine() -> Option<Arc<Engine>> {
+    None
 }
 
 /// At start: downloads still waiting from last time are asked about again.
@@ -52,9 +65,20 @@ pub fn enqueue(id: &str) {
     show();
 }
 
+/// A download the browser started (`browser_size`: what the browser was told, 0 = not known):
+/// the window opens at once, with what the browser knows.
+pub fn enqueue_from_browser(id: &str, browser_size: u64) {
+    if browser_size > 0 {
+        BROWSER_SIZE.lock().unwrap().insert(id.to_string(), browser_size);
+    }
+    enqueue(id);
+}
+
 /// A download from the browser started (no window, or it was answered): the small window
 /// opens by itself when that setting is on.
 pub fn started() {
+    // (Never in the unit tests: no window there, and its code needs what only Pako.exe has.)
+    #[cfg(not(test))]
     if let Some(app) = APP.get() {
         if engine().is_some_and(|e| e.settings().mini_on_browser) {
             crate::tray::show_mini_quietly(app);
@@ -81,7 +105,11 @@ pub fn current() -> Option<AskView> {
     let engine = engine()?;
     let order = prune(&engine);
     let id = order.first()?;
-    engine.ask_view(id, 1, order.len())
+    let mut v = engine.ask_view(id, 1, order.len())?;
+    if v.size.is_none() {
+        v.size = BROWSER_SIZE.lock().unwrap().get(id).copied();
+    }
+    Some(v)
 }
 
 /// The window's answer; then the next one, or the window closes.
@@ -89,7 +117,14 @@ pub fn answer(a: AskAnswer) -> Result<(), String> {
     let engine = engine().ok_or("Pako is still starting.")?;
     let action = a.action.clone();
     let id = a.id.clone();
+    // Cancel for a download the browser handed over (it waits for Pako's answer): it isn't
+    // downloaded at all, so the browser drops its copy too (as before the window could open
+    // ahead of the check).
+    if action == "cancel" {
+        crate::extension::HELD.finish(&id, Ok(()));
+    }
     engine.answer_ask(a).map_err(|e| e.to_string())?;
+    BROWSER_SIZE.lock().unwrap().remove(&id);
     ORDER.lock().unwrap().retain(|x| *x != id);
     if action != "cancel" {
         started();
@@ -127,7 +162,12 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
         .ok()
 }
 
+/// The unit tests have no window (see `started`).
+#[cfg(test)]
+fn show() {}
+
 /// Opens the window in front, in the middle of the screen the mouse is on.
+#[cfg(not(test))]
 fn show() {
     let Some(app) = APP.get() else { return };
     let Some(w) = window(app) else { return };

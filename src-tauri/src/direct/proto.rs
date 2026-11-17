@@ -41,9 +41,26 @@ pub enum Msg {
     /// "My user changed the name I go by" (sent to connected contacts at once; older Pakos ignore it
     /// and learn the name at the next connection).
     Name { name: String },
-    /// Files I'd like to send you.
-    Offer { id: String, name: String, files: Vec<OfferFile> },
-    Accept { id: String },
+    /// Files I'd like to send you. `resume`: "if we're cut off, I can pick this up where it
+    /// stopped" (older Pakos don't send it, and ignore it).
+    Offer {
+        id: String,
+        name: String,
+        files: Vec<OfferFile>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume: bool,
+        /// Only between your own devices: "pass these files on to your contact `to`" (Direct
+        /// relay). Older Pakos don't send it (and the switch never offers them). Never a path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay: Option<RelayTo>,
+    },
+    /// `resume`: "I keep what arrives, so we can pick it up after a cut" (only when the offer
+    /// said it can; older Pakos don't send it). Also the answer to `Continue`: ready again.
+    Accept {
+        id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume: bool,
+    },
     Decline { id: String },
     /// Either side stops a transfer.
     Cancel { id: String },
@@ -60,7 +77,45 @@ pub enum Msg {
         control: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pc_name: Option<String>,
+        /// Only with `control`: "I can show you my Direct contacts and pass files on to them",
+        /// with the name my contacts see and how many there are. Older Pakos don't send it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay: Option<RelayFrom>,
     },
+    // ---------- Direct relay between your devices (older Pakos read these as `Unknown`) ----------
+    /// "Show me your Direct contacts, or your history with one of them" (needs control);
+    /// answered with `Seen` (same id).
+    Look { id: String, look: Look },
+    /// The answer to `Look`. `ok: false` with why (no permission, too many asks…).
+    Seen {
+        id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        me: Option<RemoteMe>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        contacts: Vec<RemoteContact>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        history: Vec<super::store::HistoryItem>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        moving: Vec<RemoteTransfer>,
+    },
+    /// The relaying PC tells the PC that asked how a relay is doing (`id`: the relay, the first
+    /// leg's transfer id): `state` waiting / offered / sending / delivered / declined / failed /
+    /// cancelled / expired, and how far the second leg is.
+    Relayed {
+        id: String,
+        state: String,
+        #[serde(default)]
+        done: u64,
+        #[serde(default)]
+        size: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+    /// The PC that asked: "stop this relay" (the copy is deleted there).
+    Unrelay { id: String },
     /// "Send me your download list while I look at it" (or stop).
     Watch { on: bool },
     /// The download list, a summary (newest first).
@@ -80,9 +135,126 @@ pub enum Msg {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         items: Vec<LinkItems>,
     },
+    // ---------- Picking up a transfer cut short (older Pakos read these as `Unknown`) ----------
+    /// Sender, on connecting again: "I'm still keeping this transfer for you." A receiver that
+    /// has it answers with `Have` (it sends that by itself when connecting); one that finished
+    /// it answers `Result`; one that dropped it answers `Cancel`.
+    Resume { id: String },
+    /// Receiver: "Continue this one: here's what I already have." `full`: runs of files that
+    /// are all here ([first, end) by their place in the offer); `part`: files partly here,
+    /// with their byte ranges. Sent when connecting again, and when a file didn't match its
+    /// hash (it's then left out, so it comes again in full).
+    Have {
+        id: String,
+        #[serde(default)]
+        full: Vec<[usize; 2]>,
+        #[serde(default)]
+        part: Vec<FileHave>,
+    },
+    /// Sender, answering `Have`: these files changed since, so they start again from zero at
+    /// this size. The receiver answers `Accept` once ready, then the missing parts come.
+    Continue {
+        id: String,
+        #[serde(default)]
+        restart: Vec<Restart>,
+    },
     /// A kind of message this Pako doesn't know (a newer Pako's): ignored, the connection stays.
     #[serde(other)]
     Unknown,
+}
+
+/// Pass the files of this offer on to `to` (a Pako ID among that PC's Direct contacts), as a
+/// normal send from that PC. `keep`: keep a copy there once delivered (in the folder of the PC
+/// that sent them), else the copy is deleted.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct RelayTo {
+    pub to: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
+}
+
+/// What a device that can relay says about its Direct side: the name its contacts see, and how
+/// many contacts it has.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct RelayFrom {
+    pub name: String,
+    pub contacts: u32,
+}
+
+/// What a `Look` asks for.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "what", rename_all = "camelCase")]
+pub enum Look {
+    Contacts,
+    Talk { contact: String },
+    /// A newer Pako's: refused.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The relaying PC's Direct side: its Pako ID and the name its contacts see.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct RemoteMe {
+    pub id: String,
+    pub name: String,
+}
+
+/// One of that PC's Direct contacts, as your other PC sees it (shown only, nothing to change).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteContact {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub their_name: Option<String>,
+    #[serde(default)]
+    pub online: bool,
+    /// How it's connected ("local", "direct6", "direct", "relay").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<u64>,
+    #[serde(default)]
+    pub favourite: bool,
+    /// Said yes once (a contact still waiting for that can't be sent to).
+    #[serde(default)]
+    pub trusted: bool,
+    #[serde(default)]
+    pub declined: bool,
+}
+
+/// A transfer moving on that PC with one of its contacts.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTransfer {
+    pub id: String,
+    pub outgoing: bool,
+    pub name: String,
+    pub files: u32,
+    pub size: u64,
+    pub done: u64,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Relayed for another of your PCs: its name there ("Laptop").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+}
+
+/// One file partly received: which byte ranges ([start, end)) are on the disk there.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct FileHave {
+    pub f: usize,
+    pub r: Vec<[u64; 2]>,
+}
+
+/// A file that changed on the sender's PC since it was offered: sent again from zero, at this size.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Restart {
+    pub file: usize,
+    pub size: u64,
 }
 
 /// What a device may ask another of your devices to do. Nothing else exists: no path on disk,
@@ -410,12 +582,12 @@ mod tests {
     #[tokio::test]
     async fn frames_round_trip_and_cap() {
         let (mut a, mut b) = tokio::io::duplex(1 << 16);
-        let m = Msg::Offer { id: "t1".into(), name: "Photos".into(), files: vec![OfferFile { path: "a.jpg".into(), size: 3 }] };
+        let m = Msg::Offer { id: "t1".into(), name: "Photos".into(), files: vec![OfferFile { path: "a.jpg".into(), size: 3 }], resume: false, relay: None };
         write_frame(&mut a, &m, MAX_MSG).await.unwrap();
-        write_frame(&mut a, &Msg::Accept { id: "t1".into() }, MAX_MSG).await.unwrap();
+        write_frame(&mut a, &Msg::Accept { id: "t1".into(), resume: false }, MAX_MSG).await.unwrap();
         drop(a);
         assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), Some(m));
-        assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), Some(Msg::Accept { id: "t1".into() }));
+        assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), Some(Msg::Accept { id: "t1".into(), resume: false }));
         assert_eq!(read_frame::<_, Msg>(&mut b, MAX_MSG).await.unwrap(), None);
         // A message kind from a newer Pako is read as "unknown", not as a broken connection.
         let (mut a, mut b) = tokio::io::duplex(1 << 16);

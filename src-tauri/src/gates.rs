@@ -14,6 +14,8 @@
 //! capabilities): it only talks back through navigations to `https://pako.gate/…`, which are
 //! intercepted and never leave the PC. It also keeps nothing: it runs in WebView2's InPrivate mode,
 //! so the gate's and its ads' cookies and storage are gone when the window closes.
+// The unit tests leave the window code out (see `open` / `show`).
+#![cfg_attr(test, allow(dead_code, unused_imports))]
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -151,6 +153,14 @@ const AUTO_MAX: Duration = Duration::from_secs(180);
 const YOUR_TURN: Duration = Duration::from_secs(15 * 60);
 
 /// Works through a gate link in the background; the result lands on the Found row.
+/// The unit tests have no windows (and the window code needs what only Pako.exe has): as when
+/// Pako has no window yet.
+#[cfg(test)]
+pub fn open(engine: Arc<Engine>, id: String, _link: String) {
+    engine.gate_failed(&id, "Link pages can't be opened here.");
+}
+
+#[cfg(not(test))]
 pub fn open(engine: Arc<Engine>, id: String, link: String) {
     let Some(app) = APP.get().cloned() else {
         engine.gate_failed(&id, "Link pages can't be opened here.");

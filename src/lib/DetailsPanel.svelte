@@ -3,7 +3,7 @@
 <script lang="ts">
   import { app, hostName, hostSwitch } from "./state.svelte";
   import { api, isActive, type Download, type Part } from "./api";
-  import { bytes, bytesOf, sourceOf, speed, statusLook, timeLeft, wordColor } from "./format";
+  import { bytes, bytesOf, downloadLook, sourceOf, speed, statusLook, timeLeft, wordColor } from "./format";
   import Icon from "./Icon.svelte";
   import HelpLink from "./help/HelpLink.svelte";
   import ItemSettings from "./ItemSettings.svelte";
@@ -69,8 +69,19 @@
     if (x.source.kind === "gDrive") return "Google Drive (public link)";
     return sourceOf(x).label;
   }
-  function primary(x: Download): { label: string; icon: string; run: () => Promise<void> } {
+  function primary(x: Download): { label: string; icon: string; run: () => Promise<void>; off?: string } {
     if (x.status === "completed") return { label: "Open", icon: "open", run: () => api.openItem(x.id, false) };
+    // Done by the browser (through the extension), where the browser can.
+    if (x.viaBrowser) {
+      if (x.status === "downloading") return { label: "Pause", icon: "pause", run: () => api.pause([x.id]) };
+      const can = x.viaBrowser.browserId >= 0 && (x.status === "paused" || x.viaBrowser.canResume);
+      return {
+        label: x.status === "paused" ? "Resume" : "Try again",
+        icon: x.status === "paused" ? "play" : "retry",
+        run: () => api.resume([x.id]),
+        off: can ? undefined : x.viaBrowser.browserId < 0 ? "Waiting for your browser to report this download" : "Your browser can't continue this download: open the link again in the browser",
+      };
+    }
     if (isActive(x.status) || x.status === "queued") return { label: "Pause", icon: "pause", run: () => api.pause([x.id]) };
     if (x.status === "paused") return { label: "Resume", icon: "play", run: () => api.resume([x.id]) };
     return { label: "Try again", icon: "retry", run: () => api.resume([x.id]) };
@@ -79,7 +90,7 @@
 
 <div class="panel">
   {#if d}
-    {@const look = statusLook(d.status, d.message)}
+    {@const look = downloadLook(d)}
     {@const p = app.live[d.id]}
     {@const pr = primary(d)}
     <section class="top">
@@ -117,6 +128,18 @@
         <div class="callout" class:warn={d.status !== "failed"} class:err={d.status === "failed"}>
           <Icon name="alert" size={14} />
           <span>{d.message}</span>
+        </div>
+      {/if}
+      {#if d.viaBrowser && d.status !== "completed"}
+        <div class="callout">
+          <Icon name="globe" size={14} />
+          <span>This site only lets your browser download this file, so Pako can't use its multi-part speed. The browser downloads it; Pako follows it and moves it to your folder when it's done.</span>
+        </div>
+      {/if}
+      {#if d.private && d.status === "completed"}
+        <div class="callout">
+          <Icon name="check" size={14} />
+          <span>From a private window: it leaves this list once you open it or click its ✕, else {app.settings?.privateKeep === "1h" ? "an hour after it finished" : app.settings?.privateKeep === "close" ? "when you quit Pako" : "10 minutes after it finished"}. The file stays. Pako keeps no other trace of it. <button class="linkish" onclick={() => app.run(async () => { await api.forgetPrivate(d.id); await app.refresh(); })}>Remove it from the list now</button></span>
         </div>
       {/if}
       {#if hostSwitch(d)}
@@ -191,8 +214,9 @@
     {#if d.status !== "completed"}
       <ItemSettings
         dest={d.destDir}
-        destLocked={isActive(d.status) || d.downloaded > 0}
+        destLocked={!d.viaBrowser && (isActive(d.status) || d.downloaded > 0)}
         priority={d.priority}
+        priorityOff={d.viaBrowser ? "Your browser downloads it: Pako's queue doesn't apply." : undefined}
         notify={d.notify}
         onDest={(dir) => app.run(() => api.setFolder([d.id], dir))}
         onPriority={(p) => app.run(() => api.setPriority([d.id], p))}
@@ -218,6 +242,9 @@
         {#if d.source.kind === "video"}
           <dt>Quality</dt><dd>{d.source.audio ? `Audio only (${d.source.audio.toUpperCase()})` : d.source.quality ? `Up to ${d.source.quality}p` : `Up to ${app.settings?.videoQuality || 1080}p (default)`}</dd>
           <dt>After a pause</dt><dd>Continues where it stopped</dd>
+        {:else if d.viaBrowser}
+          <dt>Downloaded by</dt><dd>Your browser</dd>
+          <dt>After a pause</dt><dd>{d.viaBrowser.canResume ? "Continues where it stopped" : "As your browser can"}</dd>
         {:else}
           <dt>After a pause</dt><dd>{d.resolved ? (d.resumable ? "Continues where it stopped" : "Starts again from zero (this server can't continue)") : "—"}</dd>
         {/if}
@@ -227,7 +254,7 @@
     </section>
 
     <div class="actions">
-      <button class="btn" onclick={() => app.run(pr.run)}><Icon name={pr.icon} size={13} />{pr.label}</button>
+      <button class="btn" disabled={!!pr.off} title={pr.off} onclick={() => app.run(pr.run)}><Icon name={pr.icon} size={13} />{pr.label}</button>
       <button class="btn" onclick={() => app.run(() => api.openItem(d.id, true))}><Icon name="folder" size={13} />Folder</button>
       <button class="btn danger" onclick={() => onremove([d.id])}><Icon name="trash" size={13} />Remove</button>
     </div>

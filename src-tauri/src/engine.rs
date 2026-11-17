@@ -166,6 +166,8 @@ struct Note {
     id: Option<String>,
     /// Its own "Notify when done" asked for it: the pop-up shows whatever Settings say.
     force: bool,
+    /// A private window's download: said on its own, never kept in the bell.
+    private: bool,
 }
 
 /// What to do when every download has finished.
@@ -266,6 +268,7 @@ fn numbers_event(d: &Download, speed: Option<&Speed>, ok: bool) {
     e.name = d.name.clone();
     e.bytes = if ok { d.size.unwrap_or(d.downloaded) } else { 0 };
     e.source = match d.source {
+        _ if d.via_browser.is_some() => "browser",
         Source::GDrive { .. } => "drive",
         Source::Video { .. } => "video",
         Source::Http { .. } => "web",
@@ -282,6 +285,7 @@ fn scheduled_note(start: u32) -> String {
     format!("Waiting for the scheduled hours ({})", crate::system::hhmm(start))
 }
 
+#[derive(Clone)]
 struct Speed {
     bytes: u64,
     at: Instant,
@@ -342,6 +346,9 @@ struct Job {
     requeue: std::sync::atomic::AtomicBool,
     /// When this run started (a download that comes first takes the spot of the newest one).
     started: Instant,
+    /// The first request's answer (from the start of the file), kept open: the part that starts
+    /// at 0 reads on from it instead of asking the server again.
+    first: Mutex<Option<reqwest::Response>>,
     /// The parts as they were at the last flush to disk: the only progress ever saved while
     /// running, so a power cut can't leave parts marked done that are still zeros on disk.
     flushed: Mutex<Option<Vec<Segment>>>,
@@ -621,6 +628,9 @@ impl Engine {
                 )
             }
         };
+        // A private window's downloads left unfinished last time (Pako closed or stopped): their
+        // unfinished files go, since nothing else knows them.
+        clean_private_parts(&private_parts_path());
         let loaded = crate::paths::read_list_checked::<Download>(&list_path());
         start_notes.extend(list_note("download list", &list_path(), &loaded));
         let loaded_ok = loaded.is_ok();
@@ -633,7 +643,11 @@ impl Engine {
             if d.date == 0 {
                 d.date = d.added_at;
             }
-            if d.status.is_active() {
+            if d.status.is_active() && d.via_browser.is_some() {
+                // The browser's next report says how it is (Pako never downloads it itself).
+                d.status = Status::Paused;
+                d.message = Some(VIA_WAITING.into());
+            } else if d.status.is_active() {
                 // Settings › Downloads › Continue downloads when Pako starts (on by default).
                 d.status = if settings.resume_on_start { Status::Queued } else { Status::Paused };
                 d.message = None;
@@ -1942,6 +1956,7 @@ impl Engine {
                 me.timekeeping();
                 me.schedule();
                 me.tick();
+                me.sweep_private();
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         });
@@ -1962,6 +1977,9 @@ impl Engine {
     pub fn set_settings(self: &Arc<Self>, mut s: Settings) -> Result<()> {
         s.connections = s.connections.clamp(1, MAX_CONNECTIONS);
         s.max_active = s.max_active.clamp(1, 20);
+        if !crate::send::part_mb_ok(s.send_part_mb) {
+            s.send_part_mb = crate::send::PART_DEFAULT_MB;
+        }
         std::fs::create_dir_all(&s.download_dir)
             .map_err(|_| anyhow!("Can't use that folder for downloads."))?;
         self.limiter.set_rate(s.speed_limit_kb.saturating_mul(1024));
@@ -2134,6 +2152,10 @@ impl Engine {
             stem
         };
         let wanted = if ext.is_empty() { stem } else { format!("{stem}.{ext}") };
+        // Your own name for it (kept if the browser ends up downloading it: "Via browser").
+        if wanted != d.name {
+            d.named = true;
+        }
         // A browser download Pako already began (a few seconds, to check it): moving or
         // renaming it starts it again from zero.
         if (dir != d.dest_dir || wanted != d.name) && (d.downloaded > 0 || !d.segments.is_empty() || d.has_part()) {
@@ -2218,12 +2240,14 @@ impl Engine {
         let mut added = Vec::new();
         // The downloads made here (a Drive link opened through add_one has none to show).
         let mut added_ids: Vec<String> = Vec::new();
-        // The Download with Pako window first (a download the browser holds is asked about
-        // once Pako has checked it: see browser_request).
-        let ask = !r.takeover && crate::ask::wanted();
+        // The Download with Pako window first. A download the browser started: at once when
+        // the extension can wait for Pako's check (`hold`, the window says "Checking…"),
+        // otherwise once Pako has checked it (see browser_request), as when the browser holds
+        // its copy paused (`paused`).
+        let ask = (!r.takeover || (r.hold && !r.paused)) && crate::ask::wanted();
         let mut held = Vec::new();
         for url in files {
-            if drive::parse_link(&url).is_some() {
+            if drive_route(&url, r.private) {
                 let before: HashSet<String> = self.inner.lock().unwrap().downloads.iter().map(|d| d.id.clone()).collect();
                 if let Ok(n) = self.add_one(&url, &dest).await {
                     if n > 0 {
@@ -2238,7 +2262,11 @@ impl Engine {
             }
             let name = browser_name(&r.filename, &url, r.urls.len() > 1);
             let mut d = new_download(&url, Source::Http { url: url.clone() }, name.clone(), dest.clone(), None);
-            crate::extension::remember_headers(&d.id, crate::extension::BrowserHeaders { referrer: r.referrer.clone(), cookies: r.cookies.clone(), ..Default::default() });
+            crate::extension::remember_headers(
+                &d.id,
+                crate::extension::BrowserHeaders { referrer: r.referrer.clone(), cookies: r.cookies.clone(), private: r.private, ..Default::default() },
+            );
+            d.private = r.private;
             d.ask = ask;
             if ask {
                 d.message = Some(ASK_NOTE.into());
@@ -2255,13 +2283,20 @@ impl Engine {
             if held.is_empty() {
                 let body = if added.len() == 1 { added[0].clone() } else { format!("{} files", added.len()) };
                 let one = (added.len() == 1 && added_ids.len() == 1).then(|| added_ids[0].clone());
-                self.notify("browser", "Downloading in Pako", &body, Go::maybe("downloads", one));
+                if r.private {
+                    (self.emit)("notify", notices::payload_private("browser", "Downloading in Pako", &body, &Go::maybe("downloads", one), Pop::Pref));
+                } else {
+                    self.notify("browser", "Downloading in Pako", &body, Go::maybe("downloads", one));
+                }
                 if !r.takeover {
                     crate::ask::started();
                 }
             }
-            for id in &held {
-                crate::ask::enqueue(id);
+            // (A takeover's window is opened by the takeover itself, marked as being checked.)
+            if !r.takeover {
+                for id in &held {
+                    crate::ask::enqueue(id);
+                }
             }
         }
         if !videos.is_empty() {
@@ -2387,6 +2422,15 @@ impl Engine {
                 job.cancel.cancel();
             }
             if let Some(d) = inner.downloads.iter_mut().find(|d| &d.id == id) {
+                // The browser pauses a "Via browser" one (told with its next report).
+                if d.via_browser.is_some() {
+                    if d.status.is_active() {
+                        FOLLOW_COMMANDS.lock().unwrap().insert(id.clone(), "pause");
+                        d.status = Status::Paused;
+                        d.message = None;
+                    }
+                    continue;
+                }
                 if matches!(d.status, Status::Queued) || d.status.is_active() {
                     d.status = Status::Paused;
                     d.message = None;
@@ -2421,6 +2465,16 @@ impl Engine {
         for id in ids {
             inner.auto_retry.remove(id);
             if let Some(d) = inner.downloads.iter_mut().find(|d| &d.id == id) {
+                // The browser resumes a "Via browser" one, when it can.
+                if let Some(v) = &d.via_browser {
+                    let can = d.status == Status::Paused || (d.status == Status::Failed && v.can_resume);
+                    if can && v.browser_id >= 0 {
+                        FOLLOW_COMMANDS.lock().unwrap().insert(id.clone(), "resume");
+                        d.status = Status::Downloading;
+                        d.message = None;
+                    }
+                    continue;
+                }
                 if matches!(d.status, Status::Paused | Status::Failed | Status::QuotaExceeded | Status::NeedsAccount) {
                     d.status = Status::Queued;
                     d.message = None;
@@ -2448,7 +2502,12 @@ impl Engine {
             }
             if let Some(pos) = inner.downloads.iter().position(|d| &d.id == id) {
                 let d = inner.downloads.remove(pos);
-                if running.is_none() {
+                // The browser cancels a "Via browser" one (told with its next report).
+                if d.via_browser.is_some() && d.status != Status::Completed {
+                    FOLLOW_COMMANDS.lock().unwrap().insert(id.clone(), "cancel");
+                }
+                // (A "Via browser" row has no unfinished file of Pako's: nothing to delete.)
+                if running.is_none() && d.via_browser.is_none() {
                     d.remove_part();
                 }
                 if let Source::Video { recording: Some(dir), .. } = &d.source {
@@ -2546,7 +2605,8 @@ impl Engine {
             }
             let running = inner.jobs.get(id).map(|j| !j.cancel.is_cancelled()).unwrap_or(false);
             if let Some(d) = inner.downloads.iter_mut().find(|d| &d.id == id) {
-                if d.status == Status::Completed {
+                // (The browser downloads a "Via browser" one: no place in Pako's queue.)
+                if d.status == Status::Completed || d.via_browser.is_some() {
                     continue;
                 }
                 d.priority = Priority::First;
@@ -2758,7 +2818,8 @@ impl Engine {
             }
             let taken = taken_paths(&inner.downloads, Some(id));
             let Some(d) = inner.downloads.iter_mut().find(|d| &d.id == id) else { continue };
-            if d.status == Status::Completed || d.downloaded > 0 || d.has_part() {
+            // (A "Via browser" one: the browser writes its own file; it's moved here when done.)
+            if d.status == Status::Completed || (d.via_browser.is_none() && (d.downloaded > 0 || d.has_part())) {
                 continue;
             }
             d.dest_dir = dir.clone();
@@ -2779,7 +2840,7 @@ impl Engine {
     /// except that a waiting download set to First may take a spot right away.
     pub fn set_priority(self: &Arc<Self>, ids: &[String], priority: Priority) {
         let mut inner = self.inner.lock().unwrap();
-        for d in inner.downloads.iter_mut().filter(|d| ids.contains(&d.id)) {
+        for d in inner.downloads.iter_mut().filter(|d| ids.contains(&d.id) && d.via_browser.is_none()) {
             d.priority = priority;
         }
         inner.dirty = true;
@@ -2791,6 +2852,9 @@ impl Engine {
 
     /// "Start over": throw away what was downloaded and download again from zero.
     pub fn start_over(self: &Arc<Self>, ids: &[String]) {
+        // Not for a "Via browser" one: only the browser can download it.
+        let ids: Vec<String> = ids.iter().filter(|id| !self.via(id)).cloned().collect();
+        let ids = ids.as_slice();
         let mut inner = self.inner.lock().unwrap();
         for id in ids {
             inner.auto_retry.remove(id);
@@ -2861,6 +2925,9 @@ impl Engine {
         if d.status == Status::Completed {
             std::fs::rename(d.final_path(), d.dest_dir.join(&name))
                 .map_err(|e| anyhow!("Couldn't rename the file: {e}"))?;
+        } else if d.via_browser.is_some() {
+            // The browser's file takes this name when it comes in (Pako has no file of it yet).
+            d.named = true;
         } else if matches!(d.source, Source::Video { .. }) {
             // A video not finished: its pieces (Pako's own streams and yt-dlp's) are named after
             // it. They take the new name, so it carries on from them and none stays behind.
@@ -2985,7 +3052,8 @@ impl Engine {
                 .filter(|&i| {
                     let d = &inner.downloads[i];
                     // Waiting for the Download with Pako window: not started before its answer.
-                    d.status == Status::Queued && !d.ask && !inner.jobs.contains_key(&d.id)
+                    // The browser downloads a "Via browser" one: never started by Pako.
+                    d.status == Status::Queued && !d.ask && d.via_browser.is_none() && !inner.jobs.contains_key(&d.id)
                 })
                 .collect();
             // First, then Normal, then Later; same level in the order they were added.
@@ -3068,7 +3136,7 @@ impl Engine {
     fn sync_jobs(inner: &mut Inner) {
         let jobs: Vec<Arc<Job>> = inner.jobs.values().cloned().collect();
         for job in jobs {
-            if let Some(d) = inner.downloads.iter_mut().find(|d| d.id == job.id) {
+            if let Some(d) = inner.downloads.iter_mut().find(|d| d.id == job.id && d.via_browser.is_none()) {
                 let slots = job.slots.lock().unwrap();
                 if !slots.is_empty() {
                     d.segments = slots.iter().map(|s| s.seg.clone()).collect();
@@ -3131,6 +3199,7 @@ impl Engine {
                         stopped: done == 0,
                         id: None,
                         force: force || files.iter().any(|x| x.notify),
+                        private: false,
                     }
                 }
                 None => Note {
@@ -3140,9 +3209,12 @@ impl Engine {
                     stopped: false,
                     id: Some(d.id.clone()),
                     force,
+                    private: d.private,
                 },
             }
         };
+        // Asked "Notify when done": a chime now (the pop-up comes with the gathered ones).
+        notices::chime_if_asked(note.force && !note.stopped);
         let mut notes = self.notes.lock().unwrap();
         notes.0.push(note);
         notes.1 = Some(Instant::now());
@@ -3156,8 +3228,8 @@ impl Engine {
             self.note_finished(id, force);
             return;
         }
-        let name = self.inner.lock().unwrap().downloads.iter().find(|d| d.id == id).map(|d| d.name.clone());
-        let Some(name) = name else { return };
+        let found = self.inner.lock().unwrap().downloads.iter().find(|d| d.id == id).map(|d| (d.name.clone(), d.private));
+        let Some((name, private)) = found else { return };
         let mut notes = self.notes.lock().unwrap();
         notes.0.push(Note {
             title: format!("Download stopped: {name}"),
@@ -3166,6 +3238,7 @@ impl Engine {
             stopped: true,
             id: Some(id.to_string()),
             force,
+            private,
         });
         notes.1 = Some(Instant::now());
     }
@@ -3181,6 +3254,13 @@ impl Engine {
             notes.1 = None;
             std::mem::take(&mut notes.0)
         };
+        // A private window's downloads: each said on its own, never kept in the bell.
+        let (private, ready): (Vec<Note>, Vec<Note>) = ready.into_iter().partition(|n| n.private);
+        for n in private {
+            let kind = if n.stopped { "download-failed" } else { "download-done" };
+            let pop = if n.force { Pop::Force } else { Pop::Pref };
+            (self.emit)("notify", notices::payload_private(kind, &n.title, &n.body, &Go::maybe("downloads", n.id), pop));
+        }
         let (stopped, finished): (Vec<Note>, Vec<Note>) = ready.into_iter().partition(|n| n.stopped);
         for (kind, group) in [("download-done", finished), ("download-failed", stopped)] {
             if group.is_empty() {
@@ -3247,10 +3327,14 @@ impl Engine {
         let countdown = inner.when_done_at.is_some();
         crate::system::keep_awake(inner.settings.keep_awake && (has_jobs || uploads || waits_for_hours || countdown));
         Self::sync_jobs(&mut inner);
+        // "Via browser" rows the browser is downloading: their speed comes from its reports.
+        let following: Vec<String> =
+            inner.downloads.iter().filter(|d| d.via_browser.is_some() && d.status == Status::Downloading).map(|d| d.id.clone()).collect();
+        let has_jobs = has_jobs || !following.is_empty();
         if has_jobs {
             let now = Instant::now();
             let mut progress = Vec::new();
-            let ids: Vec<String> = inner.jobs.keys().cloned().collect();
+            let ids: Vec<String> = inner.jobs.keys().cloned().chain(following).collect();
             for id in ids {
                 let Some(d) = inner.downloads.iter().find(|d| d.id == id).cloned() else { continue };
                 let conns = inner.jobs.get(&id).map(|j| j.connections.load(Ordering::Relaxed)).unwrap_or(0);
@@ -3263,7 +3347,10 @@ impl Engine {
                     peak: 0.0,
                 });
                 let dt = now.duration_since(sp.at).as_secs_f64();
-                if dt >= 0.4 {
+                // A "Via browser" row moves only when the extension reports (every 2 s): its
+                // speed is taken between reports, not as zero in between.
+                let waiting_report = d.via_browser.is_some() && d.downloaded == sp.bytes && dt < 6.0;
+                if dt >= 0.4 && !waiting_report {
                     let instant = d.downloaded.saturating_sub(sp.bytes) as f64 / dt;
                     sp.value = if sp.value == 0.0 { instant } else { sp.value * 0.7 + instant * 0.3 };
                     if d.status == Status::Downloading {
@@ -3331,7 +3418,10 @@ impl Engine {
         if !inner.loaded_ok {
             return None;
         }
-        let mut list = inner.downloads.clone();
+        // A private window's downloads are never written to disk (only where their unfinished
+        // files are, sealed, so they're cleaned up at the next start: see `note_private_parts`).
+        note_private_parts(&private_parts_path(), &inner.downloads);
+        let mut list: Vec<Download> = inner.downloads.iter().filter(|d| !d.private).cloned().collect();
         for d in list.iter_mut() {
             if let Some(job) = inner.jobs.get(&d.id) {
                 if let Some(segs) = job.flushed.lock().unwrap().clone() {
@@ -3391,12 +3481,23 @@ impl Engine {
         let mut stopped_note: Option<(String, bool)> = None;
         let mut finished_note: Option<bool> = None;
         let mut extract_group: Option<(String, PathBuf)> = None;
+        let mut private_done = false;
         {
             let mut inner = self.inner.lock().unwrap();
             Self::sync_jobs(&mut inner);
             // Only forget the map entry if it is still this run (defensive: never drop a newer run).
             let current = inner.jobs.get(&job.id).map(|j| Arc::ptr_eq(j, job)).unwrap_or(false);
             if !current {
+                return;
+            }
+            // Handed to the browser meanwhile ("Via browser"): this run's end changes nothing
+            // there (its unfinished file goes, see `to_via_browser`).
+            if inner.downloads.iter().any(|d| d.id == job.id && d.via_browser.is_some()) {
+                inner.jobs.remove(&job.id);
+                inner.speeds.remove(&job.id);
+                drop(inner);
+                self.list_changed();
+                self.schedule();
                 return;
             }
             // Keep only progress known to be on disk (the file was flushed before it closed,
@@ -3430,12 +3531,17 @@ impl Engine {
                     let d = &mut inner.downloads[i];
                     match outcome {
                         Ok(()) => {
-                            self.stats.lock().unwrap().finished(true);
                             done_ok = true;
                             d.status = Status::Completed;
                             d.message = None;
                             d.finished_at = Some(now_secs());
-                            numbers_event(d, speed.as_ref(), true);
+                            // A private window's: not in the Dashboard's numbers.
+                            if d.private {
+                                private_done = true;
+                            } else {
+                                self.stats.lock().unwrap().finished(true);
+                                numbers_event(d, speed.as_ref(), true);
+                            }
                             if (d.notify || done_pref.popup || done_pref.bell) && !d.quiet {
                                 finished_note = Some(d.notify);
                             }
@@ -3458,7 +3564,9 @@ impl Engine {
                             // Continued from another host's bytes, and the whole file failed
                             // its checksum: the mixed file goes, and it starts over from zero
                             // on this host (once: the next file is from this host alone).
-                            crate::errorlog::note(crate::errorlog::Area::download(false), &msg);
+                            if !d.private {
+                                crate::errorlog::note(crate::errorlog::Area::download(false), &msg);
+                            }
                             d.remove_part();
                             d.segments.clear();
                             d.downloaded = 0;
@@ -3470,7 +3578,9 @@ impl Engine {
                             // The same file on another host (picked in Links): go on from there.
                             // Not a failed download (yet): no notification, not counted.
                             let keep = found::next_host(d, &status, &msg, false) == (found::NextHost::Switch { keep: true });
-                            crate::errorlog::note(crate::errorlog::Area::download(false), &msg);
+                            if !d.private {
+                                crate::errorlog::note(crate::errorlog::Area::download(false), &msg);
+                            }
                             found::switch_host(d, keep, &msg);
                         }
                         Err(Stop::Fail(status, msg)) => {
@@ -3482,7 +3592,7 @@ impl Engine {
                             };
                             // Counted once: Pako trying again by itself every few hours
                             // (Google's daily limit) isn't another failed download.
-                            if stop_is_news(retried_from.as_ref(), &status) {
+                            if stop_is_news(retried_from.as_ref(), &status) && !d.private {
                                 self.stats.lock().unwrap().finished(false);
                                 numbers_event(d, speed.as_ref(), false);
                             }
@@ -3492,7 +3602,7 @@ impl Engine {
                             if wanted && stop_is_news(retried_from.as_ref(), &status) {
                                 stopped_note = Some((msg.clone(), d.notify));
                             }
-                            if stop_is_news(retried_from.as_ref(), &status) { crate::errorlog::note(crate::errorlog::Area::download(matches!(d.source, Source::Video { .. })), &msg); }
+                            if stop_is_news(retried_from.as_ref(), &status) && !d.private { crate::errorlog::note(crate::errorlog::Area::download(matches!(d.source, Source::Video { .. })), &msg); }
                             d.status = status;
                             d.message = Some(msg);
                         }
@@ -3539,6 +3649,9 @@ impl Engine {
         }
         if let Some((group, dir)) = extract_group {
             self.extract_when_complete(&group, &dir);
+        }
+        if private_done {
+            Self::private_finished(&job.id);
         }
     }
 
@@ -3979,7 +4092,13 @@ impl Engine {
                     job.host_answered();
                     let info = probe_info(&resp);
                     let page = crate::fetch::is_html(&resp);
-                    drop(resp); // closes the connection; parts are fetched separately
+                    // A download from the browser: what a takeover compares with the browser's
+                    // file (lib.rs `first_response`).
+                    if crate::extension::headers_for(&job.id).is_some() {
+                        crate::extension::note_first_answer(&job.id, info.size, page);
+                    }
+                    // Kept: the first part reads on from it (the server is asked once).
+                    *job.first.lock().unwrap() = Some(resp);
                     break (info, page);
                 }
                 Err(FetchError::Retry(msg)) => {
@@ -4007,6 +4126,7 @@ impl Engine {
         // as "finished" with a broken file.
         let expected = self.find(&job.id).map(|d| d.name).unwrap_or_default();
         if web_page_instead(&expected, page, info.name.is_some()) {
+            job.first.lock().unwrap().take();
             return Err(Stop::Fail(Status::Failed, WEB_PAGE.into()));
         }
 
@@ -4069,6 +4189,7 @@ impl Job {
             file: Mutex::new(None),
             requeue: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
+            first: Mutex::new(None),
             flushed: Mutex::new(None),
             answers: Mutex::new(found::AnswerClock::new(Instant::now())),
         }
@@ -4282,9 +4403,15 @@ impl Worker {
             if let Some(c) = self.chunk {
                 to = Some(to.map_or(pos + c - 1, |t| t.min(pos + c - 1)));
             }
-            let r = tokio::select! {
-                _ = self.abort.cancelled() => return Ok(()),
-                r = self.fetcher.get(pos, to) => r,
+            // The first request's answer, when this part starts the file: read on from it.
+            let first = if pos == 0 { self.job.first.lock().unwrap().take() } else { None };
+            let reused = first.is_some();
+            let r = match first {
+                Some(resp) => Ok(resp),
+                None => tokio::select! {
+                    _ = self.abort.cancelled() => return Ok(()),
+                    r = self.fetcher.get(pos, to) => r,
+                },
             };
             let resp = match r {
                 Ok(r) => r,
@@ -4375,7 +4502,8 @@ impl Worker {
                     }
                 }
             }
-            if pos == 0 && !partial && *self.job.resumable.lock().unwrap() {
+            // (Not for the first request's own answer: it is the version the file was sized by.)
+            if pos == 0 && !partial && !reused && *self.job.resumable.lock().unwrap() {
                 // The whole file instead of the piece asked for: fine if it is the same file.
                 // But when the version was sent along (If-Range), a whole-file answer means
                 // it didn't match: the file was replaced.
@@ -4743,6 +4871,335 @@ fn web_page_instead(name: &str, html: bool, named: bool) -> bool {
         || matches!(ext.as_str(), "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "epub" | "odt")
 }
 
+// ---------- "Via browser": downloads the browser makes, followed by Pako ----------
+
+/// What a "Via browser" row says until the browser reports it.
+pub const VIA_WAITING: &str = "Waiting for your browser";
+
+/// What you asked of a browser download Pako follows (pause, resume, cancel): handed to the
+/// extension with its next report (the extension does it in the browser). A row removed from
+/// the list keeps its "cancel" here until then.
+static FOLLOW_COMMANDS: std::sync::LazyLock<Mutex<HashMap<String, &'static str>>> = std::sync::LazyLock::new(Default::default);
+
+/// "Via browser" rows whose finished file is being moved into place right now: a report that
+/// comes meanwhile never starts a second move.
+static MOVING: std::sync::LazyLock<Mutex<HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+
+/// How long a finished private download stays in the list ("Done · private") before it leaves
+/// by itself, by Settings › Downloads › Advanced (`Settings::private_keep`): 10 minutes (also for
+/// anything unknown), an hour, or None: until Pako closes (the list on disk never has it). It
+/// leaves at once when you open it from Pako or click its ✕.
+pub fn private_keep_for(choice: &str) -> Option<Duration> {
+    match choice {
+        "1h" => Some(Duration::from_secs(3600)),
+        "close" => None,
+        _ => Some(Duration::from_secs(600)),
+    }
+}
+
+/// Plain words for the browser's reasons a download stopped.
+fn browser_stop(error: &str) -> String {
+    let why = match error {
+        "USER_CANCELED" => return "Cancelled in the browser.".into(),
+        "NETWORK_FAILED" | "NETWORK_TIMEOUT" | "NETWORK_DISCONNECTED" => "the connection was lost",
+        "NETWORK_SERVER_DOWN" | "SERVER_FAILED" | "SERVER_BAD_CONTENT" | "SERVER_NO_RANGE" => "the server stopped sending it",
+        "SERVER_UNAUTHORIZED" | "SERVER_FORBIDDEN" | "SERVER_CERT_PROBLEM" => "the server refused it",
+        "FILE_NO_SPACE" | "FILE_TOO_LARGE" => "the drive is full",
+        "FILE_ACCESS_DENIED" | "FILE_NAME_TOO_LONG" | "FILE_FAILED" | "FILE_BLOCKED" => "it couldn't be saved",
+        "FILE_VIRUS_INFECTED" | "FILE_SECURITY_CHECK_FAILED" => "your browser's safety check blocked it",
+        "RESTART_FAILED" => "your browser couldn't start it again",
+        _ => "",
+    };
+    if why.is_empty() { "The browser stopped this download.".into() } else { format!("The browser stopped this download: {why}.") }
+}
+
+impl Engine {
+    /// A takeover Pako couldn't get itself: the browser downloads it instead and Pako follows it
+    /// (the row stays, with your name and folder). False = it isn't in the list any more.
+    pub fn to_via_browser(self: &Arc<Self>, id: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let running = inner.jobs.get(id).cloned();
+        if let Some(job) = &running {
+            job.cancel.cancel();
+        }
+        let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id) else { return false };
+        d.via_browser = Some(ViaBrowser { browser_id: -1, ..Default::default() });
+        d.status = Status::Paused;
+        d.message = Some(VIA_WAITING.into());
+        d.ask = false;
+        d.resolved = true;
+        d.segments.clear();
+        d.downloaded = 0;
+        let part = d.part_path();
+        inner.dirty = true;
+        drop(inner);
+        crate::extension::forget_headers(id);
+        // Pako's own unfinished file goes, once its run has stopped.
+        let me = self.clone();
+        let id = id.to_string();
+        tauri::async_runtime::spawn(async move {
+            for _ in 0..100 {
+                if !me.inner.lock().unwrap().jobs.contains_key(&id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let _ = std::fs::remove_file(part);
+        });
+        self.save_now();
+        self.list_changed();
+        true
+    }
+
+    /// Whether this row is one the browser downloads ("Via browser").
+    fn via(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().downloads.iter().any(|d| d.id == id && d.via_browser.is_some())
+    }
+
+    /// The extension's report on a browser download Pako follows: the row is listed (made if
+    /// Pako doesn't know it yet: reported while Pako was closed), its progress kept, and once
+    /// the browser has finished, the file goes to the row's folder. The answer carries what you
+    /// asked for it meanwhile (pause, resume, cancel).
+    pub fn follow(self: &Arc<Self>, r: &crate::extension::Request) -> crate::extension::Reply {
+        use crate::extension::Reply;
+        let Some(f) = r.follow.clone() else { return Reply::error("Unknown request.") };
+        let url = r.urls.first().cloned().unwrap_or_default();
+        let known = |d: &Download| {
+            d.via_browser.as_ref().is_some_and(|v| (!f.pako.is_empty() && d.id == f.pako) || (f.browser_id >= 0 && v.browser_id == f.browser_id && d.link == url))
+        };
+        let found = self.inner.lock().unwrap().downloads.iter().find(|d| known(d)).map(|d| d.id.clone());
+        let id = match found {
+            Some(id) => id,
+            None => {
+                // Removed in Pako: the browser drops it too.
+                if !f.pako.is_empty() && FOLLOW_COMMANDS.lock().unwrap().remove(&f.pako) == Some("cancel") {
+                    return Reply { ok: true, command: Some("cancel".into()), ..Default::default() };
+                }
+                // Cancelled in the browser before Pako heard of it: nothing to list.
+                if f.state == "interrupted" && f.error == "USER_CANCELED" {
+                    return Reply::ok();
+                }
+                let from_path = std::path::Path::new(&f.path).file_name().map(|n| n.to_string_lossy().to_string());
+                let name = from_path.or_else(|| (!r.filename.is_empty()).then(|| r.filename.clone())).unwrap_or_else(|| names::from_url(&url));
+                let dest = self.settings().download_dir;
+                let mut d = new_download(&url, Source::Http { url: url.clone() }, names::sanitize(&name), dest, None);
+                d.via_browser = Some(ViaBrowser { browser_id: f.browser_id, light: r.light, ..Default::default() });
+                d.private = r.private;
+                d.resolved = true;
+                d.status = Status::Downloading;
+                let id = d.id.clone();
+                self.push(d);
+                id
+            }
+        };
+        let command = FOLLOW_COMMANDS.lock().unwrap().remove(&id).map(String::from);
+        let complete = f.state == "complete";
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id) else { return Reply::ok() };
+            if d.status == Status::Completed {
+                // In place: the browser's list may forget it. Not moved (said in the row): the
+                // browser's list keeps it, where it is.
+                let said = if d.message.is_none() { "forget" } else { "keep" };
+                return Reply { ok: true, followed: Some(id), command: Some(said.into()), ..Default::default() };
+            }
+            if let Some(v) = d.via_browser.as_mut() {
+                v.browser_id = f.browser_id;
+                v.can_resume = f.can_resume;
+                v.light = r.light;
+                if !f.path.is_empty() {
+                    v.path = f.path.clone();
+                }
+            }
+            d.downloaded = f.bytes;
+            if f.total > 0 {
+                d.size = Some(f.total);
+            }
+            match f.state.as_str() {
+                "in_progress" => {
+                    d.status = Status::Downloading;
+                    d.message = None;
+                }
+                "paused" => {
+                    d.status = Status::Paused;
+                    d.message = None;
+                }
+                "interrupted" => {
+                    let news = d.status != Status::Failed;
+                    d.status = Status::Failed;
+                    d.message = Some(browser_stop(&f.error));
+                    if news && !d.private {
+                        self.stats.lock().unwrap().finished(false);
+                        numbers_event(d, None, false);
+                    }
+                }
+                _ => {}
+            }
+            inner.dirty = true;
+        }
+        if complete && MOVING.lock().unwrap().insert(id.clone()) {
+            // Moved on its own (a big file between drives takes a while): the extension's next
+            // report hears how it went ("forget" or "keep", above).
+            let me = self.clone();
+            let (moving, path) = (id.clone(), f.path.clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                me.follow_done(&moving, &path);
+                MOVING.lock().unwrap().remove(&moving);
+                me.list_changed();
+            });
+        }
+        self.list_changed();
+        Reply { ok: true, followed: Some(id), command, ..Default::default() }
+    }
+
+    /// The browser finished: the file goes to the row's folder (see `via::place`), then the
+    /// usual (notification, the Dashboard's numbers).
+    fn follow_done(self: &Arc<Self>, id: &str, path: &str) {
+        let (dest, wanted, taken) = {
+            let inner = self.inner.lock().unwrap();
+            let Some(d) = inner.downloads.iter().find(|d| d.id == id) else { return };
+            (d.dest_dir.clone(), d.named.then(|| d.name.clone()), taken_paths(&inner.downloads, Some(id)))
+        };
+        let placed = match crate::via::usable_file(path) {
+            Some(from) => match crate::via::place(&from, &dest, wanted.as_deref(), &taken) {
+                Ok(p) => Ok(p),
+                Err(e) => Err((from.clone(), format!("Pako couldn't move it to your folder ({e}), so it's still in {}.", from.parent().map(|p| p.display().to_string()).unwrap_or_default()))),
+            },
+            None => Err((PathBuf::from(path), "The browser finished it, but Pako couldn't find the file to move it.".into())),
+        };
+        let mut finished_note = None;
+        let private;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let done_pref = notices::pref(&inner.settings, "download-done");
+            let speed = inner.speeds.get(id).cloned();
+            let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id) else { return };
+            let file = match &placed {
+                Ok(p) => p.clone(),
+                Err((p, _)) => p.clone(),
+            };
+            if let (Some(dir), Some(name)) = (file.parent(), file.file_name()) {
+                if file.exists() {
+                    d.dest_dir = dir.to_path_buf();
+                    d.name = name.to_string_lossy().to_string();
+                }
+            }
+            if let Ok(meta) = std::fs::metadata(&file) {
+                d.size = Some(meta.len());
+                d.downloaded = meta.len();
+            }
+            d.status = Status::Completed;
+            d.finished_at = Some(now_secs());
+            d.message = placed.as_ref().err().map(|(_, m)| m.clone());
+            private = d.private;
+            if !d.private {
+                self.stats.lock().unwrap().finished(true);
+                numbers_event(d, speed.as_ref(), true);
+            }
+            if (d.notify || done_pref.popup || done_pref.bell) && !d.quiet {
+                finished_note = Some(d.notify);
+            }
+            inner.done_any = true;
+            inner.dirty = true;
+            Self::save(&mut inner);
+        }
+        if let Some(force) = finished_note {
+            self.note_finished(id, force);
+        }
+        if private {
+            Self::private_finished(id);
+        }
+    }
+
+    /// A private download finished: the browser's headers for it go now. The row itself leaves
+    /// with `sweep_private` (its time is up), `forget_private` (opened, or its ✕), or when
+    /// Pako closes.
+    fn private_finished(id: &str) {
+        crate::extension::forget_headers(id);
+    }
+
+    /// Takes the finished private downloads whose time is up off the list (the files stay).
+    /// Checked on every tick, with the setting as it is now: a changed choice applies to the
+    /// rows already there too.
+    fn sweep_private(&self) {
+        let due: Vec<String> = {
+            let inner = self.inner.lock().unwrap();
+            let Some(keep) = private_keep_for(&inner.settings.private_keep) else { return };
+            let now = now_secs();
+            inner
+                .downloads
+                .iter()
+                .filter(|d| d.private && d.status == Status::Completed)
+                .filter(|d| d.finished_at.is_some_and(|t| now.saturating_sub(t) >= keep.as_secs()))
+                .map(|d| d.id.clone())
+                .collect()
+        };
+        for id in due {
+            self.forget_private(&id);
+        }
+    }
+
+    /// Takes a finished private download off the list now (opened, or its time is up).
+    pub fn forget_private(&self, id: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        let before = inner.downloads.len();
+        inner.downloads.retain(|d| !(d.id == id && d.private && d.status == Status::Completed));
+        if inner.downloads.len() != before {
+            inner.speeds.remove(id);
+            inner.dirty = true;
+            drop(inner);
+            self.list_changed();
+        }
+    }
+}
+
+fn private_parts_path() -> PathBuf {
+    data_dir().join("private-parts.dat")
+}
+
+/// The unfinished files of a private window's downloads, as last written (written again only
+/// when they change).
+static PRIVATE_PARTS: std::sync::LazyLock<Mutex<Vec<PathBuf>>> = std::sync::LazyLock::new(Default::default);
+
+/// Notes where the unfinished files of private downloads are, sealed for this Windows user
+/// (never readable by anyone else, never in the list), so a Pako closed or stopped in the
+/// middle deletes them at its next start. No private download unfinished: no file at all.
+fn note_private_parts(file: &PathBuf, downloads: &[Download]) {
+    let parts: Vec<PathBuf> =
+        downloads.iter().filter(|d| d.private && d.via_browser.is_none() && d.status != Status::Completed).map(|d| d.part_path()).collect();
+    let mut last = PRIVATE_PARTS.lock().unwrap();
+    if *last == parts {
+        return;
+    }
+    if parts.is_empty() {
+        let _ = std::fs::remove_file(file);
+    } else if let Some(sealed) = serde_json::to_vec(&parts).ok().and_then(|j| crate::secure::protect(&j).ok()) {
+        let _ = crate::paths::write_atomic(file, &sealed);
+    }
+    *last = parts;
+}
+
+/// At start: deletes the unfinished files noted by `note_private_parts` (only Pako's own
+/// unfinished files: a name ending in its part extension), then the note itself.
+fn clean_private_parts(file: &PathBuf) {
+    let Ok(sealed) = std::fs::read(file) else { return };
+    let parts: Vec<PathBuf> = crate::secure::unprotect(&sealed).ok().and_then(|j| serde_json::from_slice(&j).ok()).unwrap_or_default();
+    for p in parts {
+        let ours = p.extension().is_some_and(|e| e.eq_ignore_ascii_case(names::PART_EXT));
+        if ours && std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    let _ = std::fs::remove_file(file);
+}
+
+/// A browser's Google Drive link goes through Pako's Drive support (Google's file list, rows
+/// made there). Not a private window's: that one is downloaded as the browser asked for it, with
+/// that window's own login, as a private row (nothing about it kept).
+fn drive_route(url: &str, private: bool) -> bool {
+    !private && drive::parse_link(url).is_some()
+}
+
 fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, group: Option<String>) -> Download {
     Download {
         id: uuid::Uuid::new_v4().to_string(),
@@ -4774,6 +5231,9 @@ fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, gro
         spot_check: false,
         spliced: false,
         from_device: false,
+        via_browser: None,
+        named: false,
+        private: false,
     }
 }
 
@@ -4858,6 +5318,81 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
+
+    /// "Remove private downloads from the list": 10 minutes by default (and for anything
+    /// unknown), an hour, or never by time (when Pako closes).
+    #[test]
+    fn private_rows_leave_by_the_setting() {
+        assert_eq!(super::private_keep_for("10m"), Some(Duration::from_secs(600)));
+        assert_eq!(super::private_keep_for(&Settings::default().private_keep), Some(Duration::from_secs(600)));
+        assert_eq!(super::private_keep_for("1h"), Some(Duration::from_secs(3600)));
+        assert_eq!(super::private_keep_for("close"), None);
+        assert_eq!(super::private_keep_for("soon"), Some(Duration::from_secs(600)));
+    }
+
+    /// A private window's download left unfinished (Pako closed or stopped): its unfinished file
+    /// goes at the next start; nothing else is ever deleted, and the note is sealed.
+    #[test]
+    fn private_unfinished_files_go_at_the_next_start() {
+        let dir = std::env::temp_dir().join(format!("pako-private-parts-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("private-parts.dat");
+        let mut private = new_download("https://e.org/secret.zip", Source::Http { url: "https://e.org/secret.zip".into() }, "secret.zip".into(), dir.clone(), None);
+        private.private = true;
+        let plain = new_download("https://e.org/plain.zip", Source::Http { url: "https://e.org/plain.zip".into() }, "plain.zip".into(), dir.clone(), None);
+        std::fs::write(private.part_path(), b"half").unwrap();
+        std::fs::write(plain.part_path(), b"half").unwrap();
+        super::note_private_parts(&note, &[private.clone(), plain.clone()]);
+        assert!(note.exists());
+        assert!(!String::from_utf8_lossy(&std::fs::read(&note).unwrap()).contains("secret"), "sealed");
+        // A path that isn't one of Pako's unfinished files is never deleted.
+        let sealed = crate::secure::protect(&serde_json::to_vec(&vec![private.part_path(), dir.join("keep.txt")]).unwrap()).unwrap();
+        std::fs::write(&note, sealed).unwrap();
+        std::fs::write(dir.join("keep.txt"), b"x").unwrap();
+        super::clean_private_parts(&note);
+        assert!(!private.part_path().exists());
+        assert!(plain.part_path().exists() && dir.join("keep.txt").exists());
+        assert!(!note.exists());
+        // Finished (or none left): no note.
+        private.status = Status::Completed;
+        super::note_private_parts(&note, &[private]);
+        assert!(!note.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A private window's Google Drive download is downloaded as the browser asked for it (its
+    /// own login), never through Pako's Drive support and your account.
+    #[test]
+    fn a_private_drive_download_stays_a_plain_web_link() {
+        let link = "https://drive.usercontent.google.com/download?id=1AbCdEfGhIjKlMnOp&export=download";
+        assert!(super::drive_route(link, false));
+        assert!(!super::drive_route(link, true));
+        assert!(!super::drive_route("https://e.org/a.zip", false));
+    }
+
+    /// "Via browser" and private rows: saved and read back; lists from before (without those
+    /// fields) still load, and an ordinary row writes nothing new (an older Pako reads it).
+    #[test]
+    fn via_browser_and_private_rows_save_and_old_lists_load() {
+        let plain = new_download("https://e.org/a.zip", Source::Http { url: "https://e.org/a.zip".into() }, "a.zip".into(), PathBuf::from(r"C:\D"), None);
+        let json = serde_json::to_value(&plain).unwrap();
+        for key in ["viaBrowser", "named", "private"] {
+            assert!(json.get(key).is_none(), "{key} written for an ordinary row");
+        }
+        let back: crate::model::Download = serde_json::from_value(json).unwrap();
+        assert!(back.via_browser.is_none() && !back.named && !back.private);
+        let mut via = plain.clone();
+        via.via_browser = Some(crate::model::ViaBrowser { browser_id: 42, path: r"C:\Users\me\Downloads\a (1).zip".into(), can_resume: true, light: false });
+        via.named = true;
+        let back: crate::model::Download = serde_json::from_str(&serde_json::to_string(&via).unwrap()).unwrap();
+        assert_eq!(back.via_browser, via.via_browser);
+        assert!(back.named);
+        // A row with only part of "viaBrowser" (written by a later Pako, say) still loads.
+        let mut json = serde_json::to_value(&plain).unwrap();
+        json["viaBrowser"] = serde_json::json!({ "browserId": 7 });
+        let back: crate::model::Download = serde_json::from_value(json).unwrap();
+        assert_eq!(back.via_browser.unwrap().browser_id, 7);
+    }
 
     /// A video caught on a page or a recording never goes to another PC ("Download on").
     #[test]

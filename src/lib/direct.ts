@@ -47,6 +47,10 @@ export function statusOf(c: DirectContact, internet = true) {
   if (c.declined) return c.note ?? "They declined. You can ask again after 7 days.";
   if (!internet) return "Not reachable without internet";
   if (!c.trusted) return c.note ?? "Not connected yet";
+  // Not called in the background (30 days with nothing, or only when you ask).
+  if (c.unchecked) return "Not checked lately";
+  // Closed for being quiet: not offline, just not connected right now.
+  if (c.idle) return ago(c.lastSeen).replace(/^./, (x) => x.toUpperCase());
   return `Offline · ${ago(c.lastSeen)}`;
 }
 

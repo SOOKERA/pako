@@ -14,7 +14,11 @@
   import Modal from "./Modal.svelte";
 
   const request = $derived(app.direct?.requests?.[0] ?? null);
-  const offer = $derived(request ? null : (app.direct?.offers?.[0] ?? null));
+  /** Contacts you muted: their offers wait in their conversation, asked only once it's open. */
+  const muted = $derived(new Set((app.direct?.contacts ?? []).filter((c) => c.muted).map((c) => c.id)));
+  const offer = $derived(
+    request ? null : ((app.direct?.offers ?? []).find((o) => !muted.has(o.contact) || (app.view === "direct" && app.directPicked === o.contact)) ?? null),
+  );
   /** A folder picked for this offer (else the contact's folder). */
   let folder = $state<string | null>(null);
   let lastOffer = "";

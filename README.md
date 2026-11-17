@@ -13,6 +13,7 @@
   <a href="https://pako.sookera.com"><b>Download for Windows</b></a> ·
   <a href="https://pako.sookera.com/help">Help</a> ·
   <a href="https://pako.sookera.com/help/whats-new">What's new</a> ·
+  <a href="https://github.com/sookera/pako/discussions">Discussions</a> ·
   <a href="https://sookera.com/terms">Terms</a> ·
   <a href="https://sookera.com/privacy">Privacy</a>
 </p>
@@ -38,7 +39,7 @@ Free for Windows 10 and 11. No account, no ads, no tracking.
   restart, and going on from the next host when a file is on several.
 - **Many links at once.** Paste a whole list: each link is checked first, split archives are grouped and unpacked,
   and whole Google Drive folders open as a list of files.
-- **Straight from your browser.** Pako's extension for Chrome, Edge, Brave, Vivaldi, Opera and Firefox sends
+- **Straight from your browser.** Pako's extension for Chrome, Edge, Brave, Vivaldi, Opera, Firefox and Firefox-based browsers (Zen, LibreWolf, Waterfox, Floorp) sends
   links, files and videos to Pako with a right-click.
 - **Videos in the quality you want.** Paste a video or playlist link, check a short preview, pick the quality or
   Audio only. With the full browser extension, Pako also finds the video playing on almost any page.
@@ -60,7 +61,9 @@ The first time, Windows may say it protected your PC: choose **More info**, then
 ## This repository
 
 It holds a copy of each release's source code. Contributions aren't accepted (pull requests and issues are off).
-If something doesn't work, use **Help › Report a problem** in Pako, or write to support@sookera.com.
+Ideas and questions are welcome in [Discussions](https://github.com/sookera/pako/discussions). If something
+doesn't work, use **Help › Report a problem** in Pako, so the details stay private, or write to
+support@sookera.com.
 
 <details>
 <summary><b>Building it yourself</b></summary>

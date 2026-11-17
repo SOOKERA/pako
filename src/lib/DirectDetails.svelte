@@ -1,12 +1,29 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
+<script lang="ts" module>
+  import type { OftenFor } from "./api";
+  /** "Often for…" picked in this window, per contact, with the end it should have (else the
+   *  span is read from when it ends). */
+  const picked = new Map<string, { span: OftenFor; until: number }>();
+  /** When "Often for…" picked now would end, as Pako works it out (`pace::often_until`). */
+  function endOf(span: OftenFor, now: number): number {
+    if (span === "hour") return now + 3_600_000;
+    if (span === "week") return now + 7 * 86_400_000;
+    const d = new Date(now);
+    d.setHours(24, 0, 0, 0);
+    return d.getTime();
+  }
+</script>
+
 <script lang="ts">
   // Direct › details panel (Ctrl+I, like Downloads): the picked contact's connection, what went
   // between you (all time, from the Dashboard's numbers), speeds, and their settings.
   import { app } from "./state.svelte";
-  import { api, type ContactNumbers, type DirectContact, type DirectTransfer } from "./api";
+  import { api, type ContactNumbers, type DirectCheck, type DirectContact, type DirectTransfer } from "./api";
   import { bytes, shortDate, speed } from "./format";
   import Icon from "./Icon.svelte";
+  import SegPick from "./SegPick.svelte";
+  import { rowSlide } from "./motion";
   import { isLocal, pathLabel } from "./direct";
   import { quintOut } from "svelte/easing";
   import type { TransitionConfig } from "svelte/transition";
@@ -79,6 +96,65 @@
     // A part that never happened isn't listed (Direct and Via relay always are).
     return parts.map((p, i) => ({ ...p, pct: pct[i] })).filter((p) => p.bytes > 0 || p.key !== "local");
   });
+  // "Check this contact": how Pako calls them in the background. Often lasts a while, then
+  // it's back to the choice it had before by itself (When I ask, else Automatic).
+  const CHECKS: { value: DirectCheck; label: string }[] = [
+    { value: "auto", label: "Automatic" },
+    { value: "often", label: "Often for…" },
+    { value: "ask", label: "When I ask" },
+  ];
+  const SPANS: { value: OftenFor; label: string }[] = [
+    { value: "hour", label: "1 hour" },
+    { value: "today", label: "Today" },
+    { value: "week", label: "1 week" },
+  ];
+  const check = $derived<DirectCheck>(c.check === "often" && !c.checkUntil ? "auto" : (c.check ?? "auto"));
+  const isMidnight = (d: Date) => d.getHours() + d.getMinutes() + d.getSeconds() + d.getMilliseconds() === 0;
+  /** Which "Often for…" runs: as picked here (if that's still the one running: not one picked
+   *  since from the right-click menu), else from its end (midnight = Today, more than an hour
+   *  away = 1 week). */
+  const span = $derived.by<OftenFor>(() => {
+    const until = c.checkUntil ?? 0;
+    const known = picked.get(c.id);
+    if (known && Math.abs(known.until - until) < 120_000) return known.span;
+    if (isMidnight(new Date(until))) return "today";
+    return until - Date.now() > 3_660_000 ? "week" : "hour";
+  });
+  /** "18:40", "midnight", or the day for a week. */
+  function untilText(until: number): string {
+    const d = new Date(until);
+    const left = until - Date.now();
+    if (isMidnight(d) && left <= 86_400_000) return "midnight";
+    if (left < 86_400_000) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleDateString([], { day: "numeric", month: "long" });
+  }
+  /** One line under the picker: what the choice does for this contact. */
+  const checkNote = $derived(
+    check === "often"
+      ? `Checked often until ${untilText(c.checkUntil ?? 0)}${c.checkBefore === "ask" ? ", then back to When I ask" : ""}.`
+      : check === "ask"
+        ? "Only when you open, send or check."
+        : c.checkAs === "often"
+          ? "Always connected: they say this PC is theirs."
+          : c.favourite
+            ? "Less when away. Favourites never stop."
+            : c.autoAccept
+              ? "Less when away. Never stops: they send without asking."
+              : "Pauses after 30 days with nothing new.",
+  );
+  function pickCheck(v: DirectCheck) {
+    // "Often for…" starts with an hour; the row under it changes how long.
+    if (v === "often") {
+      if (check !== "often") setOften("hour");
+      return;
+    }
+    picked.delete(c.id);
+    app.run(() => api.directSetCheck(c.id, v));
+  }
+  function setOften(s: OftenFor) {
+    picked.set(c.id, { span: s, until: endOf(s, Date.now()) });
+    app.run(() => api.directSetCheck(c.id, "often", s));
+  }
   const added = $derived(new Date(c.added).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }));
   function copyId() {
     app.run(() => api.copyText(c.id)).then(() => app.toast(`${c.name}'s Pako ID is copied.`));
@@ -100,7 +176,9 @@
     <div class="label">Connection</div>
     <dl>
       <dt>Status</dt>
-      <dd><span class="sdot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span>{c.online ? "Online" : c.waiting ? "Waiting for them" : "Offline"}</dd>
+      <dd>
+        <span class="sdot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span>{c.online ? "Online" : c.waiting ? "Waiting for them" : c.unchecked ? "Not checked lately" : c.idle ? "Seen lately" : "Offline"}
+      </dd>
       {#if c.online}
         <dt>Route</dt>
         <dd title={routeTip[c.path ?? ""] ?? ""}>{pathLabel(c.path) || "Connected"}</dd>
@@ -119,6 +197,24 @@
         {/if}
       </dd>
     </dl>
+    {#if c.unchecked}
+      <div class="xrow" transition:rowSlide={{ duration: 200 }}>
+        <span class="xt dim">Not called by itself.</span>
+        <button class="btn small" onclick={() => app.run(() => api.directConnect(c.id))}><Icon name="retry" size={12} />Check now</button>
+      </div>
+    {/if}
+    <div class="checkpick">
+      <span class="k">Check this contact</span>
+      <div class="picks">
+        <SegPick small options={CHECKS} value={check} label="Check this contact" onpick={pickCheck} />
+        {#if check === "often"}
+          <div transition:rowSlide={{ duration: 200 }}>
+            <div class="spans"><SegPick small options={SPANS} value={span} label="Check often for" onpick={setOften} /></div>
+          </div>
+        {/if}
+      </div>
+      <span class="note">{checkNote}</span>
+    </div>
   </section>
 
   <section>
@@ -196,6 +292,10 @@
       <dt>Added</dt>
       <dd>{added}</dd>
     </dl>
+    <div class="xrow">
+      <span class="xt">Mute<span class="xsub">No pop-ups or sounds from them</span></span>
+      <button class="switch" class:on={c.muted} role="switch" aria-checked={!!c.muted} aria-label="Mute" onclick={() => app.run(() => api.directSetMuted(c.id, !c.muted))}></button>
+    </div>
     <div class="xrow" data-tour="direct-trust">
       <span class="xt">Can send to me without asking</span>
       <button class="switch" class:on={c.autoAccept} role="switch" aria-checked={c.autoAccept} aria-label="Can send to me without asking" onclick={() => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept }))}></button>
@@ -448,6 +548,42 @@
   .xt {
     font-size: 12px;
     color: var(--text-2);
+  }
+  .xsub {
+    display: block;
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+  .checkpick {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    margin-top: 14px;
+  }
+  .checkpick :global(.seg) {
+    display: flex;
+  }
+  /* Equal thirds, so the "Often for…" row's buttons line up under the ones above. */
+  .checkpick :global(.seg button) {
+    flex: 1 1 0;
+    padding: 0 6px;
+    justify-content: center;
+  }
+  .picks {
+    display: flex;
+    flex-direction: column;
+  }
+  /* (Flex, so its picker stretches like the one above.) */
+  .spans {
+    display: flex;
+    flex-direction: column;
+    padding-top: 6px;
+  }
+  .note {
+    font-size: 11.5px;
+    color: var(--text-3);
   }
   .folder {
     display: flex;

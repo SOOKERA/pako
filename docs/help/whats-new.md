@@ -1,5 +1,40 @@
 # What's new
 
+## 1.2.0
+
+### Browser extension
+
+- **Downloads go straight to Pako**: its window opens the moment you click, before any **Save as**.
+- **Via browser**: files only your browser can get are downloaded there and followed in Pako.
+- **Private windows**: allow Pako there in your browser; it keeps no trace beyond the file.
+- **Zen**, **LibreWolf**, **Waterfox** and **Floorp** can add Pako too, and Settings shows which browsers have it.
+
+### Direct
+
+- **Transfers resume** by themselves after a drop, a sleep or a restart. Also in **My devices**.
+- **Send from another of your PCs**: pick it at the top of the contact list and send to its contacts.
+- **Mute** a contact, and choose how often Pako checks on each one.
+- Stays light even with hundreds of contacts.
+
+### Upload
+
+- **ZIP in parts**: a dropped connection or a power cut only resends the unfinished part.
+
+### Notifications
+
+- A soft chime when a download marked **Notify when done** finishes.
+- No **Download finished** pop-up while the tray window is open.
+
+### Settings
+
+- **Tabs**, a **search** box, and an **Advanced** part on each tab for the rarely used settings.
+
+### Fixed
+
+- Sending links from the browser no longer waits for Pako to check the server.
+- In the light look, the background behind a question window no longer looks see-through.
+- In **My devices**, a file on its way no longer shows a tall empty strip instead of its progress bar.
+
 ## 1.1.0
 
 ### Videos

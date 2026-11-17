@@ -6,7 +6,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { showcase } from "./showcase";
 import type { MenuItem } from "./menu";
-import { inApp, listen, type DirectContact, type DirectHistory, type DirectRequest, type DirectTransfer, type Priority, type Status } from "./api";
+import { inApp, listen, type DirectContact, type DirectHistory, type DirectRelay, type DirectRequest, type DirectTransfer, type Priority, type Status } from "./api";
 
 export interface Device extends DirectContact {
   /** You said "this is my device". */
@@ -119,6 +119,8 @@ export interface DevicesState {
   sent: SentCard[];
   /** Each device's download list (while you look at it and it lets you). */
   remote: Record<string, { items: RemoteItem[]; at: number }>;
+  /** Direct relays through your devices, both ways (older Pakos: missing). */
+  relays?: DirectRelay[];
 }
 
 function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -375,6 +377,10 @@ function mockState(): DevicesState {
       },
       [LAPTOP]: { at: Date.now(), items: [{ id: "l1", name: "Lecture recording.mp4", size: 980e6, done: 980e6, speed: 0, status: "completed", message: null }] },
     },
+    // Sent from Direct to Rado through Home PC (the same as Direct's sample).
+    relays: [
+      { id: "rl1", mine: true, device: HOME, deviceName: "Home PC", to: "rado", toName: "Rado", name: "Wedding photos", files: 3, size: 860e6, date: now - 4 * 60_000, ended: null, state: "sending", message: null, leg1Done: 860e6, leg1State: null, done: 400e6, keep: false, reached: true },
+    ],
   };
 }
 

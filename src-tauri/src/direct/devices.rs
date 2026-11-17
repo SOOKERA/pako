@@ -485,6 +485,8 @@ pub struct DevicesState {
     pub sent: Vec<SentCard>,
     /// The download list each device sent (only while you look and it lets you).
     pub remote: HashMap<String, RemoteView>,
+    /// Direct relays through your devices, both ways ("Relaying 2 files to Rado").
+    pub relays: Vec<super::relay::RelayView>,
 }
 
 impl Node {
@@ -527,10 +529,11 @@ impl Node {
             log: inner.dev.log.clone(),
             sent: inner.dev.sent.iter().filter(|c| is_dev(&c.device)).cloned().collect(),
             remote: inner.dev.remote.iter().map(|(k, (items, at))| (k.clone(), RemoteView { items: items.clone(), at: *at })).collect(),
+            relays: full.relays,
         }
     }
 
-    fn log(&self, device: &str, by_me: bool, text: String, ok: bool) {
+    pub(super) fn log(&self, device: &str, by_me: bool, text: String, ok: bool) {
         let mut inner = self.inner.lock().unwrap();
         inner.dev.log.push(DeviceLog { device: device.to_string(), date: now_ms(), by_me, text, ok });
         let mut l = std::mem::take(&mut inner.dev.log);
@@ -557,9 +560,22 @@ impl Node {
             return;
         }
         let pc_name = Some(inner.dev.pc_name.clone()).filter(|n| !n.is_empty());
-        let m = Msg::Device { mine: c.device, control: c.device && c.control, pc_name };
+        let control = c.device && c.control;
+        // Only to a device this PC lets control it: Direct's name and how many contacts (it
+        // can then show them and send through this PC).
+        let relay = control.then(|| self.relay_from(&inner));
+        let m = Msg::Device { mine: c.device, control, pc_name, relay };
         if let Some(l) = inner.live.get(id) {
             let _ = l.tx.send(m);
+        }
+    }
+
+    /// Tells every connected device how this PC counts it (after Direct's name or the number
+    /// of contacts changed: the "From" menu there shows them).
+    pub(super) fn tell_devices(&self) {
+        let ids: Vec<String> = self.inner.lock().unwrap().contacts.iter().filter(|c| c.device).map(|c| c.id.clone()).collect();
+        for id in ids {
+            self.tell_device(&id);
         }
     }
 
@@ -658,6 +674,8 @@ impl Node {
                     c.device = true;
                     c.control = true;
                     c.declined = false;
+                    // My devices can't be muted (and My devices has no Unmute).
+                    c.muted = false;
                     if let Some(n) = name {
                         c.name = n;
                     } else if let Some(pc) = c.their_pc_name.clone() {
@@ -681,7 +699,8 @@ impl Node {
             self.save_contacts(&inner);
         }
         self.log(&id, true, "Paired as your device".into(), true);
-        self.tell_device(&id);
+        // (A contact that became a device: one contact fewer in Direct.)
+        self.tell_devices();
         self.changed();
         self.reach(&id);
         Ok(())
@@ -738,14 +757,19 @@ impl Node {
         }
         self.log(id, true, if on { "Allowed to control this Pako".into() } else { "No longer allowed to control this Pako".into() }, true);
         self.tell_device(id);
+        // Direct relays it asked of this PC stop at once (none of its files go on).
+        if !on {
+            self.relay_sweep();
+        }
         self.changed();
         Ok(())
     }
 
     /// Called once a connection is kept: say how we count them, and ask for their list again
     /// if the window looks at it.
-    pub(super) fn device_hello(&self, id: &str) {
+    pub(super) fn device_hello(self: &Arc<Self>, id: &str) {
         self.tell_device(id);
+        self.relay_hello(id);
         let inner = self.inner.lock().unwrap();
         if inner.dev.watching.contains(id) {
             if let Some(l) = inner.live.get(id) {
@@ -768,7 +792,7 @@ impl Node {
     }
 
     /// "You're one of my devices" (or no longer), from their Pako.
-    pub(super) fn on_device(&self, peer: &str, mine: bool, control: bool, pc_name: Option<String>) {
+    pub(super) fn on_device(&self, peer: &str, mine: bool, control: bool, pc_name: Option<String>, relay: Option<proto::RelayFrom>) {
         if let (true, Some(pc)) = (mine, pc_name.as_deref()) {
             self.remember_pc_name(peer, pc);
         }
@@ -776,9 +800,12 @@ impl Node {
             let mut inner = self.inner.lock().unwrap();
             let Some(c) = inner.contacts.iter_mut().find(|c| c.id == peer) else { return };
             let newly = mine && !c.their_device;
-            let changed = c.their_device != mine || c.their_control != (mine && control);
+            // What it says of its Direct side (shown in the "From" menu), cleaned.
+            let relay = relay.filter(|_| mine && control).map(|r| proto::RelayFrom { name: super::clean_name(&r.name).unwrap_or_default(), contacts: r.contacts.min(1_000_000) });
+            let changed = c.their_device != mine || c.their_control != (mine && control) || c.their_relay != relay;
             c.their_device = mine;
             c.their_control = mine && control;
+            c.their_relay = relay;
             let asks = newly && !c.device;
             let name = c.name.clone();
             if changed {
@@ -797,8 +824,10 @@ impl Node {
             }
             (asks && !quiet).then_some(name)
         };
+        // (Not from a contact you muted: it still shows in My devices.)
         if let Some(name) = asks {
-            (self.notify)(
+            self.tell(
+                peer,
                 "direct-request",
                 "Pair a device",
                 &format!("{name} says this PC is one of its devices. Confirm it in My devices."),
@@ -1394,8 +1423,8 @@ mod tests {
     fn the_new_messages_round_trip_and_older_pakos_skip_them() {
         let msgs = vec![
             Msg::Hello { name: "Zak".into(), device: true, pc: Some("Laptop".into()) },
-            Msg::Device { mine: true, control: false, pc_name: None },
-            Msg::Device { mine: true, control: true, pc_name: Some("Desk PC".into()) },
+            Msg::Device { mine: true, control: false, pc_name: None, relay: None },
+            Msg::Device { mine: true, control: true, pc_name: Some("Desk PC".into()), relay: None },
             Msg::Watch { on: true },
             Msg::List { items: vec![RemoteItem { id: "a".into(), name: "x.zip".into(), size: 5, done: 2, speed: 1, status: "paused".into(), message: None, priority: None }] },
             Msg::Order { id: "o".into(), order: Order::Add { links: vec!["https://a.com/x".into()], opts: Vec::new() } },
@@ -1437,8 +1466,8 @@ mod tests {
     #[test]
     fn this_pcs_name_travels_with_the_device_message_and_older_pakos_skip_it() {
         // Sent only when set; a Pako from before it reads the message as it always did.
-        assert_eq!(serde_json::to_string(&Msg::Device { mine: true, control: true, pc_name: None }).unwrap(), r#"{"t":"device","mine":true,"control":true}"#);
-        let named = serde_json::to_string(&Msg::Device { mine: true, control: false, pc_name: Some("Desk PC".into()) }).unwrap();
+        assert_eq!(serde_json::to_string(&Msg::Device { mine: true, control: true, pc_name: None, relay: None }).unwrap(), r#"{"t":"device","mine":true,"control":true}"#);
+        let named = serde_json::to_string(&Msg::Device { mine: true, control: false, pc_name: Some("Desk PC".into()), relay: None }).unwrap();
         assert_eq!(named, r#"{"t":"device","mine":true,"control":false,"pc_name":"Desk PC"}"#);
         #[derive(serde::Deserialize, Debug, PartialEq)]
         #[serde(tag = "t", rename_all = "camelCase")]
@@ -1447,7 +1476,7 @@ mod tests {
         }
         assert_eq!(serde_json::from_str::<Before>(&named).unwrap(), Before::Device { mine: true, control: false });
         // And a message from such a Pako reads here, without a name.
-        assert_eq!(serde_json::from_str::<Msg>(r#"{"t":"device","mine":true,"control":true}"#).unwrap(), Msg::Device { mine: true, control: true, pc_name: None });
+        assert_eq!(serde_json::from_str::<Msg>(r#"{"t":"device","mine":true,"control":true}"#).unwrap(), Msg::Device { mine: true, control: true, pc_name: None, relay: None });
         // A plain hello stays as it was; a pairing one carries the PC's name.
         assert_eq!(
             serde_json::to_string(&Msg::Hello { name: "Zak".into(), device: true, pc: Some("Desk PC".into()) }).unwrap(),

@@ -17,9 +17,13 @@ For your own PCs (your desk PC and your laptop, say), use [My devices](devices.m
 
 ## Your Pako ID and your name
 
-Every Pako has its own **Pako ID**, a long code. It's at the bottom of the contact list in **Direct** (or in the middle of the page before you have contacts). **Copy** copies it: send it to the people you want to connect with.
+At the top of the contact list in **Direct**, under **You, sending from**, are your name and this PC on one button ("Sam · This PC"), and your **Pako ID** under it. (Before you have contacts, the ID is in the middle of the page.)
 
-**Your name** (just above it) is what your contacts see. They can still give you their own name for you. Pako asks for it once, before your first contact: when you add someone, or accept someone who wants to connect.
+Every Pako has its own **Pako ID**, a long code. **Copy ID** copies it: send it to the people you want to connect with.
+
+**Your name** is what your contacts see. Click it to change it, type the new one and press **Enter** (or click elsewhere); **Esc** keeps the old one. Your contacts can still give you their own name for you. Pako asks for your name once, before your first contact: when you add someone, or accept someone who wants to connect.
+
+The PC part of the button lets you send from another of your PCs: see [Send from another of your PCs](#send-from-another-of-your-pcs).
 
 ## Add someone
 
@@ -45,7 +49,7 @@ For 7 days, Pako turns away someone you declined or removed without asking you. 
 
 The contact list shows each person with a dot on their picture:
 
-- **Grey**: offline. Under the name: when you last saw them.
+- **Grey**: offline. Under the name: when you last saw them. With many contacts it can also mean "not connected right now" (see below): then the line says only "Seen just now" or "Last seen 20 min ago", without "Offline". "Not checked lately" means Pako doesn't call them by itself any more (see [Check this contact](#check-this-contact)).
 - **Green**: online, and how you're connected (see [How you're connected](#how-youre-connected)).
 - **Blue**: online on the same network as you ("Local network").
 - **Amber**: waiting for them to accept you.
@@ -56,7 +60,24 @@ Something waiting for *your* answer is coral, not amber: a **!** on the contact,
 
 Online people come first, then those you're waiting for, then the rest, by name. When there are many contacts, **Search contacts** finds them by name or tag.
 
-Pako tries to reach your contacts by itself every few minutes (not someone who declined you: only **Connect** asks them again). **Connect** (above the conversation) tries now. A contact who restarts their Pako is back online at once.
+Pako tries to reach your contacts by itself every few minutes (not someone who declined you: only **Connect** asks them again; see also [Check this contact](#check-this-contact)). **Connect** (above the conversation, **Check now** for someone not checked lately) tries now. A contact who restarts their Pako is back online at once.
+
+With a long contact list, Pako stays light:
+
+- It tries a few contacts at a time, not all at once. Someone who doesn't answer is tried less and less often (up to once an hour, but still every few minutes while a transfer with them waits to continue), and again right away when they come back, show up on your network, or your internet comes back.
+- When many contacts are online, a connection where nothing happened for about 10 minutes closes. Their dot turns grey with "Seen just now", and opening their conversation or sending to them connects again at once. They can still send to you meanwhile. Your devices, transfers and the conversation you have open stay connected. Contacts checked **Often**, favourites, people who can send to you without asking and people you exchanged with in the last 7 days stay connected too, up to 64 connections open.
+
+### Check this contact
+
+In the details panel, **Check this contact** says how Pako calls someone by itself:
+
+- **Automatic** (the default): called less and less often while they don't answer. After **30 days with nothing new** (no files either way, no send from you, no call from them, no **Check now**), Pako stops calling them by itself. Favourites and people who can send to you without asking never stop, and are called before the others. Your devices are always connected.
+- **Often for…**: pick **1 hour**, **Today** (until midnight) or **1 week** under it. Until then, they're called every few minutes, first, even when they don't answer, and their connection stays open however quiet (up to 64 connections open; if their Pako closes it, it's called again within the hour, or at once when you open or send). The panel says until when, like "Checked often until 18:40", then it goes back by itself to what it was before: **When I ask** for a contact set to **When I ask** ("Checked often until 18:40, then back to When I ask"), otherwise **Automatic**. **Check often for 1 hour** in the right-click menu does the same.
+- **When I ask**: never called by itself.
+
+A contact Pako no longer calls by itself, and who isn't connected, has a grey dot and "Not checked lately". **Check now** (in the details panel, the right-click menu, or above the conversation) calls them at once, and with **Automatic** they're called by themselves again for 30 days. Opening their conversation or sending to them also connects.
+
+Whatever you pick, they can still reach you (that also counts as something new), and a transfer waiting to continue with them is still tried every 30 seconds in its first hour.
 
 ### Filters and tags on the left
 
@@ -72,6 +93,8 @@ Right-click a contact, or click the gear above the conversation, for:
 - **Rename…**: your own name for them. If they call themselves something else, it shows next to their name ("calls themselves …"). When they change their name, connected contacts see it at once. A contact you never renamed takes their new name.
 - **Tags…**: tick their tags, or type a new one and click **Add**, then **Save**.
 - **Add to favourites** / **Remove from favourites**: favourites have a star and their own filter.
+- **Mute** / **Unmute**: no pop-ups, sounds or bell lines from them (files coming in, files waiting for your answer, files received). Their files still arrive: a send waiting for your answer stays in their conversation (a **!** on their row, and the count on **Waiting for you**), and Pako asks you when you open it. A muted contact has a crossed-out bell next to their name. Your devices can't be muted: pairing a muted contact as one of your devices unmutes it.
+- **Check now**, for someone "Not checked lately", and **Check often for 1 hour** (see [Check this contact](#check-this-contact)).
 - **Can send to me without asking** (see below).
 - **Save their files in…**: where their files go.
 - **Clear history…** (Pako asks first): empties your history with them on this PC. It can't be brought back.
@@ -114,7 +137,13 @@ Pick a contact to see everything sent and received with them, newest at the bott
 
 While files move, their item shows how far they are, the speed and **Cancel**. The contact's row in the list shows it too: "Sending 37% · 12 MB/s" under their name and a thin bar along the row. The **Direct** tab on the left shows how many questions wait for your answer (files, and people who want to connect), or how many transfers are moving.
 
-If the connection drops in the middle, the transfer stops. Send it again once you're connected.
+If the connection drops in the middle (the Wi-Fi goes, a PC sleeps, Pako is closed on either side), the transfer waits instead of stopping. Its item says "Waiting for Rado to continue · 62% done", and once you're both connected again it continues by itself from where it stopped: nothing to click, nothing asked again. What already arrived stays on their PC, hidden, until it's finished.
+
+- **Cancel** works on either side while it waits, and deletes what had arrived.
+- A transfer that waits 7 days is cleared on both PCs, and its item says it expired.
+- A file changed on the sender's PC meanwhile is sent again from the start. A file deleted or moved there stops the transfer, and says which one. If the files got bigger than what you accepted, it stops too ("… bigger than what you accepted"), unless that person can send you files without asking and the extra size isn't big for your drive. They can send them again.
+- At the end, every file is checked against the sender's copy. One that doesn't match is sent again once by itself; if it still doesn't match, the item says so. Only a file that matches gets its name.
+- With an older Pako on the other side, a transfer still stops when the connection drops ("The connection was lost."). Send it again once you're connected.
 
 Other things a send can say:
 
@@ -123,14 +152,42 @@ Other things a send can say:
 
 While files move, Pako keeps the PC awake (with **Settings › Downloads › Keep the PC awake while downloading** on), **When done** waits for them, and quitting Pako asks first (with **Ask before quitting while downloading or uploading** on): "Files are on their way in Direct".
 
+## Send from another of your PCs
+
+Each of your PCs keeps its own contacts. If Rado is a contact of your home PC but not of your laptop, you can still send him files from the laptop: they go through the home PC.
+
+It works with your own PCs paired in [My devices](devices.md), when the other PC lets this one control it (**… can control my Pako**, in that device's **Settings** on the other PC), and has a Pako that can do it.
+
+1. Click the PC part of the button at the top of the contact list ("Sam · **This PC**"). The menu lists **This PC** and those PCs. Each says the name you gave it in My devices (and the name it gives itself, when different: "Home PC · calls itself Desk PC"), the name its contacts see and how many contacts it has. A PC that is offline is greyed. (Renaming stays in My devices.)
+2. Pick **Home PC** (for example). The list now shows Home PC's contacts, read live from it, and the button shows the name and Pako ID Home PC's contacts see. The **Online** and **Favourites** filters work; tags are this PC's own. Nothing about these contacts can be changed from here: that's done on Home PC.
+3. Pick a contact: their conversation is Home PC's history with them, read live from it.
+4. Add files as usual and click **Send to Rado**.
+
+What happens:
+
+- The files go to Home PC first, like a send between your devices (it continues by itself after a cut). There they wait in a folder inside Pako's own data, never in your folders, and they can't be opened or used for anything else.
+- Then Home PC offers them to Rado as a normal send of its own. Rado is asked as for any send from Home PC (or not, if he lets Home PC send without asking), with the same limits and size questions. He sees a send from Home PC; nothing tells him it came from your laptop.
+- The card in the conversation shows both parts: "To Home PC 100% · To Rado 45%". **Cancel** stops it, wherever it is.
+- If Rado is offline, Home PC offers them once he's back. If he doesn't accept within 7 days, or declines, the copy on Home PC is deleted and the card says so ("Rado declined").
+- Once Rado has them, the copy on Home PC is deleted, unless you turned on **Keep a copy on Home PC** next to the send button: the copy then goes into Home PC's folder for files from this PC (see [My devices](devices.md#where-files-from-a-device-are-saved)).
+- On Home PC itself, Rado's conversation shows the files arriving from your laptop, then the send to Rado.
+
+History:
+
+- In the conversation (on both PCs), the card is tagged "from Laptop" (Home PC's name for the PC that sent it).
+- In My devices, Home PC's **History** has one line for it: "Relayed 3 files to Rado · delivered" (or "Rado declined"). While it runs, Home PC's line in the device list says "Relaying 3 files to Rado".
+- The Dashboard counts the send once, on the PC that sent it to Rado (Home PC). The part between your two PCs counts like any send between your devices.
+
+Only your own paired PCs that allow control can see each other's contacts and conversations, and only files sent from this PC in that send are passed on: a PC can never make another send files that are already on its disk. If the other PC turns control off, it leaves the menu at once, and what it was still passing on for this PC stops (its line in My devices › History says "didn't go through: That PC no longer lets this one send through it.").
+
 ## The details panel
 
 Press **Ctrl+I**, or click the panel button above the conversation, to see more about the person you picked:
 
-- **Connection**: **Status** (**Online**, **Waiting for them** or **Offline**), the **Route** or when you last saw them, and **Speed now**.
+- **Connection**: **Status** (**Online**, **Waiting for them**, **Not checked lately**, **Seen lately** or **Offline**), the **Route** or when you last saw them, **Speed now**, **Check now** when they're not checked lately, and **Check this contact** (**Automatic**, **Often for…**, **When I ask**).
 - **Between you**: how much you **Sent** and **Received**, the number of **Transfers** and the **Last exchange**.
 - **Speed with** them: the **Fastest** and **Average** speeds both ways, and a bar of how what you exchanged travelled: **Local network** (over your home network, in blue; shown once something went that way), **Direct** (straight between the PCs over the internet) and **Via relay**.
-- **About them**: their **Pako ID** (with a copy button), **Their name** (the one they chose), **Tags**, **Favourite**, when they were **Added**, **Can send to me without asking**, and **Their files go to**.
+- **About them**: their **Pako ID** (with a copy button), **Their name** (the one they chose), **Tags**, **Favourite**, when they were **Added**, **Mute**, **Can send to me without asking**, and **Their files go to**.
 
 ## How you're connected
 
@@ -149,7 +206,7 @@ When you and a contact are on the same network, for example at home on the same 
 
 - **Without internet:** Direct keeps working on the network. Contacts on the same network connect as usual. Contacts elsewhere show "Not reachable without internet" until the internet is back; then Pako reaches them by itself.
 - **What your network sees:** when you're visible (below), your Pako tells the other devices on the same network that a Pako is here: its Pako ID, and its address and port on that network. Nothing else: not your name, not your contacts. This stays on the network: your router doesn't pass it on to the internet. Someone on the same network who sees your Pako ID can ask to connect, like someone you gave it to: you're asked first, as always. Only your contacts connect by themselves.
-- **Be visible to Pakos on this network**, under your Pako ID on the **Direct** page:
+- **Be visible to Pakos on this network**, at the bottom of the contact list on the **Direct** page:
   - **On home networks** (the default): only while Windows marks the network you're on as private (or as your company's network). On a network Windows marks as public, like a café or hotel Wi-Fi, nobody there sees your Pako ID. The **Direct** page then says "Not visible on this network (Windows marks it, or another network this PC is on, as public)." When the PC is on several networks at once (a VPN, or a virtual network made by Hyper-V, WSL or VirtualBox), each one counts: one marked public is enough to stay hidden. When you change networks, Pako checks again by itself.
   - **Always**: visible on every network, public ones too.
   - **Never**: visible on no network.

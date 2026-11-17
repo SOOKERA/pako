@@ -363,6 +363,11 @@
     overflow-y: auto;
     padding: 4px 0 6px;
   }
+  /* A line between the groups, so each reads apart (like Settings › Notifications). */
+  .group + .group {
+    margin-top: 4px;
+    border-top: 1px solid var(--line-soft);
+  }
   .gname {
     padding: 10px 16px 4px;
     font-size: 11px;

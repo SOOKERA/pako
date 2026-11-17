@@ -34,6 +34,7 @@ mod notices;
 mod theme;
 mod terms;
 mod consent;
+mod via;
 pub mod release;
 pub mod install;
 
@@ -124,6 +125,19 @@ fn direct_set_favourite(d: Dir<'_>, id: String, on: bool) -> Result<(), String> 
     d.node()?.set_favourite(&id, on)
 }
 
+/// Mute or unmute a contact: no pop-up, chime or bell line from them (not for My devices).
+#[tauri::command]
+fn direct_set_muted(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
+    d.node()?.set_muted(&id, on)
+}
+
+/// "Check this contact": "often" (with `span` "hour", "today" or "week"), "auto" or "ask".
+#[tauri::command]
+fn direct_set_check(d: Dir<'_>, id: String, check: String, span: Option<String>) -> Result<(), String> {
+    let (check, span) = direct::parse_check(&check, span.as_deref())?;
+    d.node()?.set_check(&id, check, span)
+}
+
 /// A contact's tags (only on this PC; new names are added to your tags).
 #[tauri::command]
 fn direct_set_tags(d: Dir<'_>, id: String, tags: Vec<String>) -> Result<(), String> {
@@ -155,6 +169,14 @@ fn direct_remove_contact(d: Dir<'_>, id: String) -> Result<(), String> {
 #[tauri::command]
 fn direct_connect(d: Dir<'_>, id: String) -> Result<(), String> {
     d.node()?.reach(&id);
+    Ok(())
+}
+
+/// The conversation shown on the Direct page (None: none shown): kept connected, and called
+/// at once if it isn't.
+#[tauri::command]
+fn direct_shown(d: Dir<'_>, id: Option<String>) -> Result<(), String> {
+    d.node()?.set_open(id.as_deref());
     Ok(())
 }
 
@@ -231,9 +253,10 @@ fn send_state(sender: Snd<'_>) -> send::SendState {
 /// Starts sending these files / folders. Looking through a big folder can take a moment: off
 /// the window's thread.
 #[tauri::command]
-async fn send_start(sender: Snd<'_>, paths: Vec<String>, mode: Option<String>, name: Option<String>, delete_days: Option<u32>, host: Option<String>) -> Result<String, String> {
+/// `part_mb`: "ZIP in parts"' part size for this send (None = the setting).
+async fn send_start(sender: Snd<'_>, paths: Vec<String>, mode: Option<String>, name: Option<String>, delete_days: Option<u32>, host: Option<String>, part_mb: Option<u32>) -> Result<String, String> {
     let s = sender.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || s.start(paths, mode, name, delete_days, host)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || s.start(paths, mode, name, delete_days, host, part_mb)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 
 /// Sizes of the files and folders in the Send basket (folders: all their files), off the window's
@@ -1047,6 +1070,19 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
     if r.kind == "ping" {
         return Reply::ok();
     }
+    // The result of a takeover answered "held" (see take_over).
+    if r.kind == "held" {
+        let mut reply = extension::HELD.wait(&r.held, extension::HELD_ASK_WAIT).await;
+        // Pako couldn't get it: the browser downloads it, reported to this row ("Via browser").
+        if reply.error.is_some() && engine.find(&r.held).is_some_and(|d| d.via_browser.is_some()) {
+            reply.followed = Some(r.held.clone());
+        }
+        return reply;
+    }
+    // A download the browser makes because Pako couldn't get it: its progress ("Via browser").
+    if r.kind == "follow" {
+        return engine.follow(&r);
+    }
     // A video caught playing on the page (checked by stream::validate_stream). Never from
     // Pako Light (checked when the request came in, and here again).
     if r.kind == "stream" {
@@ -1087,24 +1123,36 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
         return Reply::declined();
     }
     if !r.takeover {
-        if engine.add_from_browser(r).await.open_links {
-            tray::show_main(&app);
-            let _ = app.emit_to("main", "open-view", "found");
-        }
+        // Answered at once: a Drive link or a page of links can take Google a while to
+        // describe, and nothing about it changes the answer. Added in the order they came.
+        static ADDING: std::sync::LazyLock<tokio::sync::Mutex<()>> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+        tauri::async_runtime::spawn(async move {
+            let _turn = ADDING.lock().await;
+            let since = std::time::Instant::now();
+            let kind = r.kind.clone();
+            if engine.add_from_browser(r).await.open_links {
+                tray::show_main(&app);
+                let _ = app.emit_to("main", "open-view", "found");
+            }
+            extension::timing(&format!("pako: {kind} added {} ms after the answer", since.elapsed().as_millis()));
+        });
         return Reply::ok();
     }
     // The same browser download asked twice at once (the full extension and Pako Light, or a
     // double click): Pako takes it once, and both get that answer.
     let key = (r.urls.first().cloned().unwrap_or_default(), r.total_bytes);
-    extension::TAKEOVERS.run(key, take_over(app, engine, r)).await
+    let hold = r.hold;
+    extension::TAKEOVERS.run(key, hold, take_over(app, engine, r)).await
 }
 
 /// A download the browser holds paused: added, then confirmed once Pako's own first request got
 /// the same file (see browser_request).
 async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Request) -> extension::Reply {
     use extension::Reply;
+    let since = std::time::Instant::now();
     let asked = r.clone();
     let added = engine.add_from_browser(r).await;
+    extension::timing(&format!("pako: takeover added in {} ms (hold {})", since.elapsed().as_millis(), asked.hold));
     if added.open_links {
         tray::show_main(&app);
         let _ = app.emit_to("main", "open-view", "found");
@@ -1128,7 +1176,12 @@ async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Req
             return Reply::declined();
         }
     };
-    match first_response(&engine, &id, &asked).await {
+    if asked.hold {
+        return hold_takeover(engine, id, asked);
+    }
+    let reply = first_response(&engine, &id, &asked).await;
+    extension::timing(&format!("pako: takeover checked {} ms after it came ({})", since.elapsed().as_millis(), if reply.is_ok() { "ok" } else { "refused" }));
+    match reply {
         Ok(()) => {
             // Pako has the same file: the browser drops its copy. Then the Download with Pako
             // window (it waits paused meanwhile), or it carries on right away.
@@ -1148,17 +1201,76 @@ async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Req
     }
 }
 
-/// Waits (a limited time) for Pako's first request for a new download: Ok once the server gave
-/// a good answer for the same file the browser got (`asked`: its size and kind of file).
+/// A takeover from an extension that can wait for a second answer: answered "held" at once,
+/// with no request to the server first. The Download with Pako window opens now with what the
+/// browser knows (the download waits there, not started) or, with the window switched off, it
+/// starts right away. Pako's first request is the real download; its first answer is compared
+/// with the browser's (see `first_response`). Not the same file, or no file: taken off Pako's
+/// list again, a notification says why, and the browser downloads it.
+/// When the browser holds its copy paused (`asked.paused`: a form sent with POST, Pako Light, a
+/// private window in Chrome), Pako checks first and asks you after, as an older extension's
+/// takeover: that paused copy can't wait long for your answer.
+fn hold_takeover(engine: Arc<Engine>, id: String, asked: extension::Request) -> extension::Reply {
+    let since = std::time::Instant::now();
+    extension::HELD.open(&id);
+    if asked.paused {
+        // (Asked about once checked, below.)
+    } else if engine.find(&id).is_some_and(|d| d.ask) {
+        ask::enqueue_from_browser(&id, asked.total_bytes);
+    } else {
+        ask::started();
+    }
+    let reply = extension::Reply::held(&id);
+    tauri::async_runtime::spawn(async move {
+        let checked = first_response(&engine, &id, &asked).await;
+        extension::timing(&format!(
+            "pako: held takeover checked {} ms after the answer ({})",
+            since.elapsed().as_millis(),
+            if checked.is_ok() { "ok" } else { "refused" }
+        ));
+        // Removed from Pako meanwhile: you don't want it (the browser drops it too).
+        let checked = if engine.find(&id).is_none() { Ok(()) } else { checked };
+        if asked.paused && checked.is_ok() {
+            // Pako has the same file: the Download with Pako window now (it waits paused).
+            let done = engine.find(&id).is_none_or(|d| d.status == model::Status::Completed);
+            if !done && ask::wanted() {
+                engine.hold_for_ask(&id);
+                ask::enqueue(&id);
+            } else {
+                ask::started();
+            }
+        }
+        let checked = checked.map_err(|e| format!("Pako couldn't get this download itself ({}), so your browser downloads it and Pako follows it.", e.trim_end_matches('.')));
+        if let Some(Err(_)) = extension::HELD.finish(&id, checked) {
+            // The row stays (your name and folder), marked "Via browser"; the extension
+            // reports the browser's download to it. Unless no extension waits for the result
+            // any more (the browser closed meanwhile): nobody would download it then, so the
+            // row stays Pako's own, with what went wrong (Try again works).
+            if extension::HELD.listening(&id) {
+                engine.to_via_browser(&id);
+            }
+        }
+    });
+    reply
+}
+
+/// Waits (a limited time) for Pako's first answer from the server for a new download: Ok once
+/// it is the same file the browser got (`asked`: its size and kind of file). That answer is the
+/// download's own first request (kept as its first part, see engine `resolve`), so the server
+/// is asked once. A download waiting in the Download with Pako window isn't started (or timed)
+/// before your answer; one waiting for a free spot or download hours is asked about separately.
 async fn first_response(engine: &Arc<Engine>, id: &str, asked: &extension::Request) -> Result<(), String> {
     use model::Status;
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(25);
-    let start = std::time::Instant::now();
+    let mut start = std::time::Instant::now();
     loop {
         let Some(d) = engine.find(id) else { return Err("it was removed in Pako".into()) };
+        if let Some((size, html)) = extension::first_answer(id) {
+            return extension::same_as_browser(asked, size, Some(html));
+        }
         if d.resolved || d.status == Status::Completed {
-            // Both sizes known and the same: the same file. Otherwise Pako asks the server
-            // itself, to see the kind of file it gives.
+            // Started without that first answer (a Google Drive file…): both sizes known and
+            // the same, or Pako asks the server itself, to see the kind of file it gives.
             if d.size.is_some() && asked.total_bytes > 0 {
                 return extension::same_as_browser(asked, d.size, None);
             }
@@ -1170,6 +1282,8 @@ async fn first_response(engine: &Arc<Engine>, id: &str, asked: &extension::Reque
                 return Err(d.message.unwrap_or_else(|| "the server refused it".into()));
             }
             Status::Paused => return Err("it was paused in Pako before it started".into()),
+            // In the Download with Pako window: nothing is asked before your answer.
+            Status::Queued if d.ask => start = std::time::Instant::now(),
             // Waiting for a free spot or for download hours: Pako asks the server itself now.
             Status::Queued if start.elapsed() >= std::time::Duration::from_secs(2) => {
                 let (size, html) = probe(engine, &d).await?;
@@ -1180,7 +1294,7 @@ async fn first_response(engine: &Arc<Engine>, id: &str, asked: &extension::Reque
         if start.elapsed() >= LIMIT {
             return Err("the server didn't answer in time".into());
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -1224,6 +1338,13 @@ fn sweep_headers_soon(app: &tauri::AppHandle) {
     });
 }
 
+/// The ✕ on a "Done · private" row: off the list now (the file stays). Only a finished private
+/// download; anything else is left as it is.
+#[tauri::command]
+fn forget_private(engine: Eng<'_>, id: String) {
+    engine.forget_private(&id);
+}
+
 /// Opens the finished file, or shows it in its folder.
 #[tauri::command]
 fn open_item(app: tauri::AppHandle, engine: Eng<'_>, id: String, reveal: bool) -> Result<(), String> {
@@ -1234,6 +1355,10 @@ fn open_item(app: tauri::AppHandle, engine: Eng<'_>, id: String, reveal: bool) -
         d.adopt_old_part();
     }
     let path = if done { d.final_path() } else { d.part_path() };
+    // A private window's download leaves the list once you've opened it (the file stays).
+    if done && d.private {
+        engine.forget_private(&id);
+    }
     if reveal || !done {
         if path.exists() {
             app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())
@@ -1459,6 +1584,10 @@ pub fn run() {
             // (once the terms of use are accepted, like everything below that runs by itself).
             let sweeper = sender.clone();
             consent::after(move || sweeper.start_sweeper());
+            // Uploads in parts that Pako was closed during carry on by themselves ("Continue
+            // unfinished uploads when Pako starts"), also once the terms of use are accepted.
+            let carry = sender.clone();
+            consent::after(move || carry.continue_restored());
             app.manage(sender);
             // Direct (Pako to Pako) starts in the background.
             // Only once Direct was used (contacts, or the Direct page opened before): someone who
@@ -1593,12 +1722,15 @@ pub fn run() {
             direct_add_contact,
             direct_edit_contact,
             direct_set_favourite,
+            direct_set_muted,
+            direct_set_check,
             direct_set_tags,
             direct_add_tag,
             direct_rename_tag,
             direct_delete_tag,
             direct_remove_contact,
             direct_connect,
+            direct_shown,
             direct_answer_request,
             direct_answer_offer,
             direct_send,
@@ -1626,6 +1758,11 @@ pub fn run() {
             direct::found_device_note,
             direct::devices_add_links,
             direct::devices_send_ask,
+            direct::direct_from_choices,
+            direct::direct_remote_contacts,
+            direct::direct_remote_talk,
+            direct::direct_relay_send,
+            direct::direct_relay_cancel,
             snapshot,
             add_links,
             found_add,
@@ -1712,6 +1849,7 @@ pub fn run() {
             open_in_drive,
             set_settings,
             open_item,
+            forget_private,
             open_folder,
             drag_paths,
             notices::notices_list,
@@ -1774,5 +1912,319 @@ mod tests {
         assert_eq!(drive_page(file, &gdrive("FILE1234567", None)), "https://drive.google.com/file/d/FILE1234567/view");
         let web = model::Source::Http { url: "https://x.example/a.zip".into() };
         assert_eq!(drive_page("https://x.example/a.zip", &web), "https://x.example/a.zip");
+    }
+    // ---------- browser takeovers with a real engine (in a process of their own) ----------
+
+    /// The engine keeps its lists in the data folder, so these run in a child test process
+    /// with its own empty one (PAKO_DATA_DIR), never in the developer's.
+    #[test]
+    fn browser_takeovers_with_a_real_engine() {
+        if std::env::var_os("PAKO_ENGINE_CHILD").is_some() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("pako-engine-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::engine_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("PAKO_DATA_DIR", &dir)
+            .env("PAKO_ENGINE_CHILD", "1")
+            .output()
+            .unwrap();
+        let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        for line in text.lines().filter_map(|l| l.find("TIMING").map(|i| &l[i..])) {
+            println!("{line}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}");
+    }
+
+    /// A tiny file server: answers after `DELAY` (a slow server), with ranges. Logs each
+    /// request as "path range".
+    fn slow_server(log: Arc<std::sync::Mutex<Vec<String>>>) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { continue };
+                let log = log.clone();
+                std::thread::spawn(move || {
+                    let mut buf = vec![0u8; 8192];
+                    let n = sock.read(&mut buf).unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let range = head
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .map(|l| l[6..].trim().to_string())
+                        .unwrap_or_default();
+                    log.lock().unwrap().push(format!("{path} {range}"));
+                    std::thread::sleep(DELAY);
+                    if path.contains("missing") {
+                        let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return;
+                    }
+                    let body = file_bytes();
+                    let (from, to) = range
+                        .strip_prefix("bytes=")
+                        .and_then(|r| r.split_once('-'))
+                        .map(|(a, b)| (a.parse::<usize>().unwrap_or(0), b.parse::<usize>().ok().map(|b| b.min(body.len() - 1)).unwrap_or(body.len() - 1)))
+                        .unwrap_or((0, body.len() - 1));
+                    let part = &body[from..=to];
+                    let status = if range.is_empty() { "200 OK".to_string() } else { "206 Partial Content".to_string() };
+                    let mut answer = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n",
+                        part.len()
+                    );
+                    if !range.is_empty() {
+                        answer.push_str(&format!("Content-Range: bytes {from}-{to}/{}\r\n", body.len()));
+                    }
+                    answer.push_str("\r\n");
+                    let _ = sock.write_all(answer.as_bytes());
+                    let _ = sock.write_all(part);
+                });
+            }
+        });
+        port
+    }
+
+    const DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+    const SIZE: usize = 300_000;
+
+    fn file_bytes() -> Vec<u8> {
+        (0..SIZE).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[test]
+    #[ignore]
+    fn engine_child() {
+        if std::env::var_os("PAKO_ENGINE_CHILD").is_none() {
+            return;
+        }
+        use std::time::{Duration, Instant};
+        consent::open();
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let port = slow_server(log.clone());
+        let url = |p: &str| format!("http://127.0.0.1:{port}{p}");
+        let data = paths::data_dir().clone();
+        let dl = data.join("Downloads");
+        let browser_dir = data.join("Browser downloads");
+        std::fs::create_dir_all(&dl).unwrap();
+        std::fs::create_dir_all(&browser_dir).unwrap();
+        let engine = Engine::new(Arc::new(|_, _| {}));
+        engine.change_settings(|s| s.download_dir = dl.clone()).unwrap();
+        let takeover = |path: &str, total: u64, hold: bool, private: bool| {
+            extension::validate(extension::Request {
+                kind: "download".into(),
+                urls: vec![url(path)],
+                filename: path.trim_start_matches('/').into(),
+                takeover: true,
+                hold,
+                private,
+                total_bytes: total,
+                mime: "application/octet-stream".into(),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let wait_done = |id: &str| {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(20) {
+                if engine.find(id).is_some_and(|d| d.status == model::Status::Completed) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        let zero_requests = |path: &str| log.lock().unwrap().iter().filter(|l| l.starts_with(path) && l.ends_with("bytes=0-")).count();
+
+        // 1. A Pako that answers at once: "held" before the server has said anything; the
+        //    result once its own (only) first request got the same file.
+        rt.block_on(async {
+            let r = takeover("/good.bin", SIZE as u64, true, false);
+            let t0 = Instant::now();
+            let id = engine.add_from_browser(r.clone()).await.ids[0].clone();
+            let added = t0.elapsed();
+            let reply = hold_takeover(engine.clone(), id.clone(), r);
+            let answered = t0.elapsed();
+            assert!(reply.ok && reply.held.as_deref() == Some(id.as_str()), "{reply:?}");
+            assert!(answered < DELAY / 2, "answered in {answered:?}, before the server");
+            let confirm = extension::HELD.wait(&id, Duration::from_secs(20)).await;
+            let checked = t0.elapsed();
+            assert!(confirm.ok, "{confirm:?}");
+            assert!(checked >= DELAY, "checked on the server's answer ({checked:?})");
+            println!("TIMING new takeover: added {} ms, answered {} ms, checked {} ms (server answers after {} ms)", added.as_millis(), answered.as_millis(), checked.as_millis(), DELAY.as_millis());
+            assert!(wait_done(&id), "finished");
+            let d = engine.find(&id).unwrap();
+            assert_eq!(std::fs::read(d.final_path()).unwrap(), file_bytes());
+            // The server was asked for the start of the file once: the download's own request.
+            assert_eq!(zero_requests("/good.bin"), 1, "{:?}", log.lock().unwrap());
+        });
+
+        // 2. An older extension (no hold): answered only once checked, as before.
+        rt.block_on(async {
+            let r = takeover("/old.bin", SIZE as u64, false, false);
+            let t0 = Instant::now();
+            let id = engine.add_from_browser(r.clone()).await.ids[0].clone();
+            assert!(first_response(&engine, &id, &r).await.is_ok());
+            let answered = t0.elapsed();
+            assert!(answered >= DELAY);
+            println!("TIMING older extension: answered {} ms (server answers after {} ms)", answered.as_millis(), DELAY.as_millis());
+            assert!(wait_done(&id));
+            assert_eq!(zero_requests("/old.bin"), 1, "no separate check request");
+        });
+
+        // 3. Not the same file (another size): the browser downloads it, Pako follows it.
+        let id = rt.block_on(async {
+            let r = takeover("/other.bin", SIZE as u64 + 1, true, false);
+            let id = engine.add_from_browser(r.clone()).await.ids[0].clone();
+            let _ = hold_takeover(engine.clone(), id.clone(), r);
+            let confirm = extension::HELD.wait(&id, Duration::from_secs(20)).await;
+            assert!(!confirm.ok && confirm.error.as_deref().unwrap_or_default().contains("different file"), "{confirm:?}");
+            id
+        });
+        let d = engine.find(&id).expect("the row stays");
+        assert!(d.via_browser.is_some());
+        assert_eq!(d.status, model::Status::Paused);
+        // The extension reports the browser's download.
+        let follow = |pako: &str, browser_id: i64, state: &str, bytes: u64, path: &str| {
+            let r = extension::validate(extension::Request {
+                kind: "follow".into(),
+                urls: vec![url("/other.bin")],
+                follow: Some(extension::FollowReport {
+                    pako: pako.into(),
+                    browser_id,
+                    path: path.into(),
+                    bytes,
+                    total: SIZE as u64,
+                    state: state.into(),
+                    can_resume: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+            engine.follow(&r)
+        };
+        let reply = follow(&id, 5, "in_progress", 1000, "");
+        assert_eq!(reply.followed.as_deref(), Some(id.as_str()));
+        let d = engine.find(&id).unwrap();
+        assert_eq!((d.status.clone(), d.downloaded, d.size), (model::Status::Downloading, 1000, Some(SIZE as u64)));
+        // Pause, Resume: done by the browser (the extension, with its next report).
+        engine.pause(&[id.clone()]);
+        assert_eq!(follow(&id, 5, "in_progress", 2000, "").command.as_deref(), Some("pause"));
+        assert_eq!(follow(&id, 5, "paused", 2000, "").command, None);
+        engine.resume(&[id.clone()]);
+        assert_eq!(follow(&id, 5, "paused", 2000, "").command.as_deref(), Some("resume"));
+        // Pako's queue doesn't apply to it.
+        engine.download_first(&[id.clone()]);
+        engine.start_over(&[id.clone()]);
+        let d = engine.find(&id).unwrap();
+        assert_eq!(d.priority, model::Priority::Normal);
+        assert_eq!(d.downloaded, 2000);
+        // Finished in another folder: moved to the row's folder, keeping the browser's " (1)".
+        let file = browser_dir.join("other (1).bin");
+        std::fs::write(&file, file_bytes()).unwrap();
+        std::fs::write(dl.join("other (1).bin"), b"someone else's").unwrap();
+        let reply = follow(&id, 5, "complete", SIZE as u64, &file.to_string_lossy());
+        assert!(reply.ok);
+        // Moved on its own: the browser's list keeps it until Pako says it's in place.
+        assert_eq!(reply.command, None);
+        assert!(wait_done(&id));
+        // The same report again (the extension's next one): no second move, and now "forget".
+        assert_eq!(follow(&id, 5, "complete", SIZE as u64, &file.to_string_lossy()).command.as_deref(), Some("forget"));
+        let d = engine.find(&id).unwrap();
+        assert_eq!(d.status, model::Status::Completed);
+        assert_eq!(d.dest_dir, dl);
+        assert!(d.name.starts_with("other (1)") && d.name != "other (1).bin", "never over another file: {}", d.name);
+        assert_eq!(std::fs::read(d.final_path()).unwrap(), file_bytes());
+        assert_eq!(std::fs::read(dl.join("other (1).bin")).unwrap(), b"someone else's");
+        assert!(!file.exists());
+
+        // 4. Reported while Pako didn't know it (Pako was closed): listed; the same folder and
+        //    name as the browser's: left where it is.
+        let same = dl.join("same.bin");
+        std::fs::write(&same, b"done").unwrap();
+        let reply = follow("", 9, "complete", 4, &same.to_string_lossy());
+        let id9 = reply.followed.unwrap();
+        assert!(wait_done(&id9));
+        let d = engine.find(&id9).unwrap();
+        assert_eq!((d.status.clone(), d.final_path()), (model::Status::Completed, same.clone()));
+        assert_eq!(std::fs::read_dir(&dl).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("same")).count(), 1);
+        // Removed in Pako while the browser still downloads one: the browser cancels it too.
+        let gone = follow("", 11, "in_progress", 1, "").followed.unwrap();
+        let ids = vec![gone.clone()];
+        engine.remove(&ids, false);
+        assert_eq!(follow(&gone, 11, "in_progress", 2, "").command.as_deref(), Some("cancel"));
+        // The browser's file can't be found to move it: said in the row, and the browser's list
+        // keeps it ("keep").
+        let lost = follow("", 12, "complete", 4, &dl.join("not-there.bin").to_string_lossy()).followed.unwrap();
+        assert!(wait_done(&lost));
+        assert!(engine.find(&lost).unwrap().message.is_some());
+        assert_eq!(follow(&lost, 12, "complete", 4, "").command.as_deref(), Some("keep"));
+
+        // 4b. The browser holds its copy paused (a form sent with POST): Pako checks first, and
+        //     only then the window (none in the tests): the check doesn't wait on an answer.
+        rt.block_on(async {
+            let mut r = takeover("/paused.bin", SIZE as u64, true, false);
+            r.paused = true;
+            let r = extension::validate(r).unwrap();
+            assert!(r.paused);
+            let id = engine.add_from_browser(r.clone()).await.ids[0].clone();
+            assert!(!engine.find(&id).unwrap().ask, "not asked before the check");
+            let _ = hold_takeover(engine.clone(), id.clone(), r);
+            assert!(extension::HELD.wait(&id, Duration::from_secs(20)).await.ok);
+            assert!(wait_done(&id));
+        });
+
+        // 5. No file at all (404): the browser downloads it, the row follows it.
+        rt.block_on(async {
+            let r = takeover("/missing.bin", SIZE as u64, true, false);
+            let id = engine.add_from_browser(r.clone()).await.ids[0].clone();
+            let _ = hold_takeover(engine.clone(), id.clone(), r);
+            let confirm = extension::HELD.wait(&id, Duration::from_secs(30)).await;
+            assert!(!confirm.ok, "{confirm:?}");
+            assert!(engine.find(&id).unwrap().via_browser.is_some());
+        });
+
+        // 6. A private window's: no trace beyond the file.
+        rt.block_on(async {
+            let r = takeover("/private-file.bin", SIZE as u64, true, true);
+            let id = engine.add_from_browser(r.clone()).await.ids[0].clone();
+            let _ = hold_takeover(engine.clone(), id.clone(), r);
+            assert!(extension::HELD.wait(&id, Duration::from_secs(20)).await.ok);
+            assert!(wait_done(&id));
+            assert!(engine.find(&id).unwrap().private);
+            assert!(extension::headers_for(&id).is_none(), "its cookies are gone");
+            let r = takeover("/private-missing.bin", SIZE as u64, true, true);
+            let failed = engine.add_from_browser(r.clone()).await.ids[0].clone();
+            let _ = hold_takeover(engine.clone(), failed.clone(), r);
+            let _ = extension::HELD.wait(&failed, Duration::from_secs(30)).await;
+            engine.save_now();
+            std::thread::sleep(Duration::from_millis(500));
+            // Nothing in the data folder names it: not the list, the numbers or the error log.
+            let mut stack = vec![data.clone()];
+            while let Some(dir) = stack.pop() {
+                for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                    let p = e.path();
+                    if p.starts_with(&dl) || p.starts_with(&browser_dir) {
+                        continue;
+                    }
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if let Ok(bytes) = std::fs::read(&p) {
+                        assert!(!String::from_utf8_lossy(&bytes).contains("private-"), "{} names it", p.display());
+                    }
+                }
+            }
+            // And it leaves the list (opened, or after a while); the file stays.
+            let file = engine.find(&id).unwrap().final_path();
+            engine.forget_private(&id);
+            assert!(engine.find(&id).is_none());
+            assert!(file.exists());
+        });
+        engine.shutdown();
     }
 }

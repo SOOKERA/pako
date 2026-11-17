@@ -13,6 +13,7 @@
     isDefault = false,
     destLocked = false,
     priority,
+    priorityOff,
     notify,
     count = 1,
     onDest,
@@ -27,6 +28,8 @@
     /** Already writing: the folder can't change any more. */
     destLocked?: boolean;
     priority: Priority;
+    /** Why the priority doesn't apply to it (a download your browser makes), else unset. */
+    priorityOff?: string;
     notify: boolean;
     /** How many items these settings change (folder of files, several picked). */
     count?: number;
@@ -72,11 +75,12 @@
     <span class="k">Priority</span>
     <div class="seg" role="radiogroup" aria-label="Priority">
       {#each levels as l (l.key)}
-        <button role="radio" aria-checked={priority === l.key} class:on={priority === l.key} onclick={() => onPriority(l.key)}>
+        <button role="radio" aria-checked={priority === l.key} class:on={priority === l.key} disabled={!!priorityOff} title={priorityOff} onclick={() => onPriority(l.key)}>
           {#if l.icon}<Icon name={l.icon} size={11} stroke={2.6} />{/if}{l.label}
         </button>
       {/each}
     </div>
+    {#if priorityOff}<span class="note">{priorityOff}</span>{/if}
   </div>
 
   <div class="field row">
@@ -198,7 +202,12 @@
       background var(--fast) ease,
       color var(--fast) ease;
   }
-  .seg button:hover:not(.on) {
+  /* Not for this download (the browser makes it): shown, greyed, its reason under it. */
+  .seg button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .seg button:hover:not(.on):not(:disabled) {
     background: var(--raise);
     color: var(--text);
   }

@@ -159,6 +159,14 @@ pub fn payload(kind: &str, title: &str, body: &str, go: &Go, pop: Pop) -> serde_
     serde_json::json!({ "kind": kind, "title": title, "body": body, "go": go, "pop": pop.name() })
 }
 
+/// The same for a private window's download: a pop-up only (as Settings say), never a line in
+/// the bell (nothing about it is kept).
+pub fn payload_private(kind: &str, title: &str, body: &str, go: &Go, pop: Pop) -> serde_json::Value {
+    let mut p = payload(kind, title, body, go, pop);
+    p["noBell"] = serde_json::Value::Bool(true);
+    p
+}
+
 /// Posts what the engine sent (see `payload`).
 pub fn post_payload(app: &AppHandle, p: &serde_json::Value) {
     let text = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
@@ -169,7 +177,8 @@ pub fn post_payload(app: &AppHandle, p: &serde_json::Value) {
         _ => Pop::Pref,
     };
     let kind = text("kind");
-    post(app, if kind.is_empty() { "other" } else { &kind }, &text("title"), &text("body"), go, pop);
+    let bell = p.get("noBell").and_then(|v| v.as_bool()) != Some(true);
+    post_as(app, if kind.is_empty() { "other" } else { &kind }, &text("title"), &text("body"), go, pop, bell);
 }
 
 // ---------- the settings in use ----------
@@ -188,8 +197,14 @@ fn live_pref(kind: &str) -> (Pref, bool) {
 }
 
 /// No pop-ups now: Pako's Do not disturb, or Windows says not now (when that is followed).
+/// The finished chime keeps quiet then too.
 fn quiet_for(s: &Settings) -> bool {
-    s.quiet || (s.follow_windows_quiet && windows_says_not_now())
+    quiet_when(s.quiet, s.follow_windows_quiet, windows_says_not_now)
+}
+
+/// `quiet_for` with Windows' answer passed in (only asked when it is followed).
+fn quiet_when(do_not_disturb: bool, follow_windows: bool, windows_not_now: impl FnOnce() -> bool) -> bool {
+    do_not_disturb || (follow_windows && windows_not_now())
 }
 
 fn quiet_now() -> bool {
@@ -221,16 +236,34 @@ fn about<'a>(kind: &str, go: &'a Go) -> Option<&'a str> {
     }
 }
 
+/// Whether a pop-up shows: as `pop` and the kind's Pop-up switch say, never at a quiet time,
+/// and no "Download finished" while the small window is on screen (it shows the download
+/// finishing itself; a download's own "Notify when done" included).
+fn popup_shows(kind: &str, pop: Pop, kind_popup: bool, quiet: bool, small_window_open: bool) -> bool {
+    let wanted = match pop {
+        Pop::Force => true,
+        Pop::Skip => false,
+        Pop::Pref => kind_popup,
+    };
+    wanted && !quiet && !(kind == "download-done" && small_window_open)
+}
+
 /// Tells you something: into the bell if its kind goes there, and as a pop-up if its kind
-/// (or `pop`) says so, unless Do not disturb is on or Windows says not now. A question about
-/// the same thing as an earlier one (the same link asking again) takes its place.
+/// (or `pop`) says so, unless Do not disturb is on or Windows says not now (see
+/// `popup_shows`). A question about the same thing as an earlier one (the same link asking
+/// again) takes its place.
 pub fn post(app: &AppHandle, kind: &str, title: &str, body: &str, go: Go, pop: Pop) {
+    post_as(app, kind, title, body, go, pop, true);
+}
+
+/// `bell` = false: never a line in the bell (a private window's download).
+fn post_as(app: &AppHandle, kind: &str, title: &str, body: &str, go: Go, pop: Pop, bell: bool) {
     let kind = kind_of(kind).id;
     let (p, quiet) = live_pref(kind);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let key = about(kind, &go).map(str::to_string);
     let same = |k: &str, g: &Go| key.is_some() && k == kind && about(k, g) == key.as_deref();
-    if p.bell {
+    if p.bell && bell {
         let n = Notice { id: id.clone(), kind: kind.into(), title: title.into(), body: body.into(), at: now_ms(), read: false, go: go.clone(), answered: None };
         change(app, |list| {
             list.retain(|o| !same(&o.kind, &o.go));
@@ -239,12 +272,8 @@ pub fn post(app: &AppHandle, kind: &str, title: &str, body: &str, go: Go, pop: P
             true
         });
     }
-    let wanted = match pop {
-        Pop::Force => true,
-        Pop::Skip => false,
-        Pop::Pref => p.popup,
-    };
-    if wanted && !quiet {
+    let small_window_open = kind == "download-done" && crate::tray::mini_showing(app);
+    if popup_shows(kind, pop, p.popup, quiet, small_window_open) {
         drop_cards(app, &same);
         let stays = STAYS.contains(&kind);
         if stays && key.is_some() {
@@ -292,6 +321,60 @@ pub fn resolve(app: &AppHandle, kind: &str, key: &str, text: &str) {
     });
     drop_cards(app, &is_it);
 }
+
+// ---------- the finished chime ----------
+
+/// Pako's chime: two soft rising notes, about 0.42 s (made by `scripts/make-done-sound.mjs`).
+static DONE_SOUND: &[u8] = include_bytes!("../sounds/done.wav");
+
+/// Several downloads finishing this close together chime once.
+const CHIME_GAP_MS: u64 = 2000;
+
+/// When the chime last played (ms since 1970).
+static LAST_CHIME: Mutex<Option<u64>> = Mutex::new(None);
+
+/// Whether the chime plays for a finished download: only one with its own "Notify when done"
+/// (`notify`), with the sound on, not at a quiet time (as for pop-ups: Do not disturb, or
+/// Windows says not now), and not again within 2 seconds of the last one. The small window
+/// being open doesn't matter (it only stops the pop-up).
+fn chime_plays(notify: bool, sound_on: bool, quiet: bool, last: Option<u64>, now: u64) -> bool {
+    notify && sound_on && !quiet && last.is_none_or(|l| now < l || now - l >= CHIME_GAP_MS)
+}
+
+/// A download (or a whole folder or set) finished; `notify`: it asked "Notify when done".
+/// Plays the chime if `chime_plays` says so. Never waits for the sound.
+pub fn chime_if_asked(notify: bool) {
+    if !notify {
+        return;
+    }
+    let s = LIVE.lock().unwrap().clone().unwrap_or_default();
+    // Windows is only asked when the sound is on.
+    let quiet = s.play_done_sound && quiet_for(&s);
+    let now = now_ms();
+    {
+        let mut last = LAST_CHIME.lock().unwrap();
+        if !chime_plays(notify, s.play_done_sound, quiet, *last, now) {
+            return;
+        }
+        *last = Some(now);
+    }
+    play(DONE_SOUND);
+}
+
+/// Plays a WAV held in memory, in the background. Any failure is ignored (no sound).
+#[cfg(all(windows, not(test)))]
+fn play(wav: &'static [u8]) {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    // SAFETY: with SND_MEMORY the first argument is the WAV's bytes, not a name; they are
+    // 'static, so they outlive the sound playing on after the call (SND_ASYNC).
+    unsafe {
+        PlaySoundW(wav.as_ptr() as _, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
+}
+
+/// No sound outside Windows, nor while testing.
+#[cfg(any(not(windows), test))]
+fn play(_wav: &'static [u8]) {}
 
 // ---------- the bell's history ----------
 
@@ -690,6 +773,76 @@ mod tests {
         std::fs::write(&path, br#"[{"id":"a","kind":"other","title":"t","body":"b","at":5}]"#).unwrap();
         assert_eq!(load_from(&path).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_download_finished_popup_while_the_small_window_shows() {
+        for pop in [Pop::Pref, Pop::Force] {
+            assert!(popup_shows("download-done", pop, true, false, false));
+            // Its own "Notify when done" (Force) included.
+            assert!(!popup_shows("download-done", pop, true, false, true), "{pop:?}");
+        }
+        // Other kinds still pop up with the small window open.
+        for kind in ["download-failed", "upload-done", "browser", "needs-you"] {
+            assert!(popup_shows(kind, Pop::Pref, true, false, true), "{kind}");
+        }
+        // The rest as before: the switch, Force, Skip, quiet.
+        assert!(!popup_shows("download-done", Pop::Pref, false, false, false));
+        assert!(popup_shows("download-done", Pop::Force, false, false, false));
+        assert!(!popup_shows("download-failed", Pop::Skip, true, false, false));
+        assert!(!popup_shows("download-failed", Pop::Force, true, true, false));
+    }
+
+    #[test]
+    fn quiet_follows_windows_only_when_asked() {
+        assert!(quiet_when(true, false, || false));
+        assert!(quiet_when(false, true, || true));
+        assert!(!quiet_when(false, false, || panic!("Windows isn't asked when not followed")));
+        assert!(!quiet_when(false, true, || false));
+    }
+
+    #[test]
+    fn chime_only_for_notify_when_done_and_not_when_quiet() {
+        let now = 1_000_000;
+        assert!(chime_plays(true, true, false, None, now));
+        // Not for downloads without "Notify when done", nor with the sound off.
+        assert!(!chime_plays(false, true, false, None, now));
+        assert!(!chime_plays(true, false, false, None, now));
+        // Do not disturb, and Windows saying not now (when followed): the same check as pop-ups.
+        assert!(!chime_plays(true, true, quiet_when(true, true, || false), None, now));
+        assert!(!chime_plays(true, true, quiet_when(false, true, || true), None, now));
+        assert!(chime_plays(true, true, quiet_when(false, false, || true), None, now));
+        // The small window open: no pop-up, the chime still plays.
+        assert!(!popup_shows("download-done", Pop::Force, true, false, true));
+        assert!(chime_plays(true, true, false, None, now));
+    }
+
+    #[test]
+    fn two_finishing_within_2_seconds_chime_once() {
+        let first = 1_000_000;
+        assert!(!chime_plays(true, true, false, Some(first), first + 500));
+        assert!(!chime_plays(true, true, false, Some(first), first + 1_999));
+        assert!(chime_plays(true, true, false, Some(first), first + 2_000));
+        // A clock set back never silences it.
+        assert!(chime_plays(true, true, false, Some(first), first - 10_000));
+    }
+
+    /// The chime is a small 16-bit mono WAV at 22.05 kHz, about 0.42 s.
+    #[test]
+    fn done_sound_is_a_small_wav() {
+        let w = DONE_SOUND;
+        assert_eq!(&w[0..4], b"RIFF");
+        assert_eq!(&w[8..16], b"WAVEfmt ");
+        let u16_at = |i: usize| u16::from_le_bytes([w[i], w[i + 1]]);
+        let u32_at = |i: usize| u32::from_le_bytes([w[i], w[i + 1], w[i + 2], w[i + 3]]);
+        assert_eq!(u16_at(20), 1, "PCM");
+        assert_eq!(u16_at(22), 1, "mono");
+        assert_eq!(u32_at(24), 22_050);
+        assert_eq!(u16_at(34), 16);
+        assert_eq!(&w[36..40], b"data");
+        let secs = u32_at(40) as f64 / (22_050.0 * 2.0);
+        assert!((0.3..=0.5).contains(&secs), "{secs} s");
+        assert!(w.len() < 20_000);
     }
 
     #[test]

@@ -76,6 +76,8 @@ async function send(message) {
     const reply = await nativeMessage(message);
     if (reply && typeof reply === "object") {
       newerInFolder(reply.ext);
+      learnHolds(reply);
+      if (reply.ok && message.kind !== "follow") followsAgain();
       return reply;
     }
     const detail = `No answer from ${HOST}`;
@@ -131,7 +133,8 @@ async function newerInFolder(ext) {
  *  the tab's own cookie store (a Firefox container has its own). They only travel to Pako on
  *  this PC, and Pako keeps them for that download only. Never from a private window. */
 async function cookiesFor(url, incognito, storeId) {
-  if (incognito) return "";
+  // A private window: only its own store, never your normal one (none known = no cookies).
+  if (incognito && !(typeof storeId === "string" && storeId)) return "";
   try {
     const query = typeof storeId === "string" && storeId ? { url, storeId } : { url };
     const list = await api.cookies.getAll(query);
@@ -161,7 +164,8 @@ function cookieSite(url) {
  *  from a private window; only this site's own cookies, well formed, capped. */
 async function siteCookiesFor(url, incognito, storeId) {
   const site = cookieSite(url);
-  if (incognito || !site) return [];
+  // A private window: only its own store (Firefox names it), never your normal login.
+  if (!site || (incognito && !(typeof storeId === "string" && storeId))) return [];
   try {
     const query = typeof storeId === "string" && storeId ? { domain: site, storeId } : { domain: site };
     const list = await api.cookies.getAll(query);
@@ -194,7 +198,7 @@ function isWebLink(url) {
 
 /** `totalBytes` and `mime` (takeover only): the browser's file, so Pako takes it only when its
  *  own first answer from the server is the same file. */
-async function download(url, referrer, filename, { takeover = false, incognito = false, storeId, totalBytes = 0, mime = "" } = {}) {
+async function download(url, referrer, filename, { takeover = false, incognito = false, storeId, totalBytes = 0, mime = "", hold = false, paused = false, isPrivate = false } = {}) {
   if (!isWebLink(url)) return { ok: false, error: "Pako only takes http and https links." };
   // Pako Light sends nothing from the sites it leaves alone (Pako checks again on its side).
   if (LIGHT && (onSkippedSite(url) || onSkippedSite(referrer))) return { ok: false, error: LIGHT_SKIPPED };
@@ -202,12 +206,17 @@ async function download(url, referrer, filename, { takeover = false, incognito =
     kind: "download",
     urls: [url],
     referrer: referrer || "",
-    cookies: await cookiesFor(url, incognito, storeId),
+    cookies: await cookiesFor(url, incognito || isPrivate, storeId),
     filename: filename || "",
     takeover,
     totalBytes: takeover && totalBytes > 0 ? totalBytes : 0,
     mime: takeover && typeof mime === "string" ? mime : "",
   };
+  // Pako may answer at once and check meanwhile (`held`): only asked of a Pako that said so.
+  if (takeover && hold) message.hold = true;
+  if (takeover && hold && paused) message.paused = true;
+  // From a private window: Pako keeps no trace of it beyond the file.
+  if (takeover && isPrivate) message.private = true;
   /* full-only:start */
   // A video page or link: the site's login goes with it (Pako downloads the video).
   if (!takeover && isVideoSite(url)) message.siteCookies = await siteCookiesFor(url, incognito, storeId);
@@ -373,7 +382,12 @@ api.windows?.onFocusChanged?.addListener((windowId) => {
   retitleFor({ active: true, windowId });
 });
 
-api.runtime.onInstalled.addListener(() => syncMenus(true));
+api.runtime.onInstalled.addListener(() => {
+  syncMenus(true);
+  // Say hello to Pako's helper right away (a "ping" is answered by the helper alone: it never
+  // starts Pako), so Settings › Browser extension shows this browser as Installed at once.
+  send({ kind: "ping" }).catch(() => {});
+});
 api.runtime.onStartup?.addListener(() => syncMenus(true));
 
 async function pageLinks(tabId) {
@@ -432,49 +446,362 @@ function isUnsafe(item) {
   return !!d && d !== "safe" && d !== "accepted";
 }
 
-api.downloads.onCreated.addListener(async (item) => {
-  const { takeOver } = await settings();
+/** The file's name without its folder. */
+function baseName(path) {
+  return String(path || "").split(/[\\/]/).pop();
+}
+
+/** Downloads the extension started again in the browser (Pako couldn't get them): never taken
+ *  over again. The browser marks them too (`byExtensionId`). */
+const restarted = new Set();
+
+/** Like IDM: the browser doesn't download what Pako takes. Pako opens its window at once and
+ *  its first request is the real download; only if Pako can't get the file (not the same file,
+ *  no answer, Pako unreachable) does the browser download it again itself, with the "!" saying
+ *  why. A download that can't be asked for again (a form sent with POST, and anything Pako
+ *  Light can't tell apart) is held paused by the browser instead, until Pako confirms. */
+async function takeOver(item, letGo = () => {}) {
+  let released = false;
+  // The browser's file-name step (Chromium): it waits for this, so no "Save as" shows meanwhile.
+  const release = () => {
+    if (released) return;
+    released = true;
+    try {
+      letGo();
+    } catch {
+      // the download is already gone
+    }
+  };
+  const { takeOver: on } = await settings();
   const url = item.finalUrl || item.url;
-  if (!takeOver || !isWebLink(url) || item.byExtensionId) return;
-  // Private windows stay private; flagged files stay with the browser's warning.
-  if (item.incognito || isUnsafe(item)) return;
+  if (!on || !isWebLink(url) || item.byExtensionId || restarted.has(url) || restarted.has(item.url)) return release();
+  // Flagged files stay with the browser's warning. A private window's download reaches the
+  // extension only when you allowed it there in the browser (its own switch for Pako).
+  if (isUnsafe(item) || (item.incognito && !(await privateAllowed()))) return release();
   // Pako Light: the sites it leaves alone keep their downloads, and when the full extension is
   // on in this browser, that one takes over instead.
-  if (LIGHT && (onSkippedSite(url) || onSkippedSite(item.url) || onSkippedSite(item.referrer))) return;
-  if (LIGHT && (await fullHere())) return;
-  // Hold it while Pako is asked; it carries on in the browser if Pako can't take it.
+  if (LIGHT && (onSkippedSite(url) || onSkippedSite(item.url) || onSkippedSite(item.referrer))) return release();
+  if (LIGHT && (await fullHere())) return release();
+  let seen = null;
+  /* full-only:start */
+  // What the browser's own answer from the server said (size, kind, name, POST or not).
+  seen = responseFor(url) || responseFor(item.url);
+  /* full-only:end */
+  const holds = await pakoHolds();
+  const firstSize = item.totalBytes > 0 ? item.totalBytes : seen?.size || 0;
+  if (firstSize > 0 && firstSize < SMALL) return release();
+  const isPrivate = !!item.incognito;
+  // Its cookies come from its own window's store (a private window's is never mixed with yours).
+  const storeId = item.cookieStoreId ?? (isPrivate ? PRIVATE_STORE : undefined);
+  // Until Pako has it or the browser has it back, the extension doesn't reload itself for an
+  // update (see newerInFolder): the browser's copy may already be gone.
+  inFlight++;
+  try {
+    await handOff(item, url, seen, holds, firstSize, isPrivate, storeId, release);
+  } finally {
+    inFlight--;
+  }
+}
+
+/** The rest of `takeOver`, once the download is Pako's to take. */
+async function handOff(item, url, seen, holds, firstSize, isPrivate, storeId, release) {
+  if (holds && canStartAgain(seen, isPrivate)) {
+    const name = baseName(item.filename) || seen?.filename || "";
+    // Gone from the browser at once; Pako has it from here.
+    await api.downloads.cancel(item.id).catch(() => {});
+    await api.downloads.erase({ id: item.id }).catch(() => {});
+    release();
+    const reply = await handOver(url, item.referrer || "", name, { storeId, totalBytes: firstSize, mime: item.mime || seen?.type || "", hold: true, isPrivate });
+    if (!reply.ok) await startAgain(url, name, storeId, reply, isPrivate);
+    return;
+  }
+  // Held paused while Pako is asked; it carries on in the browser if Pako can't take it.
   try {
     await api.downloads.pause(item.id);
   } catch {
-    return; // already finished (tiny file): nothing to take over
+    return release(); // already finished (tiny file): nothing to take over
   }
   const [now] = await api.downloads.search({ id: item.id }).catch(() => []);
   if (!now || isUnsafe(now)) {
     api.downloads.resume(item.id).catch(() => {});
-    return;
+    return release();
   }
   const size = now.totalBytes > 0 ? now.totalBytes : now.fileSize > 0 ? now.fileSize : 0;
   if (size > 0 && size < SMALL) {
     api.downloads.resume(item.id).catch(() => {});
-    return;
+    return release();
   }
-  const name = (now.filename || "").split(/[\\/]/).pop();
-  // Pako answers "ok" only once its own first request for the file got a good answer, so the
-  // browser's copy is deleted only then; otherwise it carries on here.
-  const totalBytes = now.totalBytes > 0 ? now.totalBytes : 0;
-  const reply = await download(url, item.referrer || "", name, {
-    takeover: true,
-    storeId: now.cookieStoreId ?? item.cookieStoreId,
-    totalBytes,
+  const name = baseName(now.filename) || baseName(item.filename) || seen?.filename || "";
+  // Pako's answer is "ok" only once its own first answer from the server is the same file, so
+  // the browser's copy is deleted only then; otherwise it carries on here.
+  const reply = await handOver(url, item.referrer || "", name, {
+    storeId: now.cookieStoreId ?? storeId,
+    totalBytes: now.totalBytes > 0 ? now.totalBytes : 0,
     mime: now.mime || item.mime || "",
+    hold: holds,
+    // The browser holds its copy paused: Pako checks the file before asking you anything, so
+    // the browser's paused copy (a form's answer can't be asked for again) isn't kept waiting.
+    paused: holds,
+    isPrivate,
   });
   if (reply.ok) {
     await api.downloads.cancel(item.id).catch(() => {});
     await api.downloads.erase({ id: item.id }).catch(() => {});
+    release();
   } else {
     api.downloads.resume(item.id).catch(() => {});
+    release();
     if (reply.error) flag(reply.error, reply.detail);
+    // Pako couldn't get it: the browser carries on with it, and Pako follows it ("Via browser").
+    if (typeof reply.followed === "string") follow(item.id, reply.followed, url, name, isPrivate);
   }
+}
+
+/** Can the browser ask for this file again if Pako can't get it? Not a form sent with POST
+ *  (asking again with a plain request gives something else). Pako Light can't see how the
+ *  browser asked, so it never assumes it can. */
+function canStartAgain(seen, isPrivate = false) {
+  if (LIGHT) return false;
+  // A private window's download in Chrome, Edge and similar: the extension could only start it
+  // again in your normal window, with your normal login and in its history. It stays paused in
+  // the private window instead. (Firefox starts it again in a private window.)
+  if (isPrivate && !globalThis.browser?.runtime) return false;
+  return !seen || !seen.method || seen.method === "GET";
+}
+
+/** Hands a browser download to Pako. A Pako that answers at once ("held") is then asked for the
+ *  result (again while it still waits for your answer in its window). An older Pako answers
+ *  only once it has checked the file, as before. */
+async function handOver(url, referrer, name, { storeId, totalBytes, mime, hold, paused = false, isPrivate = false }) {
+  let reply = await download(url, referrer, name, { takeover: true, storeId, totalBytes, mime, hold, paused, isPrivate });
+  while (reply.ok && typeof reply.held === "string") {
+    const held = reply.held;
+    // (A private window's: Pako's helper keeps no note of its problems.)
+    reply = await send(isPrivate ? { kind: "held", held, private: true } : { kind: "held", held });
+    // Still waiting in Pako's window: ask again.
+    if (!reply.ok && reply.held === held && !reply.error) reply = { ok: true, held };
+  }
+  return reply;
+}
+
+/** Pako couldn't get it: the browser downloads it itself (marked, so it isn't taken over
+ *  again). Pako follows it as one of its own ("Via browser"); without Pako, the "!" says why. */
+async function startAgain(url, name, storeId, reply, isPrivate = false) {
+  restarted.add(url);
+  setTimeout(() => restarted.delete(url), 60_000);
+  const opts = { url, conflictAction: "uniquify" };
+  if (name) opts.filename = name;
+  // Firefox: the same container as before.
+  if (globalThis.browser?.runtime && storeId) opts.cookieStoreId = storeId;
+  // A private window's download is started again in a private window, with its store (Firefox;
+  // Chrome and similar never start one again, see canStartAgain).
+  if (isPrivate && globalThis.browser?.runtime) {
+    opts.incognito = true;
+    if (!opts.cookieStoreId) opts.cookieStoreId = "firefox-private";
+  }
+  let started = await api.downloads.download(opts).then((id) => id, () => null);
+  if (started == null && opts.filename) {
+    delete opts.filename;
+    started = await api.downloads.download(opts).then((id) => id, () => null);
+  }
+  if (started == null) {
+    const why = (reply.error || "Pako couldn't take this download").replace(/[.\s]+$/, "");
+    flag(`${why}. Your browser couldn't start it again: open the link again to download it.`, reply.detail);
+    // Pako's row for it says so too.
+    if (typeof reply.followed === "string") {
+      send({ kind: "follow", urls: [url], filename: name, private: isPrivate, follow: { pako: reply.followed, browserId: -1, state: "interrupted", error: "RESTART_FAILED" } });
+    }
+    return;
+  }
+  // Pako follows it ("Via browser"). Without an answer from Pako (closed): the "!" says why, and
+  // Pako lists it once it answers again.
+  follow(started, typeof reply.followed === "string" ? reply.followed : "", url, name, isPrivate);
+  if (typeof reply.followed !== "string" && reply.error) flag(reply.error, reply.detail);
+}
+
+// ---------- "Via browser": Pako follows a download the browser makes ----------
+// When Pako can't get a file itself, the browser downloads it and Pako lists it as its own:
+// the extension reports its progress (every few seconds, and at once when it changes state),
+// does what you ask in Pako (pause, resume, cancel), and once it is finished Pako moves the file
+// to your folder; only once it's moved does the browser's list forget it. A report Pako
+// couldn't take (Pako closed) is kept and sent when Pako answers again.
+
+/** By browser download id: { pako, url, name, private, sent, state }. Kept in storage.local;
+ *  a private window's only in the browser's memory (storage.session), never on disk. */
+let follows = null;
+/** Each report starts Pako's helper once: every 2 s while the browser downloads, every 5 s
+ *  while it is paused or stopped (only to pick up Resume from Pako). */
+const FOLLOW_EVERY = 2000;
+const FOLLOW_IDLE_EVERY = 5000;
+/** Pako didn't answer: reports wait until then (or until another answer from Pako). */
+let followQuietUntil = 0;
+let followTimer = null;
+
+async function loadFollows() {
+  if (follows) return follows;
+  const got = await api.storage.local.get({ follows: {} }).catch(() => ({ follows: {} }));
+  const kept = got.follows && typeof got.follows === "object" ? got.follows : {};
+  const priv = (await Promise.resolve(api.storage.session?.get("privateFollows")).catch(() => null))?.privateFollows;
+  follows = { ...kept, ...(priv && typeof priv === "object" ? priv : {}) };
+  // (A report cut short by the browser stopping the extension never stays "busy".)
+  for (const f of Object.values(follows)) delete f.busy;
+  return follows;
+}
+function saveFollows() {
+  const plain = {};
+  const priv = {};
+  for (const [id, f] of Object.entries(follows || {})) {
+    const { busy: _busy, ...rest } = f;
+    (f.private ? priv : plain)[id] = rest;
+  }
+  api.storage.local.set({ follows: plain }).catch(() => {});
+  Promise.resolve(api.storage.session?.set({ privateFollows: priv })).catch(() => {});
+}
+
+/** Starts following a browser download (`pako`: Pako's row for it, "" = not known yet). */
+async function follow(browserId, pako, url, name, isPrivate) {
+  await loadFollows();
+  follows[browserId] = { pako: pako || "", url, name: name || "", private: !!isPrivate, sent: 0, state: "" };
+  saveFollows();
+  await reportFollow(browserId, true);
+  tickFollows();
+}
+
+/** One report to Pako; its answer may say what to do with the browser's download. */
+async function reportFollow(browserId, now = false) {
+  const f = (await loadFollows())[browserId];
+  if (!f || f.busy) return;
+  const [item] = await api.downloads.search({ id: Number(browserId) }).catch(() => []);
+  // Gone from the browser, or the browser gave its number to another download since (its list
+  // was cleared): never reported as this one.
+  const other = item && typeof item.url === "string" && item.url && item.url !== f.url && item.finalUrl !== f.url;
+  if (!item || other) {
+    delete follows[browserId];
+    saveFollows();
+    return;
+  }
+  let state = item.state === "in_progress" && item.paused ? "paused" : item.state;
+  if (!["in_progress", "paused", "complete", "interrupted"].includes(state)) state = "in_progress";
+  const changed = state !== f.state;
+  const every = state === "in_progress" || state === "complete" ? FOLLOW_EVERY : FOLLOW_IDLE_EVERY;
+  if (!now && !changed && Date.now() - f.sent < every) return;
+  if (!changed && Date.now() < followQuietUntil) return;
+  f.busy = true;
+  const reply = await send({
+    kind: "follow",
+    urls: [f.url],
+    filename: f.name,
+    private: f.private,
+    follow: {
+      pako: f.pako,
+      browserId: Number(browserId),
+      path: item.filename || "",
+      bytes: item.bytesReceived > 0 ? item.bytesReceived : 0,
+      total: item.totalBytes > 0 ? item.totalBytes : 0,
+      state,
+      error: state === "interrupted" ? String(item.error || "") : "",
+      canResume: !!item.canResume,
+    },
+  }).finally(() => (f.busy = false));
+  f.sent = Date.now();
+  if (!reply.ok) {
+    // Pako closed or busy: kept, sent again later (the finished file is listed then).
+    if (reply.error && !reply.followed) followQuietUntil = Date.now() + 60_000;
+    saveFollows();
+    return;
+  }
+  followQuietUntil = 0;
+  f.state = state;
+  if (typeof reply.followed === "string") f.pako = reply.followed;
+  if (reply.command === "pause") await api.downloads.pause(item.id).catch(() => {});
+  else if (reply.command === "resume") await api.downloads.resume(item.id).catch(() => {});
+  else if (reply.command === "cancel") {
+    await api.downloads.cancel(item.id).catch(() => {});
+    await api.downloads.erase({ id: item.id }).catch(() => {});
+    delete follows[browserId];
+  }
+  if (state === "complete") {
+    // Pako moved it to your folder: the browser's list forgets it (the file stays). Pako
+    // couldn't ("keep"): the browser's list keeps it, where it is. No word yet: still moving.
+    if (reply.command === "forget") await api.downloads.erase({ id: item.id }).catch(() => {});
+    if (reply.command === "forget" || reply.command === "keep") delete follows[browserId];
+  } else if (state === "interrupted" && !item.canResume) {
+    // Stopped for good (Try again in Pako can't continue it): no more reports.
+    delete follows[browserId];
+  }
+  saveFollows();
+}
+
+/** Every few seconds while the browser downloads something for Pako. */
+async function tickFollows() {
+  if (followTimer) return;
+  const ids = Object.keys(await loadFollows());
+  if (!ids.length) return;
+  followTimer = setTimeout(async () => {
+    followTimer = null;
+    for (const id of Object.keys(follows)) await reportFollow(id);
+    tickFollows();
+  }, 1000);
+  // (Never keeps a test run open.)
+  followTimer?.unref?.();
+}
+
+/** Pako answered again: what waited for it goes now. */
+function followsAgain() {
+  if (!followQuietUntil) return;
+  followQuietUntil = 0;
+  tickFollows();
+}
+
+api.downloads.onChanged?.addListener((delta) => {
+  if (!follows || !follows[delta.id]) return;
+  // A state change (finished, paused, stopped) is said at once; progress about once a second.
+  reportFollow(delta.id, !!(delta.state || delta.paused || delta.error));
+});
+
+// After the browser restarts the extension: what it was following.
+loadFollows().then(() => tickFollows());
+
+// ---------- private windows ----------
+// The browser's own switch for Pako ("Allow in Incognito", "Allow in InPrivate", Firefox's "Run
+// in Private Windows") decides: with it on, a private window's downloads go to Pako like any
+// other, with that window's own cookies, and Pako keeps no trace of them beyond the file.
+
+/** Chromium's private cookie store (Firefox names its own on each download). */
+const PRIVATE_STORE = "1";
+
+async function privateAllowed() {
+  try {
+    return !!(await api.extension?.isAllowedIncognitoAccess?.());
+  } catch {
+    return false;
+  }
+}
+
+/** Does this Pako answer takeovers at once? Learnt from its answers (see `send`). */
+let holdsNow = null;
+async function pakoHolds() {
+  if (holdsNow === null) holdsNow = (await api.storage.local.get({ pakoHolds: false }).catch(() => ({ pakoHolds: false }))).pakoHolds === true;
+  return holdsNow;
+}
+function learnHolds(reply) {
+  const v = reply.holds === true;
+  if (v === holdsNow) return;
+  holdsNow = v;
+  api.storage.local.set({ pakoHolds: v }).catch(() => {});
+}
+
+// Chromium: taken at the browser's file-name step, before any "Save as" window and before the
+// file is written. Firefox has no such step: there it is taken as soon as the download starts.
+const namingStep = api.downloads.onDeterminingFilename;
+if (namingStep) {
+  namingStep.addListener((item, suggest) => {
+    takeOver(item, () => suggest());
+    return true;
+  });
+}
+api.downloads.onCreated.addListener((item) => {
+  if (!namingStep) takeOver(item);
 });
 
 /* full-only:start */
@@ -598,9 +925,54 @@ function changeCaught(tabId, change) {
   return next;
 }
 
+// ---------- what the browser's server said about a download ----------
+// A page or frame answer that is a file (Content-Disposition: attachment, or a kind of file the
+// browser doesn't show): kept a short while, so a takeover knows how the browser asked (POST
+// can't be asked again) and what the server said (size, kind, name). Only read, never changed.
+
+/** By address: { at, method, size, type, filename }. */
+const responses = new Map();
+const RESPONSE_KEEP = 2 * 60 * 1000;
+/** What the browser shows itself (a page, a picture...), not a download. */
+const SHOWN = /^(text\/|image\/|video\/|audio\/|multipart\/|application\/(xhtml\+xml|xml|json|javascript|pdf|x-javascript)$)/;
+
+/** The name in a Content-Disposition header ("filename*=UTF-8''…" first, then "filename=…"). */
+function dispositionName(cd) {
+  const star = /filename\*\s*=\s*(?:[\w-]+)?'[^']*'([^;]+)/i.exec(cd);
+  if (star) {
+    try {
+      return baseName(decodeURIComponent(star[1].trim().replace(/^"|"$/g, "")));
+    } catch {
+      // badly written: the plain name below
+    }
+  }
+  const plainName = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(cd);
+  return plainName ? baseName((plainName[2] ?? plainName[1]).trim()) : "";
+}
+
+function noteDownloadResponse(details) {
+  const headers = details.responseHeaders || [];
+  const get = (n) => headers.find((h) => h.name.toLowerCase() === n)?.value || "";
+  const cd = get("content-disposition");
+  const type = get("content-type").split(";")[0].trim().toLowerCase();
+  const attachment = /^\s*attachment/i.test(cd);
+  if (!attachment && (!type || SHOWN.test(type))) return;
+  const now = Date.now();
+  for (const [u, r] of responses) if (now - r.at > RESPONSE_KEEP || responses.size > 50) responses.delete(u);
+  const size = parseInt(get("content-length"), 10);
+  responses.set(details.url, { at: now, method: String(details.method || "GET").toUpperCase(), size: size > 0 ? size : 0, type, filename: dispositionName(cd) });
+}
+
+function responseFor(url) {
+  const r = responses.get(url);
+  return r && Date.now() - r.at <= RESPONSE_KEEP ? r : null;
+}
+
 /** A request the browser made in a tab: a video is noted, a new page clears the list. */
 function onMediaHeaders(details) {
   const { tabId, url, type } = details;
+  if (type === "main_frame" || type === "sub_frame") noteDownloadResponse(details);
+  if (type === "sub_frame") return;
   if (typeof tabId !== "number" || tabId < 0) return;
   if (type === "main_frame") {
     changeCaught(tabId, async (list) => (list.length ? [] : null));
@@ -639,7 +1011,7 @@ function onMediaHeaders(details) {
   }, () => {});
 }
 
-api.webRequest?.onHeadersReceived?.addListener(onMediaHeaders, { urls: ["<all_urls>"], types: ["main_frame", "media", "xmlhttprequest"] }, ["responseHeaders"]);
+api.webRequest?.onHeadersReceived?.addListener(onMediaHeaders, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "media", "xmlhttprequest"] }, ["responseHeaders"]);
 function forgetTab(tabId) {
   caughtWork.delete(tabId);
   Promise.resolve(api.storage.session?.remove(caughtKey(tabId))).catch(() => {});
@@ -1001,6 +1373,8 @@ api.runtime.onMessage.addListener((msg, sender, respond) => {
     // "Send this page" comes from the toolbar window only, never from a page in a tab.
     if (msg?.type === "send-tab" && !sender?.tab) respond(await download(msg.url, "", "", { incognito: !!msg.incognito, storeId: msg.storeId }));
     else if (msg?.type === "ping") respond(await send({ kind: "ping" }));
+    // The toolbar window: are private windows on (the browser's own switch for Pako)?
+    else if (msg?.type === "private") respond({ allowed: await privateAllowed() });
     // Pako Light's popup: is the full extension on here (then Light stays out of the way), and
     // is this tab on a site Light leaves alone (its Send button is greyed out there)?
     else if (msg?.type === "edition") {

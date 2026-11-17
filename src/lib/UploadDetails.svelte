@@ -90,7 +90,7 @@
   const look = $derived(s ? sentLook(s) : null);
   const exp = $derived(s ? expiryLook(s, now) : null);
   const avg = $derived(s?.secs && s.secs > 0 ? s.size / s.secs : null);
-  const packing = $derived(!s ? "" : s.asFiles ? "As they are" : s.compressed ? "Compressed ZIP" : s.files > 1 ? "One ZIP" : "As it is");
+  const packing = $derived(!s ? "" : s.parts ? `ZIP in ${s.parts} parts` : s.asFiles ? "As they are" : s.compressed ? "Compressed ZIP" : s.files > 1 ? "One ZIP" : "As it is");
   const listed = $derived(s?.contents ?? []);
   const more = $derived(s ? Math.max(0, s.files - listed.length) : 0);
 

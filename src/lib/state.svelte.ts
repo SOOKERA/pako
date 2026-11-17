@@ -243,6 +243,8 @@ class AppState {
   });
   /** "Add contact" asked from the sidebar: the Direct tab opens its form. */
   directAdding = $state(false);
+  /** Direct › From: the device whose contacts are shown and sent to (null: this PC). */
+  directFrom = $state<string | null>(null);
   private directAsking = false;
   private directAgain = false;
   /** The Direct tutorial with no contacts yet: show example people so each step has something to
@@ -366,7 +368,8 @@ class AppState {
   }
 
   /** Sends files / folders (paths from the pickers). */
-  /** `mode` = this send only ("files" / "zip" / "compress"); null = the setting. */
+  /** `mode` = this send only ("files" / "zip" / "compress" / "parts"); null = the setting.
+   *  `partMb`: "ZIP in parts"' part size (null = the setting). */
   /** `deleteDays` and `host`: kept by "Try again" (null = the settings). */
   async send(
     paths: string[],
@@ -374,10 +377,11 @@ class AppState {
     name: string | null = null,
     deleteDays: number | null = null,
     host: SendHost | null = null,
+    partMb: number | null = null,
   ) {
     if (!paths.length) return;
     this.view = "send";
-    await this.run(() => api.sendStart(paths, mode, name, deleteDays, host));
+    await this.run(() => api.sendStart(paths, mode, name, deleteDays, host, partMb));
     await this.refreshSends();
   }
 

@@ -46,9 +46,9 @@ const send: Step[] = [
 // Left → right. With no contacts yet, example people are shown during this tutorial.
 const direct: Step[] = [
   { view: "direct", target: "filters", title: "Direct", text: "Send files straight to another Pako, PC to PC, nothing uploaded in between. On the left: show who's online, waiting for you or a favourite, and group people with tags like Work. Right-click a tag to rename or delete it." },
-  { view: "direct", target: "direct-people", when: hasContacts, optional: true, title: "Your contacts", text: "Everyone you've connected with. A green dot means online, a blue one online on your home network, an amber one that they haven't accepted yet, and a red ! that something waits for your answer. + Add adds someone with their Pako ID. At the bottom: the name your contacts see, your Pako ID to share, and whether Pakos on the same network can see you." },
+  { view: "direct", target: "direct-people", when: hasContacts, optional: true, title: "Your contacts", text: "Everyone you've connected with. A green dot means online, a blue one online on your home network, an amber one that they haven't accepted yet, and a red ! that something waits for your answer. + Add adds someone with their Pako ID. At the top, under You, sending from: the name your contacts see (click it to change it) and your Pako ID to share. Its PC part sends from another of your PCs: pick one to see its contacts and send to them through it. At the bottom: whether Pakos on the same network can see you." },
   { view: "direct", target: "direct-chat", when: hasContacts, optional: true, title: "Your history together", text: "Everything you sent each other, with progress and speed. To send, drag and drop files or folders anywhere on this page (from Explorer or your desktop), or use Choose files. They go straight to this person, encrypted." },
-  { view: "direct", target: "direct-details", panel: true, when: () => hasContacts() && app.directShown.length > 0, optional: true, title: "Details", text: "Your speeds with this person, what you exchanged, their tags and where their files go. Turn on Can send to me without asking for people you trust." },
+  { view: "direct", target: "direct-details", panel: true, when: () => hasContacts() && app.directShown.length > 0, optional: true, title: "Details", text: "Your speeds with this person, what you exchanged, their tags and where their files go. Check this contact says how often Pako calls them by itself, or often for an hour, today or a week; Mute stops their pop-ups and sounds. Turn on Can send to me without asking for people you trust." },
 ];
 
 // Left → right. Steps about a device show once one is paired (or asks to be).
@@ -69,14 +69,16 @@ const dashboard: Step[] = [
   { view: "dashboard", target: ["dash-people", "dash-records"], when: () => app.numbersEmpty !== true, optional: true, title: "Your people and Records", text: "Who you exchanged the most with in Direct and your best speeds with them, then your records: fastest download, biggest file and more." },
 ];
 
-// Left, then down the sections.
+// The tabs on the left first, then each tab in their order (each step opens its tab).
 const settings: Step[] = [
-  { view: "settings", target: "settings-nav", title: "Settings", text: "Click a section to jump to it. Changes apply when you click Save; Cancel leaves everything as it was." },
+  { view: "settings", target: "settings-nav", title: "Settings", text: "One tab per part of Settings: click one, or use ↑ ↓ and Enter (Ctrl+Tab from anywhere). Search finds any setting by name, even under Advanced. Save keeps the changes in every tab at once; a dot marks a tab with changes not saved yet." },
+  { view: "settings", target: "set-updates", title: "Features & updates", text: "Pako's version and its updates. The tools for features like videos fold under What Pako can do. At the bottom of each tab, Advanced holds what most people never change: here, running the first-start setup again." },
+  { view: "settings", target: "set-browser", title: "Browser extension", text: "Connect Pako to your browsers, add the extension (each browser says when it's Installed), and choose whether Pako asks before each browser download." },
   { view: "settings", target: "set-accounts", title: "Accounts", text: "Connect your Google Drive for uploads. Downloads never need a sign-in." },
-  { view: "settings", target: ["set-window", "set-notices"], title: "Window and Notifications", text: "Light or dark, what minimising and closing do, starting with Windows, and asking before quitting. Then what shows as a pop-up and what the bell keeps, and Do not disturb." },
-  { view: "settings", target: "set-downloads", title: "Downloads", text: "Your download folder, connections per file, a speed limit, video quality, and set hours for downloading." },
-  { view: "settings", target: ["set-upload", "set-browser"], title: "Upload and Browser extension", text: "Where uploads go and how several files are packed. Then connect Pako to your browsers, add the extension, and choose whether Pako asks before each browser download." },
-  { view: "settings", target: "set-updates", title: "Features & updates", text: "Pako's version, the video tools and updates. Run the first-start setup again from here too." },
+  { view: "settings", target: "set-window", title: "Window", text: "Light or dark, what minimising and closing do, starting with Windows, and asking before quitting." },
+  { view: "settings", target: "set-notices", title: "Notifications", text: "What shows as a pop-up and what the bell keeps, a chime for downloads you asked about, and Do not disturb." },
+  { view: "settings", target: "set-downloads", title: "Downloads", text: "Your download folder, how many at once, a speed limit, video quality and set hours for downloading. Connections per file and how long private downloads stay in the list are under Advanced." },
+  { view: "settings", target: "set-upload", title: "Upload", text: "Where uploads go and how several files are packed." },
 ];
 
 // The first look: short, down the sidebar. The details are in each page's Tutorial.
