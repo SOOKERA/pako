@@ -134,7 +134,7 @@ When it's on, everything you send from a private window is private: downloads Pa
 
 In Chrome, Edge and similar browsers, a private window's download is held paused while Pako checks it (like a file a form sent, above): if Pako can't get it, it carries on in the private window, never in your normal one. A Google Drive file from a private window is downloaded like any other file, with that window's own login.
 
-Links sent from a private window show **private** with a lock in **Links**. They're kept only until you quit Pako (never saved), are never sent to another of your PCs with **Download on** ("Private downloads stay on this PC."), and download as private downloads. **Record this video** isn't offered in private windows.
+Links sent from a private window show **private** with a lock in **Links**. They're kept only until you quit Pako (never saved), are never sent to another of your PCs with **Download on** ("Private downloads stay on this PC."), and download as private downloads. Private downloads also never show in **My devices** on your other PCs, so they can't be seen, paused, removed or fetched from there. **Record this video** isn't offered in private windows.
 
 A download from your browser that starts right away shows a short pop-up, **Downloading in Pako**, and "all links on this page" shows **Links added** (a video sent to **Links** shows **Video sent to Pako**, a playlist **Playlist sent to Pako**). Turn these off with **Sent from your browser** in **Settings › Notifications** (see [Notifications](notifications.md)).
 

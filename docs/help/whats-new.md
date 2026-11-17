@@ -1,5 +1,12 @@
 # What's new
 
+## 1.2.2
+
+### Fixed
+
+- Private downloads no longer show in **My devices** on your other PCs, which could see, pause, remove or fetch them.
+- A video sent from another of your PCs no longer joins a private download of the same video here: it gets its own download.
+
 ## 1.2.1
 
 ### Fixed

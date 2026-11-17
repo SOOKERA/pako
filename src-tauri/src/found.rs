@@ -590,8 +590,8 @@ impl Engine {
                 let _ = answer.send(if r.added + r.skipped > 0 { Ok(DeviceVideo::ToLinks) } else { Err(r.errors.into_iter().next().unwrap_or_else(|| NEEDS_VIDEO_TOOLS.into())) });
                 return;
             }
-            // Already downloading (or waiting to) here: taken.
-            let already = || me.inner.lock().unwrap().downloads.iter().find(|d| d.link == url && !matches!(d.status, Status::Completed | Status::Failed)).map(|d| d.id.clone());
+            // Already downloading (or waiting to) here: taken (never a private window's).
+            let already = || device_video_joins(&me.inner.lock().unwrap().downloads, &url);
             if let Some(have) = already() {
                 let _ = answer.send(Ok(DeviceVideo::Downloading(have)));
                 return;
@@ -1354,6 +1354,14 @@ pub struct MirrorView {
     pub picked: bool,
 }
 
+/// The download a video sent by another PC joins: the same link already downloading (or
+/// waiting to) here. Never a private window's: that one stays on this PC, so the other PC
+/// gets a download of its own and never the private one's id (its card would follow a
+/// download it can't see, and the video it sent would end with the private one, untraced).
+fn device_video_joins(downloads: &[Download], url: &str) -> Option<String> {
+    downloads.iter().find(|d| d.link == url && !d.private && !matches!(d.status, Status::Completed | Status::Failed)).map(|d| d.id.clone())
+}
+
 /// What a video sent by another of your PCs becomes here: a download in the quality picked
 /// there (the closest height at or below, as any video), in this PC's own download folder,
 /// with its priority. Never held for the Download with Pako window.
@@ -2039,6 +2047,21 @@ mod tests {
     fn on(mut f: FoundItem, device: &str) -> FoundItem {
         f.device = Some(device.into());
         f
+    }
+
+    /// A video another PC sends joins the same video already downloading here, but never a
+    /// private window's: that PC gets a download of its own, not the private one's id.
+    #[test]
+    fn a_video_from_another_pc_never_joins_a_private_download() {
+        let url = "https://www.youtube.com/watch?v=abc123";
+        let mut private = new_download(url, Source::Http { url: url.into() }, "v.mp4".into(), PathBuf::new(), None);
+        private.private = true;
+        assert_eq!(device_video_joins(std::slice::from_ref(&private), url), None, "the private one stays on this PC");
+        let plain = new_download(url, Source::Http { url: url.into() }, "v.mp4".into(), PathBuf::new(), None);
+        assert_eq!(device_video_joins(&[private, plain.clone()], url), Some(plain.id.clone()));
+        let mut done = plain;
+        done.status = Status::Completed;
+        assert_eq!(device_video_joins(&[done], url), None);
     }
 
     /// A row's "Download on" is saved with it (left out for This PC), and a Links list saved

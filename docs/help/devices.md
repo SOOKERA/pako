@@ -119,7 +119,7 @@ In the device's **Settings** tab, **… can control my Pako** says whether that 
 
 What a device you allow can do here, and nothing else:
 
-- see this PC's download list;
+- see this PC's download list (never its private downloads from a browser's private window: a device can't see, change or get them, and a link it sends never joins one, even for the same video);
 - add web links to the downloads, with a video quality and a priority, into this PC's own download folder or a folder it names inside it;
 - pause, resume, change the priority of, or remove a download from the list;
 - get a finished download from that list.

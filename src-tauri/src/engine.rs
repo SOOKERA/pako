@@ -5237,7 +5237,7 @@ fn drive_route(url: &str, private: bool) -> bool {
     !private && drive::parse_link(url).is_some()
 }
 
-fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, group: Option<String>) -> Download {
+pub(crate) fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, group: Option<String>) -> Download {
     Download {
         id: uuid::Uuid::new_v4().to_string(),
         link: link.to_string(),

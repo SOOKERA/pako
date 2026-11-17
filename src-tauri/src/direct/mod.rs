@@ -327,14 +327,43 @@ impl EngineHost {
     fn engine(&self) -> Option<Arc<crate::engine::Engine>> {
         self.0.try_state::<Arc<crate::engine::Engine>>().map(|e| e.inner().clone())
     }
+
+    /// The engine, when `item` is a download your devices may see and touch: not one waiting
+    /// for the browser's answer, and never a private window's (it stays on this PC, with no
+    /// trace in your devices' lists or histories).
+    fn engine_for(&self, item: &str) -> Option<Arc<crate::engine::Engine>> {
+        let e = self.engine()?;
+        let d = e.find(item)?;
+        shown_to_devices(&d).then_some(e)
+    }
+}
+
+/// What your devices see of the download list: not what waits for the browser's answer, and
+/// never a private window's download.
+fn shown_to_devices(d: &crate::model::Download) -> bool {
+    !d.ask && !d.private
+}
+
+/// The downloads a link from another PC just became: new since `before`, with that link, and
+/// never a private window's that the browser added meanwhile (a Drive link waits on Google).
+fn made_for_device(downloads: &[crate::model::Download], link: &str, before: &std::collections::HashSet<String>) -> Vec<String> {
+    downloads.iter().filter(|d| d.link == link && !before.contains(&d.id) && shown_to_devices(d)).map(|d| d.id.clone()).collect()
+}
+
+/// A private window's download listed here that has this very file (a finished download's file
+/// was deleted, then the browser saved a private one under its name): never sent to a device.
+fn private_file(downloads: &[crate::model::Download], p: &std::path::Path) -> bool {
+    let key = crate::names::path_key(p);
+    downloads.iter().any(|d| d.private && crate::names::path_key(&d.final_path()) == key)
 }
 
 impl Host for EngineHost {
     fn list(&self) -> Vec<RemoteItem> {
         let Some(e) = self.engine() else { return Vec::new() };
         let mut list = e.downloads();
-        // Newest first; what waits for the browser's answer isn't shown.
-        list.retain(|d| !d.ask);
+        // Newest first; what waits for the browser's answer, and a private window's download,
+        // aren't shown.
+        list.retain(shown_to_devices);
         list.sort_by(|a, b| b.date.cmp(&a.date).then(b.added_at.cmp(&a.added_at)));
         list.truncate(devices::MAX_LIST);
         list.into_iter()
@@ -409,7 +438,7 @@ impl Host for EngineHost {
                         let r = e.add_links_from_device(&l.link, Some(dir)).await;
                         if r.added > 0 {
                             out.downloads += r.added;
-                            let made: Vec<String> = e.downloads().into_iter().filter(|d| d.link == l.link && !before.contains(&d.id)).map(|d| d.id).collect();
+                            let made = made_for_device(&e.downloads(), &l.link, &before);
                             if l.priority != crate::model::Priority::Normal {
                                 e.set_priority(&made, l.priority);
                             }
@@ -440,33 +469,34 @@ impl Host for EngineHost {
     }
 
     fn set_priority(&self, item: &str, priority: crate::model::Priority) {
-        if let Some(e) = self.engine() {
+        if let Some(e) = self.engine_for(item) {
             e.set_priority(&[item.to_string()], priority);
         }
     }
 
     fn pause(&self, item: &str) {
-        if let Some(e) = self.engine() {
+        if let Some(e) = self.engine_for(item) {
             e.pause(&[item.to_string()]);
         }
     }
 
     fn resume(&self, item: &str) {
-        if let Some(e) = self.engine() {
+        if let Some(e) = self.engine_for(item) {
             e.resume(&[item.to_string()]);
         }
     }
 
     fn remove(&self, item: &str) {
-        if let Some(e) = self.engine() {
+        if let Some(e) = self.engine_for(item) {
             e.remove(&[item.to_string()], false);
         }
     }
 
     fn file_of(&self, item: &str) -> Option<PathBuf> {
-        let d = self.engine()?.find(item)?;
+        let e = self.engine_for(item)?;
+        let d = e.find(item)?;
         let p = d.final_path();
-        (d.status == crate::model::Status::Completed && p.is_file()).then_some(p)
+        (d.status == crate::model::Status::Completed && p.is_file() && !private_file(&e.downloads(), &p)).then_some(p)
     }
 }
 
@@ -885,6 +915,52 @@ mod tests {
 
     fn add(link: &str, quality: Option<u32>, newer: bool) -> ToAdd {
         ToAdd { link: link.into(), quality, priority: crate::model::Priority::Normal, newer, folder: None }
+    }
+
+    #[test]
+    fn your_devices_never_see_a_private_windows_download() {
+        let mk = |private: bool, ask: bool| {
+            let mut d = crate::engine::new_download("https://example.com/a.zip", crate::model::Source::Http { url: "https://example.com/a.zip".into() }, "a.zip".into(), std::path::PathBuf::from("."), None);
+            d.private = private;
+            d.ask = ask;
+            d
+        };
+        assert!(shown_to_devices(&mk(false, false)));
+        assert!(!shown_to_devices(&mk(true, false)), "a private window's download stays on this PC");
+        assert!(!shown_to_devices(&mk(false, true)), "a download waiting for the browser's answer isn't shown");
+        assert!(!shown_to_devices(&mk(true, true)));
+    }
+
+    /// A link from another PC: the downloads it became never include a private window's that
+    /// the browser added meanwhile (its id would go to that PC and get its priority).
+    #[test]
+    fn a_link_from_another_pc_never_takes_a_private_download_added_meanwhile() {
+        let link = "https://drive.google.com/file/d/abc/view";
+        let mk = |private: bool| {
+            let mut d = crate::engine::new_download(link, crate::model::Source::Http { url: link.into() }, "a.zip".into(), std::path::PathBuf::from("."), None);
+            d.private = private;
+            d
+        };
+        let (old, mine, private) = (mk(false), mk(false), mk(true));
+        let before = std::collections::HashSet::from([old.id.clone()]);
+        assert_eq!(made_for_device(&[old, mine.clone(), private], link, &before), vec![mine.id]);
+    }
+
+    /// "Get" never sends a file a private window's download now has (a finished download's
+    /// file was deleted, then the browser saved a private one under the same name).
+    #[test]
+    fn get_never_sends_a_file_a_private_download_has() {
+        let dir = std::path::PathBuf::from("D:\\Downloads");
+        let mk = |name: &str, private: bool| {
+            let mut d = crate::engine::new_download("https://e.org/a.zip", crate::model::Source::Http { url: "https://e.org/a.zip".into() }, name.into(), dir.clone(), None);
+            d.private = private;
+            d
+        };
+        let listed = mk("a.zip", false);
+        let p = listed.final_path();
+        assert!(!private_file(&[listed.clone()], &p));
+        assert!(!private_file(&[listed.clone(), mk("b.zip", true)], &p));
+        assert!(private_file(&[listed.clone(), mk("A.zip", true)], &p), "same file, whatever the letter case");
     }
 
     /// Links from another of your PCs: a video downloads at once in the quality picked there
