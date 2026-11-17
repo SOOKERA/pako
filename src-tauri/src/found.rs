@@ -130,14 +130,25 @@ impl Engine {
         self.found_add_with(text, no_video, private).await
     }
 
+    /// A link another of your PCs sent to Links. Like a paste, except that a private window's
+    /// row of the same link doesn't count as "already there" (`in_links`): that PC's link gets a
+    /// row of its own, kept like any other.
+    pub async fn found_add_from_device(self: &Arc<Self>, text: &str) -> AddResult {
+        self.found_add_with_opts(text, false, false, true).await
+    }
+
     async fn found_add_with(self: &Arc<Self>, text: &str, no_video: bool, private: bool) -> AddResult {
+        self.found_add_with_opts(text, no_video, private, false).await
+    }
+
+    async fn found_add_with_opts(self: &Arc<Self>, text: &str, no_video: bool, private: bool, from_device: bool) -> AddResult {
         let mut added = 0;
         let mut skipped = 0;
         let mut errors = Vec::new();
         let mut to_check = Vec::new();
         let mut to_open = Vec::new();
         for link in extract_links(text) {
-            if self.inner.lock().unwrap().found.iter().any(|f| f.template.link == link) {
+            if in_links(&self.inner.lock().unwrap().found, &link, from_device) {
                 skipped += 1;
                 continue;
             }
@@ -146,7 +157,7 @@ impl Engine {
                     let mut inner = self.inner.lock().unwrap();
                     // Checked again now: another paste of the same link may have landed while
                     // this one was being opened. (A Drive folder's files all carry its link.)
-                    if inner.found.iter().any(|f| f.template.link == link) {
+                    if in_links(&inner.found, &link, from_device) {
                         skipped += 1;
                         continue;
                     }
@@ -586,7 +597,7 @@ impl Engine {
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
             if !crate::video::ready() {
-                let r = me.found_add(&url).await;
+                let r = me.found_add_from_device(&url).await;
                 let _ = answer.send(if r.added + r.skipped > 0 { Ok(DeviceVideo::ToLinks) } else { Err(r.errors.into_iter().next().unwrap_or_else(|| NEEDS_VIDEO_TOOLS.into())) });
                 return;
             }
@@ -609,7 +620,7 @@ impl Engine {
             };
             match result {
                 Ok(p) if p.is_playlist => {
-                    me.found_add(&url).await;
+                    me.found_add_from_device(&url).await;
                     let _ = answer.send(Ok(DeviceVideo::ToLinks));
                 }
                 Ok(p) => {
@@ -1354,6 +1365,13 @@ pub struct MirrorView {
     pub picked: bool,
 }
 
+/// The link is already in Links (a paste of it is skipped). For a link another PC sends
+/// (`from_device`), a private window's row doesn't count: it lives in memory only and goes at
+/// quit, so that PC's link, counted as taken, would be lost with it.
+fn in_links(found: &[FoundItem], link: &str, from_device: bool) -> bool {
+    found.iter().any(|f| f.template.link == link && !(from_device && f.template.private))
+}
+
 /// The download a video sent by another PC joins: the same link already downloading (or
 /// waiting to) here. Never a private window's: that one stays on this PC, so the other PC
 /// gets a download of its own and never the private one's id (its card would follow a
@@ -2067,6 +2085,21 @@ mod tests {
         let mut done = plain;
         done.status = Status::Completed;
         assert_eq!(device_video_joins(&[done], url), None);
+    }
+
+    /// A link another PC sends to Links never merges into a private window's row of it (memory
+    /// only, gone at quit): it gets a row of its own. Pastes and the browser skip it as before.
+    #[test]
+    fn a_link_from_another_pc_never_merges_into_a_private_links_row() {
+        let link = "https://a.example/a.zip";
+        let mut private = row("a.zip", link, Some(1), Ready);
+        private.template.private = true;
+        let list = std::slice::from_ref(&private);
+        assert!(!in_links(list, link, true), "from another PC: a row of its own");
+        assert!(in_links(list, link, false), "a paste, or the browser: skipped, as before");
+        let plain = row("a.zip", link, Some(1), Ready);
+        assert!(in_links(&[private.clone(), plain.clone()], link, true), "a normal row of it: skipped");
+        assert!(!in_links(&[plain], "https://a.example/b.zip", false));
     }
 
     /// A row's "Download on" is saved with it (left out for This PC), and a Links list saved

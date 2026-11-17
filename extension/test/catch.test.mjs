@@ -191,7 +191,17 @@ test("A private window's tab caught before the rule left it out: back to that ta
   const allow = [...ext.rules.values()].find((r) => r.action.type === "allow");
   assert.deepEqual(allow.condition, { urlFilter: `|${FILE}|`, tabIds: [NEW], resourceTypes: ["main_frame"] });
   assert.deepEqual(ext.navigated, [{ tabId: NEW, url: FILE }]);
+  // The address first answers with a redirect back to itself (a cookie set on the way): not used
+  // yet. The browser checks the rules again for the next request (taken out at the redirect, the
+  // file was caught again in Vivaldi 8.3, and lost: the page said it went on in the browser).
+  await browse(ext, { url: FILE, tabId: NEW, statusCode: 302, responseHeaders: [{ name: "Location", value: FILE }] });
+  await settle(10);
+  assert.equal([...ext.rules.values()].filter((r) => r.action.type === "allow").length, 1, "kept through a redirect");
   assert.equal(await browse(ext, { url: FILE, tabId: NEW, responseHeaders: ATTACHMENT }), "download");
+  // Used: the exception goes (it doesn't let that address through in that tab until the
+  // browser closes).
+  await settle(10);
+  assert.equal([...ext.rules.values()].filter((r) => r.action.type === "allow").length, 0, "one-time: gone once used");
   // The browser downloads it there: the file-name step holds it paused while Pako checks it.
   await ext.listeners.naming({ id: 8, url: FILE, referrer: PAGE, mime: "application/zip", totalBytes: 50e6, filename: "", incognito: true }, () => {});
   await settle(40);
@@ -204,11 +214,41 @@ test("A private window's tab caught before the rule left it out: back to that ta
   await settle(40);
   assert.match(gone.session.lastError, /couldn't hand "big.zip" back to your private window/);
   assert.equal(gone.storage.lastError ?? "", "");
+  // Its sent page doesn't say it goes on in the browser: it says it didn't.
+  const failed = await sentPage(gone, NEW);
+  assert.equal(failed.stay, true);
+  assert.doesNotMatch(failed.said, /goes on in your browser/);
+  assert.match(failed.said, /couldn't go on in your browser\. Use Back and download it once more/);
+  assert.equal([...gone.rules.values()].filter((r) => r.action.type === "allow").length, 0, "no exception left behind");
   // A new private tab is left out of the rule at once.
   ext.chrome.tabs.query = async () => [{ id: 9, url: PAGE, incognito: true, vivExtData: "{}" }];
   ext.listeners.tabCreated({ id: 9, incognito: true });
   await settle(30);
   assert.deepEqual(ext.rules.get(1).condition.excludedTabIds, [9]);
+});
+
+test("A private tab's one-time exception goes when its tab closes before using it, and one left before the background slept goes at its next start", async () => {
+  const ext = await vivaldi({ privateTabs: [] });
+  const NEW = 7;
+  ext.chrome.tabs.get = async (id) => ({ id, url: "about:blank", incognito: true, windowId: 2 });
+  ext.chrome.tabs.update = async (id) => ({ id });
+  assert.equal(await browse(ext, { url: FILE, tabId: NEW, responseHeaders: ATTACHMENT }), "caught");
+  await settle(40);
+  const allows = (e) => [...e.rules.values()].filter((r) => r.action.type === "allow");
+  assert.equal(allows(ext).length, 1);
+  // Another tab's answer for the same address, or this tab's for another one: not used yet.
+  await browse(ext, { url: FILE, tabId: TAB, responseHeaders: [{ name: "Content-Type", value: "text/html" }] });
+  await browse(ext, { url: PAGE, tabId: NEW, responseHeaders: [{ name: "Content-Type", value: "text/html" }] });
+  await settle(10);
+  assert.equal(allows(ext).length, 1);
+  ext.listeners.removed(NEW);
+  await settle(10);
+  assert.equal(allows(ext).length, 0, "the tab closed: gone");
+  // The background slept with one still there: gone when it starts again; the catch rule stays.
+  const left = { id: 1003, priority: 2, action: { type: "allow" }, condition: { urlFilter: `|${FILE}|`, tabIds: [NEW], resourceTypes: ["main_frame"] } };
+  const woke = await vivaldi({ sessionRules: [left] });
+  assert.equal(allows(woke).length, 0);
+  assert.ok(woke.rules.get(1));
 });
 
 test("No rule when: the takeover switch is off, an older Pako, Firefox's way, Pako Light", async () => {
@@ -280,6 +320,18 @@ test("Chrome (no question first): no rule; a browser seen asking first twice in 
   assert.equal(quick.rules.size, 0);
 });
 
+test("Two downloads told at once, both after the browser asked first: both count (learnt, not one lost)", async () => {
+  const ext = await vivaldi({ vivaldi: false });
+  for (const n of [1, 2]) assert.equal(await browse(ext, { url: FILE + n, responseHeaders: ATTACHMENT }), "download");
+  await settle(1100);
+  // The browser tells the extension of both in the same moment.
+  for (const n of [1, 2]) ext.listeners.naming({ id: 7 + n, url: FILE + n, referrer: PAGE, mime: "application/zip", totalBytes: 50e6, filename: "" }, () => {});
+  await settle(60);
+  assert.equal(ext.storage.askedSlow, 2);
+  assert.equal(ext.storage.asksFirst, true);
+  assert.ok(ext.rules.get(1), "learnt: the next one is caught at the server's answer");
+});
+
 test("Firefox (no declarativeNetRequest asked for): downloads.onCreated as before", async () => {
   const ext = await vivaldi({ dnr: false, naming: false });
   assert.equal(ext.rules.size, 0);
@@ -346,6 +398,45 @@ test("A form's answer read longer than the background stays awake (it sleeps aft
   const later = await vivaldi({ sessionStored: ext.session });
   assert.equal(await browse(later, { url: FILE.replace("big", "other"), responseHeaders: ATTACHMENT }), "caught");
   assert.equal((await sentPage(later)).stay, false);
+});
+
+test("A main-frame answer that never replaced the page (204, a redirect, a stopped load) isn't the page behind: a form's answer still is", async () => {
+  const html = [{ name: "Content-Type", value: "text/html" }];
+  const formAnswer = (ext) => ext.listeners.headers({ url: "https://files.example.com/search", type: "main_frame", method: "POST", tabId: TAB, frameId: 0, statusCode: 200, requestId: "r1", responseHeaders: html });
+  const ext = await vivaldi();
+  formAnswer(ext);
+  // A link that answers "204 No Content" (the browser stays on the page), and a link that
+  // redirects (the page it leads to, if any, is noted then).
+  ext.listeners.headers({ url: "https://files.example.com/ping", type: "main_frame", method: "GET", tabId: TAB, frameId: 0, statusCode: 204, requestId: "r2", responseHeaders: [] });
+  ext.listeners.headers({ url: "https://files.example.com/go", type: "main_frame", method: "GET", tabId: TAB, frameId: 0, statusCode: 302, requestId: "r3", responseHeaders: [] });
+  assert.equal(await browse(ext, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(ext)).stay, true, "the form's answer is still behind");
+  // A page whose load was stopped after its answer came (Esc): the form's answer is still behind.
+  const stopped = await vivaldi();
+  formAnswer(stopped);
+  stopped.listeners.headers({ url: "https://files.example.com/slow", type: "main_frame", method: "GET", tabId: TAB, frameId: 0, statusCode: 200, requestId: "r4", responseHeaders: html });
+  stopped.listeners.requestError({ url: "https://files.example.com/slow", type: "main_frame", tabId: TAB, requestId: "r4", error: "net::ERR_ABORTED" });
+  await settle(10);
+  assert.equal(await browse(stopped, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(stopped)).stay, true);
+  // The same after the background slept in between (the form's answer known from the browser's memory).
+  const before = await vivaldi();
+  formAnswer(before);
+  await settle(10);
+  const woke = await vivaldi({ sessionStored: before.session });
+  woke.listeners.headers({ url: "https://files.example.com/slow", type: "main_frame", method: "GET", tabId: TAB, frameId: 0, statusCode: 200, requestId: "r5", responseHeaders: html });
+  woke.listeners.requestError({ url: "https://files.example.com/slow", type: "main_frame", tabId: TAB, requestId: "r5", error: "net::ERR_ABORTED" });
+  await settle(10);
+  assert.equal(await browse(woke, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(woke)).stay, true);
+  // A page that did load (its answer, then no error): going back is safe.
+  const loaded = await vivaldi();
+  formAnswer(loaded);
+  loaded.listeners.headers({ url: "https://files.example.com/done", type: "main_frame", method: "GET", tabId: TAB, frameId: 0, statusCode: 200, requestId: "r6", responseHeaders: html });
+  loaded.listeners.requestError({ url: "https://files.example.com/img.png", type: "main_frame", tabId: TAB, requestId: "r7", error: "net::ERR_ABORTED" });
+  await settle(10);
+  assert.equal(await browse(loaded, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(loaded)).stay, false);
 });
 
 test("The page behind was a form's answer (POST): the sent page stays, so going back doesn't send the form again", async () => {

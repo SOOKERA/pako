@@ -64,8 +64,10 @@ export function browserProfile() {
  *   and later), "old" (an older one: it throws on such a rule), or false (none: Firefox's way)
  * - `vivaldi`: the browser is Vivaldi (its tabs carry `vivExtData`)
  * - `alias`: the browser also names its API `browser` (Chromium 14x and later: not Firefox)
+ * - `sessionRules`: the extension's session rules already in the browser (left by its background
+ *   page before it slept)
  */
-export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false } = {}) {
+export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false, sessionRules = [] } = {}) {
   const id = light ? LIGHT_ID : FULL_ID;
   const who = light ? "light" : "full";
   const sent = [];
@@ -97,7 +99,7 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
   const tabList = () =>
     Object.entries(tabs).map(([tid, url], i) => ({ id: Number(tid), url, title: `Page ${tid}`, active: i === 0, incognito: privateTabs.includes(Number(tid)), ...(vivaldi ? { vivExtData: "{}" } : {}) }));
   /** The extension's session rules in the browser (declarativeNetRequest), by ID. */
-  const rules = new Map();
+  const rules = new Map(sessionRules.map((r) => [r.id, plain(r)]));
   /** Tabs the extension sent to an address (tabs.update): { tabId, url }. */
   const navigated = [];
   const storageChanged = (o) => listeners.storageChanged?.(Object.fromEntries(Object.keys(o).map((k) => [k, { newValue: o[k] }])), "local");
@@ -173,7 +175,7 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       },
     },
     extension: { isAllowedIncognitoAccess: async () => privateAllowed },
-    webRequest: { onHeadersReceived: ev("headers"), onSendHeaders: ev("sendHeaders"), onBeforeRedirect: ev("redirect") },
+    webRequest: { onHeadersReceived: ev("headers"), onSendHeaders: ev("sendHeaders"), onBeforeRedirect: ev("redirect"), onErrorOccurred: ev("requestError") },
     storage: {
       local: {
         get: async (d) => ({ ...d, ...storage }),

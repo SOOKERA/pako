@@ -419,8 +419,9 @@ impl Host for EngineHost {
                 };
                 match route {
                     Route::Links => {
-                        let r = e.found_add(&l.link).await;
-                        // Already in Links there counts as taken.
+                        let r = e.found_add_from_device(&l.link).await;
+                        // Already in Links there counts as taken (never a private window's row:
+                        // that one goes at quit, so the link gets a row of its own).
                         if r.added + r.skipped > 0 {
                             out.to_links += 1;
                         } else {

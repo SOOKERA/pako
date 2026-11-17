@@ -1113,9 +1113,15 @@ function onMediaHeaders(details) {
   if (type === "sub_frame" || type === "other") return;
   if (typeof tabId !== "number" || tabId < 0) return;
   if (type === "main_frame") {
-    // How the tab's page was asked for (a file's answer doesn't replace the page): a form's
-    // answer isn't gone back to by the sent page (see sentPageAnswer).
-    if (!isFile) notePageMethod(tabId, String(details.method || "GET").toUpperCase());
+    // A one-time exception for a private tab's file (see againInTab) has done its work once its
+    // address answers for good. A redirect isn't that: the browser asks again (often the same
+    // address, after a cookie) and checks the rules anew, likely before the exception would be
+    // back (seen in Vivaldi 8.3: the file was then caught again and lost).
+    if (finalAnswer(details.statusCode)) dropAllowFor(tabId, url);
+    // How the tab's page was asked for (a file's answer, a redirect or a "204 No Content"
+    // doesn't replace the page): a form's answer isn't gone back to by the sent page (see
+    // sentPageAnswer).
+    if (!isFile && loadsPage(details.statusCode)) notePageMethod(tabId, String(details.method || "GET").toUpperCase(), details.requestId);
     changeCaught(tabId, async (list) => (list.length ? [] : null));
     // The new page gets the pill again once a video is caught on it.
     forgetPill(tabId);
@@ -1153,6 +1159,8 @@ function onMediaHeaders(details) {
 }
 
 api.webRequest?.onHeadersReceived?.addListener(onMediaHeaders, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "media", "xmlhttprequest", "other"] }, ["responseHeaders"]);
+// A page's load stopped before it showed (see pageLoadFailed).
+api.webRequest?.onErrorOccurred?.addListener(pageLoadFailed, { urls: ["<all_urls>"], types: ["main_frame"] });
 // Only whether a login header went with it (Authorization is given without "extraHeaders").
 api.webRequest?.onSendHeaders?.addListener(notedRequest, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "other"] }, ["requestHeaders"]);
 
@@ -1185,6 +1193,8 @@ api.webRequest?.onSendHeaders?.addListener(notedRequest, { urls: ["<all_urls>"],
 const CATCH_RULE = 1;
 const ALLOW_RULES = 1000;
 const ALLOW_RING = 20;
+/** A one-time exception the tab didn't use within this goes (the tab asks again at once). */
+const ALLOW_FOR = 60 * 1000;
 /** The page a caught answer is turned into (web-accessible, at an address that changes). */
 const SENT_PAGE = "/pako-sent.html";
 /** Longer than this between the server's answer and the file-name step: the browser asked first. */
@@ -1214,17 +1224,39 @@ let catchWork = Promise.resolve();
 let pakoAwayNow = null;
 let awayTimer = null;
 let allowNext = 0;
+/** The one-time exceptions in the browser now: rule ID → { tabId, url, timer }. */
+const allowRules = new Map();
 /** "tab address" → when it was caught last (see CAUGHT_AGAIN). */
 const caughtLately = new Map();
 /** By tab: what its sent page is told (see sentPageAnswer). */
 const sentPages = new Map();
 /** By tab: how its page was asked for ("POST": a form's answer, which going back would send again). */
 const pageMethods = new Map();
+/** By tab: the page last noted as loading in it, and whether the one before it was a form's
+ *  answer (see pageLoadFailed). */
+const pageLoads = new Map();
+const REDIRECTS = [301, 302, 303, 307, 308];
+/** An answer that replaces the tab's page: not a redirect, not "204 No Content" / "205 Reset
+ *  Content" (the browser keeps the page), not an early "1xx". (An error status shows the
+ *  server's error page; a "304" the browser's copy.) */
+function loadsPage(status) {
+  if (typeof status !== "number") return true;
+  return status >= 200 && status !== 204 && status !== 205 && !REDIRECTS.includes(status);
+}
+/** The address's last answer for this request: not a redirect, nor a sign-in question (401, 407:
+ *  the browser may ask again with the sign-in). */
+function finalAnswer(status) {
+  return typeof status !== "number" || (status >= 200 && !REDIRECTS.includes(status) && status !== 401 && status !== 407);
+}
 /** A form's answer is also kept in the browser's memory (storage.session): the background
  *  sleeps after 30 s without events, and you often read a page longer than that before you
  *  click its download. Only a form's answer is written, so a plain page costs nothing. */
 const postKey = (tabId) => `post-${tabId}`;
-function notePageMethod(tabId, method) {
+function notePageMethod(tabId, method, requestId) {
+  // (Read before it changes; from the browser's memory after a sleep.)
+  const before = method === "POST" ? null : pageIsPost(tabId);
+  if (before && requestId != null) pageLoads.set(tabId, { requestId, before });
+  else pageLoads.delete(tabId);
   const was = pageMethods.get(tabId);
   pageMethods.set(tabId, method);
   if (method === "POST") Promise.resolve(api.storage.session?.set({ [postKey(tabId)]: true })).catch(() => {});
@@ -1235,6 +1267,20 @@ async function pageIsPost(tabId) {
   if (pageMethods.has(tabId)) return pageMethods.get(tabId) === "POST";
   const got = await Promise.resolve(api.storage.session?.get(postKey(tabId))).catch(() => null);
   return got?.[postKey(tabId)] === true;
+}
+/** A page's load failed or was stopped after its answer came (Esc, another click): it may never
+ *  have replaced the page. If the page before was a form's answer, it still counts as one (going
+ *  back would send it again); staying on the sent page is the safe side if it did show. */
+function pageLoadFailed(details) {
+  const l = pageLoads.get(details?.tabId);
+  if (!l || l.requestId !== details.requestId) return;
+  pageLoads.delete(details.tabId);
+  l.before.then(
+    (post) => {
+      if (post && !pageLoads.has(details.tabId) && pageMethods.get(details.tabId) !== "POST") notePageMethod(details.tabId, "POST");
+    },
+    () => {},
+  );
 }
 /** What says it's the same file again: its name and size (a link signed anew each time, or
  *  from another mirror, is another address for the same file), else its address. */
@@ -1253,7 +1299,13 @@ function sameFileKeys(tabId, url, seen) {
 }
 
 /** The catch rule. `privateTabs`: a private window's tabs (never caught: its download can't be
- *  started again there if Pako can't get it). */
+ *  started again there if Pako can't get it).
+ *  Frames are caught too (the usual hidden download frame). Known limit: a page script that
+ *  watches its hidden download frame and reads it (jQuery fileDownload's way) can't read the
+ *  sent page there (another origin), and may then say the download failed though Pako has it,
+ *  unless the server's "done" cookie came with the answer. The rule can't tell a hidden frame
+ *  from a shown one, a turned-away answer can only become another page (never "nothing"), and
+ *  leaving frames out would bring the browser's question back for every frame download. */
 function catchRule(privateTabs) {
   return {
     id: CATCH_RULE,
@@ -1314,7 +1366,16 @@ async function syncCatchNow() {
  *  (`slow`: it asked you first). Learnt after ASKED_TWICE in a row, unlearnt by one told at once,
  *  so a single slow one (Chrome's own "download multiple files?" question, a file slow to start)
  *  never turns the catch on in a browser that doesn't ask. */
-async function noteAsking(slow) {
+let askingWork = Promise.resolve();
+function noteAsking(slow) {
+  // One at a time: two downloads told at once would each read the count before the other wrote it.
+  askingWork = askingWork.then(
+    () => noteAskingNow(slow),
+    () => noteAskingNow(slow),
+  );
+  return askingWork;
+}
+async function noteAskingNow(slow) {
   const got = await Promise.resolve(api.storage.local.get({ asksFirst: false, askedSlow: 0 })).catch(() => null);
   if (!got) return;
   const was = got.asksFirst === true;
@@ -1377,17 +1438,19 @@ function onCaught(details) {
   for (const k of keys) caughtLately.set(k, now);
   // (Asked now, while the tab is surely there: its sent page waits for this before it closes it.)
   const tab = Promise.resolve(seen?.tab || (details.tabId >= 0 ? api.tabs.get(details.tabId) : null)).catch(() => null);
-  if (details.type === "main_frame" && details.tabId >= 0) {
-    sentPages.set(details.tabId, { tab, stay: again || pageIsPost(details.tabId), at: now });
-  }
   // The page asked for the same file again by itself: Pako has it (or the browser, if Pako
   // couldn't), so it isn't handed twice.
-  if (again) return;
-  // Counted from now (the browser's copy is already gone): no reload for an update meanwhile.
-  inFlight++;
-  handCaught(details, seen, tab)
-    .catch((e) => console.warn("Pako:", e?.message || e))
-    .finally(() => inFlight--);
+  let handed = null;
+  if (!again) {
+    // Counted from now (the browser's copy is already gone): no reload for an update meanwhile.
+    inFlight++;
+    handed = handCaught(details, seen, tab)
+      .catch((e) => console.warn("Pako:", e?.message || e))
+      .finally(() => inFlight--);
+  }
+  if (details.type === "main_frame" && details.tabId >= 0) {
+    sentPages.set(details.tabId, { tab, stay: again || pageIsPost(details.tabId), handed, at: now });
+  }
 }
 
 /** What the sent page in this tab does: go back (or close a tab opened only for the file), or
@@ -1397,7 +1460,11 @@ async function sentPageAnswer(tabId) {
   sentPages.delete(tabId);
   if (!s || Date.now() - s.at > CAUGHT_AGAIN) return { ok: true, stay: false };
   const tab = await s.tab;
-  if (tab?.incognito) return { ok: true, stay: true, said: "This private window's download goes on in your browser." };
+  if (tab?.incognito) {
+    // Handed back to the tab, or not: said as it is.
+    if ((await s.handed) === false) return { ok: true, stay: true, said: "This private window's download couldn't go on in your browser. Use Back and download it once more." };
+    return { ok: true, stay: true, said: "This private window's download goes on in your browser." };
+  }
   if (await s.stay) return { ok: true, stay: true, said: "This download went to Pako. Use Back to return to your page." };
   return { ok: true, stay: false };
 }
@@ -1436,19 +1503,54 @@ async function handCaught(details, seen, tabNow) {
 
 /** A private window's file that was caught: asked for again in its own tab, past the catch rule
  *  (a one-time exception for that tab and address, set before the tab asks). The browser then
- *  downloads it there, as if it had never been caught. */
+ *  downloads it there, as if it had never been caught. Whether it was handed back. The exception
+ *  goes once the tab's answer for it comes (see onMediaHeaders), when the tab closes, or after
+ *  ALLOW_FOR. */
 async function againInTab(tab, url, name) {
   const id = ALLOW_RULES + (allowNext++ % ALLOW_RING);
   try {
     // (A filter can't hold * ^ | as plain characters.)
     if (/[*^|]/.test(url) || url.length > 4000) throw new Error("This address can't be let through.");
     const rule = { id, priority: 2, action: { type: "allow" }, condition: { urlFilter: `|${url}|`, tabIds: [tab.id], resourceTypes: ["main_frame"] } };
+    clearTimeout(allowRules.get(id)?.timer);
+    const timer = setTimeout(() => dropAllow(id), ALLOW_FOR);
+    timer?.unref?.();
+    allowRules.set(id, { tabId: tab.id, url, timer });
     await api.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id], addRules: [rule] });
     await api.tabs.update(tab.id, { url });
+    return true;
   } catch (e) {
+    dropAllow(id);
     const what = name ? `"${name}"` : "this download";
     flag(`Pako's extension couldn't hand ${what} back to your private window. Download it once more from the page.`, e?.message || String(e), true);
+    return false;
   }
+}
+
+/** Takes a one-time exception out of the browser. */
+function dropAllow(id) {
+  clearTimeout(allowRules.get(id)?.timer);
+  allowRules.delete(id);
+  Promise.resolve(api.declarativeNetRequest?.updateSessionRules({ removeRuleIds: [id] })).catch(() => {});
+}
+/** A tab's one-time exceptions: the one for that address (its answer came: used), or all of them
+ *  (`url` null: the tab closed). */
+function dropAllowFor(tabId, url) {
+  for (const [id, a] of allowRules) {
+    if (a.tabId === tabId && (url == null || a.url.toLowerCase() === String(url).toLowerCase())) dropAllow(id);
+  }
+}
+/** At start: exceptions left by the background before it slept go (each was for one request,
+ *  made at once). */
+function dropOldAllows() {
+  const dnr = api.declarativeNetRequest;
+  if (!dnr?.getSessionRules || FIREFOX) return;
+  Promise.resolve(dnr.getSessionRules())
+    .then((rules) => {
+      const old = (rules || []).map((r) => r?.id).filter((id) => id >= ALLOW_RULES && id < ALLOW_RULES + ALLOW_RING && !allowRules.has(id));
+      if (old.length) return dnr.updateSessionRules({ removeRuleIds: old });
+    })
+    .catch(() => {});
 }
 
 api.webRequest?.onBeforeRedirect?.addListener(onCaught, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] });
@@ -1463,11 +1565,14 @@ api.tabs.onCreated?.addListener((t) => {
 api.tabs.onReplaced?.addListener(() => syncCatch());
 // The browser keeps the rule while it runs, not after it restarts: set again at every start.
 syncCatch();
+dropOldAllows();
 
 function forgetTab(tabId) {
   caughtWork.delete(tabId);
   pageMethods.delete(tabId);
+  pageLoads.delete(tabId);
   sentPages.delete(tabId);
+  dropAllowFor(tabId, null);
   Promise.resolve(api.storage.session?.remove(caughtKey(tabId))).catch(() => {});
   Promise.resolve(api.storage.session?.remove(postKey(tabId))).catch(() => {});
   forgetPill(tabId);

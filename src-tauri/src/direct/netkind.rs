@@ -55,13 +55,30 @@ mod win {
     /// `CoUninitialize` then tears that space down under other threads still using COM inside
     /// it without having set it up themselves (Direct's network library asks Windows for the
     /// default route through WMI that way, on its own background threads): their next COM call
-    /// crashes Pako (STATUS_ACCESS_VIOLATION). Done once, before the first `CoInitializeEx`.
-    fn keep_mta_alive() {
-        static KEPT: std::sync::Once = std::sync::Once::new();
-        KEPT.call_once(|| {
-            // SAFETY: a plain call; the cookie is deliberately never given back.
-            let _ = unsafe { CoIncrementMTAUsage() };
-        });
+    /// crashes Pako (STATUS_ACCESS_VIOLATION). Done before the first `CoInitializeEx`, and tried
+    /// again by the next reader for as long as Windows refuses it (out of memory). Whether it is
+    /// kept now: a reader never closes COM while it isn't (see `Drop`).
+    fn keep_mta_alive() -> bool {
+        static KEPT: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+        // SAFETY: a plain call; the cookie is deliberately never given back.
+        pin_once(&KEPT, || unsafe { CoIncrementMTAUsage() }.is_ok())
+    }
+
+    /// Whether the MTA is kept; `pin` (asking Windows to keep it) is called until it says yes
+    /// once, then never again (one call at a time: never kept twice).
+    pub(super) fn pin_once(kept: &std::sync::Mutex<bool>, pin: impl FnOnce() -> bool) -> bool {
+        let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+        if !*kept {
+            *kept = pin();
+        }
+        *kept
+    }
+
+    /// Whether a reader that set COM up on its thread (`com`) closes it when it goes: only while
+    /// the MTA is kept. Otherwise its thread keeps COM set up until it ends, which keeps the MTA
+    /// alive for the others just the same.
+    pub(super) fn closes_com(com: bool, kept: bool) -> bool {
+        com && kept
     }
 
     pub struct Reader {
@@ -73,8 +90,8 @@ mod win {
     impl Reader {
         pub fn new() -> Self {
             keep_mta_alive();
-            // SAFETY: called once on the reader's own thread; undone in Drop when it succeeded.
-            // (The shared COM space outlives that: `keep_mta_alive`.)
+            // SAFETY: called once on the reader's own thread; undone in Drop when it succeeded
+            // and the shared COM space outlives that (`keep_mta_alive`, `closes_com`).
             let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
             Self { nlm: None, com }
         }
@@ -121,8 +138,10 @@ mod win {
     impl Drop for Reader {
         fn drop(&mut self) {
             self.nlm = None;
-            if self.com {
-                // SAFETY: pairs the successful CoInitializeEx of this thread.
+            // (Asked again: a later reader may have kept the MTA since this one started.)
+            if closes_com(self.com, keep_mta_alive()) {
+                // SAFETY: pairs the successful CoInitializeEx of this thread, while the shared
+                // COM space is kept alive by `keep_mta_alive`.
                 unsafe { CoUninitialize() };
             }
         }
@@ -140,6 +159,32 @@ mod tests {
         let got = std::thread::spawn(|| Reader::new().read()).join().unwrap();
         eprintln!("networks on this PC: {got:?}");
         assert!(got.is_some(), "the Network List Manager answered");
+    }
+
+    /// Windows refusing to keep the MTA once (out of memory) isn't the end: the next reader asks
+    /// again, until it says yes, then never again. Until then, a reader never closes COM.
+    #[cfg(windows)]
+    #[test]
+    fn keeping_the_mta_is_tried_again_until_it_works() {
+        use super::win::{closes_com, pin_once};
+        let kept = std::sync::Mutex::new(false);
+        let mut asked = 0;
+        assert!(!pin_once(&kept, || {
+            asked += 1;
+            false
+        }));
+        assert!(!closes_com(true, false), "not kept: COM stays set up on that thread");
+        assert!(pin_once(&kept, || {
+            asked += 1;
+            true
+        }), "tried again by the next reader");
+        assert!(pin_once(&kept, || {
+            asked += 1;
+            true
+        }));
+        assert_eq!(asked, 2, "never asked again once kept");
+        assert!(closes_com(true, true));
+        assert!(!closes_com(false, true), "COM wasn't set up there: nothing to close");
     }
 
     /// Readers coming and going (each sets COM up on its thread, then closes it) while other

@@ -1,5 +1,14 @@
 # What's new
 
+## 1.2.4
+
+### Fixed
+
+- In Vivaldi, going back after a download no longer asks to send a form again when a link on the form's answer hadn't opened a page.
+- In Vivaldi, a private window's download that couldn't go back to the browser no longer says it goes on there.
+- A file your browser downloaded for Pako (**Via browser**) no longer takes the name of an older download in the list whose file was deleted: it gets a free name.
+- A link sent from another of your PCs to **Links** is no longer lost when a private window had sent the same link: it gets its own row.
+
 ## 1.2.3
 
 ### Fixed

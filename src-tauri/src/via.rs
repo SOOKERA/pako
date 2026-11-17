@@ -33,7 +33,9 @@ pub fn same_folder(a: &Path, b: &Path) -> bool {
 }
 
 /// Where the browser's finished file ends up, and how:
-/// - same folder and same name: left as it is (no copy, no "(2)");
+/// - same folder and same name: left as it is (no copy, no "(2)"), unless that path is in
+///   `taken` (an older row of the list has it, its file deleted since): then renamed in place
+///   to a free name, so that row never points at this file;
 /// - same folder, another name (`wanted`, picked by you): renamed in place, never over another
 ///   file;
 /// - another folder: moved there (copied then deleted between drives), never over another file.
@@ -44,7 +46,8 @@ pub fn place(from: &Path, dest_dir: &Path, wanted: Option<&str>, taken: &HashSet
     let name = wanted.map(crate::names::sanitize).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| from_name.clone());
     let from_dir = from.parent().ok_or("the browser's file has no folder")?;
     let same_dir = same_folder(from_dir, dest_dir);
-    if same_dir && name.to_lowercase() == from_name.to_lowercase() {
+    let listed = |p: &Path| taken.contains(&crate::names::path_key(p));
+    if same_dir && name.to_lowercase() == from_name.to_lowercase() && !listed(from) && !listed(&dest_dir.join(&name)) {
         if name != from_name {
             // Only the letter case differs: Windows renames it in place.
             std::fs::rename(from, from_dir.join(&name)).map_err(|e| e.to_string())?;
@@ -156,6 +159,31 @@ mod tests {
         assert_eq!(got, f, "no move, no copy, no (2)");
         assert!(f.exists());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "nothing else made");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The browser saved it where an older row of the list had its file (deleted since): it
+    /// gets a free name, so that row (and "Get" from another PC through it) never reaches it.
+    #[test]
+    fn same_folder_same_name_as_an_older_row_gets_a_free_name() {
+        let dir = tmp("old-row");
+        let f = dir.join("a.zip");
+        std::fs::write(&f, b"new").unwrap();
+        let mut taken = HashSet::new();
+        taken.insert(crate::names::path_key(&dir.join("A.zip")));
+        taken.insert(crate::names::path_key(&dir.join("a (1).zip")));
+        let got = place(&f, &dir, None, &taken).unwrap();
+        assert_eq!(got.parent().unwrap(), dir.as_path());
+        assert_eq!(got.file_name().unwrap(), "a (2).zip", "not the old row's path, nor another row's");
+        assert_eq!(std::fs::read(&got).unwrap(), b"new");
+        assert!(!f.exists());
+        // Only the letter case differs from the name asked for: the same.
+        let g = dir.join("b.zip");
+        std::fs::write(&g, b"x").unwrap();
+        let mut taken = HashSet::new();
+        taken.insert(crate::names::path_key(&dir.join("B.zip")));
+        let got = place(&g, &dir, Some("B.zip"), &taken).unwrap();
+        assert_eq!(got.file_name().unwrap(), "B (1).zip");
         let _ = std::fs::remove_dir_all(dir);
     }
 
