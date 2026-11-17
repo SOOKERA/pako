@@ -1,5 +1,13 @@
 # What's new
 
+## 1.2.3
+
+### Fixed
+
+- In Vivaldi, a page that starts its download by itself through a new link each time no longer sends it to Pako over and over.
+- In Vivaldi, going back after a download no longer asks to send a form again when you had stayed on the form's answer for a while.
+- A video sent from another of your PCs no longer joins one waiting in the **Download with Pako** window here: it gets its own download.
+
 ## 1.2.2
 
 ### Fixed

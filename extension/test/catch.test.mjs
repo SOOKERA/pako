@@ -310,6 +310,44 @@ test("A page that asks for its file again by itself (reloaded by going back): no
   assert.equal(pako.said.filter((s) => s === "download+hold").length, 2);
 });
 
+test("A page that asks for its file again through a link signed anew each time (or another mirror): still the same file, not handed twice (no loop)", async () => {
+  const pako = newPako();
+  const ext = await vivaldi({}, pako);
+  // "Your download starts in a moment": each load of the page gets a new signed address.
+  const signed = (n) => `https://cdn${n}.example.net/get/big.zip?sig=${n}&expires=17${n}`;
+  assert.equal(await browse(ext, { url: signed(1), responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(ext)).stay, false);
+  await settle(40);
+  assert.equal(await browse(ext, { url: signed(2), responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(ext)).stay, true, "the tab stays: no loop");
+  await settle(40);
+  assert.equal(pako.said.filter((s) => s === "download+hold").length, 1, "handed to Pako once");
+  // Another file from the same page (another name, or another size): handed as usual.
+  const other = ATTACHMENT.map((h) => (h.name === "Content-Disposition" ? { ...h, value: 'attachment; filename="other.zip"' } : h));
+  assert.equal(await browse(ext, { url: signed(3), responseHeaders: other }), "caught");
+  assert.equal((await sentPage(ext)).stay, false);
+  const bigger = ATTACHMENT.map((h) => (h.name === "Content-Length" ? { ...h, value: "60000000" } : h));
+  assert.equal(await browse(ext, { url: signed(4), responseHeaders: bigger }), "caught");
+  await settle(40);
+  assert.equal(pako.said.filter((s) => s === "download+hold").length, 3);
+});
+
+test("A form's answer read longer than the background stays awake (it sleeps after 30 s): the sent page still stays", async () => {
+  const before = await vivaldi();
+  before.listeners.headers({ url: "https://files.example.com/search", type: "main_frame", method: "POST", tabId: TAB, frameId: 0, statusCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }] });
+  await settle(10);
+  // The background wakes again for the download: its memory is new, the browser's is kept.
+  const ext = await vivaldi({ sessionStored: before.session });
+  assert.equal(await browse(ext, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(ext)).stay, true, "going back would send the form again");
+  // A plain page after it: going back is safe again, also after the next sleep.
+  ext.listeners.headers({ url: "https://files.example.com/done", type: "main_frame", method: "GET", tabId: TAB, frameId: 0, statusCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }] });
+  await settle(10);
+  const later = await vivaldi({ sessionStored: ext.session });
+  assert.equal(await browse(later, { url: FILE.replace("big", "other"), responseHeaders: ATTACHMENT }), "caught");
+  assert.equal((await sentPage(later)).stay, false);
+});
+
 test("The page behind was a form's answer (POST): the sent page stays, so going back doesn't send the form again", async () => {
   const ext = await vivaldi();
   // The tab's page came from a form (its answer is a page, not a file).
@@ -321,7 +359,9 @@ test("The page behind was a form's answer (POST): the sent page stays, so going 
   assert.equal(ext.sent.find((m) => m.kind === "download")?.url ?? ext.sent[0].urls[0], FILE, "handed to Pako all the same");
   // A form that answered with a redirect to a page (POST, then GET): going back is safe.
   ext.listeners.headers({ url: "https://files.example.com/done", type: "main_frame", method: "GET", tabId: TAB, frameId: 0, statusCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }] });
-  assert.equal(await browse(ext, { url: FILE.replace("big", "other"), responseHeaders: ATTACHMENT }), "caught");
+  // (Another file: another name. The same name and size would be the same file again.)
+  const other = ATTACHMENT.map((h) => (h.name === "Content-Disposition" ? { ...h, value: 'attachment; filename="other.zip"' } : h));
+  assert.equal(await browse(ext, { url: FILE.replace("big", "other"), responseHeaders: other }), "caught");
   assert.equal((await sentPage(ext)).stay, false);
 });
 

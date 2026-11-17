@@ -147,6 +147,8 @@ async function newerInFolder(ext) {
     if (inFlight > 0 || recording) return void setTimeout(tryReload, 5000);
     // Noted first: when it can't be noted, no reload (the next start couldn't tell it did).
     const noted = await Promise.resolve(api.storage.local.set({ reloadedFor: ext, reloadedAt: Date.now() })).then(() => true, () => false);
+    // (Something set off for Pako while it was noted: later.)
+    if (noted && inFlight > 0) return void setTimeout(tryReload, 5000);
     if (noted) api.runtime.reload();
   };
   setTimeout(tryReload, 3000);
@@ -1113,7 +1115,7 @@ function onMediaHeaders(details) {
   if (type === "main_frame") {
     // How the tab's page was asked for (a file's answer doesn't replace the page): a form's
     // answer isn't gone back to by the sent page (see sentPageAnswer).
-    if (!isFile) pageMethods.set(tabId, String(details.method || "GET").toUpperCase());
+    if (!isFile) notePageMethod(tabId, String(details.method || "GET").toUpperCase());
     changeCaught(tabId, async (list) => (list.length ? [] : null));
     // The new page gets the pill again once a video is caught on it.
     forgetPill(tabId);
@@ -1218,6 +1220,37 @@ const caughtLately = new Map();
 const sentPages = new Map();
 /** By tab: how its page was asked for ("POST": a form's answer, which going back would send again). */
 const pageMethods = new Map();
+/** A form's answer is also kept in the browser's memory (storage.session): the background
+ *  sleeps after 30 s without events, and you often read a page longer than that before you
+ *  click its download. Only a form's answer is written, so a plain page costs nothing. */
+const postKey = (tabId) => `post-${tabId}`;
+function notePageMethod(tabId, method) {
+  const was = pageMethods.get(tabId);
+  pageMethods.set(tabId, method);
+  if (method === "POST") Promise.resolve(api.storage.session?.set({ [postKey(tabId)]: true })).catch(() => {});
+  else if (was !== "GET") Promise.resolve(api.storage.session?.remove(postKey(tabId))).catch(() => {});
+}
+/** Whether the tab's page is a form's answer (asked of the browser's memory after a sleep). */
+async function pageIsPost(tabId) {
+  if (pageMethods.has(tabId)) return pageMethods.get(tabId) === "POST";
+  const got = await Promise.resolve(api.storage.session?.get(postKey(tabId))).catch(() => null);
+  return got?.[postKey(tabId)] === true;
+}
+/** What says it's the same file again: its name and size (a link signed anew each time, or
+ *  from another mirror, is another address for the same file), else its address. */
+function sameFileKeys(tabId, url, seen) {
+  const keys = [`${tabId} ${url}`];
+  let name = seen?.filename || "";
+  if (!name) {
+    try {
+      name = decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+    } catch {
+      name = "";
+    }
+  }
+  if (name && seen?.size > 0) keys.push(`${tabId} file ${name} ${seen.size}`);
+  return keys;
+}
 
 /** The catch rule. `privateTabs`: a private window's tabs (never caught: its download can't be
  *  started again there if Pako can't get it). */
@@ -1338,19 +1371,23 @@ function onCaught(details) {
   if (!isSentPage(details.redirectUrl)) return;
   const now = Date.now();
   for (const [k, at] of caughtLately) if (now - at > CAUGHT_AGAIN || caughtLately.size > 50) caughtLately.delete(k);
-  const key = `${details.tabId} ${details.url}`;
-  const again = caughtLately.has(key);
-  caughtLately.set(key, now);
   const seen = responseFor(details.url);
+  const keys = sameFileKeys(details.tabId, details.url, seen);
+  const again = keys.some((k) => caughtLately.has(k));
+  for (const k of keys) caughtLately.set(k, now);
   // (Asked now, while the tab is surely there: its sent page waits for this before it closes it.)
   const tab = Promise.resolve(seen?.tab || (details.tabId >= 0 ? api.tabs.get(details.tabId) : null)).catch(() => null);
   if (details.type === "main_frame" && details.tabId >= 0) {
-    sentPages.set(details.tabId, { tab, stay: again || pageMethods.get(details.tabId) === "POST", at: now });
+    sentPages.set(details.tabId, { tab, stay: again || pageIsPost(details.tabId), at: now });
   }
   // The page asked for the same file again by itself: Pako has it (or the browser, if Pako
   // couldn't), so it isn't handed twice.
   if (again) return;
-  handCaught(details, seen, tab).catch((e) => console.warn("Pako:", e?.message || e));
+  // Counted from now (the browser's copy is already gone): no reload for an update meanwhile.
+  inFlight++;
+  handCaught(details, seen, tab)
+    .catch((e) => console.warn("Pako:", e?.message || e))
+    .finally(() => inFlight--);
 }
 
 /** What the sent page in this tab does: go back (or close a tab opened only for the file), or
@@ -1361,7 +1398,7 @@ async function sentPageAnswer(tabId) {
   if (!s || Date.now() - s.at > CAUGHT_AGAIN) return { ok: true, stay: false };
   const tab = await s.tab;
   if (tab?.incognito) return { ok: true, stay: true, said: "This private window's download goes on in your browser." };
-  if (s.stay) return { ok: true, stay: true, said: "This download went to Pako. Use Back to return to your page." };
+  if (await s.stay) return { ok: true, stay: true, said: "This download went to Pako. Use Back to return to your page." };
   return { ok: true, stay: false };
 }
 
@@ -1378,27 +1415,23 @@ async function handCaught(details, seen, tabNow) {
   // Not known: taken as private (no normal login, never started again in a normal window).
   const isPrivate = !tab;
   const storeId = isPrivate ? PRIVATE_STORE : undefined;
-  inFlight++;
-  try {
-    const { takeOver: on } = await settings();
-    let reply = { ok: false };
-    // (Switched off meanwhile, or asked with a site's own sign-in: the browser downloads it.)
-    if (on !== false && !seen?.auth) {
-      reply = await handOver(url, catchReferrer(tab, seen, url), name, { storeId, totalBytes: seen?.size || 0, mime: seen?.type || "", hold: true, isPrivate });
-    }
-    if (reply.ok) return;
-    if (isPrivate) {
-      const why = (reply.error || "Pako couldn't take this download").replace(/[.\s]+$/, "");
-      flag(`${why}. Download it once more from the page.`, reply.detail, true);
-      if (typeof reply.followed === "string") {
-        send({ kind: "follow", urls: [url], filename: name, private: true, follow: { pako: reply.followed, browserId: -1, state: "interrupted", error: "RESTART_FAILED" } });
-      }
-      return;
-    }
-    await startAgain(url, name, storeId, reply, false);
-  } finally {
-    inFlight--;
+  // (Counted in inFlight by onCaught, from the moment it was caught.)
+  const { takeOver: on } = await settings();
+  let reply = { ok: false };
+  // (Switched off meanwhile, or asked with a site's own sign-in: the browser downloads it.)
+  if (on !== false && !seen?.auth) {
+    reply = await handOver(url, catchReferrer(tab, seen, url), name, { storeId, totalBytes: seen?.size || 0, mime: seen?.type || "", hold: true, isPrivate });
   }
+  if (reply.ok) return;
+  if (isPrivate) {
+    const why = (reply.error || "Pako couldn't take this download").replace(/[.\s]+$/, "");
+    flag(`${why}. Download it once more from the page.`, reply.detail, true);
+    if (typeof reply.followed === "string") {
+      send({ kind: "follow", urls: [url], filename: name, private: true, follow: { pako: reply.followed, browserId: -1, state: "interrupted", error: "RESTART_FAILED" } });
+    }
+    return;
+  }
+  await startAgain(url, name, storeId, reply, false);
 }
 
 /** A private window's file that was caught: asked for again in its own tab, past the catch rule
@@ -1436,6 +1469,7 @@ function forgetTab(tabId) {
   pageMethods.delete(tabId);
   sentPages.delete(tabId);
   Promise.resolve(api.storage.session?.remove(caughtKey(tabId))).catch(() => {});
+  Promise.resolve(api.storage.session?.remove(postKey(tabId))).catch(() => {});
   forgetPill(tabId);
 }
 api.tabs.onRemoved?.addListener((tabId) => {

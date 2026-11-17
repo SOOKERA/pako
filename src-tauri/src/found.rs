@@ -1358,8 +1358,10 @@ pub struct MirrorView {
 /// waiting to) here. Never a private window's: that one stays on this PC, so the other PC
 /// gets a download of its own and never the private one's id (its card would follow a
 /// download it can't see, and the video it sent would end with the private one, untraced).
+/// Nor one waiting in the Download with Pako window: also off the other PC's list, and gone
+/// if that window is cancelled here.
 fn device_video_joins(downloads: &[Download], url: &str) -> Option<String> {
-    downloads.iter().find(|d| d.link == url && !d.private && !matches!(d.status, Status::Completed | Status::Failed)).map(|d| d.id.clone())
+    downloads.iter().find(|d| d.link == url && !d.private && !d.ask && !matches!(d.status, Status::Completed | Status::Failed)).map(|d| d.id.clone())
 }
 
 /// What a video sent by another of your PCs becomes here: a download in the quality picked
@@ -2059,6 +2061,9 @@ mod tests {
         assert_eq!(device_video_joins(std::slice::from_ref(&private), url), None, "the private one stays on this PC");
         let plain = new_download(url, Source::Http { url: url.into() }, "v.mp4".into(), PathBuf::new(), None);
         assert_eq!(device_video_joins(&[private, plain.clone()], url), Some(plain.id.clone()));
+        let mut asking = plain.clone();
+        asking.ask = true;
+        assert_eq!(device_video_joins(&[asking], url), None, "one waiting in the Download with Pako window isn't joined");
         let mut done = plain;
         done.status = Status::Completed;
         assert_eq!(device_video_joins(&[done], url), None);
