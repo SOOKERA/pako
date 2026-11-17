@@ -750,9 +750,11 @@ pub struct Sent {
 #[tauri::command]
 pub async fn devices_add_links(app: AppHandle, d: Dir<'_>, id: String, links: Vec<LinkOpts>, names: Option<std::collections::HashMap<String, String>>) -> Result<Sent, String> {
     let default_q = engine_of(&app).map(|e| e.settings().video_quality).unwrap_or(1080);
-    let (held, send): (Vec<LinkOpts>, Vec<LinkOpts>) = links.into_iter().partition(|l| open_here_first(l.link.trim()).is_some());
+    // A private window's links in Links stay on this PC (held: their rows say why).
+    let private = engine_of(&app).map(|e| e.found_private_links()).unwrap_or_default();
+    let (held, send): (Vec<LinkOpts>, Vec<LinkOpts>) = links.into_iter().partition(|l| held_why(l.link.trim(), &private).is_some());
     // Trimmed, as the window compares them.
-    let held: Vec<(String, String)> = held.into_iter().map(|l| (l.link.trim().to_string(), open_here_first(l.link.trim()).unwrap_or_default().to_string())).collect();
+    let held: Vec<(String, String)> = held.into_iter().map(|l| (l.link.trim().to_string(), held_why(l.link.trim(), &private).unwrap_or_default().to_string())).collect();
     if send.is_empty() {
         return Err(held.first().map(|(_, w)| w.clone()).unwrap_or_else(|| "Nothing to send.".into()));
     }
@@ -789,6 +791,15 @@ pub async fn devices_add_links(app: AppHandle, d: Dir<'_>, id: String, links: Ve
     Ok(Sent { text: texts.join(". "), failed, held })
 }
 
+/// Why a link isn't sent to another PC as it is: opened here first (a playlist, a link page),
+/// or a private window's (`private`: those links in Links). None = it is sent.
+fn held_why(link: &str, private: &std::collections::HashSet<String>) -> Option<&'static str> {
+    if private.contains(link) {
+        return Some(crate::engine::PRIVATE_HERE);
+    }
+    open_here_first(link)
+}
+
 /// "Download on <device>" in the Download with Pako window: the waiting download's link goes
 /// to that device and, once it took it, leaves this PC (as Cancel does). A video carries the
 /// quality chosen in the window; it goes as First, like the window's "Download now".
@@ -796,6 +807,11 @@ pub async fn devices_add_links(app: AppHandle, d: Dir<'_>, id: String, links: Ve
 pub async fn devices_send_ask(app: AppHandle, d: Dir<'_>, id: String, device: String, quality: Option<u32>) -> Result<String, String> {
     let engine = engine_of(&app).ok_or("Pako is still starting.")?;
     let item = engine.find(&id).filter(|x| x.ask).ok_or("This download is no longer waiting.")?;
+    // A private window's download stays on this PC.
+    if item.private {
+        return Err(crate::engine::PRIVATE_HERE.into());
+    }
+
     if crate::engine::here_only(&item) {
         return Err("A video caught on a page downloads on this PC only.".into());
     }

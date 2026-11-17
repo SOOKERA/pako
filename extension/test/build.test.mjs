@@ -98,5 +98,16 @@ test("node extension/build.mjs: both zips are right", () => {
   assert.equal(manifest.key, undefined);
   assert.equal(manifest.content_scripts, undefined);
   assert.ok(!manifest.permissions.includes("webRequest"));
+  // Catching a download at the server's answer (browsers that ask first): the full Chromium
+  // extension only. Pako Light and Firefox keep their way: no rule permission, no sent page.
+  assert.ok(chromium.permissions.includes("declarativeNetRequestWithHostAccess"));
+  assert.ok(!chromium.permissions.includes("declarativeNetRequest"), "the one without an install warning");
+  assert.deepEqual(chromium.web_accessible_resources, [{ resources: ["pako-sent.html"], matches: ["<all_urls>"], use_dynamic_url: true }]);
+  for (const f of ["pako-sent.html", "pako-sent.js"]) assert.ok(readFileSync(join(dist, "chromium", f)), f);
+  for (const m of [manifest, folder]) {
+    assert.ok(!m.permissions.some((p) => p.startsWith("declarativeNetRequest")));
+    assert.equal(m.web_accessible_resources, undefined);
+  }
+  for (const zip of [light, firefox]) assert.ok(!zip.some((e) => e.name.startsWith("pako-sent")));
   assert.match(light.find((e) => e.name === "background.js").data.toString("utf8"), /^const LIGHT = true;$/m);
 });

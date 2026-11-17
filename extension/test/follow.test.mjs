@@ -33,8 +33,26 @@ function pako({ follow = (m) => ({ ok: true, followed: "row-1", ...(m.follow.sta
 function load(p, opts = {}) {
   const ext = loadEdition({ reply: (m) => p.reply(m), ...opts });
   ext.storage.pakoHolds = true;
+  if (!opts.light) seenPlainGet(ext);
   return ext;
 }
+
+/** The browser's own answer for URL_: a plain public GET of a file of known size (the case the
+ *  browser's copy may be cancelled at once for). */
+function seenPlainGet(ext) {
+  ext.listeners.headers({
+    tabId: 3,
+    url: URL_,
+    type: "main_frame",
+    method: "GET",
+    statusCode: 200,
+    responseHeaders: [
+      { name: "Content-Length", value: "50000000" },
+      { name: "Content-Type", value: "application/zip" },
+    ],
+  });
+}
+
 
 test("Pako can't get it: the browser downloads it and Pako follows it as its own", async () => {
   const p = pako();

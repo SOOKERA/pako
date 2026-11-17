@@ -12,7 +12,8 @@
   if (!kit) return;
   globalThis.__pakoCaught = true;
 
-  const api = globalThis.browser ?? globalThis.chrome;
+  // (pill.js's choice: never a page element named "browser".)
+  const api = kit.api;
 
   /** The video that gets the pill: the largest playing one in this frame, else the largest one
    *  on screen (thumbnails and previews are too small). */
@@ -42,9 +43,19 @@
       return v && kit.inside(v.getBoundingClientRect(), x, y) ? v : null;
     },
     items: async () => {
-      const r = await api.runtime.sendMessage({ type: "pill-menu" });
+      let r;
+      try {
+        r = await api.runtime.sendMessage({ type: "pill-menu" });
+      } catch (e) {
+        const t = kit.trouble(e);
+        return [{ head: "Download with Pako" }, { info: t.text, detail: t.detail }];
+      }
       if (r?.ok && Array.isArray(r.items)) return r.items;
-      return [{ head: "Download with Pako" }, { info: "Pako's extension was just updated. Reload this page and try again." }];
+      // The extension answered with a problem: what it said (it did answer, so not "isn't
+      // responding"). No answer at all: the plain words, kept for the toolbar window.
+      if (typeof r?.error === "string" && r.error) return [{ head: "Download with Pako" }, { info: r.error, detail: String(r.detail || "") }];
+      const t = kit.trouble(new Error("No menu in the answer"));
+      return [{ head: "Download with Pako" }, { info: t.text, detail: t.detail }];
     },
     pick: (item) => (item.send ? api.runtime.sendMessage(item.send) : null),
   });

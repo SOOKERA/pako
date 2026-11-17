@@ -2413,6 +2413,13 @@ impl Node {
         if let Err(e) = resume::save_out(&self.data_dir, n) {
             crate::errorlog::note(crate::errorlog::Area::Direct, &format!("Couldn't keep a transfer to continue later ({e})."));
         }
+        // Ended while the note was being written (cancelled, expired): `end_out` may have
+        // removed it before it landed, so it goes now; left behind, it would bring the transfer
+        // back at the next start. (`end_out` takes it out of the list before removing the note,
+        // so whichever runs last removes it.)
+        if !self.inner.lock().unwrap().outgoing.contains_key(&n.id) {
+            resume::remove_out(&self.data_dir, &n.id);
+        }
     }
 
     /// The receiver says what it already has (connected again, or a file to send again): the
@@ -4576,6 +4583,17 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/x.bin"), bytes_of(PIECE as usize * 2, 6)).unwrap();
         let id = send_and_cut(&a, &b, root.join("src/x.bin")).await;
+        // Each side saves its note just after it starts waiting, a moment after the window
+        // shows it (slower under load): expiring is checked once both notes say "waiting since",
+        // so no save is still under way when it expires.
+        let out_note = root.join(format!("a/direct_resume/{id}.out.json"));
+        let in_note = root.join(format!("b/direct_resume/{id}.in.json"));
+        let a_since = a.inner.lock().unwrap().outgoing.get(&id).unwrap().since;
+        let b_since = b.inner.lock().unwrap().incoming.get(&id).unwrap().since;
+        let read_out = || std::fs::read(&out_note).ok().and_then(|x| serde_json::from_slice::<OutNote>(&x).ok()).filter(|n| n.since == a_since);
+        let read_in = || std::fs::read(&in_note).ok().and_then(|x| serde_json::from_slice::<InNote>(&x).ok()).filter(|n| n.since == b_since);
+        until(|| read_out().is_some() && read_in().is_some()).await;
+        let late = read_out().unwrap();
         // Not yet.
         a.expire(now_ms() + resume::KEEP_MS - 60_000);
         b.expire(now_ms() + resume::KEEP_MS - 60_000);
@@ -4587,7 +4605,14 @@ mod tests {
         assert_eq!(ended(&b, &id).unwrap().message.as_deref(), Some(EXPIRED_IN));
         assert!(state_of(&a, &id).is_none() && state_of(&b, &id).is_none());
         assert!(leftovers(&root.join("b/Downloads")).is_empty(), "the part that arrived is deleted");
-        assert!(leftovers(&root.join("a/direct_resume")).is_empty() && leftovers(&root.join("b/direct_resume")).is_empty());
+        let notes = || (leftovers(&root.join("a/direct_resume")), leftovers(&root.join("b/direct_resume")));
+        let left = notes();
+        assert!(left.0.is_empty() && left.1.is_empty(), "the notes are deleted: {left:?}");
+        // A note whose save was still under way when it expired lands after it was deleted:
+        // it goes too (left, it would bring the transfer back at the next start).
+        a.save_out_note(&late);
+        let left = notes();
+        assert!(left.0.is_empty() && left.1.is_empty(), "a note saved late is deleted too: {left:?}");
 
         a.stop.cancel();
         b.stop.cancel();

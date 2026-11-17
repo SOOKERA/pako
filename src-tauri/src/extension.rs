@@ -40,6 +40,9 @@ pub const CHROMIUM_IDS: [&str; 2] = [CHROME_STORE_ID, CHROMIUM_ID];
 pub const LIGHT_IDS: [&str; 1] = [CHROME_STORE_ID];
 /// Pako's answer to Pako Light on the sites it leaves alone (its own wording).
 pub const LIGHT_REFUSED: &str = "Pako Light doesn't work on this site.";
+/// "Record this video" from a private window (the extension doesn't offer it there either).
+pub const NO_PRIVATE_RECORDING: &str = "Pako doesn't record in private windows.";
+
 
 /// The browsers' list of extensions allowed to start Pako's native host.
 fn chromium_origins() -> Vec<String> {
@@ -372,9 +375,10 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
     if r.cookies.len() > MAX_COOKIES || r.cookies.chars().any(|c| c.is_control()) {
         r.cookies.clear();
     }
-    // A video site's cookies travel only with one link to that video.
+    // A video site's cookies travel only with one link to that video, never from a private
+    // window (no cookie file for yt-dlp).
     r.site_cookies = match r.urls.as_slice() {
-        [one] if crate::video::is_video_site(one) => clean_site_cookies(one, std::mem::take(&mut r.site_cookies), unix_now()),
+        [one] if crate::video::is_video_site(one) && !r.private => clean_site_cookies(one, std::mem::take(&mut r.site_cookies), unix_now()),
         _ => Vec::new(),
     };
     // Only a plain file name, never a path. No name stays no name (the link's own name is used
@@ -493,13 +497,18 @@ fn validate_video(r: Request) -> Result<Request, String> {
         return Err("Pako can't download videos from this page.".into());
     }
     let quality = r.quality.filter(|q| VIDEO_QUALITIES.contains(q)).ok_or("Unknown video quality.")?;
-    let site_cookies = clean_site_cookies(&url, r.site_cookies, unix_now());
-    Ok(Request { kind: "video".into(), urls: vec![url], quality: Some(quality), site_cookies, ..Default::default() })
+    // A private window's: no cookies at all (no cookie file for yt-dlp), no trace in Pako.
+    let site_cookies = if r.private { Vec::new() } else { clean_site_cookies(&url, r.site_cookies, unix_now()) };
+    Ok(Request { kind: "video".into(), urls: vec![url], quality: Some(quality), site_cookies, private: r.private, ..Default::default() })
 }
 
 /// One step of "Record this video": checked (the checked form is made again where it is used),
-/// nothing else travels with it.
+/// nothing else travels with it. Never from a private window (the extension doesn't offer it
+/// there either).
 fn validate_record(r: Request) -> Result<Request, String> {
+    if r.private {
+        return Err(NO_PRIVATE_RECORDING.into());
+    }
     let rec = r.record.ok_or("Unknown request.")?;
     crate::stream::validate_record(rec.clone(), r.light)?;
     Ok(Request { kind: "record".into(), record: Some(rec), ..Default::default() })
@@ -621,13 +630,16 @@ pub fn run_host(args: &[String]) -> i32 {
         if write_message(&mut output, &json).is_err() {
             return 1;
         }
-        timing(&format!(
-            "host: reading from {} ms after start, answered {} ms after the message (ok {}, held {})",
-            asked.duration_since(started).as_millis(),
-            read.elapsed().as_millis(),
-            reply.ok,
-            reply.held.is_some()
-        ));
+        // (A private window's request: not in the timing log either.)
+        if !private {
+            timing(&format!(
+                "host: reading from {} ms after start, answered {} ms after the message (ok {}, held {})",
+                asked.duration_since(started).as_millis(),
+                read.elapsed().as_millis(),
+                reply.ok,
+                reply.held.is_some()
+            ));
+        }
         seen.note(light, version, unix_now());
     }
 }
@@ -685,14 +697,17 @@ fn hand_over(r: &Request) -> Reply {
                 match exchange(pipe, r) {
                     Ok(reply) if reply.retry && Instant::now() < deadline => {}
                     Ok(reply) => {
-                        timing(&format!(
-                            "host: {} pipe reached after {} ms (Pako started: {started}), answer {} ms later",
-                            r.kind,
-                            connected.duration_since(begun).as_millis(),
-                            connected.elapsed().as_millis()
-                        ));
+                        if !r.private {
+                            timing(&format!(
+                                "host: {} pipe reached after {} ms (Pako started: {started}), answer {} ms later",
+                                r.kind,
+                                connected.duration_since(begun).as_millis(),
+                                connected.elapsed().as_millis()
+                            ));
+                        }
                         return reply;
                     }
+
                     Err(e) => return Reply::error(format!("Pako didn't answer ({e}). The browser keeps the download.")),
                 }
             }
@@ -1415,6 +1430,8 @@ const FILES: &[(&str, &[u8])] = &[
     ("caught.js", include_bytes!("../../extension/caught.js")),
     ("recorder.js", include_bytes!("../../extension/recorder.js")),
     ("recorder-bridge.js", include_bytes!("../../extension/recorder-bridge.js")),
+    ("pako-sent.html", include_bytes!("../../extension/pako-sent.html")),
+    ("pako-sent.js", include_bytes!("../../extension/pako-sent.js")),
     ("icons/icon16.png", include_bytes!("../../extension/icons/icon16.png")),
     ("icons/icon32.png", include_bytes!("../../extension/icons/icon32.png")),
     ("icons/icon48.png", include_bytes!("../../extension/icons/icon48.png")),
@@ -2243,5 +2260,35 @@ mod tests {
         assert!(validate(r).unwrap().paused);
         let h: Request = serde_json::from_str(r#"{"kind":"held","held":"abc","private":true}"#).unwrap();
         assert!(validate(h).unwrap().private);
+    }
+
+    /// Every kind of request from a private window stays private once checked (not only a
+    /// takeover), a video from one never keeps cookies (no cookie file for yt-dlp), and Record
+    /// this video is refused there. Messages without the field are as before.
+    #[test]
+    fn every_kind_of_request_keeps_private() {
+        let cookie = r#"[{"domain":".youtube.com","path":"/","name":"SID","value":"x"}]"#;
+        let yt = "https://www.youtube.com/watch?v=abcdefghijk";
+        let check = |json: String| validate(serde_json::from_str::<Request>(&json).unwrap());
+        for private in [true, false] {
+            let p = if private { r#","private":true"# } else { "" };
+            let download = check(format!(r#"{{"kind":"download","urls":["https://e.org/a.zip"]{p}}}"#)).unwrap();
+            let links = check(format!(r#"{{"kind":"links","urls":["https://e.org/a.zip","https://e.org/b.zip"]{p}}}"#)).unwrap();
+            let video = check(format!(r#"{{"kind":"video","urls":["{yt}"],"quality":720,"siteCookies":{cookie}{p}}}"#)).unwrap();
+            let page = check(format!(r#"{{"kind":"download","urls":["{yt}"],"siteCookies":{cookie}{p}}}"#)).unwrap();
+            let stream = check(format!(
+                r#"{{"kind":"stream","urls":["https://cdn.e.org/a.m3u8"],"siteCookies":[{{"domain":"cdn.e.org","path":"/","name":"k","value":"v"}}]{p}}}"#
+            ))
+            .unwrap();
+            for r in [&download, &links, &video, &page, &stream] {
+                assert_eq!(r.private, private, "{} keeps private = {private}", r.kind);
+            }
+            // A private window's video or stream carries no cookies; a normal one keeps them.
+            assert_eq!(video.site_cookies.is_empty(), private);
+            assert_eq!(page.site_cookies.is_empty(), private);
+            assert_eq!(stream.site_cookies.is_empty(), private);
+        }
+        let rec = r#"{"kind":"record","record":{"action":"cancel","session":"0b4e1a2c-1111-4222-8333-944455556666"},"private":true}"#;
+        assert_eq!(validate(serde_json::from_str(rec).unwrap()).unwrap_err(), NO_PRIVATE_RECORDING);
     }
 }

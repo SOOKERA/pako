@@ -46,6 +46,8 @@ fn video_item(link: &str, title: String, duration: Option<f64>) -> FoundItem {
 const FILE_NOT_PUBLIC: &str =
     "Google only gives this file to people it's shared with. Open it in your browser and download it there: Pako catches the download.";
 const OPENING: &str = "Opening link…";
+/// Why a private window's link isn't sent to another of your PCs.
+pub const PRIVATE_HERE: &str = "Private downloads stay on this PC.";
 
 fn found_path() -> PathBuf {
     data_dir().join("found.json")
@@ -82,7 +84,9 @@ impl Engine {
         if !inner.found_ok {
             return;
         }
-        if let Ok(bytes) = serde_json::to_vec(&inner.found) {
+        // A private window's links are kept in memory only (gone when Pako closes).
+        let kept: Vec<&FoundItem> = inner.found.iter().filter(|f| !f.template.private).collect();
+        if let Ok(bytes) = serde_json::to_vec(&kept) {
             FOUND_SAVER.save(bytes);
         }
     }
@@ -116,10 +120,17 @@ impl Engine {
     /// Like `found_add`. `no_video`: links from Pako Light, which never become videos (no yt-dlp
     /// lookup, and a video site's link isn't added).
     pub async fn found_add_from(self: &Arc<Self>, text: &str, no_video: bool) -> AddResult {
-        self.found_add_with(text, no_video, None).await
+        self.found_add_with(text, no_video, false).await
     }
 
-    async fn found_add_with(self: &Arc<Self>, text: &str, no_video: bool, device: Option<String>) -> AddResult {
+    /// Links from the browser. `private`: from a private window: kept in memory only (never in
+    /// Links' file, gone when Pako closes), never sent to another PC, and a private download
+    /// once downloaded.
+    pub async fn found_add_browser(self: &Arc<Self>, text: &str, no_video: bool, private: bool) -> AddResult {
+        self.found_add_with(text, no_video, private).await
+    }
+
+    async fn found_add_with(self: &Arc<Self>, text: &str, no_video: bool, private: bool) -> AddResult {
         let mut added = 0;
         let mut skipped = 0;
         let mut errors = Vec::new();
@@ -141,7 +152,7 @@ impl Engine {
                     }
                     for mut it in items {
                         it.no_video = no_video;
-                        it.device = device.clone();
+                        it.template.private = private;
                         if it.state == FoundState::Checking {
                             to_check.push(it.id.clone());
                         }
@@ -314,7 +325,10 @@ impl Engine {
                     Err(e) => {
                         f.state = FoundState::Broken;
                         f.message = Some(e.message());
-                        crate::errorlog::note(crate::errorlog::Area::LinkCheck, &e.message());
+                        // (A private window's link: none of its problems in the problem list.)
+                        if !f.template.private {
+                            crate::errorlog::note(crate::errorlog::Area::LinkCheck, &e.message());
+                        }
                     }
                 }
             }
@@ -342,6 +356,7 @@ impl Engine {
                                     item.dest = old.dest;
                                     item.template.priority = old.template.priority;
                                     item.template.notify = old.template.notify;
+                                    item.template.private = old.template.private;
                                     inner.found[pos] = item;
                                 }
                             }
@@ -425,6 +440,7 @@ impl Engine {
                             it.template.priority = old.template.priority;
                             it.template.notify = old.template.notify;
                             it.template.link = link.clone();
+                            it.template.private = old.template.private;
                             it.device = old.device.clone();
                             it
                         })
@@ -461,7 +477,9 @@ impl Engine {
                     } else {
                         f.state = FoundState::Broken;
                     }
-                    crate::errorlog::note(crate::errorlog::Area::Video, &msg);
+                    if !f.template.private {
+                        crate::errorlog::note(crate::errorlog::Area::Video, &msg);
+                    }
                     f.message = Some(msg);
                 }
             }
@@ -483,7 +501,10 @@ impl Engine {
     /// link goes to Links instead (to pick the videos).
     /// The player's Download button. Waits a little for yt-dlp's answer so the button can say
     /// what went wrong (DRM, private video...); a slow site is answered "sent" and carries on.
-    pub async fn video_from_browser(self: &Arc<Self>, url: String, quality: u32, cookies: Vec<crate::extension::SiteCookie>) -> Result<(), String> {
+    /// `private`: from a private window: a private download (no trace beyond the file), and
+    /// never any cookies (no cookie file for yt-dlp).
+    pub async fn video_from_browser(self: &Arc<Self>, url: String, quality: u32, cookies: Vec<crate::extension::SiteCookie>, private: bool) -> Result<(), String> {
+        let cookies = if private { Vec::new() } else { cookies };
         /// Videos being read right now (a double click doesn't add one twice).
         static READING: LazyLock<std::sync::Mutex<HashSet<String>>> = LazyLock::new(Default::default);
         if !crate::video::ready() {
@@ -509,8 +530,8 @@ impl Engine {
             match result {
                 Ok(p) if p.is_playlist => {
                     let _ = answer.send(Ok(()));
-                    me.found_add(&url).await;
-                    me.notify("browser", "Playlist sent to Pako", "Pick the videos in Links, then press Download.", crate::notices::Go::page("found"));
+                    me.found_add_browser(&url, false, private).await;
+                    me.notify_as(private, "browser", "Playlist sent to Pako", "Pick the videos in Links, then press Download.", crate::notices::Go::page("found"));
                 }
                 Ok(p) => {
                     let audio = (quality == 0).then(|| "m4a".to_string());
@@ -530,6 +551,7 @@ impl Engine {
                     };
                     let mut d = new_download(&url, src, name, me.settings().download_dir, None);
                     d.size = size;
+                    d.private = private;
                     me.hand_over(d, cookies.clone(), crate::ask::wanted());
                     let _ = answer.send(Ok(()));
                 }
@@ -539,7 +561,7 @@ impl Engine {
                     }
                     // The button says it when it is still waiting; else a notification does.
                     if answer.send(Err(msg.clone())).is_err() {
-                        me.notify("video-failed", "Pako couldn't get this video", &msg, crate::notices::Go::none());
+                        me.notify_as(private, "video-failed", "Pako couldn't get this video", &msg, crate::notices::Go::none());
                     }
                 }
             }
@@ -632,14 +654,15 @@ impl Engine {
     /// for yt-dlp and Pako's own HLS download), then the Download with Pako window first
     /// (quality, folder, name) when `ask`, else it starts and a notification says so.
     fn hand_over(self: &Arc<Self>, mut d: Download, cookies: Vec<crate::extension::SiteCookie>, ask: bool) {
-        if !cookies.is_empty() {
+        // A private window's video never gets a cookie file (see `video_from_browser`).
+        if !cookies.is_empty() && !d.private {
             crate::extension::remember_headers(&d.id, crate::extension::BrowserHeaders { site_cookies: cookies, ..Default::default() });
         }
         d.ask = ask;
         if d.ask {
             d.message = Some(crate::engine::ASK_NOTE.into());
         }
-        let (id, name, held) = (d.id.clone(), d.name.clone(), d.ask);
+        let (id, name, held, private) = (d.id.clone(), d.name.clone(), d.ask, d.private);
         self.push(d);
         self.save_now();
         self.list_changed();
@@ -647,7 +670,7 @@ impl Engine {
         if held {
             crate::ask::enqueue(&id);
         } else {
-            self.notify("browser", "Downloading in Pako", &name, crate::notices::Go::item("downloads", id.clone()));
+            self.notify_as(private, "browser", "Downloading in Pako", &name, crate::notices::Go::item("downloads", id.clone()));
             crate::ask::started();
         }
     }
@@ -670,6 +693,7 @@ impl Engine {
         referrer: String,
         title: String,
         cookies: Vec<crate::extension::SiteCookie>,
+        private: bool,
     ) -> Result<(), String> {
         /// Streams being looked at right now (a double click doesn't add one twice).
         static READING: LazyLock<std::sync::Mutex<HashSet<String>>> = LazyLock::new(Default::default);
@@ -679,7 +703,9 @@ impl Engine {
         if self.video_in_list(&url) || !READING.lock().unwrap().insert(url.clone()) {
             return Err("This video is already in Pako.".into());
         }
-        let r = self.add_caught_stream(&url, referrer, title, cookies).await;
+        // A private window's: a private download, never with cookies.
+        let cookies = if private { Vec::new() } else { cookies };
+        let r = self.add_caught_stream(&url, referrer, title, cookies, private).await;
         READING.lock().unwrap().remove(&url);
         r
     }
@@ -690,6 +716,7 @@ impl Engine {
         referrer: String,
         title: String,
         cookies: Vec<crate::extension::SiteCookie>,
+        private: bool,
     ) -> Result<(), String> {
         let quality = self.settings().video_quality;
         let audio = (quality == 0).then(|| "m4a".to_string());
@@ -720,8 +747,10 @@ impl Engine {
         };
         let mut d = new_download(url, src, name, self.settings().download_dir, None);
         d.size = size;
+        d.private = private;
         self.hand_over(d, cookies, crate::ask::wanted());
         Ok(())
+
     }
 
     /// "Record this video" (checked by `stream::validate_record`): a recording starts, gets its
@@ -824,8 +853,10 @@ impl Engine {
     }
 
     pub(crate) fn gate_failed(&self, id: &str, msg: &str) {
-        crate::errorlog::note(crate::errorlog::Area::LinkCheck, msg);
         if let Some(f) = self.inner.lock().unwrap().found.iter_mut().find(|f| f.id == id) {
+            if !f.template.private {
+                crate::errorlog::note(crate::errorlog::Area::LinkCheck, msg);
+            }
             f.state = FoundState::Broken;
             f.message = Some(msg.to_string());
         }
@@ -856,6 +887,7 @@ impl Engine {
                             it.dest = old.dest.clone();
                             it.template.priority = old.template.priority;
                             it.template.notify = old.template.notify;
+                            it.template.private = old.template.private;
                             it.device = old.device.clone();
                             match it.state {
                                 FoundState::Checking => to_check.push(it.id.clone()),
@@ -868,7 +900,9 @@ impl Engine {
                     Err(e) => {
                         inner.found[pos].state = FoundState::Broken;
                         inner.found[pos].message = Some(format!("Reached the file link, but: {e}"));
-                        crate::errorlog::note(crate::errorlog::Area::LinkCheck, &format!("Reached the file link, but: {e}"));
+                        if !inner.found[pos].template.private {
+                            crate::errorlog::note(crate::errorlog::Area::LinkCheck, &format!("Reached the file link, but: {e}"));
+                        }
                     }
                 }
             }
@@ -894,6 +928,9 @@ impl Engine {
             let mut want: HashSet<String> = ids.iter().cloned().collect();
             let mut backups: std::collections::HashMap<String, Vec<Mirror>> = std::collections::HashMap::new();
             let mut gone: HashSet<String> = HashSet::new();
+            // A group with a private window's link in it: its download is private too (its
+            // backups' links are never written to disk).
+            let mut private_groups: HashSet<String> = HashSet::new();
             let prefs = inner.settings.mirror_hosts.clone();
             for g in mirror_groups(&inner.found) {
                 if !g.iter().any(|&i| want.contains(&inner.found[i].id)) {
@@ -905,12 +942,16 @@ impl Engine {
                 let (Some(c), _) = mirror_choice(&inner.found, &g, &prefs) else { continue };
                 want.insert(inner.found[c].id.clone());
                 backups.insert(inner.found[c].id.clone(), mirror_backups(&inner.found, &g, c, &prefs));
+                if g.iter().any(|&i| inner.found[i].template.private) {
+                    private_groups.insert(inner.found[c].id.clone());
+                }
                 gone.extend(g.iter().map(|&i| inner.found[i].id.clone()));
             }
             let mut picked: Vec<FoundItem> =
                 inner.found.iter().filter(|f| want.contains(&f.id) && f.can_download()).cloned().collect();
             for f in picked.iter_mut() {
                 f.template.mirrors = backups.remove(&f.id).unwrap_or_default();
+                f.template.private |= private_groups.contains(&f.id);
             }
             gone.extend(picked.iter().map(|f| f.id.clone()));
             inner.found.retain(|f| !gone.contains(&f.id));
@@ -1106,6 +1147,12 @@ impl Engine {
         {
             let mut inner = self.inner.lock().unwrap();
             for f in inner.found.iter_mut().filter(|f| ids.contains(&f.id)) {
+                // A private window's link stays on this PC (its row says why).
+                if f.template.private {
+                    f.device = None;
+                    f.device_note = device.is_some().then(|| PRIVATE_HERE.to_string());
+                    continue;
+                }
                 f.device = device.clone();
                 f.device_note = None;
             }
@@ -1225,6 +1272,20 @@ impl Engine {
         for (id, link) in to_open {
             crate::gates::open(self.clone(), id, link);
         }
+    }
+
+    /// The links of a private window's rows in Links (also as another PC would get them):
+    /// never sent to another of your PCs.
+    pub fn found_private_links(&self) -> HashSet<String> {
+        let inner = self.inner.lock().unwrap();
+        inner.found.iter().filter(|f| f.template.private).flat_map(|f| [f.template.link.clone(), link_of(f)]).collect()
+    }
+
+    /// `notify` about a Links row (a link page that needs you): a private window's row gets a
+    /// pop-up only, never a line in the bell.
+    pub(crate) fn notify_row(&self, id: &str, kind: &str, title: &str, body: &str, go: crate::notices::Go) {
+        let private = self.inner.lock().unwrap().found.iter().any(|f| f.id == id && f.template.private);
+        self.notify_as(private, kind, title, body, go);
     }
 
     pub fn found_remove(&self, ids: &[String]) {
@@ -1421,6 +1482,10 @@ pub(crate) fn split_by_device(found: &[FoundItem], ids: &[String], devices: &[De
             out.here.push(f.id.clone());
             continue;
         };
+        if f.template.private {
+            out.stay.push((f.id.clone(), PRIVATE_HERE.into()));
+            continue;
+        }
         let Some(d) = devices.iter().find(|d| &d.id == dev) else {
             out.stay.push((f.id.clone(), DEVICE_GONE.into()));
             continue;

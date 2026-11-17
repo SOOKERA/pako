@@ -248,15 +248,20 @@ fn net_delta(before: &NetCounters, now: &NetCounters) -> (u64, u64) {
 /// (Wi-Fi, Ethernet; not loopback or virtual adapters, which would count twice).
 #[cfg(windows)]
 fn net_totals() -> Option<NetCounters> {
-    use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_ROW2, MIB_IF_TABLE2};
     let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
+    // SAFETY: a plain out-pointer; Windows allocates the table (freed below with FreeMibTable).
     if unsafe { GetIfTable2(&mut table) } != 0 || table.is_null() {
         return None;
     }
     let mut counters = NetCounters::new();
+    // SAFETY: Windows wrote NumEntries rows from `Table` on. The rows are reached through a raw
+    // pointer to the field, not through the one-row array Rust declares (a reference to that
+    // array would only cover its first row), and are read before the table is freed.
     unsafe {
         let n = (*table).NumEntries as usize;
-        let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), n);
+        let first = std::ptr::addr_of!((*table).Table).cast::<MIB_IF_ROW2>();
+        let rows = std::slice::from_raw_parts(first, n);
         for r in rows {
             let hardware = r.InterfaceAndOperStatusFlags._bitfield & 1 == 1;
             let up_now = r.OperStatus == 1; // IfOperStatusUp

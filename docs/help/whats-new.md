@@ -1,5 +1,16 @@
 # What's new
 
+## 1.2.1
+
+### Fixed
+
+- Everything sent from a private window (right-click, links, the video button) now leaves no trace in Pako, like downloads taken over.
+- The Download pill on videos no longer says "just updated" for every problem: it says when the extension isn't responding, with the browser's reason.
+- A download from a site's own sign-in box is no longer taken from the browser before Pako has it, and a download neither Pako nor the browser could get now says so.
+- Downloads in Vivaldi (and browsers like it that ask first) no longer show the browser's own download question before Pako's window.
+- A Direct transfer you cancelled, or that expired, no longer comes back as "waiting" after Pako restarts.
+- Pako no longer crashes, rarely, when Direct stops or restarts.
+
 ## 1.2.0
 
 ### Browser extension

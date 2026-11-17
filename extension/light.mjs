@@ -11,8 +11,9 @@
 /** Words that must not be anywhere in Pako Light (the stores it goes to don't allow what they
  *  stand for, and Light's wording stays neutral). The sites list Light leaves alone is allowed.
  *  Nor anything of catching what a page plays or recording it ("Videos on this page"), nor the
- *  Download pill put on a page's video. */
-export const LIGHT_BANNED = /video|quality|player|siteCookies|sendVideo|VIDEO_QUALITIES|yt-dlp|paste it in Pako|Ctrl\+V|webRequest|recorder|m3u8|MediaSource|"stream"|registerContentScripts|pill\.js|caught\.js|pill-menu/i;
+ *  Download pill put on a page's video, nor catching a download at the server's answer (it needs
+ *  what only webRequest sees). */
+export const LIGHT_BANNED = /video|quality|player|siteCookies|sendVideo|VIDEO_QUALITIES|yt-dlp|paste it in Pako|Ctrl\+V|webRequest|recorder|m3u8|MediaSource|"stream"|registerContentScripts|pill\.js|caught\.js|pill-menu|declarativeNetRequest|pako-sent|web_accessible_resources/i;
 
 /** Files whose LIGHT switch is flipped. */
 const SWITCHED = new Set(["background.js", "popup.js"]);

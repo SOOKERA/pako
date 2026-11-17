@@ -5,7 +5,8 @@
 // recorded; if not, it tells the recorder to let go and does nothing else. If so, it passes the
 // recorded parts on (a few at a time, holding the video back while Pako catches up).
 (() => {
-  const api = globalThis.browser ?? globalThis.chrome;
+  // (Not just `globalThis.browser`: a page element with id="browser" answers to that name too.)
+  const api = globalThis.browser?.runtime ? globalThis.browser : globalThis.chrome;
   const TAG = "pako-recorder";
   /** Parts on their way to Pako at once. */
   const IN_FLIGHT = 4;

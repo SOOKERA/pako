@@ -98,17 +98,23 @@ With **Let Pako take over downloads** on, files you download in the browser go t
 
 What happens when you click a download:
 
-1. The browser doesn't download it: the extension takes it before the browser saves anything (in Chrome, Edge and similar browsers even before a **Save as** window), and the **Download with Pako** window opens at once with the file's name and size.
+1. The browser doesn't download it: the extension takes it before the browser saves anything (in Chrome, Edge and similar browsers even before a **Save as** window, and in Vivaldi before its own question, see below), and the **Download with Pako** window opens at once with the file's name and size.
 2. When you click **Download**, Pako's own first request to the server is the real download. A download can't be moved from the browser's connection to Pako's (no download manager can), so the server is asked once more, by Pako. A few one-time links refuse that second request.
 3. If the server gives Pako the same file, nothing else happens. If not (no file, a web page instead, another size), your browser downloads it after all and Pako follows it: see **Via browser** below.
 
 - Small files (up to 2 MB) stay in the browser.
 - A file a page's form sent (with "POST") can't be asked for again: the browser holds it paused while Pako checks, and carries on with it if Pako can't get it. The **Download with Pako** window opens once Pako has checked it.
+- A file from a site that asked you to sign in with its own sign-in box (not a page's form) can't be asked for by Pako: the browser holds it paused while Pako checks, as above, and carries on with it if Pako can't get it.
+- If your browser couldn't start a download again after Pako couldn't get it, the Pako button shows a red **!** and says "Pako couldn't get … and your browser couldn't start it again. Download it once more from the page." (Pako's row says it too.)
 - With Pako Light, which can't see how a page asked for a file, the browser always holds the download paused until Pako has it (the window opens once Pako has checked it, as above).
 - With a Pako older than 1.2.0, the extension works as before: the browser holds the download paused until Pako has checked it.
 - Files the browser flags as unsafe stay in the browser.
 - A video page itself (a YouTube or Vimeo address, for example) is never taken over: for videos, use the **Download** button or the right-click menu. Pako Light leaves every download on a video site to the browser.
 - In Firefox, a file type set to **Always ask** still shows Firefox's own question first; set it to **Save File** in Firefox's settings (**Files and Applications**) for a straight handover to Pako.
+- Vivaldi asks "Download …?" (Save, Save As, Open, Cancel) before an extension can see a download. So there, Pako's extension stops the file as soon as the server answers: Vivaldi asks nothing and its download panel doesn't open. The tab shows a blank page for a moment and goes straight back to your page (a tab opened only for the file closes), and the **Download with Pako** window opens. Another browser built on Chromium that asks first gets the same once the extension has seen it ask twice in a row.
+- The tab stays on Pako's page ("This download went to Pako. Use Back to return to your page.") when going back would send a form again (the page you were on was a form's answer), and when a page asks for the same file again by itself (a "your download starts in 5 seconds" page): Pako gets it once, and the page doesn't start it over and over.
+- Vivaldi's question still comes first for a file a form sent, a private window, a video site, a small file, while the extension can't reach Pako, and in a browser older than Chrome 128 (2024): click **Save** and Pako takes it from there, or turn on **Save Files to Default Location Without Asking** in Vivaldi's **Settings › Downloads**. A file from a site's own sign-in box goes back to Vivaldi (it asks then): Pako can't sign in there. A private window's tab opened a moment before the download may show Pako's page too: the download then goes on in your browser in that tab.
+- A file Pako takes this way never reaches Vivaldi's own download checks; Windows still checks it when you open it.
 
 ### Via browser
 
@@ -124,9 +130,11 @@ Some files only the browser can get: a site that refuses download managers, a pr
 
 Pako works in private windows only if you allow it there, on the extension's page in your browser: **Allow in Incognito** (Chrome), **Allow in InPrivate** (Edge), or **Run in Private Windows** (Firefox: menu › **Add-ons and themes** › Pako). The extension's small window says whether it's on, with a button to that page (Firefox doesn't let extensions open it, so the window says where to go).
 
-When it's on, a private window's downloads go to Pako like any other, with that window's own login (never your normal one), and Pako keeps no trace of them beyond the file: no line in the bell, nothing in the Dashboard or in the problem list, never saved in Pako's list, and the login is dropped as soon as the download ends. A finished one shows **Done · private** and leaves the list once you open it from Pako or click its **✕** (the file stays), or else 10 minutes after it finished. To keep it longer, pick **1 hour after** or **When you quit Pako** in **Settings › Downloads › Advanced › Remove private downloads from the list**. If Pako closes before one is finished, its unfinished file is deleted the next time Pako starts.
+When it's on, everything you send from a private window is private: downloads Pako takes over, the right-click items, **Send all links on this page**, the **Send** button in the extension's window, and the **Download** button and pill on videos. They go to Pako like any other, never with your normal login (a download Pako takes over keeps that window's own login, and so do the right-click items and **Send** in Firefox; links and videos go without one), and Pako keeps no trace of them beyond the file: no line in the bell, nothing in the Dashboard or in the problem list, never saved in Pako's list, and the login is dropped as soon as the download ends. A finished one shows **Done · private** and leaves the list once you open it from Pako or click its **✕** (the file stays), or else 10 minutes after it finished. To keep it longer, pick **1 hour after** or **When you quit Pako** in **Settings › Downloads › Advanced › Remove private downloads from the list**. If Pako closes before one is finished, its unfinished file is deleted the next time Pako starts.
 
 In Chrome, Edge and similar browsers, a private window's download is held paused while Pako checks it (like a file a form sent, above): if Pako can't get it, it carries on in the private window, never in your normal one. A Google Drive file from a private window is downloaded like any other file, with that window's own login.
+
+Links sent from a private window show **private** with a lock in **Links**. They're kept only until you quit Pako (never saved), are never sent to another of your PCs with **Download on** ("Private downloads stay on this PC."), and download as private downloads. **Record this video** isn't offered in private windows.
 
 A download from your browser that starts right away shows a short pop-up, **Downloading in Pako**, and "all links on this page" shows **Links added** (a video sent to **Links** shows **Video sent to Pako**, a playlist **Playlist sent to Pako**). Turn these off with **Sent from your browser** in **Settings › Notifications** (see [Notifications](notifications.md)).
 
@@ -152,7 +160,7 @@ Pako refreshes its extension folder by itself when it starts, and the extension 
 
 Firefox, Zen, LibreWolf, Waterfox and Floorp update Pako's extension by themselves, like their other add-ons (to check now: `about:addons`, the gear button, **Check for Updates**). If you turned off add-on updates in one of them, add it again with **Add to …** after updating Pako.
 
-If the Download button then says "Pako's extension was just updated. Reload this page and try again.", reload the web page.
+If the Download button then says "Pako's extension was just updated. Reload this page and try again.", reload the web page. If it says "Pako's extension isn't responding. Open the Pako button in the toolbar for details.", click the Pako button: its message says what the browser reported (also shown when you point at the button's message).
 
 ## Not connected
 
@@ -175,6 +183,6 @@ If it still fails, the Download button's message ends with "(Browser says: …)"
 
 - The extension talks to Pako directly on your PC. Nothing goes over the internet.
 - For **Connected** in Settings, Pako keeps only which browser it was, the edition (full or Pako Light), the extension's version when it says one, and the date, on this PC (`browsers_seen.json` in Pako's data folder).
-- In private windows, the extension does nothing unless you allowed it there in your browser (see **Private windows** above); then Pako keeps no trace of those downloads beyond the file. Without that, a link goes to Pako only when you click a Pako item yourself, without your login.
+- In private windows, the extension does nothing unless you allowed it there in your browser (see **Private windows** above); then Pako keeps no trace of anything sent from them beyond the file. Without that, nothing from a private window reaches Pako: the browser doesn't run the extension there.
 - For **Videos on this page**, the full extension only looks at the video requests your browser makes (it never changes or blocks them). The list stays in the browser's memory, for that tab only, and nothing goes to Pako until you click. With a video, Pako gets its address, the page it played on, the page's title, and your browser's login for the video's own server only.
 - Your browser's login for a site is passed to Pako only for the downloads it handles (ones you send, and browser downloads it takes over), kept encrypted, and deleted when the download is finished or removed.

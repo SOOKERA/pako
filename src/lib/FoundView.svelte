@@ -529,6 +529,13 @@
             <div class="cell name">
               {#if r.kind === "child"}<span class="rail" class:end={r.last}></span>{/if}
               <MiddleText text={f.template.name} class="nm" />
+              {#if f.template.private}
+                <span
+                  class="devmark"
+                  title="From a private window: kept only until you quit Pako, never sent to another PC, and a private download once downloaded"
+                  aria-label="Private"
+                ><Icon name="lock" size={11} stroke={2.2} /><span class="devname">private</span></span>
+              {/if}
               {#if f.device || f.deviceNote}
                 <span
                   class="devmark"

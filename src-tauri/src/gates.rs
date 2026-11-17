@@ -356,7 +356,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
         manual.store(true, Ordering::Relaxed);
         show_page(&win, &page_title);
         engine.gate_status(id, Some(WAITING_PAGE));
-        engine.notify("needs-you", "Pako needs you", &format!("{gate_host} only lets a person click through: finish it in the Pako window."), crate::notices::Go::item("found", id));
+        engine.notify_row(id, "needs-you", "Pako needs you", &format!("{gate_host} only lets a person click through: finish it in the Pako window."), crate::notices::Go::item("found", id));
     }
 
     let result = loop {
@@ -371,7 +371,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     manual.store(true, Ordering::Relaxed);
                 show_page(&win, &page_title);
                 engine.gate_status(id, Some(WAITING_PAGE));
-                engine.notify("needs-you", "Pako needs you", &format!("Finish opening a link from {gate_host} in the Pako window."), crate::notices::Go::item("found", id));
+                engine.notify_row(id, "needs-you", "Pako needs you", &format!("Finish opening a link from {gate_host} in the Pako window."), crate::notices::Go::item("found", id));
             }
             Err(_) => {
                 let at = last_host.lock().unwrap().clone();
@@ -387,7 +387,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     manual.store(true, Ordering::Relaxed);
                     show_page(&win, &page_title);
                     engine.gate_status(id, Some(WAITING_PAGE));
-                    engine.notify("needs-you", "Pako needs you", &format!("Finish opening a link from {gate_host} in the Pako window."), crate::notices::Go::item("found", id));
+                    engine.notify_row(id, "needs-you", "Pako needs you", &format!("Finish opening a link from {gate_host} in the Pako window."), crate::notices::Go::item("found", id));
                 }
             }
             Ok(Some(Msg::Show)) => match mode {
@@ -413,7 +413,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     manual.store(true, Ordering::Relaxed);
                     show_page(&win, &page_title);
                     engine.gate_status(id, Some(WAITING_PAGE));
-                    engine.notify("needs-you", "Pako needs you", &format!("{host} only lets a person click through: finish it in the Pako window."), crate::notices::Go::item("found", id));
+                    engine.notify_row(id, "needs-you", "Pako needs you", &format!("{host} only lets a person click through: finish it in the Pako window."), crate::notices::Go::item("found", id));
                 }
             }
             Ok(Some(Msg::Solved)) => {
@@ -452,7 +452,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                 let _ = win.show();
                 let _ = win.set_focus();
                 engine.gate_status(id, Some(WAITING_FOR_YOU));
-                engine.notify("needs-you", "Pako needs you", &format!("Solve a quick check to open a link from {gate_host}."), crate::notices::Go::item("found", id));
+                engine.notify_row(id, "needs-you", "Pako needs you", &format!("Solve a quick check to open a link from {gate_host}."), crate::notices::Go::item("found", id));
             }
         }
     };

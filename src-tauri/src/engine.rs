@@ -38,6 +38,7 @@ use crate::paths::{data_dir, write_atomic};
 mod found;
 pub use found::{DeviceChoice, DeviceSplit, DeviceVideo, PickItem};
 pub use found::MirrorView;
+pub use found::PRIVATE_HERE;
 
 /// Smallest part worth giving its own connection.
 const MIN_SPLIT: u64 = 1024 * 1024;
@@ -2222,9 +2223,11 @@ impl Engine {
     /// become videos (`r.light`).
     pub async fn add_from_browser(self: &Arc<Self>, r: crate::extension::Request) -> BrowserAdded {
         if r.kind == "links" {
-            let res = self.found_add_from(&r.urls.join("\n"), r.light).await;
+            // A private window's: kept in memory only, marked private in Links.
+            let res = self.found_add_browser(&r.urls.join("\n"), r.light, r.private).await;
             if res.added > 0 {
-                self.notify(
+                self.notify_as(
+                    r.private,
                     "browser",
                     "Links added",
                     &format!("{} from your browser, ready to pick in Links.", if res.added == 1 { "1 link".to_string() } else { format!("{} links", res.added) }),
@@ -2300,8 +2303,8 @@ impl Engine {
             }
         }
         if !videos.is_empty() {
-            self.found_add(&videos.join("\n")).await;
-            self.notify("browser", "Video sent to Pako", "Pick the quality in Links, then press Download.", Go::page("found"));
+            self.found_add_browser(&videos.join("\n"), false, r.private).await;
+            self.notify_as(r.private, "browser", "Video sent to Pako", "Pick the quality in Links, then press Download.", Go::page("found"));
             return BrowserAdded { open_links: true, ids: added_ids };
         }
         BrowserAdded { open_links: false, ids: added_ids }
@@ -2652,7 +2655,7 @@ impl Engine {
     /// The result is noted on the set's first part ("Extracted", or why not).
     fn extract_when_complete(self: &Arc<Self>, group: &str, dir: &PathBuf) {
         // Every split set in the folder (a Drive folder can hold several), once all is done.
-        let (jobs, notify) = {
+        let (jobs, notify, private) = {
             let inner = self.inner.lock().unwrap();
             let files: Vec<&Download> =
                 inner.downloads.iter().filter(|d| d.group.as_deref() == Some(group) && &d.dest_dir == dir).collect();
@@ -2670,7 +2673,7 @@ impl Engine {
                 // Never two 7-Zip runs on the same set at once.
                 .filter(|(_, path, _)| running.insert(names::path_key(path)))
                 .collect();
-            (jobs, files.iter().any(|d| d.notify))
+            (jobs, files.iter().any(|d| d.notify), files.iter().any(|d| d.private))
         };
         if jobs.is_empty() {
             return;
@@ -2735,7 +2738,10 @@ impl Engine {
                 };
                 // Asked for by the set's own "Notify when done".
                 let first = jobs.first().map(|(id, _, _)| id.clone());
-                (me.emit)("notify", notices::payload(kind, &title, &body, &Go::maybe("downloads", first), Pop::Force));
+                // (A set with a private window's file in it: a pop-up only, never in the bell.)
+                let go = Go::maybe("downloads", first);
+                let p = if private { notices::payload_private(kind, &title, &body, &go, Pop::Force) } else { notices::payload(kind, &title, &body, &go, Pop::Force) };
+                (me.emit)("notify", p);
             }
         });
     }
@@ -3199,7 +3205,9 @@ impl Engine {
                         stopped: done == 0,
                         id: None,
                         force: force || files.iter().any(|x| x.notify),
-                        private: false,
+                        // A folder or set with a private window's file in it (sent to Links
+                        // from a private window): its name never goes to the bell.
+                        private: files.iter().any(|x| x.private),
                     }
                 }
                 None => Note {
@@ -3241,6 +3249,12 @@ impl Engine {
             private,
         });
         notes.1 = Some(Instant::now());
+    }
+
+    /// `flush_notes` for the tests that run an engine without its timer (`start` isn't called).
+    #[cfg(test)]
+    pub(crate) fn flush_notes_now(&self) {
+        self.flush_notes();
     }
 
     /// Sends the gathered notifications once nothing new has finished for 3 seconds: one for
@@ -3288,6 +3302,16 @@ impl Engine {
     /// line in the bell, as Settings › Notifications says for its kind (see notices.rs).
     pub(crate) fn notify(&self, kind: &str, title: &str, body: &str, go: Go) {
         self.notify_pop(kind, title, body, go, Pop::Pref);
+    }
+
+    /// `notify`, or for a private window's request a pop-up only (as Settings say), never a
+    /// line in the bell.
+    pub(crate) fn notify_as(&self, private: bool, kind: &str, title: &str, body: &str, go: Go) {
+        if private {
+            (self.emit)("notify", notices::payload_private(kind, title, body, &go, Pop::Pref));
+        } else {
+            self.notify(kind, title, body, go);
+        }
     }
 
     /// The same, saying whether the pop-up shows (e.g. not while Pako's window is in front and
@@ -3742,9 +3766,10 @@ impl Engine {
                     dd.resolved = false;
                     dd.spliced = false;
                 }
-                if checked.is_err() {
+                if checked.is_err() && !dd.private {
                     crate::errorlog::note(crate::errorlog::Area::download(false), &note);
                 }
+
                 *job.host_note.lock().unwrap() = Some(note.clone());
                 dd.message = Some(note);
                 d = dd.clone();
@@ -4907,7 +4932,8 @@ fn browser_stop(error: &str) -> String {
         "FILE_NO_SPACE" | "FILE_TOO_LARGE" => "the drive is full",
         "FILE_ACCESS_DENIED" | "FILE_NAME_TOO_LONG" | "FILE_FAILED" | "FILE_BLOCKED" => "it couldn't be saved",
         "FILE_VIRUS_INFECTED" | "FILE_SECURITY_CHECK_FAILED" => "your browser's safety check blocked it",
-        "RESTART_FAILED" => "your browser couldn't start it again",
+        // Pako couldn't get it and the browser couldn't either: never lost without a word.
+        "RESTART_FAILED" => return "Pako couldn't get it, and your browser couldn't start it again. Download it once more from the page.".into(),
         _ => "",
     };
     if why.is_empty() { "The browser stopped this download.".into() } else { format!("The browser stopped this download: {why}.") }
@@ -4994,8 +5020,12 @@ impl Engine {
         };
         let command = FOLLOW_COMMANDS.lock().unwrap().remove(&id).map(String::from);
         let complete = f.state == "complete";
+        // Stopped by the browser (not by you): said like any stopped download, so a download
+        // neither Pako nor the browser could get never goes unnoticed.
+        let mut stopped: Option<(String, bool)> = None;
         {
             let mut inner = self.inner.lock().unwrap();
+            let stopped_pref = notices::pref(&inner.settings, "download-failed");
             let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id) else { return Reply::ok() };
             if d.status == Status::Completed {
                 // In place: the browser's list may forget it. Not moved (said in the row): the
@@ -5032,10 +5062,17 @@ impl Engine {
                         self.stats.lock().unwrap().finished(false);
                         numbers_event(d, None, false);
                     }
+                    let wanted = d.notify || ((stopped_pref.popup || stopped_pref.bell) && !d.quiet);
+                    if news && wanted && f.error != "USER_CANCELED" {
+                        stopped = Some((d.message.clone().unwrap_or_default(), d.notify));
+                    }
                 }
                 _ => {}
             }
             inner.dirty = true;
+        }
+        if let Some((msg, force)) = stopped {
+            self.note_stopped(&id, &msg, force);
         }
         if complete && MOVING.lock().unwrap().insert(id.clone()) {
             // Moved on its own (a big file between drives takes a while): the extension's next

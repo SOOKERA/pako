@@ -94,8 +94,10 @@ pub fn validate_stream(r: Request) -> Result<Request, String> {
     let url = web_link(url).ok_or("Pako only takes http and https links.")?;
     let page = web_link(&r.referrer).unwrap_or_default();
     let referrer = referrer_for(&page, &url);
-    let site_cookies = stream_cookies(&url, r.site_cookies);
-    Ok(Request { kind: "stream".into(), urls: vec![url], referrer, filename: clean_title(&r.filename), site_cookies, ..Default::default() })
+    // A private window's: no cookies (the extension sends none either), no trace in Pako.
+    let site_cookies = if r.private { Vec::new() } else { stream_cookies(&url, r.site_cookies) };
+    Ok(Request { kind: "stream".into(), urls: vec![url], referrer, filename: clean_title(&r.filename), site_cookies, private: r.private, ..Default::default() })
+
 }
 
 // ---------- "Record this video" ----------

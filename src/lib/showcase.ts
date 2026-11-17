@@ -9,8 +9,9 @@ import type { Notice, PopupCard } from "./notices";
 export const showcase = typeof location !== "undefined" && new URLSearchParams(location.search).has("showcase");
 /** A scene for one picture, from "?showcase=<scene>": "sets" (Links with split archives),
  *  "share" (a fresh upload and the same files received in Links), "hosts" (the same file on
- *  several hosts in Links, and a download that went on from a backup host) or "local" (Direct
- *  with a contact on the same home network); none = the usual set. */
+ *  several hosts in Links, and a download that went on from a backup host), "local" (Direct
+ *  with a contact on the same home network), "browser" (a download made by the browser for
+ *  Pako) or "parts" (Upload with a ZIP in parts on its way); none = the usual set. */
 const scene = showcase ? new URLSearchParams(location.search).get("showcase") : null;
 
 const now = Date.now();
@@ -252,6 +253,16 @@ export const showcaseSnapshot: Snapshot = {
 /** Your Google Drive for uploads, connected (an address that can't belong to anyone). */
 export const showcaseDrive = { configured: true, missingNote: null, signedIn: true, email: "sam@example.com", limit: 15e9, used: 6.1e9, error: null };
 
+/** "?showcase=parts": a ZIP in parts on its way (3 of its 7 parts up). */
+const inParts: SendState["jobs"] = scene === "parts"
+  ? [
+      {
+        id: "j1", name: "Site backup.zip", files: 1840, size: 3_300_000_000, total: 3_300_000_000, sent: 1_480_000_000, speed: 14_600_000, status: "uploading", message: null,
+        paths: ["D:\\Site backup"], asFiles: false, filesDone: 3, link: null, canResume: false, mode: "parts", host: "gofile", deleteDays: 7, partMb: 500, parts: 7, making: false,
+      },
+    ]
+  : [];
+
 /** "?showcase=share": the upload just made, at the top of the list. */
 const justSent: SendState["sent"] = scene === "share"
   ? [
@@ -265,7 +276,7 @@ const justSent: SendState["sent"] = scene === "share"
   : [];
 
 export const showcaseSend: SendState = {
-  jobs: [],
+  jobs: inParts,
   // Pako's uploads in the sample Drive (the Drive bar says so).
   driveSends: 3,
   driveUsed: 3_900_000_000,

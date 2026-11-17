@@ -99,11 +99,15 @@ async function init() {
   const { playerButton = true } = await api.storage.local.get({ playerButton: true });
   $("player").setAttribute("aria-checked", String(playerButton));
   /* full-only:end */
-  showError(lastError);
-  showDetail(lastDetail);
+  // A problem with something from a private window is kept in the browser's memory only.
+  const hidden = (await Promise.resolve(api.storage.session?.get({ lastError: "", lastDetail: "" })).catch(() => null)) || {};
+  const fromPrivate = typeof hidden.lastError === "string" && hidden.lastError !== "";
+  showError(fromPrivate ? hidden.lastError : lastError);
+  showDetail(fromPrivate ? String(hidden.lastDetail || "") : lastDetail);
   // Seen: clear the "!" on the toolbar button.
   api.action.setBadgeText({ text: "" });
   await api.storage.local.set({ lastError: "", lastDetail: "" });
+  if (fromPrivate) await Promise.resolve(api.storage.session.set({ lastError: "", lastDetail: "" })).catch(() => {});
 
   if (await lightEdition()) return;
 

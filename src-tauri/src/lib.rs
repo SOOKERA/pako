@@ -1090,13 +1090,17 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
             return Reply::error(extension::LIGHT_REFUSED);
         }
         let Some(url) = r.urls.first().cloned() else { return Reply::error("Unknown request.") };
-        return match engine.stream_from_browser(url, r.referrer.clone(), r.filename.clone(), r.site_cookies.clone()).await {
+        return match engine.stream_from_browser(url, r.referrer.clone(), r.filename.clone(), r.site_cookies.clone(), r.private).await {
             Ok(()) => Reply::ok(),
             Err(e) => Reply::error(e),
         };
     }
     // Record this video: one step (start, a part, end or cancel), checked once more here.
     if r.kind == "record" {
+        // Never from a private window (refused when it came in, and here again).
+        if r.private {
+            return Reply::error(extension::NO_PRIVATE_RECORDING);
+        }
         let checked = r.record.clone().ok_or_else(|| "Unknown request.".to_string()).and_then(|rec| stream::validate_record(rec, r.light));
         return match checked.and_then(|rec| engine.record(rec)) {
             Ok(()) => Reply::ok(),
@@ -1113,7 +1117,7 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
     if r.kind == "video" || one_video {
         let quality = r.quality.unwrap_or_else(|| engine.settings().video_quality);
         let Some(url) = r.urls.first().cloned() else { return Reply::error("Unknown request.") };
-        return match engine.video_from_browser(url, quality, r.site_cookies.clone()).await {
+        return match engine.video_from_browser(url, quality, r.site_cookies.clone(), r.private).await {
             Ok(()) => Reply::ok(),
             Err(e) => Reply::error(e),
         };
@@ -1129,12 +1133,15 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
         tauri::async_runtime::spawn(async move {
             let _turn = ADDING.lock().await;
             let since = std::time::Instant::now();
-            let kind = r.kind.clone();
+            let (kind, private) = (r.kind.clone(), r.private);
             if engine.add_from_browser(r).await.open_links {
                 tray::show_main(&app);
                 let _ = app.emit_to("main", "open-view", "found");
             }
-            extension::timing(&format!("pako: {kind} added {} ms after the answer", since.elapsed().as_millis()));
+            // (A private window's request: not in the timing log.)
+            if !private {
+                extension::timing(&format!("pako: {kind} added {} ms after the answer", since.elapsed().as_millis()));
+            }
         });
         return Reply::ok();
     }
@@ -1152,7 +1159,9 @@ async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Req
     let since = std::time::Instant::now();
     let asked = r.clone();
     let added = engine.add_from_browser(r).await;
-    extension::timing(&format!("pako: takeover added in {} ms (hold {})", since.elapsed().as_millis(), asked.hold));
+    if !asked.private {
+        extension::timing(&format!("pako: takeover added in {} ms (hold {})", since.elapsed().as_millis(), asked.hold));
+    }
     if added.open_links {
         tray::show_main(&app);
         let _ = app.emit_to("main", "open-view", "found");
@@ -1180,7 +1189,9 @@ async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Req
         return hold_takeover(engine, id, asked);
     }
     let reply = first_response(&engine, &id, &asked).await;
-    extension::timing(&format!("pako: takeover checked {} ms after it came ({})", since.elapsed().as_millis(), if reply.is_ok() { "ok" } else { "refused" }));
+    if !asked.private {
+        extension::timing(&format!("pako: takeover checked {} ms after it came ({})", since.elapsed().as_millis(), if reply.is_ok() { "ok" } else { "refused" }));
+    }
     match reply {
         Ok(()) => {
             // Pako has the same file: the browser drops its copy. Then the Download with Pako
@@ -1223,11 +1234,14 @@ fn hold_takeover(engine: Arc<Engine>, id: String, asked: extension::Request) -> 
     let reply = extension::Reply::held(&id);
     tauri::async_runtime::spawn(async move {
         let checked = first_response(&engine, &id, &asked).await;
-        extension::timing(&format!(
-            "pako: held takeover checked {} ms after the answer ({})",
-            since.elapsed().as_millis(),
-            if checked.is_ok() { "ok" } else { "refused" }
-        ));
+        if !asked.private {
+            extension::timing(&format!(
+                "pako: held takeover checked {} ms after the answer ({})",
+                since.elapsed().as_millis(),
+                if checked.is_ok() { "ok" } else { "refused" }
+            ));
+        }
+
         // Removed from Pako meanwhile: you don't want it (the browser drops it too).
         let checked = if engine.find(&id).is_none() { Ok(()) } else { checked };
         if asked.paused && checked.is_ok() {
@@ -2011,7 +2025,14 @@ mod tests {
         let browser_dir = data.join("Browser downloads");
         std::fs::create_dir_all(&dl).unwrap();
         std::fs::create_dir_all(&browser_dir).unwrap();
-        let engine = Engine::new(Arc::new(|_, _| {}));
+        // The notifications the engine sends (pop-up and bell), as the window would get them.
+        let heard: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let hear = heard.clone();
+        let engine = Engine::new(Arc::new(move |event: &str, p: serde_json::Value| {
+            if event == "notify" {
+                hear.lock().unwrap().push(p);
+            }
+        }));
         engine.change_settings(|s| s.download_dir = dl.clone()).unwrap();
         let takeover = |path: &str, total: u64, hold: bool, private: bool| {
             extension::validate(extension::Request {
@@ -2225,6 +2246,133 @@ mod tests {
             assert!(engine.find(&id).is_none());
             assert!(file.exists());
         });
+
+        // 7. Everything else from a private window is private too: a right-click download (not
+        //    a takeover), "Send all links" (in Links, in memory only, never sent to another PC)
+        //    and such a link downloaded from Links. A normal window's links are kept as before.
+        rt.block_on(async {
+            let req = |kind: &str, paths: &[&str], private: bool| {
+                extension::validate(extension::Request { kind: kind.into(), urls: paths.iter().map(|p| url(p)).collect(), private, ..Default::default() }).unwrap()
+            };
+            let clicked = engine.add_from_browser(req("download", &["/private-click.bin"], true)).await.ids;
+            assert_eq!(clicked.len(), 1);
+            assert!(engine.find(&clicked[0]).unwrap().private);
+            assert!(wait_done(&clicked[0]));
+            assert!(engine.add_from_browser(req("links", &["/private-link-a.bin", "/private-link-b.bin"], true)).await.open_links);
+            engine.add_from_browser(req("links", &["/plain-link.bin"], false)).await;
+            let found = engine.found();
+            let private: Vec<&model::FoundItem> = found.iter().filter(|f| f.template.link.contains("private-link")).collect();
+            assert_eq!(private.len(), 2);
+            assert!(private.iter().all(|f| f.template.private), "marked private in Links");
+            let plain = found.iter().find(|f| f.template.link.contains("plain-link")).unwrap();
+            assert!(!plain.template.private);
+            // "Download on" another PC: never a private link.
+            let ids: Vec<String> = found.iter().map(|f| f.id.clone()).collect();
+            engine.found_set_device(&ids, Some("home".into()));
+            let devices = vec![crate::engine::DeviceChoice { id: "home".into(), name: "Home PC".into(), online: true }];
+            let split = engine.found_split(&ids, &devices);
+            let sent: Vec<&String> = split.send.iter().flat_map(|(_, _, rows)| rows).collect();
+            assert_eq!(sent, vec![&plain.id], "only the normal window's link goes to the other PC");
+            for f in engine.found().iter().filter(|f| f.template.private) {
+                assert_eq!((f.device.as_deref(), f.device_note.as_deref()), (None, Some(crate::engine::PRIVATE_HERE)));
+            }
+            assert!(engine.found_private_links().contains(&private[0].template.link));
+            // Downloaded from Links: a private download.
+            let made = engine.found_download(&[private[0].id.clone()], false, None, false);
+            assert_eq!(made, 1);
+            let d = engine.downloads().into_iter().find(|d| d.link.contains("private-link-a")).unwrap();
+            assert!(d.private);
+            assert!(wait_done(&d.id));
+            engine.save_now();
+            std::thread::sleep(Duration::from_millis(800));
+            // The normal link is in Links' file; nothing in the data folder names a private one.
+            let links_file = String::from_utf8_lossy(&std::fs::read(data.join("found.json")).unwrap()).to_string();
+            assert!(links_file.contains("plain-link"), "{links_file}");
+            let mut stack = vec![data.clone()];
+            while let Some(dir) = stack.pop() {
+                for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                    let p = e.path();
+                    if p.starts_with(&dl) || p.starts_with(&browser_dir) {
+                        continue;
+                    }
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if let Ok(bytes) = std::fs::read(&p) {
+                        assert!(!String::from_utf8_lossy(&bytes).contains("private-"), "{} names it", p.display());
+                    }
+                }
+            }
+        });
+
+        // 8. Nothing about a private window's links goes to the bell either: a link page that
+        //    needs you, and a split set downloaded from Links (the set's one notice, and its
+        //    extraction's). A normal window's row still goes to the bell.
+        rt.block_on(async {
+            let req = |paths: &[&str], private: bool| {
+                extension::validate(extension::Request { kind: "links".into(), urls: paths.iter().map(|p| url(p)).collect(), private, ..Default::default() }).unwrap()
+            };
+            engine.add_from_browser(req(&["/private-set.part1.rar", "/private-set.part2.rar"], true)).await;
+            engine.add_from_browser(req(&["/plain-gate.bin"], false)).await;
+            let found = engine.found();
+            let rows: Vec<String> = found.iter().filter(|f| f.template.link.contains("private-set")).map(|f| f.id.clone()).collect();
+            assert_eq!(rows.len(), 2);
+            let plain = found.iter().find(|f| f.template.link.contains("plain-gate")).unwrap().id.clone();
+            let no_bell = |p: &serde_json::Value| p.get("noBell").and_then(|v| v.as_bool()) == Some(true);
+            heard.lock().unwrap().clear();
+            engine.notify_row(&rows[0], "needs-you", "Pako needs you", "Finish opening a link from private-gate.example in the Pako window.", notices::Go::item("found", rows[0].clone()));
+            engine.notify_row(&plain, "needs-you", "Pako needs you", "Finish opening a link from gate.example in the Pako window.", notices::Go::item("found", plain.clone()));
+            {
+                let got = heard.lock().unwrap();
+                assert_eq!(got.len(), 2);
+                assert!(no_bell(&got[0]), "a private row's link page: a pop-up only");
+                assert!(!no_bell(&got[1]), "a normal row's link page: in the bell as before");
+            }
+            heard.lock().unwrap().clear();
+            assert_eq!(engine.found_download(&rows, false, None, true), 2);
+            let set: Vec<model::Download> = engine.downloads().into_iter().filter(|d| d.link.contains("private-set")).collect();
+            assert_eq!(set.len(), 2);
+            assert!(set.iter().all(|d| d.private && d.group.as_deref() == Some("private-set")), "{set:?}");
+            for d in &set {
+                assert!(wait_done(&d.id));
+            }
+            // The set's notice comes once nothing else finished for 3 seconds (Pako's timer
+            // isn't running here: asked by hand).
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(12) && !heard.lock().unwrap().iter().any(|p| p["title"] == "private-set") {
+                engine.flush_notes_now();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            let got = heard.lock().unwrap();
+            assert!(got.iter().any(|p| p["title"] == "private-set"), "{got:?}");
+            for p in got.iter().filter(|p| p.to_string().contains("private-set")) {
+                assert!(no_bell(p), "never in the bell: {p}");
+            }
+        });
+
+        // 9. A download neither Pako nor the browser could get (the browser couldn't start it
+        //    again, or stopped it at once) is said like any stopped download, never only in the row.
+        {
+            heard.lock().unwrap().clear();
+            let report = |browser_id: i64, error: &str| extension::Request {
+                kind: "follow".into(),
+                urls: vec![url("/one-time.glb")],
+                filename: "one-time.glb".into(),
+                follow: Some(extension::FollowReport { browser_id, state: "interrupted".into(), error: error.into(), ..Default::default() }),
+                ..Default::default()
+            };
+            let reply = engine.follow(&report(41, "RESTART_FAILED"));
+            let row = reply.followed.clone().expect("listed");
+            assert_eq!(engine.find(&row).unwrap().status, model::Status::Failed);
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(8) && heard.lock().unwrap().is_empty() {
+                engine.flush_notes_now();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let got = heard.lock().unwrap();
+            let text = format!("{got:?}");
+            assert!(text.contains("download-failed") && text.contains("Download it once more from the page"), "{text}");
+        }
         engine.shutdown();
     }
 }

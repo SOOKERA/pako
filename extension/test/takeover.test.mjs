@@ -33,8 +33,26 @@ function newPako({ result = { ok: true }, pending = 0 } = {}) {
 function load(opts = {}, pako = newPako()) {
   const ext = loadEdition({ reply: pako.reply, ...opts });
   ext.storage.pakoHolds = true;
+  if (!opts.light) seenPlainGet(ext);
   return ext;
 }
+
+/** The browser's own answer for URL_: a plain public GET of a file of known size (the case the
+ *  browser's copy may be cancelled at once for). */
+function seenPlainGet(ext) {
+  ext.listeners.headers({
+    tabId: 3,
+    url: URL_,
+    type: "main_frame",
+    method: "GET",
+    statusCode: 200,
+    responseHeaders: [
+      { name: "Content-Length", value: "50000000" },
+      { name: "Content-Type", value: "application/zip" },
+    ],
+  });
+}
+
 
 test("A Pako that answers at once: the browser's copy is cancelled straight away, Pako checks meanwhile", async () => {
   const pako = newPako();
@@ -217,4 +235,33 @@ test("Chromium: taken at the file-name step, before any 'Save as' (the browser i
   await settle(20);
   assert.equal(let_go, true);
   assert.deepEqual(off.log, []);
+});
+
+test("Asked with the site's own sign-in (Authorization): held paused until Pako has it, never cancelled first", async () => {
+  for (const result of [{ ok: true }, { ok: false, error: "Pako couldn't get this download (the server refused it)." }]) {
+    const pako = newPako({ result });
+    const ext = load({}, pako);
+    ext.listeners.sendHeaders({ tabId: 3, url: URL_, type: "main_frame", method: "GET", requestHeaders: [{ name: "Authorization", value: "Basic c2VjcmV0" }] });
+    seenPlainGet(ext);
+    await ext.listeners.download(ITEM);
+    await settle(40);
+    assert.deepEqual(ext.log, result.ok ? ["full pause", "full cancel", "full erase"] : ["full pause", "full resume"]);
+    assert.deepEqual(ext.restarted, [], "never started again: the browser's own copy carries on");
+  }
+  // The same file without that header: cancelled at once, as before (the fast way).
+  const plain = load();
+  plain.listeners.sendHeaders({ tabId: 3, url: URL_, type: "main_frame", method: "GET", requestHeaders: [{ name: "Accept", value: "*/*" }] });
+  await plain.listeners.download(ITEM);
+  await settle(40);
+  assert.deepEqual(plain.log, ["full cancel", "full erase"]);
+});
+
+test("Started again but the browser's copy stopped at once: the '!' says so, never a silent loss", async () => {
+  const ext = load({}, newPako({ result: { ok: false, error: "Pako couldn't get this download (the server refused it)." } }));
+  ext.items[99] = { state: "interrupted", error: "SERVER_UNAUTHORIZED", filename: "", bytesReceived: 0 };
+  await ext.listeners.download({ ...ITEM, filename: "D:/Downloads/scan.glb" });
+  await settle(5300);
+  assert.equal(ext.storage.badge, "!");
+  assert.match(ext.storage.lastError, /^Pako couldn't get "scan\.glb", and your browser couldn't start it again\. Download it once more from the page\.$/);
+  assert.equal(ext.storage.lastDetail, "SERVER_UNAUTHORIZED");
 });

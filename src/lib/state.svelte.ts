@@ -1329,7 +1329,9 @@ class AppState {
       this.folderOpenedAt = Date.now();
     } else next.add(key);
     this.collapsed = next;
-    LS.set("collapsed", [...next]);
+    // A folder of a private window's downloads (its name, its place) is never written to disk.
+    const hidden = new Set(this.downloads.filter((d) => d.private).map(folderKeyOf));
+    LS.set("collapsed", [...next].filter((k) => !hidden.has(k)));
   }
 
   togglePanel() {

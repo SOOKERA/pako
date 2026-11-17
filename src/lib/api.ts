@@ -170,6 +170,12 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (cmd === "ask_current") {
     const q = new URLSearchParams(location.search);
     const video = q.has("video");
+    // ("?showcase=browser": a file just clicked on a sample site, for the website's picture.)
+    if (q.get("showcase") === "browser")
+      return Promise.resolve({
+        id: "preview", stem: "Conference talk slides", ext: "pdf", site: "events.example.org", size: 86_400_000, dir: "C:\\Users\\Sam\\Downloads",
+        video: false, quality: 1080, sizes: [], position: 1, total: 1, running: 2, notify: true, hereOnly: false,
+      } as T);
     return Promise.resolve({
       id: "preview",
       stem: video ? "Lofi rain cafe - 3 hours of calm music" : "Project files (final)",

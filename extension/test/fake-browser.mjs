@@ -57,8 +57,15 @@ export function browserProfile() {
  * - `naming`: the browser has Chromium's file-name step (downloads.onDeterminingFilename)
  * - `restartFails`: downloads.download (the extension starting a download itself) is refused
  * - `privateAllowed`: the browser lets the extension work in private windows
+ * - `privateTabs`: the IDs of the tabs that are in a private window
+ * - `stored` / `sessionStored`: what storage.local / storage.session already hold (the
+ *   background page starting again: the browser restarted it, or Reload in its extensions page)
+ * - `dnr`: the browser's declarativeNetRequest: "full" (rules on the server's answer, Chrome 128
+ *   and later), "old" (an older one: it throws on such a rule), or false (none: Firefox's way)
+ * - `vivaldi`: the browser is Vivaldi (its tabs carry `vivExtData`)
+ * - `alias`: the browser also names its API `browser` (Chromium 14x and later: not Firefox)
  */
-export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false } = {}) {
+export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false } = {}) {
   const id = light ? LIGHT_ID : FULL_ID;
   const who = light ? "light" : "full";
   const sent = [];
@@ -69,8 +76,8 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
   const updates = [];
   const listeners = {};
   const log = [];
-  const storage = {};
-  const session = {};
+  const storage = JSON.parse(JSON.stringify(stored));
+  const session = JSON.parse(JSON.stringify(sessionStored));
   const badges = {};
   const fetched = [];
   /** Downloads the extension started itself (downloads.download options). */
@@ -87,7 +94,13 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
   /** The files put into a page (scripting.executeScript with files): { tabId, frameIds, files }. */
   const injected = [];
   const ev = (name) => ({ addListener: (f) => (listeners[name] = f) });
-  const tabList = () => Object.entries(tabs).map(([tid, url], i) => ({ id: Number(tid), url, title: `Page ${tid}`, active: i === 0, incognito: false }));
+  const tabList = () =>
+    Object.entries(tabs).map(([tid, url], i) => ({ id: Number(tid), url, title: `Page ${tid}`, active: i === 0, incognito: privateTabs.includes(Number(tid)), ...(vivaldi ? { vivExtData: "{}" } : {}) }));
+  /** The extension's session rules in the browser (declarativeNetRequest), by ID. */
+  const rules = new Map();
+  /** Tabs the extension sent to an address (tabs.update): { tabId, url }. */
+  const navigated = [];
+  const storageChanged = (o) => listeners.storageChanged?.(Object.fromEntries(Object.keys(o).map((k) => [k, { newValue: o[k] }])), "local");
   const runtime = {
     id,
     lastError: null,
@@ -138,8 +151,14 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       onActivated: ev("activated"),
       onUpdated: ev("updated"),
       onRemoved: ev("removed"),
+      onCreated: ev("tabCreated"),
       get: async (tid) => tabList().find((t) => t.id === tid),
       reload: async () => {},
+      update: async (tid, props) => {
+        if (!tabList().some((t) => t.id === tid)) throw new Error(`No tab with id: ${tid}.`);
+        navigated.push(plain({ tabId: tid, ...props }));
+        return tabList().find((t) => t.id === tid);
+      },
       query: async (q) => {
         const list = tabList();
         if (q?.windowId != null) return list.filter((t) => t.active);
@@ -154,12 +173,16 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       },
     },
     extension: { isAllowedIncognitoAccess: async () => privateAllowed },
-    webRequest: { onHeadersReceived: ev("headers") },
+    webRequest: { onHeadersReceived: ev("headers"), onSendHeaders: ev("sendHeaders"), onBeforeRedirect: ev("redirect") },
     storage: {
       local: {
         get: async (d) => ({ ...d, ...storage }),
-        set: async (o) => Object.assign(storage, o),
+        set: async (o) => {
+          Object.assign(storage, o);
+          storageChanged(o);
+        },
       },
+      onChanged: ev("storageChanged"),
       session: {
         get: async (k) => (k in session ? { [k]: JSON.parse(JSON.stringify(session[k])) } : {}),
         set: async (o) => Object.assign(session, JSON.parse(JSON.stringify(o))),
@@ -189,6 +212,22 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       },
       ...(naming ? { onDeterminingFilename: { addListener: (f) => (listeners.naming = f) } } : {}),
     },
+    ...(dnr
+      ? {
+          declarativeNetRequest: {
+            updateSessionRules: (o) => {
+              // An older browser doesn't know conditions on the server's answer: Chrome throws at once.
+              if (dnr === "old" && (o?.addRules || []).some((r) => r.condition?.responseHeaders || r.condition?.excludedResponseHeaders)) {
+                throw new TypeError("Error at property 'condition': Unexpected property: 'responseHeaders'.");
+              }
+              for (const rid of o?.removeRuleIds || []) rules.delete(rid);
+              for (const r of o?.addRules || []) rules.set(r.id, plain(r));
+              return Promise.resolve();
+            },
+            getSessionRules: async () => [...rules.values()].map(plain),
+          },
+        }
+      : {}),
     scripting: {
       executeScript: async ({ target, files }) => {
         if (files) {
@@ -210,10 +249,77 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
     return { ok: text != null, text: async () => text ?? "" };
   };
   const context = { chrome, console, URL, setTimeout, clearTimeout, AbortController, fetch: fakeFetch, crypto: globalThis.crypto };
+  if (alias) context.browser = chrome;
   vm.runInContext(backgroundSource(light), vm.createContext(context), { filename: `${who}/background.js` });
-  const edition = { id, who, sent, pings, reloads, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, restarted, items, cookieStores, chrome };
+  const edition = { id, who, rules, navigated, sent, pings, reloads, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, restarted, items, cookieStores, chrome };
   profile.installed.set(id, edition);
   return edition;
+}
+
+/** A declarativeNetRequest value pattern ("*" any characters, "?" zero or one), case-insensitive. */
+function glob(pattern, value) {
+  const re = String(pattern)
+    .split("")
+    .map((ch) => (ch === "*" ? ".*" : ch === "?" ? ".?" : ch.replace(/[.+^${}()|[\]\\]/g, (m) => "\\" + m)))
+    .join("");
+  return new RegExp(`^${re}$`, "i").test(String(value));
+}
+function onDomain(url, domains) {
+  try {
+    const h = new URL(url).hostname;
+    return (domains || []).some((d) => h === d || h.endsWith("." + d));
+  } catch {
+    return false;
+  }
+}
+function headersMatch(list, headers) {
+  return list.some((c) => headers.some((h) => h.name.toLowerCase() === c.header.toLowerCase() && (!c.values || c.values.some((v) => glob(v, h.value)))));
+}
+
+/** The rule that decides a request on the server's answer, as Chrome's declarativeNetRequest
+ *  does (the highest priority; "allow" first at the same priority), or null. */
+export function decidingRule(rules, r) {
+  const hits = [...rules.values()].filter((rule) => {
+    const c = rule.condition || {};
+    if (c.resourceTypes && !c.resourceTypes.includes(r.type)) return false;
+    if (c.requestMethods && !c.requestMethods.includes(r.method.toLowerCase())) return false;
+    if (c.excludedTabIds?.includes(r.tabId)) return false;
+    if (c.tabIds && !c.tabIds.includes(r.tabId)) return false;
+    if (onDomain(r.url, c.excludedRequestDomains)) return false;
+    if (r.initiator && onDomain(r.initiator, c.excludedInitiatorDomains)) return false;
+    if (c.urlFilter) {
+      const exact = /^\|(.*)\|$/.exec(c.urlFilter);
+      if (exact ? r.url.toLowerCase() !== exact[1].toLowerCase() : !r.url.includes(c.urlFilter)) return false;
+    }
+    if (c.excludedResponseHeaders && headersMatch(c.excludedResponseHeaders, r.responseHeaders)) return false;
+    if (c.responseHeaders && !headersMatch(c.responseHeaders, r.responseHeaders)) return false;
+    return true;
+  });
+  const rank = (rule) => (rule.priority || 1) * 2 + (rule.action.type === "allow" ? 1 : 0);
+  hits.sort((a, b) => rank(b) - rank(a));
+  return hits[0] || null;
+}
+
+/** The browser loading a page or frame whose answer may be a file: the extension sees the request
+ *  go out (onSendHeaders), then the server's answer (onHeadersReceived, before the browser's
+ *  rules, as in Chrome), then the browser's rules decide. Returns "caught" (turned into the
+ *  extension's sent page: no download) or "download" (the browser goes on with it). */
+export async function browse(edition, { url, type = "main_frame", method = "GET", tabId = 3, initiator = "", requestHeaders = [], responseHeaders = [], statusCode = 200 }) {
+  const details = { url, type, method, tabId, frameId: type === "main_frame" ? 0 : 1, initiator, statusCode };
+  // Chrome decides with the rules without conditions on the answer when the request starts
+  // (one added later, even before the answer, doesn't count for this request: checked in Vivaldi
+  // 8.3), and with those on the answer when it comes.
+  const onAnswer = (r) => !!(r.condition?.responseHeaders || r.condition?.excludedResponseHeaders);
+  const atStart = [...edition.rules].filter(([, r]) => !onAnswer(r));
+  edition.listeners.sendHeaders?.({ ...details, requestHeaders });
+  // The server takes a moment to answer.
+  await settle(5);
+  edition.listeners.headers?.({ ...details, responseHeaders });
+  const deciding = new Map([...atStart, ...[...edition.rules].filter(([, r]) => onAnswer(r))]);
+  const rule = decidingRule(deciding, { ...details, responseHeaders });
+  if (rule?.action.type !== "redirect") return "download";
+  edition.listeners.redirect?.({ ...details, redirectUrl: `chrome-extension://1c4ea6cf-7588-4816-8277-3a2758e249c6${rule.action.redirect.extensionPath}` });
+  return "caught";
 }
 
 /** Copies a value out of the sandbox (its arrays and objects are another realm's). */

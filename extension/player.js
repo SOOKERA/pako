@@ -13,7 +13,8 @@
   // (caught.js steps aside in a frame where this is set.)
   globalThis.__pakoPlayer = true;
 
-  const api = globalThis.browser ?? globalThis.chrome;
+  // (pill.js's choice: never a page element named "browser".)
+  const api = kit.api;
   const QUALITIES = [
     [1080, "Up to 1080p", "MP4"],
     [720, "Up to 720p", "MP4"],

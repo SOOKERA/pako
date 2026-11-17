@@ -516,6 +516,151 @@ const SHOTS = {
       return { x: b.x - p, y: b.y - p, width: b.width + p * 2, height: b.height + p * 2 };
     },
   },
+  // ---------- new in 1.2.0 ----------
+  "browser-handoff": {
+    // Downloads with a "Via browser" row, and the Download with Pako window just opened on top
+    // for a file clicked in the browser (its own page, in a frame where Windows would show it).
+    ...main("/?showcase=browser"),
+    async run(page) {
+      await closePanel(page);
+      await page.evaluate(
+        ({ w, h, theme }) => {
+          const frame = document.createElement("iframe");
+          frame.src = "/ask?showcase=browser";
+          const edge = theme === "light" ? "1px solid #c9d0dc" : "1px solid #343943";
+          const shadow = theme === "light" ? "0 18px 50px rgba(20,26,46,.22), 0 3px 10px rgba(20,26,46,.12)" : "0 18px 50px rgba(0,0,0,.6), 0 3px 10px rgba(0,0,0,.4)";
+          Object.assign(frame.style, {
+            position: "fixed", zIndex: "9999", width: w + "px", height: h + "px", left: Math.round(220 + (1440 - 220 - w) / 2) + "px", top: "330px",
+            border: edge, borderRadius: "8px", boxShadow: shadow, background: "transparent", colorScheme: theme,
+          });
+          frame.setAttribute("data-ask", "");
+          document.body.appendChild(frame);
+        },
+        { w: ASK.width, h: ASK.height, theme: THEME },
+      );
+      const ask = page.frameLocator("[data-ask]");
+      await ask.getByText("Conference talk slides.pdf").waitFor();
+      await page.frameLocator("[data-ask]").locator("body").evaluate(() => {
+        const s = document.createElement("style");
+        s.textContent = "*, *::before, *::after { transition-duration: 0s !important; caret-color: transparent !important; }";
+        document.head.appendChild(s);
+        /** @type {HTMLElement} */ (document.activeElement)?.blur();
+      });
+      await park(page, 700, 880);
+      await settle(page, 1800);
+    },
+  },
+  "via-browser": {
+    ...main("/?showcase=browser"),
+    async run(page) {
+      // The file only the browser could get (first row) in the details panel, with its note.
+      await home(page);
+      await park(page, 700, 860);
+      await settle(page, 1800);
+    },
+  },
+  "direct-resume": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "Direct");
+      // Nina's laptop went to sleep: the transfer waits and goes on once she's back.
+      await clickRow(page, "Nina");
+      await park(page, 700, 880);
+      await settle(page, 1800);
+    },
+  },
+  "direct-from-pc": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "Direct");
+      // Sending from Home PC to Rado (the card: to Home PC done, on its way to Rado), and the
+      // "sending from" menu open again: This PC, Home PC, Laptop, Office PC (offline).
+      const pcButton = page.locator("button.fpc");
+      await pcButton.click();
+      await page.locator(".frommenu .fitem", { hasText: "Home PC" }).click();
+      await settle(page, 900);
+      await clickRow(page, "Rado");
+      await settle(page, 900);
+      await pcButton.click();
+      await page.locator(".frommenu").waitFor();
+      await park(page, 700, 880);
+      await settle(page, 3500);
+    },
+  },
+  "direct-from-home": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "Direct");
+      await page.locator("button.fpc").click();
+      await page.locator(".frommenu .fitem", { hasText: "Home PC" }).click();
+      await settle(page, 900);
+      await clickRow(page, "Rado");
+      await park(page, 700, 880);
+      await settle(page, 3500);
+    },
+  },
+  "upload-zip-parts": {
+    ...main("/?showcase=parts"),
+    async run(page) {
+      await sidebar(page, "Upload");
+      await closePanel(page);
+      await page.getByRole("radio", { name: "ZIP in parts", exact: true }).click();
+      await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+      await park(page, 700, 880);
+      await settle(page);
+    },
+  },
+  "settings-tabs": {
+    ...main(),
+    async run(page) {
+      await page.locator(".sidebar, nav, aside").getByText("Settings", { exact: true }).first().click();
+      await settle(page, 600);
+      await page.getByRole("dialog").getByRole("tab", { name: "Downloads" }).click();
+      await settle(page, 600);
+      const fold = page.getByRole("dialog").locator("[data-fold-toggle]:visible").first();
+      await fold.click();
+      await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+      await settle(page, 600);
+      // Down to the Advanced part, its title near the top, so what it holds shows.
+      await fold.evaluate((el) => {
+        let box = el.parentElement;
+        while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+        if (box) box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 120;
+      });
+      await park(page, 2, 700);
+      await settle(page, 1200);
+    },
+  },
+  "settings-search": {
+    ...main(),
+    async run(page) {
+      await page.locator(".sidebar, nav, aside").getByText("Settings", { exact: true }).first().click();
+      await settle(page, 600);
+      // "start" typed, its first find picked: Pako goes to that setting and lights it up.
+      await page.getByRole("dialog").getByLabel("Search settings").fill("start");
+      await page.getByRole("dialog").locator(".hits .hit").first().waitFor();
+      await settle(page, 400);
+      await page.getByRole("dialog").locator(".hits .hit").first().click();
+      await page.locator(".set-flash").first().evaluate((el) => el.setAttribute("data-lit", ""));
+      // Kept lit (it fades after a moment in the window).
+      await page.addStyleTag({ content: "[data-lit]::after { animation: none !important; opacity: 1 !important; }" });
+      await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+      await park(page, 2, 700);
+      await settle(page, 2000);
+      await page.locator("[data-lit]").evaluate((el) => el.classList.add("set-flash"));
+      await settle(page, 300);
+    },
+  },
+  "direct-check-contact": {
+    ...main(),
+    async run(page) {
+      await sidebar(page, "Direct");
+      // Jo: checked often for an hour (picked a quarter of an hour ago), and Mute under it.
+      await clickRow(page, "Jo");
+      await park(page, 700, 880);
+      await settle(page, 1800);
+    },
+  },
   "pako-light-popup": { extension: "light" },
   "extension-popup": { extension: "full" },
   "extension-videos": { extension: "full", videos: true },

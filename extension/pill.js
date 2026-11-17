@@ -9,7 +9,26 @@
 (() => {
   if (globalThis.__pakoPill) return;
 
-  const api = globalThis.browser ?? globalThis.chrome;
+  // The browser's extension API. (Not just `globalThis.browser`: in a page, an element with
+  // id="browser" also answers to that name, and every click would fail.)
+  const api = globalThis.browser?.runtime ? globalThis.browser : globalThis.chrome;
+  const UPDATED = "Pako's extension was just updated. Reload this page and try again.";
+  const NOT_ANSWERING = "Pako's extension isn't responding. Open the Pako button in the toolbar for details.";
+
+  /** The extension's background couldn't be reached (`e`: what the browser said). Only a page
+   *  whose script is from before an update hears "just updated"; anything else is said as it
+   *  is, kept for the toolbar window (its "!" details) and in the console. */
+  function trouble(e) {
+    const detail = String(e?.message || e || "No answer");
+    if (/context invalidated/i.test(detail)) return { text: UPDATED, detail };
+    console.warn("Pako:", detail);
+    try {
+      Promise.resolve(api.storage.local.set({ lastError: NOT_ANSWERING, lastDetail: detail })).catch(() => {});
+    } catch {
+      // the extension's storage can't be reached from here either
+    }
+    return { text: NOT_ANSWERING, detail };
+  }
   /** Smaller videos (thumbnails, previews) get no pill. */
   const MIN_W = 240;
   const MIN_H = 135;
@@ -257,7 +276,12 @@
       for (const it of list || []) {
         if (it.head) nodes.push(el("div", "head", it.head));
         else if (it.sep) nodes.push(el("div", "sep"));
-        else if (it.info) nodes.push(el("div", "info", it.info));
+        else if (it.info) {
+          const info = el("div", "info", it.info);
+          // (What the browser said, when the extension couldn't be reached.)
+          if (it.detail) info.title = it.detail;
+          nodes.push(info);
+        }
         else if (it.text) {
           const item = el("button", "item");
           item.type = "button";
@@ -288,7 +312,10 @@
         fill([{ head: "Download with Pako" }, { info: "…" }]);
         list.then(
           (l) => mine === opening && menuOpen && fill(l),
-          () => mine === opening && menuOpen && fill([{ head: "Download with Pako" }, { info: "Pako's extension was just updated. Reload this page and try again." }]),
+          (e) => {
+            const t = trouble(e);
+            if (mine === opening && menuOpen) fill([{ head: "Download with Pako" }, { info: t.text, detail: t.detail }]);
+          },
         );
       } else fill(list);
     }
@@ -342,8 +369,9 @@
       }
     }
 
-    function setNote(text) {
+    function setNote(text, detail = "") {
       note.textContent = text;
+      note.title = detail;
       note.classList.toggle("on", !!text);
     }
 
@@ -404,8 +432,9 @@
       let reply;
       try {
         reply = await pick(item, current);
-      } catch {
-        reply = { ok: false, error: "Pako's extension was just updated. Reload this page and try again." };
+      } catch (e) {
+        const t = trouble(e);
+        reply = { ok: false, error: t.text, why: t.detail };
       }
       busy = false;
       main.removeAttribute("aria-busy");
@@ -422,7 +451,7 @@
         setMenu(true);
         // The browser's own words too, when the line to Pako itself failed.
         const detail = reply?.detail ? ` (Browser says: ${reply.detail})` : "";
-        setNote((reply?.error || "Couldn't send this video to Pako.") + detail);
+        setNote((reply?.error || "Couldn't send this video to Pako.") + detail, reply?.why || reply?.detail || "");
       }
     }
 
@@ -447,5 +476,6 @@
     };
   }
 
-  globalThis.__pakoPill = { MIN_W, MIN_H, bigEnough, inside, videoAt, make };
+  globalThis.__pakoPill = { MIN_W, MIN_H, bigEnough, inside, videoAt, make, trouble, api };
+
 })();

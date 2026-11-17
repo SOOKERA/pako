@@ -19,11 +19,15 @@ import { makeZip, readZip } from "./zip.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const out = join(root, "dist", "extension");
-const shared = ["background.js", "pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "popup.html", "popup.css", "popup.js", "icons"];
+const shared = ["background.js", "pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "popup.html", "popup.css", "popup.js", "pako-sent.html", "pako-sent.js", "icons"];
 /** Only the full extension has these: the Download pill on videos and "Record this video". */
-const FULL_ONLY_FILES = ["pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js"];
-/** Only the full extension asks for these: noticing the videos a page plays. */
-const FULL_ONLY_PERMISSIONS = ["webRequest"];
+const FULL_ONLY_FILES = ["pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "pako-sent.html", "pako-sent.js"];
+/** Only the full extension asks for these: noticing the videos a page plays, and catching a
+ *  download at the server's answer in the browsers that ask before downloading. */
+const FULL_ONLY_PERMISSIONS = ["webRequest", "declarativeNetRequestWithHostAccess"];
+/** Only the Chromium folder has these: the page a download caught at the server's answer turns
+ *  into (Firefox keeps its own way). */
+const CHROMIUM_ONLY_FILES = ["pako-sent.html", "pako-sent.js"];
 /** The licence and its additional terms travel with every copy. */
 const legal = ["LICENSE", "NOTICE.md"];
 
@@ -67,6 +71,7 @@ stage(join(out, "chromium"), "manifest.chromium.json");
 
 const ff = join(out, "firefox");
 stage(ff, "manifest.firefox.json");
+for (const f of CHROMIUM_ONLY_FILES) rmSync(join(ff, f));
 zipUp(ff, join(out, "pako-firefox.zip"), true);
 // Chromium and Firefox are the same extension: one version number for both.
 const versionOf = (f) => JSON.parse(readFileSync(join(here, f), "utf8")).version;
@@ -94,6 +99,7 @@ writeFileSync(notice, toLight("NOTICE.md", readFileSync(notice, "utf8").replace(
 const m = JSON.parse(readFileSync(join(store, "manifest.json"), "utf8"));
 delete m.key;
 delete m.content_scripts;
+delete m.web_accessible_resources;
 m.permissions = m.permissions.filter((p) => !FULL_ONLY_PERMISSIONS.includes(p));
 m.name = "Pako Light";
 m.short_name = "Pako Light";

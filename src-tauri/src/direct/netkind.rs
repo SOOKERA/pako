@@ -43,10 +43,26 @@ mod win {
     use windows::Win32::Networking::NetworkListManager::{
         INetworkListManager, NetworkListManager, NLM_ENUM_NETWORK_CONNECTED, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED, NLM_NETWORK_CATEGORY_PRIVATE,
     };
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoIncrementMTAUsage, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
 
     /// More networks than this at once is not a real PC: stop counting.
     const MOST: usize = 64;
+
+    /// Keeps Windows' shared COM space for background threads (the "MTA") alive until Pako
+    /// closes. Without it, the reader's thread could be the last one that set COM up, and its
+    /// `CoUninitialize` then tears that space down under other threads still using COM inside
+    /// it without having set it up themselves (Direct's network library asks Windows for the
+    /// default route through WMI that way, on its own background threads): their next COM call
+    /// crashes Pako (STATUS_ACCESS_VIOLATION). Done once, before the first `CoInitializeEx`.
+    fn keep_mta_alive() {
+        static KEPT: std::sync::Once = std::sync::Once::new();
+        KEPT.call_once(|| {
+            // SAFETY: a plain call; the cookie is deliberately never given back.
+            let _ = unsafe { CoIncrementMTAUsage() };
+        });
+    }
 
     pub struct Reader {
         nlm: Option<INetworkListManager>,
@@ -56,7 +72,9 @@ mod win {
 
     impl Reader {
         pub fn new() -> Self {
+            keep_mta_alive();
             // SAFETY: called once on the reader's own thread; undone in Drop when it succeeded.
+            // (The shared COM space outlives that: `keep_mta_alive`.)
             let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
             Self { nlm: None, com }
         }
@@ -122,5 +140,54 @@ mod tests {
         let got = std::thread::spawn(|| Reader::new().read()).join().unwrap();
         eprintln!("networks on this PC: {got:?}");
         assert!(got.is_some(), "the Network List Manager answered");
+    }
+
+    /// Readers coming and going (each sets COM up on its thread, then closes it) while other
+    /// threads use COM without setting it up, as Direct's network library does for WMI. The
+    /// reader closing COM used to tear the shared COM space down under them: the whole program
+    /// crashed (STATUS_ACCESS_VIOLATION) within about a second of this.
+    #[cfg(windows)]
+    #[test]
+    fn readers_closing_never_pull_com_from_under_other_threads() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use windows::Win32::Networking::NetworkListManager::{INetworkListManager, NetworkListManager, NLM_ENUM_NETWORK_CONNECTED};
+        use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
+        // A first reader makes sure the shared COM space exists before the others use it.
+        std::thread::spawn(|| Reader::new().read()).join().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let used = Arc::new(AtomicU32::new(0));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let stop = stop.clone();
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = Reader::new().read();
+                }
+            }));
+        }
+        for _ in 0..4 {
+            let (stop, used) = (stop.clone(), used.clone());
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    // SAFETY: plain COM calls on objects this thread made; no CoInitializeEx here
+                    // on purpose (the shared COM space is used as it is).
+                    let ok = unsafe {
+                        CoCreateInstance::<_, INetworkListManager>(&NetworkListManager, None, CLSCTX_ALL)
+                            .and_then(|nlm| nlm.GetNetworks(NLM_ENUM_NETWORK_CONNECTED))
+                            .is_ok()
+                    };
+                    if ok {
+                        used.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        stop.store(true, Ordering::Relaxed);
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert!(used.load(Ordering::Relaxed) > 0, "the threads without their own COM set-up could use it");
     }
 }
