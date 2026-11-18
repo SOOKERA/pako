@@ -272,6 +272,67 @@ test("No rule when: the takeover switch is off, an older Pako, Firefox's way, Pa
   assert.deepEqual(light.log, ["light pause", "light cancel", "light erase"], "Light as before: held paused until Pako has it");
 });
 
+test("Pako says the browser asks first (it knows Vivaldi by its program): the rule goes in even when the tabs don't show it and the browser refuses every save", async () => {
+  const said = [];
+  const reply = (m) => {
+    said.push(m.kind);
+    return m.hold ? { ok: true, held: "tok-1", holds: true, asksFirst: true } : { ok: true, holds: true, asksFirst: true };
+  };
+  const ext = loadEdition({ dnr: "full", vivaldi: false, naming: true, tabs: { [TAB]: PAGE }, reply, stored: {} });
+  // A Vivaldi profile seen refusing the extension's saves: nothing lands in storage.local.
+  ext.chrome.storage.local.set = async () => {
+    throw new Error("refused");
+  };
+  await settle(30);
+  assert.equal(ext.rules.size, 0, "nothing known yet: no rule");
+  // Its first answer (any: here a download at the file-name step) says it holds takeovers and
+  // that this browser asks first.
+  await ext.listeners.naming({ id: 7, url: FILE, referrer: PAGE, mime: "application/zip", totalBytes: 50e6, filename: "" }, () => {});
+  await settle(60);
+  assert.ok(said.length > 0, "Pako was asked");
+  assert.ok(ext.rules.get(1), "the catch rule is in the browser, from Pako's answer kept in memory");
+  assert.deepEqual(ext.storage, {}, "nothing was saved (the browser refused)");
+
+  // A browser Pako doesn't say that of (Chrome): no rule from its answers alone.
+  const chrome = loadEdition({ dnr: "full", naming: true, tabs: { [TAB]: PAGE }, reply: () => ({ ok: true, holds: true }), stored: {} });
+  await settle(30);
+  await chrome.listeners.naming({ id: 8, url: FILE, referrer: PAGE, mime: "application/zip", totalBytes: 50e6, filename: "" }, () => {});
+  await settle(60);
+  assert.equal(chrome.rules.size, 0, "Chrome: no rule");
+});
+
+test("Vivaldi: the background page started again keeps the catch before it talks to Pako again (what Pako said is kept)", async () => {
+  const reply = (m) => (m.hold ? { ok: true, held: "tok-1", holds: true, asksFirst: true } : { ok: true, holds: true, asksFirst: true });
+  const first = loadEdition({ dnr: "full", naming: true, tabs: { [TAB]: PAGE }, reply, stored: {} });
+  await settle(30);
+  await first.listeners.naming({ id: 7, url: FILE, referrer: PAGE, mime: "application/zip", totalBytes: 50e6, filename: "" }, () => {});
+  await settle(60);
+  assert.ok(first.rules.get(1), "on, from Pako's answer");
+  assert.equal(first.storage.toldAsks, true, "kept");
+  // The browser stops the idle background page (MV3: after half a minute) and starts it again
+  // for the next tab or request: its session rule is still there, its memory isn't.
+  const again = loadEdition({ dnr: "full", naming: true, tabs: { [TAB]: PAGE }, reply, stored: first.storage, sessionRules: [...first.rules.values()] });
+  await settle(30);
+  assert.deepEqual([again.sent.length, again.pings.length], [0, 0], "nothing asked of Pako yet");
+  assert.ok(again.rules.get(1), "the rule stays: the next download is still caught");
+  assert.equal(await browse(again, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+});
+
+test("What this run learnt wins over what was saved: an older Pako (no holds) turns the catch off even when the save is refused", async () => {
+  // Saved by a newer Pako before: it holds takeovers, and this browser asks first.
+  const old = (m) => (m.hold ? { ok: false, error: "x" } : { ok: true });
+  const ext = loadEdition({ dnr: "full", vivaldi: true, naming: true, tabs: { [TAB]: PAGE }, reply: old, stored: { pakoHolds: true, asksFirst: true } });
+  await settle(30);
+  assert.ok(ext.rules.get(1), "on, from what was saved");
+  ext.chrome.storage.local.set = async () => {
+    throw new Error("refused");
+  };
+  await ask(ext, { type: "ping" });
+  await settle(60);
+  assert.equal(ext.storage.pakoHolds, true, "the save didn't land");
+  assert.equal(ext.rules.size, 0, "this Pako doesn't hold takeovers: no catch");
+});
+
 test("A browser without rules on the server's answer (older than Chrome 128): the file-name step, as before", async () => {
   const pako = newPako();
   const ext = await vivaldi({ dnr: "old" }, pako);

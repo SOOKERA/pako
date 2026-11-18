@@ -52,6 +52,9 @@ async function ping() {
   } catch (e) {
     console.warn("Pako: the background page didn't answer:", e?.message || String(e));
   }
+  /* full-only:start */
+  backgroundSaid = viaBackground;
+  /* full-only:end */
   if (viaBackground && typeof viaBackground === "object" && (viaBackground.ok || viaBackground.detail)) return viaBackground;
   try {
     const reply = await nativePing();
@@ -88,6 +91,32 @@ async function lightEdition() {
   return false;
 }
 
+/* full-only:start */
+/** The background page's answer to "ping" (it says its script's version). */
+let backgroundSaid;
+/** The browser runs an older background script than this window's (it can keep the one it took
+ *  when the extension was added, after Pako wrote a newer one in the folder: seen in Vivaldi
+ *  8.3), and an older script can't tell. This window always comes from the folder: it reloads
+ *  the extension, once per version. Not in Firefox (it updates its signed copy itself). */
+async function olderBackground(status) {
+  if (LIGHT || typeof globalThis.browser?.runtime?.getBrowserInfo === "function") return false;
+  const said = backgroundSaid;
+  const version = api.runtime.getManifest().version;
+  if (!said || typeof said !== "object" || said.script === version) return false;
+  const got = await Promise.resolve(api.storage.local.get({ reloadedFor: "" })).catch(() => null);
+  if (!got || got.reloadedFor === version) return false;
+  const noted = await Promise.resolve(api.storage.local.set({ reloadedFor: version, reloadedAt: Date.now() })).then(
+    () => true,
+    () => false,
+  );
+  if (!noted) return false;
+  status.textContent = "Updating Pako's extension… open this again in a moment.";
+  status.className = "status";
+  setTimeout(() => api.runtime.reload(), 800);
+  return true;
+}
+/* full-only:end */
+
 async function init() {
   const { takeOver = true, lastError = "", lastDetail = "" } = await api.storage.local.get({
     takeOver: true,
@@ -113,6 +142,9 @@ async function init() {
 
   const reply = await ping();
   const status = $("status");
+  /* full-only:start */
+  if (await olderBackground(status)) return;
+  /* full-only:end */
   if (reply?.ok) {
     status.textContent = "Connected";
     status.className = "status ok";

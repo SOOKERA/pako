@@ -177,17 +177,46 @@ pub fn record(path: &PathBuf, browser: &str, light: bool, version: Option<String
 
 /// The host's own memory: a host kept open by the browser doesn't even read the file more than
 /// once a minute.
-#[derive(Default)]
 pub struct HostNote {
     browser: Option<Option<&'static str>>,
+    /// The lookup started by `look_ahead`, not taken yet.
+    ahead: Option<std::thread::JoinHandle<Option<&'static str>>>,
+    lookup: fn() -> Option<&'static str>,
     last: Option<u64>,
 }
 
+impl Default for HostNote {
+    fn default() -> Self {
+        Self { browser: None, ahead: None, lookup: browser_of_this_process, last: None }
+    }
+}
+
 impl HostNote {
+    /// Starts finding the browser now, on its own thread, while the message is read and handed
+    /// to Pako: the lookup (all the PC's processes, about 10 ms) is never added to an answer's
+    /// time, and the browser starts a new helper for almost every message.
+    pub fn look_ahead(&mut self) {
+        if self.browser.is_none() && self.ahead.is_none() {
+            self.ahead = std::thread::Builder::new().name("browser-lookup".into()).spawn(self.lookup).ok();
+        }
+    }
+
+    /// The browser this helper runs for (found once).
+    pub fn browser(&mut self) -> Option<&'static str> {
+        if let Some(found) = self.browser {
+            return found;
+        }
+        let found = match self.ahead.take() {
+            Some(lookup) => lookup.join().unwrap_or(None),
+            None => (self.lookup)(),
+        };
+        self.browser = Some(found);
+        found
+    }
+
     /// `version`: the extension's version, when the message said it (`version_in`).
     pub fn note(&mut self, light: bool, version: Option<String>, now: u64) {
-        let browser = *self.browser.get_or_insert_with(browser_of_this_process);
-        let Some(browser) = browser else { return };
+        let Some(browser) = self.browser() else { return };
         if version.is_none() && self.last.is_some_and(|t| now >= t && now - t < WRITE_EVERY) {
             return;
         }
@@ -222,6 +251,27 @@ mod tests {
         assert_eq!(id(r"C:\Windows\System32\cmd.exe"), None);
         assert_eq!(id(r"C:\Windows\explorer.exe"), None);
         assert_eq!(id(r"C:\Tools\notchrome.exe"), None);
+    }
+
+    #[test]
+    fn the_browser_is_found_beside_the_answer_not_before_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+        static ON_OWN_THREAD: AtomicUsize = AtomicUsize::new(0);
+        fn lookup() -> Option<&'static str> {
+            RUNS.fetch_add(1, Ordering::SeqCst);
+            if std::thread::current().name() == Some("browser-lookup") {
+                ON_OWN_THREAD.fetch_add(1, Ordering::SeqCst);
+            }
+            Some("vivaldi")
+        }
+        let mut note = HostNote { lookup, ..HostNote::default() };
+        note.look_ahead();
+        assert_eq!(note.browser(), Some("vivaldi"));
+        assert_eq!(note.browser(), Some("vivaldi"));
+        note.look_ahead();
+        assert_eq!(RUNS.load(Ordering::SeqCst), 1, "found once");
+        assert_eq!(ON_OWN_THREAD.load(Ordering::SeqCst), 1, "on its own thread, not the one answering");
     }
 
     #[test]

@@ -16,6 +16,12 @@ import { fileURLToPath } from "node:url";
 import { toLight, LIGHT_BANNED } from "./light.mjs";
 import { makeZip, readZip } from "./zip.mjs";
 
+/** The version background.js says it is (`const SCRIPT_VERSION = "…";`), or null. */
+function scriptVersion(source) {
+  const all = [...source.matchAll(/^const SCRIPT_VERSION = "([^"]*)";\r?$/gm)];
+  return all.length === 1 ? all[0][1] : null;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const out = join(root, "dist", "extension");
@@ -77,6 +83,12 @@ zipUp(ff, join(out, "pako-firefox.zip"), true);
 const versionOf = (f) => JSON.parse(readFileSync(join(here, f), "utf8")).version;
 if (versionOf("manifest.chromium.json") !== versionOf("manifest.firefox.json")) {
   throw new Error("manifest.chromium.json and manifest.firefox.json have different versions: make them the same");
+}
+// The background script says its version too (a browser can keep running an older script after
+// the folder was updated: the extension tells them apart by it).
+const scriptSays = scriptVersion(readFileSync(join(here, "background.js"), "utf8"));
+if (scriptSays !== versionOf("manifest.chromium.json")) {
+  throw new Error(`background.js says SCRIPT_VERSION = "${scriptSays}" but the manifests say ${versionOf("manifest.chromium.json")}: raise it with them`);
 }
 
 // Pako Light: the Chrome Web Store / Edge Add-ons edition. Those stores don't allow downloading

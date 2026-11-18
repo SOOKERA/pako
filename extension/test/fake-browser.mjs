@@ -12,6 +12,8 @@ import { toLight } from "../light.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 export const FULL_ID = "fnaplmfbaccplngclnkchlngpkbcbhod";
 export const LIGHT_ID = "cojnnpgiilnbkblckkjnheigiodkdlpl";
+/** The extension's version (its manifest's), which its script says too. */
+export const MANIFEST_VERSION = JSON.parse(readFileSync(join(here, "..", "manifest.chromium.json"), "utf8")).version;
 
 /** The background script of one edition, as that edition ships it. */
 export function backgroundSource(light) {
@@ -66,8 +68,10 @@ export function browserProfile() {
  * - `alias`: the browser also names its API `browser` (Chromium 14x and later: not Firefox)
  * - `sessionRules`: the extension's session rules already in the browser (left by its background
  *   page before it slept)
+ * - `manifestVersion`: the version its manifest says (another than its script's: the browser
+ *   runs an older script than the folder's)
  */
-export function loadEdition({ light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false, sessionRules = [] } = {}) {
+export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false, sessionRules = [] } = {}) {
   const id = light ? LIGHT_ID : FULL_ID;
   const who = light ? "light" : "full";
   const sent = [];
@@ -118,7 +122,7 @@ export function loadEdition({ light = false, tabs = {}, links = [], profile = br
       setTimeout(() => cb(reply(m)), 2);
     },
     sendMessage: (toId, msg, cb) => profile.send(id, toId, msg, cb, runtime),
-    getManifest: () => ({ version: "1.0.0" }),
+    getManifest: () => ({ version: manifestVersion }),
     reload: () => reloads.push(Date.now()),
     onConnect: ev("connect"),
     connectNative: () => {

@@ -16,7 +16,8 @@ else sees it there) and ships the signed file itself.
     web-ext only through environment variables inside the script, never printed.
   - Mozilla signs each version once: the script stops when `signed/pako-firefox-<version>.xpi`
     already exists. Raise `version` in **both** `manifest.chromium.json` and
-    `manifest.firefox.json` (the build refuses different versions).
+    `manifest.firefox.json`, and `SCRIPT_VERSION` at the top of `extension/background.js` with
+    them (the build refuses different versions).
 - **Shipping with Pako:** `src-tauri/build.rs` copies `dist/extension/signed/pako-firefox-<version
   in manifest.firefox.json>.xpi` into the build, and `extension.rs` holds it (`FIREFOX_XPI`,
   `include_bytes!`). An older signed version is never built in. Without the file (someone building
@@ -42,8 +43,8 @@ else sees it there) and ships the signed file itself.
 
 ## At each release
 
-1. The extension changed since the last release? Raise `version` in both extension manifests and
-   run `powershell -ExecutionPolicy Bypass -File scripts/sign-firefox.ps1` (a few minutes; it
+1. The extension changed since the last release? Raise `version` in both extension manifests (and
+   `SCRIPT_VERSION` in `extension/background.js`) and run `powershell -ExecutionPolicy Bypass -File scripts/sign-firefox.ps1` (a few minutes; it
    uploads to Mozilla). Unchanged? Nothing to do: the same signed file goes again.
 2. `scripts/release.ps1` as usual. It stops if the extension's current version isn't signed (`-WithoutFirefox`
    releases without Firefox), and if the signed file isn't the extension as it is now

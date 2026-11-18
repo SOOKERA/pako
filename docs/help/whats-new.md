@@ -1,5 +1,12 @@
 # What's new
 
+## 1.2.5
+
+### Fixed
+
+- In Vivaldi, downloads now really go straight to Pako without Vivaldi's question first: Pako tells its extension it's Vivaldi, and the extension remembers it.
+- After a Pako update, a browser that kept running the old extension (seen in Vivaldi, even after restarting it) now takes the new one: the extension reloads itself, or opening the Pako button in the toolbar does it.
+
 ## 1.2.4
 
 ### Fixed

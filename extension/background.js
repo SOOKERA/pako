@@ -23,6 +23,11 @@ const HOST = "app.pako.host";
 /** Browser downloads smaller than this stay in the browser. */
 const SMALL = 2 * 1024 * 1024;
 const NOT_CONNECTED = "Pako isn't connected. Click the Pako button in the toolbar, then Open Pako.";
+/** This script's own version: always the manifests' (build.mjs and the tests check). A Chromium
+ *  browser can keep running the background script it took when the extension was added, after
+ *  Pako wrote a newer one in the folder, even across restarts (seen in Vivaldi 8.3): it then
+ *  reads the new manifest but runs the old script. Told apart by this, the extension reloads. */
+const SCRIPT_VERSION = "1.2.10";
 
 // The toolbar window and the pages ask through here. Registered first, at
 // once, so nothing else that runs at start-up (or fails there) can keep it from answering.
@@ -86,6 +91,9 @@ async function send(message) {
     if (reply && typeof reply === "object") {
       newerInFolder(reply.ext);
       learnHolds(reply);
+      /* full-only:start */
+      learnAsks(reply);
+      /* full-only:end */
       if (reply.ok && message.kind !== "follow") followsAgain();
       /* full-only:start */
       if (reply.ok) pakoAnswered(true);
@@ -137,6 +145,19 @@ let reloadPlanned = false;
 async function newerInFolder(ext) {
   if (LIGHT || FIREFOX || reloadPlanned) return;
   if (typeof ext !== "string" || !newerVersion(ext, api.runtime.getManifest().version)) return;
+  reloadFor(ext);
+}
+/** The browser runs an older script than its manifest's (see SCRIPT_VERSION): a reload makes it
+ *  take the folder's. Once per version, like a newer one in the folder. */
+function olderScript() {
+  if (LIGHT || FIREFOX || reloadPlanned) return;
+  const version = api.runtime.getManifest().version;
+  if (typeof version === "string" && version !== SCRIPT_VERSION) reloadFor(version);
+}
+/** Reloads the extension for `ext` (the folder's version): once per version, never two reloads
+ *  within RELOAD_GAP, and not while something is on its way to Pako or being recorded. */
+async function reloadFor(ext) {
+  if (reloadPlanned) return;
   const got = await Promise.resolve(api.storage.local.get({ reloadedFor: "", reloadedAt: 0 })).catch(() => null);
   if (!got || got.reloadedFor === ext) return;
   const at = Number(got.reloadedAt) || 0;
@@ -879,6 +900,19 @@ async function privateAllowed() {
   }
 }
 
+/** Saves what the extension learnt. What it learnt in this run is kept in memory too, and wins
+ *  over what was saved: a save the browser refuses only means learning it again after the
+ *  background page restarts. Said once in the service worker's console. */
+let saveFailed = false;
+function saveState(values) {
+  return Promise.resolve()
+    .then(() => api.storage.local.set(values))
+    .catch((e) => {
+      if (!saveFailed) console.warn("Pako: the browser didn't save the extension's settings:", e?.message || e);
+      saveFailed = true;
+    });
+}
+
 /** Does this Pako answer takeovers at once? Learnt from its answers (see `send`). */
 let holdsNow = null;
 async function pakoHolds() {
@@ -889,7 +923,7 @@ function learnHolds(reply) {
   const v = reply.holds === true;
   if (v === holdsNow) return;
   holdsNow = v;
-  api.storage.local.set({ pakoHolds: v }).catch(() => {});
+  saveState({ pakoHolds: v });
   /* full-only:start */
   syncCatch();
   /* full-only:end */
@@ -1338,14 +1372,18 @@ async function syncCatchNow() {
   const dnr = api.declarativeNetRequest;
   // Firefox keeps its own way (no question comes before its extensions' downloads.onCreated).
   if (!dnr?.updateSessionRules || FIREFOX) return;
-  const s = await Promise.resolve(api.storage.local.get({ takeOver: true, pakoHolds: false, pakoAway: false, asksFirst: false })).catch(() => null);
+  const s = await Promise.resolve(api.storage.local.get({ takeOver: true, pakoHolds: false, pakoAway: false, asksFirst: false, toldAsks: false })).catch(() => null);
   if (!s) return;
   const tabs = (await Promise.resolve(api.tabs.query({})).catch(() => [])) || [];
-  // Seen asking first (noteAsking), or Vivaldi (its tabs carry its own data), which asks first
-  // unless told not to.
-  const asks = s.asksFirst === true || tabs.some((t) => t && typeof t === "object" && "vivExtData" in t);
-  if (s.pakoAway === true) pingLater();
-  const want = !catchRefused && asks && s.takeOver !== false && s.pakoHolds === true && s.pakoAway !== true;
+  // Pako said so (it knows its browser by its program: `asksFirst` in its answers; kept, so a
+  // background page started again keeps the rule before it next talks to Pako), seen asking
+  // first (noteAsking), or Vivaldi's own tab data (older Vivaldi versions).
+  const asks = toldAsks || s.toldAsks === true || (asksLearnt ?? s.asksFirst === true) || tabs.some((t) => t && typeof t === "object" && "vivExtData" in t);
+  // What this run learnt wins over what was saved (a save the browser refused never lands).
+  const away = pakoAwayNow ?? s.pakoAway === true;
+  const holds = holdsNow ?? s.pakoHolds === true;
+  if (away) pingLater();
+  const want = !catchRefused && asks && s.takeOver !== false && holds && !away;
   const rule = want ? catchRule(tabs.filter((t) => t?.incognito && Number.isInteger(t.id)).map((t) => t.id)) : null;
   const key = rule ? JSON.stringify(rule) : "";
   if (key === catchApplied) return;
@@ -1367,6 +1405,18 @@ async function syncCatchNow() {
  *  so a single slow one (Chrome's own "download multiple files?" question, a file slow to start)
  *  never turns the catch on in a browser that doesn't ask. */
 let askingWork = Promise.resolve();
+/** What noteAsking learnt in this run (used when the browser refuses saves); null: nothing yet. */
+let askingNow = { asksFirst: false, askedSlow: 0 };
+let asksLearnt = null;
+/** Pako said this browser asks before its extensions see a download (`asksFirst`). Saved too: a
+ *  browser is the same browser for good, and the background page is started again often. */
+let toldAsks = false;
+function learnAsks(reply) {
+  if (reply.asksFirst !== true || toldAsks) return;
+  toldAsks = true;
+  saveState({ toldAsks: true });
+  syncCatch();
+}
 function noteAsking(slow) {
   // One at a time: two downloads told at once would each read the count before the other wrote it.
   askingWork = askingWork.then(
@@ -1376,13 +1426,16 @@ function noteAsking(slow) {
   return askingWork;
 }
 async function noteAskingNow(slow) {
-  const got = await Promise.resolve(api.storage.local.get({ asksFirst: false, askedSlow: 0 })).catch(() => null);
-  if (!got) return;
+  const stored = await Promise.resolve(api.storage.local.get({ asksFirst: false, askedSlow: 0 })).catch(() => null);
+  // A browser that refuses saves: counted in memory for this run.
+  const got = saveFailed || !stored ? askingNow : stored;
   const was = got.asksFirst === true;
   const n = slow ? Math.min((Number(got.askedSlow) || 0) + 1, ASKED_TWICE) : 0;
   const asks = slow && (was || n >= ASKED_TWICE);
   if (n === got.askedSlow && asks === was) return;
-  await Promise.resolve(api.storage.local.set({ asksFirst: asks, askedSlow: n })).catch(() => {});
+  askingNow = { asksFirst: asks, askedSlow: n };
+  asksLearnt = asks;
+  await saveState({ asksFirst: asks, askedSlow: n });
   if (asks !== was) syncCatch();
 }
 
@@ -1395,9 +1448,7 @@ function pakoAnswered(yes) {
   } else pingLater();
   if (pakoAwayNow === !yes) return;
   pakoAwayNow = !yes;
-  Promise.resolve(api.storage.local.set({ pakoAway: !yes }))
-    .catch(() => {})
-    .then(() => syncCatch());
+  saveState({ pakoAway: !yes }).then(() => syncCatch());
 }
 function pingLater() {
   if (awayTimer) return;
@@ -1566,6 +1617,8 @@ api.tabs.onReplaced?.addListener(() => syncCatch());
 // The browser keeps the rule while it runs, not after it restarts: set again at every start.
 syncCatch();
 dropOldAllows();
+// An older script than the folder's, kept by the browser: reloaded once.
+olderScript();
 
 function forgetTab(tabId) {
   caughtWork.delete(tabId);
@@ -1940,7 +1993,8 @@ function onMessage(msg, sender, respond) {
     // "Send this page" comes from the toolbar window only, never from a page in a tab. A
     // private window's tab (the window says so): Pako keeps no trace of it.
     if (msg?.type === "send-tab" && !sender?.tab) respond(await download(msg.url, "", "", { incognito: !!msg.incognito, storeId: msg.storeId, isPrivate: msg.incognito === true }));
-    else if (msg?.type === "ping") respond(await send({ kind: "ping" }));
+    // (With this script's version: the toolbar window tells an older script the browser kept.)
+    else if (msg?.type === "ping") respond({ ...(await send({ kind: "ping" })), script: SCRIPT_VERSION });
     // The toolbar window: are private windows on (the browser's own switch for Pako)?
     else if (msg?.type === "private") respond({ allowed: await privateAllowed() });
     // Pako Light's popup: is the full extension on here (then Light stays out of the way), and

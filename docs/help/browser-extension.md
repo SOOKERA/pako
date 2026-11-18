@@ -156,7 +156,7 @@ With **Show the small window when a browser download starts** on (**Settings ›
 
 ## After a Pako update
 
-Pako refreshes its extension folder by itself when it starts, and the extension picks up the new version by itself the next time it talks to Pako (a few seconds after, once nothing is on its way to Pako and nothing is being recorded). An extension older than Pako 1.1.0's picks it up the next time your browser starts, or right away if you click the reload button on Pako in the browser's extensions page.
+Pako refreshes its extension folder by itself when it starts, and the extension picks up the new version by itself the next time it talks to Pako (a few seconds after, once nothing is on its way to Pako and nothing is being recorded). A browser can also keep running the extension it had before even after it restarts (seen in Vivaldi): opening the Pako button in the toolbar then makes it take the new one (the small window says "Updating Pako's extension…": open it again a moment later). You can also click the reload button on Pako in the browser's extensions page.
 
 Firefox, Zen, LibreWolf, Waterfox and Floorp update Pako's extension by themselves, like their other add-ons (to check now: `about:addons`, the gear button, **Check for Updates**). If you turned off add-on updates in one of them, add it again with **Add to …** after updating Pako.
 

@@ -254,6 +254,16 @@ pub struct Reply {
     /// "resume", "cancel"), done by the extension.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// The browser this helper runs for asks "Download …? Save / Open / Cancel" before its
+    /// extensions see a download (Vivaldi): the full extension then catches downloads at the
+    /// server's answer. Added by the native host, which knows its browser by its program.
+    #[serde(rename = "asksFirst", skip_serializing_if = "std::ops::Not::not")]
+    pub asks_first: bool,
+}
+
+/// Browsers that ask before their extensions see a download (by `seen::browser_id`).
+pub fn asks_first(browser: Option<&str>) -> bool {
+    browser == Some("vivaldi")
 }
 
 impl Reply {
@@ -600,6 +610,9 @@ pub fn run_host(args: &[String]) -> i32 {
     let mut output = std::io::stdout().lock();
     // Which browser this is, for "Connected" in Settings (noted after each answer is sent).
     let mut seen = crate::seen::HostNote::default();
+    // Found while the first message is read and handed over (its answer says whether the
+    // browser asks first: `asks_first`).
+    seen.look_ahead();
     loop {
         let asked = Instant::now();
         let msg = match read_host_message(&mut input) {
@@ -625,6 +638,9 @@ pub fn run_host(args: &[String]) -> i32 {
         }
         // This Pako answers takeovers at once (see `Request::hold`).
         reply.holds = true;
+        if !light {
+            reply.asks_first = asks_first(seen.browser());
+        }
         if let Some(e) = reply.error.as_deref().filter(|e| *e != LIGHT_REFUSED && !private) { crate::errorlog::note(crate::errorlog::Area::Extension, e); }
         let json = serde_json::to_vec(&reply).unwrap_or_default();
         if write_message(&mut output, &json).is_err() {
@@ -1512,6 +1528,18 @@ pub fn firefox_xpi(root: &std::path::Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vivaldi_is_said_to_ask_first_and_the_answer_names_it() {
+        assert!(asks_first(Some("vivaldi")));
+        for b in [None, Some("chrome"), Some("edge"), Some("brave"), Some("opera"), Some("firefox")] {
+            assert!(!asks_first(b), "{b:?}");
+        }
+        let mut r = Reply::ok();
+        assert!(!serde_json::to_string(&r).unwrap().contains("asksFirst"));
+        r.asks_first = true;
+        assert!(serde_json::to_string(&r).unwrap().contains("\"asksFirst\":true"));
+    }
 
     #[test]
     fn framing_round_trip() {
