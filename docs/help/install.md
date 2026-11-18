@@ -50,7 +50,7 @@ Pako looks for a new version once a day, also while it stays open in the tray fo
 - With it off, Pako only tells you: "Pako 0.2.0 is available (Settings › Features & updates)". Click **Update** there, then **Restart now**.
 - **Check for updates** (in **Settings › Features & updates**) looks right away (and, with automatic updates on, downloads the new version).
 
-After an update, Pako shows once what's new in that version (Help has them all).
+After an update, Pako shows once what's new: in every version since the one you had, newest first, when an update skipped a few (Help has them all).
 
 Updates are safe:
 

@@ -517,6 +517,8 @@ pub fn make_window(app: &AppHandle) -> Option<WebviewWindow> {
         .visible(false)
         .build()
         .ok()
+        // A window manager (PowerToys FancyZones) never snaps it into a zone.
+        .inspect(crate::tray::keep_out_of_zones)
 }
 
 /// The pop-up window takes the pop-ups waiting for it.

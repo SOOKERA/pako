@@ -247,6 +247,9 @@ pub fn show_mini_quietly(app: &AppHandle) {
     }
     let _ = app.emit_to("mini", "mini-show", serde_json::json!({ "from": "bottom" }));
     show_without_focus(&w);
+    if let Some(p) = pos {
+        stay_put(app, &w, p);
+    }
 }
 
 #[cfg(windows)]
@@ -285,6 +288,7 @@ fn mini_window(app: &AppHandle) -> Option<WebviewWindow> {
         .visible(false)
         .build()
         .ok()?;
+    keep_out_of_zones(&w);
     // Clicking anywhere else closes it, like any tray popup (unless it is pinned). A pinned
     // one remembers where it is moved to.
     let me = w.clone();
@@ -316,6 +320,113 @@ fn mini_window(app: &AppHandle) -> Option<WebviewWindow> {
     Some(w)
 }
 
+/// A tray popup, not an app window: window managers such as PowerToys FancyZones ("move newly
+/// created windows to their last known zone") leave tool windows alone. It also keeps the
+/// window out of Alt+Tab, like other tray popups.
+///
+/// Setting the style once is not enough: the window library rewrites the whole extended style
+/// each time it shows or hides the window (or changes any of its flags), which would drop it
+/// again just before the window shows. A hook on the window keeps it in every rewrite.
+pub(crate) fn keep_out_of_zones(w: &WebviewWindow) {
+    #[cfg(windows)]
+    if let Ok(h) = w.hwnd() {
+        let hwnd = h.0 as isize;
+        // SAFETY: the window's own handle, valid while `w` lives. The hook can only be put on
+        // from the window's own thread (the main one): from elsewhere, the style is set now and
+        // the hook goes on there.
+        if !unsafe { tool_window::make(hwnd as _) } {
+            let _ = w.run_on_main_thread(move || unsafe {
+                tool_window::make(hwnd as _);
+            });
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = w;
+}
+
+/// Bumped to stop a running `stay_put`: the window opening again, or you dragging it.
+static STAY_PUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(windows)]
+mod tool_window {
+    use std::sync::atomic::Ordering;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongW, STYLESTRUCT, SetWindowLongW, WM_ENTERSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING,
+        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+
+    const ID: usize = 0x5041_4b4f;
+
+    /// A tool window's extended style: not an app window (taskbar, Alt+Tab, window managers).
+    pub(super) fn style(ex: u32) -> u32 {
+        (ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+    }
+
+    /// Makes `hwnd` a tool window for good. The style is set from any thread (32-bit calls: the
+    /// extended style fits); the hook only from the window's own thread: false otherwise.
+    ///
+    /// # Safety
+    /// `hwnd` is a live window.
+    pub(super) unsafe fn make(hwnd: HWND) -> bool {
+        unsafe {
+            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            SetWindowLongW(hwnd, GWL_EXSTYLE, style(ex) as i32);
+            SetWindowSubclass(hwnd, Some(hook), ID, 0) != 0
+        }
+    }
+
+    unsafe extern "system" fn hook(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, id: usize, _: usize) -> LRESULT {
+        match msg {
+            // SAFETY: for GWL_EXSTYLE, lParam is the STYLESTRUCT Windows is about to apply.
+            WM_STYLECHANGING if wp as i32 == GWL_EXSTYLE => {
+                if let Some(s) = unsafe { (lp as *mut STYLESTRUCT).as_mut() } {
+                    s.styleNew = style(s.styleNew);
+                }
+            }
+            // You started dragging it: wherever you put it is where it goes.
+            WM_ENTERSIZEMOVE => {
+                super::STAY_PUT.fetch_add(1, Ordering::SeqCst);
+            }
+            WM_NCDESTROY => {
+                // SAFETY: our own hook, taken off the window it is on.
+                unsafe { RemoveWindowSubclass(hwnd, Some(hook), id) };
+            }
+            _ => {}
+        }
+        // SAFETY: the message as Windows passed it, on to the window's own procedure.
+        unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+    }
+}
+
+/// Puts the small window back where Pako placed it if something moved it just after it showed
+/// (a window manager snapping it into a zone). Pinned windows can be moved by you, so only an
+/// unpinned one is checked, a few times in its first half second; it stops as soon as the
+/// window opens again or you start dragging it.
+fn stay_put(app: &AppHandle, w: &WebviewWindow, p: PhysicalPosition<f64>) {
+    use std::sync::atomic::Ordering;
+    let turn = STAY_PUT.fetch_add(1, Ordering::SeqCst) + 1;
+    let (w, app) = (w.clone(), app.clone());
+    std::thread::spawn(move || {
+        for wait in [60u64, 140, 300] {
+            std::thread::sleep(Duration::from_millis(wait));
+            if STAY_PUT.load(Ordering::SeqCst) != turn || is_pinned(&app) || !mini_showing(&app) {
+                return;
+            }
+            let Ok(now) = w.outer_position() else { return };
+            if moved_away(now.x, now.y, p) {
+                let _ = w.set_position(p);
+            }
+        }
+    });
+}
+
+/// More than a couple of pixels from where it was put (rounding of scaled positions aside).
+fn moved_away(x: i32, y: i32, p: PhysicalPosition<f64>) -> bool {
+    (x as f64 - p.x).abs() > 2.0 || (y as f64 - p.y).abs() > 2.0
+}
+
 /// Shows the compact list next to the tray icon (or hides it if it is open).
 fn toggle_mini(app: &AppHandle, near: PhysicalPosition<f64>) {
     let Some(w) = mini_window(app) else { return };
@@ -338,6 +449,7 @@ fn toggle_mini(app: &AppHandle, near: PhysicalPosition<f64>) {
     }
     // Above the tray icon (taskbar at the bottom), or below it (taskbar at the top).
     let mut from = "bottom";
+    let mut placed = None;
     if let Ok(Some(m)) = app.monitor_from_point(near.x, near.y) {
         let scale = m.scale_factor();
         let (ww, wh) = ((MINI_W + MARGIN * 2.0) * scale, (MINI_H + MARGIN * 2.0) * scale);
@@ -350,12 +462,18 @@ fn toggle_mini(app: &AppHandle, near: PhysicalPosition<f64>) {
             from = "top";
         }
         let y = if below { near.y + 4.0 } else { near.y - wh - 4.0 };
-        let _ = w.set_position(PhysicalPosition::new(x, y.max(my)));
+        placed = Some(PhysicalPosition::new(x, y.max(my)));
+    }
+    if let Some(p) = placed {
+        let _ = w.set_position(p);
     }
     // The list plays its opening slide, from the side the taskbar is on.
     let _ = app.emit_to("mini", "mini-show", serde_json::json!({ "from": from }));
     let _ = w.show();
     let _ = w.set_focus();
+    if let Some(p) = placed {
+        stay_put(app, &w, p);
+    }
 }
 
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
@@ -505,4 +623,60 @@ fn with_dot(icon: &Image<'_>) -> Image<'static> {
         }
     }
     Image::new_owned(px, w as u32, h as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_snapped_elsewhere_is_put_back_but_rounding_is_not_a_move() {
+        let p = PhysicalPosition::new(1500.0, 800.0);
+        assert!(!moved_away(1500, 800, p));
+        assert!(!moved_away(1501, 799, p), "scaled positions round by a pixel");
+        assert!(moved_away(0, 0, p), "snapped into a zone at the top left");
+        assert!(moved_away(1500, 400, p));
+    }
+
+    /// The window library rewrites the whole extended style on each show and hide: the hook
+    /// keeps the tool window style in every rewrite, and a drag stops `stay_put`.
+    #[cfg(windows)]
+    #[test]
+    fn the_tool_window_style_survives_a_rewrite_and_a_drag_stops_stay_put() {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GWL_EXSTYLE, GetWindowLongW, PM_NOREMOVE, PeekMessageW, SendMessageW, SetWindowLongW,
+            WM_ENTERSIZEMOVE, WS_EX_ACCEPTFILES, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        };
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        // SAFETY: a hidden window of this thread, destroyed at the end; only its style is used.
+        unsafe {
+            let hwnd = CreateWindowExW(WS_EX_APPWINDOW, class.as_ptr(), std::ptr::null(), 0, 0, 0, 10, 10, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            assert!(!hwnd.is_null());
+            let ex = || GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            // From another thread: the style is set, the hook can't go on (the main thread does it).
+            // Windows hands that thread's style change to this one, so this one keeps taking
+            // messages meanwhile (as the main thread does), within a time limit.
+            let h = hwnd as isize;
+            let t = std::thread::spawn(move || tool_window::make(h as _));
+            let start = Instant::now();
+            let mut msg = std::mem::zeroed();
+            while !t.is_finished() && start.elapsed() < Duration::from_secs(5) {
+                PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(t.is_finished(), "the style change from another thread went through");
+            assert!(!t.join().unwrap());
+            assert_eq!(ex() & (WS_EX_TOOLWINDOW | WS_EX_APPWINDOW), WS_EX_TOOLWINDOW);
+            assert!(tool_window::make(hwnd));
+            // What the window library does on show(): the whole style, computed from its flags.
+            SetWindowLongW(hwnd, GWL_EXSTYLE, (WS_EX_APPWINDOW | WS_EX_ACCEPTFILES) as i32);
+            assert_eq!(ex() & (WS_EX_TOOLWINDOW | WS_EX_APPWINDOW), WS_EX_TOOLWINDOW, "kept a tool window");
+            assert_ne!(ex() & WS_EX_ACCEPTFILES, 0, "the rest of the rewrite applies");
+            let before = STAY_PUT.load(Ordering::SeqCst);
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+            assert_ne!(STAY_PUT.load(Ordering::SeqCst), before, "dragging stops stay_put");
+            DestroyWindow(hwnd);
+        }
+    }
 }

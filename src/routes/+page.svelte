@@ -32,7 +32,7 @@
   import WhatsNewDialog from "$lib/help/WhatsNewDialog.svelte";
   import ReportDialog from "$lib/help/ReportDialog.svelte";
   import { help } from "$lib/help/help.svelte";
-  import { whatsNewFor } from "$lib/help/content";
+  import { whatsNewSince } from "$lib/help/content";
   import TourOverlay from "$lib/tour/TourOverlay.svelte";
   import TutorialButton from "$lib/tour/TutorialButton.svelte";
   import { tour } from "$lib/tour/tour.svelte";
@@ -306,9 +306,10 @@
 
   // ---------- Help: What's new once after an update, then the tour offered once ----------
   let whatsNewDone = $state(false);
-  const whatsNewEntry = $derived(app.version ? whatsNewFor(app.version) : undefined);
+  // Every version since the one you had (an update can skip a few).
+  const whatsNewEntries = $derived(app.version && app.settings ? whatsNewSince(app.settings.whatsNewSeen, app.version) : []);
   const whatsNewShow = $derived(
-    !whatsNewDone && !termsAsk && !!whatsNewEntry && app.loaded && !!app.settings && inApp && app.settings.setupDone && !trayAsk && !videoAsk && app.settings.whatsNewSeen !== app.version,
+    !whatsNewDone && !termsAsk && whatsNewEntries.length > 0 && app.loaded && !!app.settings && inApp && app.settings.setupDone && !trayAsk && !videoAsk && app.settings.whatsNewSeen !== app.version,
   );
   function closeWhatsNew() {
     whatsNewDone = true;
@@ -646,8 +647,8 @@
 
 {#if help.open}
   <HelpDialog />
-{:else if whatsNewShow && whatsNewEntry}
-  <WhatsNewDialog entry={whatsNewEntry} version={app.version} onclose={closeWhatsNew} />
+{:else if whatsNewShow}
+  <WhatsNewDialog entries={whatsNewEntries} seen={app.settings?.whatsNewSeen ?? null} version={app.version} onclose={closeWhatsNew} />
 {:else if tourAsk}
   <Modal title="Take a quick tour?" width={440} onclose={() => answerTour(false)}>
     <p class="msg">A spotlight shows what each page of Pako is for. It takes about a minute.</p>

@@ -1,5 +1,12 @@
 # What's new
 
+## 1.2.6
+
+### Fixed
+
+- The small tray window always opens by the tray, also with window tools such as PowerToys FancyZones set to put new windows back in their zone.
+- After an update that skipped versions, **What's new** shows every version since the one you had, not only the newest.
+
 ## 1.2.5
 
 ### Fixed

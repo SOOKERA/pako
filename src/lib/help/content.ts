@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // The guides in docs/help/, bundled into Pako when it's built (one source of truth with the website).
 import { parse, plain, type Block } from "./markdown";
+import { sinceSeen } from "./versions";
 import licenceText from "../../../LICENSE?raw";
 import noticeText from "../../../NOTICE.md?raw";
 import termsText from "../../../TERMS.md?raw";
@@ -83,8 +84,9 @@ export const whatsNew: WhatsNew[] = (() => {
   return out;
 })();
 
-/** What's new for exactly this version (shown once after an update), if the file has it. */
-export const whatsNewFor = (version: string) => whatsNew.find((w) => w.version === version || w.version === `Pako ${version}`);
+/** What's new to show once after an update: every version since `seen` (the one you had),
+ *  newest first; just `version`'s own without a known `seen`. Empty when there's nothing. */
+export const whatsNewSince = (seen: string | null | undefined, version: string) => sinceSeen(whatsNew, seen, version);
 
 export interface Hit {
   guide: Guide;
