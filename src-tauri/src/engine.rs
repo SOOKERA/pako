@@ -1842,7 +1842,7 @@ impl Engine {
     /// A site changed and yt-dlp couldn't follow: get the newest yt-dlp in the background. Only
     /// with "Update Pako and its tools automatically" on: off, Pako asks GitHub nothing by itself.
     fn update_video_tool(&self) {
-        use crate::components::{Kind, install, installed_version, is_installing, latest_version};
+        use crate::components::{Kind, install, installed_version, is_installing, latest_version, rebuild_due};
         if !self.settings().auto_update {
             return;
         }
@@ -1853,7 +1853,7 @@ impl Engine {
             }
             let Some(have) = installed_version(Kind::YtDlp) else { return };
             let Ok(latest) = latest_version(&http, Kind::YtDlp).await else { return };
-            if latest != have {
+            if latest != have || rebuild_due(Kind::YtDlp, &latest) {
                 let quiet = |_: &str, _: u64, _: Option<u64>| {};
                 let _ = install(&http, Kind::YtDlp, &quiet).await;
             }
@@ -5100,7 +5100,10 @@ impl Engine {
         let placed = match crate::via::usable_file(path) {
             Some(from) => match crate::via::place(&from, &dest, wanted.as_deref(), &taken) {
                 Ok(p) => Ok(p),
-                Err(e) => Err((from.clone(), format!("Pako couldn't move it to your folder ({e}), so it's still in {}.", from.parent().map(|p| p.display().to_string()).unwrap_or_default()))),
+                Err(e) => {
+                    let why = via_not_placed(&from, &dest, &e);
+                    Err((from.clone(), why))
+                }
             },
             None => Err((PathBuf::from(path), "The browser finished it, but Pako couldn't find the file to move it.".into())),
         };
@@ -5235,6 +5238,16 @@ fn clean_private_parts(file: &PathBuf) {
 /// that window's own login, as a private row (nothing about it kept).
 fn drive_route(url: &str, private: bool) -> bool {
     !private && drive::parse_link(url).is_some()
+}
+
+/// Why a file the browser downloaded for Pako stayed as it is: already in your folder (only
+/// its name couldn't be changed), or still in the browser's folder (it couldn't be moved).
+fn via_not_placed(from: &std::path::Path, dest: &std::path::Path, e: &str) -> String {
+    let name = from.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    match from.parent() {
+        Some(dir) if crate::via::same_folder(dir, dest) => format!("Pako couldn't give it its name ({e}): it's in your folder as {name}."),
+        dir => format!("Pako couldn't move it to your folder ({e}), so it's still in {}.", dir.map(|p| p.display().to_string()).unwrap_or_default()),
+    }
 }
 
 pub(crate) fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, group: Option<String>) -> Download {
@@ -5405,6 +5418,18 @@ mod tests {
         assert!(super::drive_route(link, false));
         assert!(!super::drive_route(link, true));
         assert!(!super::drive_route("https://e.org/a.zip", false));
+    }
+
+    /// A "Via browser" file that couldn't be placed: already in your folder (only its name
+    /// couldn't be changed) says where it is, as what; one still in the browser's folder says so.
+    #[test]
+    fn a_via_browser_file_already_in_your_folder_says_only_its_name_failed() {
+        let dl = std::env::temp_dir().join("pako-via-msg");
+        let in_folder = super::via_not_placed(&dl.join("a.zip"), &dl, "in use");
+        assert_eq!(in_folder, "Pako couldn't give it its name (in use): it's in your folder as a.zip.");
+        let browser = dl.join("browser");
+        let elsewhere = super::via_not_placed(&browser.join("a.zip"), &dl, "in use");
+        assert_eq!(elsewhere, format!("Pako couldn't move it to your folder (in use), so it's still in {}.", browser.display()));
     }
 
     /// "Via browser" and private rows: saved and read back; lists from before (without those

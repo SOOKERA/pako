@@ -124,6 +124,8 @@
 
   // ---------- the pill (pill.js) ----------
 
+  /** The link Pako was asked to read ahead for the menu open now. */
+  let readAhead = null;
   const pill = kit.make({
     find: (x, y) => {
       const v = kit.videoAt(x, y);
@@ -134,6 +136,20 @@
       const url = videoUrl(video);
       if (!url) return null;
       return api.runtime.sendMessage({ type: "video", url, quality: item.quality });
+    },
+    // You clicked Download: Pako starts reading the video while you pick a quality (the read
+    // is the same for every quality), so the pick starts at once.
+    prepare: (video) => {
+      const url = videoUrl(video);
+      readAhead = url;
+      return url ? api.runtime.sendMessage({ type: "video-prepare", url }) : null;
+    },
+    // The menu closed without a pick: Pako stops that read at once (the link it was asked for:
+    // the page's may have changed since, YouTube changing pages without reloading).
+    unprepare: () => {
+      const url = readAhead;
+      readAhead = null;
+      return url ? api.runtime.sendMessage({ type: "video-prepare-cancel", url }) : null;
     },
   });
   // YouTube changes pages without reloading: a new page starts without the pill.

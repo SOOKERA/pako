@@ -637,7 +637,7 @@
 {:else if videoAsk}
   <Modal title="Pako can download videos now" width={460} onclose={() => answerVideo(false)}>
     <p class="msg">Paste a YouTube (or other video site) link or playlist, pick the quality or audio only, and Pako does the rest.</p>
-    <p class="msg small-note">It uses three free tools, yt-dlp, Deno and ffmpeg (about 200 MB), downloaded from their official sources. You can also turn this on later in Settings › Features &amp; updates.</p>
+    <p class="msg small-note">It uses three free tools, yt-dlp, Deno and ffmpeg (about 600 MB on disk), downloaded from their official sources. You can also turn this on later in Settings › Features &amp; updates.</p>
     {#snippet actions()}
       <button class="btn ghost" onclick={() => answerVideo(false)}>Not now</button>
       <button class="btn primary" onclick={() => answerVideo(true)}>Install video tools</button>

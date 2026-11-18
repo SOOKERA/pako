@@ -34,3 +34,7 @@ LangString pakoTermsTitle ${LANG_ENGLISH} "Terms of use"
 LangString pakoTermsSubtitle ${LANG_ENGLISH} "Please read them before installing Pako."
 LangString pakoTermsTop ${LANG_ENGLISH} "Scroll down to read them all. They are also at sookera.com/terms."
 LangString pakoTermsBottom ${LANG_ENGLISH} "If you accept the terms, click I Agree to install Pako. Pako can only be installed if you accept them."
+; [Pako] The folder page's check (installer/hooks.nsh: PakoCheckDir).
+LangString pakoDirNotWritable ${LANG_ENGLISH} "Pako Setup installs Pako for you only, without admin rights, so it needs a folder you can change. Windows doesn't let you change $INSTDIR (folders like Program Files need admin rights).$\n$\nPick another folder, for example $LOCALAPPDATA\Programs\Pako."
+LangString pakoDirNotWritableSilent ${LANG_ENGLISH} "Pako Setup installs Pako for you only, without admin rights, so it needs a folder you can change. Windows doesn't let you change $INSTDIR (folders like Program Files need admin rights). Pick another folder with /D=, for example /D=$LOCALAPPDATA\Programs\Pako$\n"
+LangString pakoDirAdminOnly ${LANG_ENGLISH} "Pako Setup is running as administrator, so it can install in $INSTDIR. But only administrators can change this folder, and Pako updates itself without admin rights: it won't be able to update itself there.$\n$\nInstall here anyway? Click No to pick another folder, for example $LOCALAPPDATA\Programs\Pako (recommended)."

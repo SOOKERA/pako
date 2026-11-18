@@ -26,6 +26,30 @@ static CHECKS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(4));
 /// Video checks run yt-dlp (a program of its own): two at a time.
 static VIDEO_CHECKS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(2));
 
+/// Videos from the player's Download button being read right now (a double click doesn't add
+/// one twice).
+static VIDEO_READING: LazyLock<std::sync::Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+/// Reads ahead (`Engine::video_prepare`) take turns among their own permits, never VIDEO_CHECKS:
+/// a quality you pick never waits behind a read nobody may ask for.
+static PREPARE_CHECKS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(2));
+/// Videos read ahead for the player's Download button (see `Engine::video_prepare`).
+static READ_AHEAD: crate::prepared::Reads<VideoRead> = crate::prepared::Reads::new(crate::prepared::KEEP, crate::prepared::MAX_KEPT);
+
+type VideoRead = std::result::Result<crate::video::Probe, (String, bool)>;
+
+/// yt-dlp's read of a video from the browser (with the site's login), once more after a
+/// network hiccup. (The caller holds a VIDEO_CHECKS or PREPARE_CHECKS permit.)
+async fn read_video(url: String, cookies: Vec<crate::extension::SiteCookie>) -> VideoRead {
+    let mut result = crate::video::probe_with(&url, Duration::from_secs(60), &cookies).await;
+    if let Err((m, _)) = &result {
+        if crate::video::is_network(m) {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            result = crate::video::probe_with(&url, Duration::from_secs(60), &cookies).await;
+        }
+    }
+    result
+}
+
 /// What the browser hears when the video tools aren't there yet.
 const NEEDS_VIDEO_TOOLS: &str =
     "Pako needs its video tools first. In Pako: Settings › Features & updates › Download videos from YouTube and other sites.";
@@ -519,8 +543,6 @@ impl Engine {
     /// never any cookies (no cookie file for yt-dlp).
     pub async fn video_from_browser(self: &Arc<Self>, url: String, quality: u32, cookies: Vec<crate::extension::SiteCookie>, private: bool) -> Result<(), String> {
         let cookies = if private { Vec::new() } else { cookies };
-        /// Videos being read right now (a double click doesn't add one twice).
-        static READING: LazyLock<std::sync::Mutex<HashSet<String>>> = LazyLock::new(Default::default);
         if !crate::video::ready() {
             return Err(NEEDS_VIDEO_TOOLS.into());
         }
@@ -528,23 +550,16 @@ impl Engine {
             return Err("This video is already in Pako.".into());
         }
         // Answered "Sent" already, and still being read (a second click, maybe another quality).
-        if !READING.lock().unwrap().insert(url.clone()) {
+        if !VIDEO_READING.lock().unwrap().insert(url.clone()) {
             return Err("Pako is already getting this video.".into());
         }
         let me = self.clone();
         let (answer, answered) = tokio::sync::oneshot::channel::<Result<(), String>>();
         tauri::async_runtime::spawn(async move {
-            let result = {
-                let _permit = VIDEO_CHECKS.acquire().await;
-                let mut result = crate::video::probe_with(&url, Duration::from_secs(60), &cookies).await;
-                if let Err((m, _)) = &result {
-                    if crate::video::is_network(m) {
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                        result = crate::video::probe_with(&url, Duration::from_secs(60), &cookies).await;
-                    }
-                }
-                result
-            };
+            // Read already when the quality menu opened (`video_prepare`): that read, else now.
+            // A read ahead that failed is never the last word (it may be a minute old): read again.
+            let key = crate::prepared::Key::new(&url, private, &cookies);
+            let result = READ_AHEAD.get(&key, &VIDEO_CHECKS, || read_video(url.clone(), cookies.clone()), |r| r.is_ok()).await;
             match result {
                 Ok(p) if p.is_playlist => {
                     let _ = answer.send(Ok(()));
@@ -583,13 +598,37 @@ impl Engine {
                     }
                 }
             }
-            READING.lock().unwrap().remove(&url);
+            VIDEO_READING.lock().unwrap().remove(&url);
         });
         match tokio::time::timeout(Self::VIDEO_ANSWER_WAIT, answered).await {
             Ok(Ok(result)) => result,
             // Still checking (a slow site), or a playlist: it goes on in Pako.
             _ => Ok(()),
         }
+    }
+
+    /// The player's Download button opened its quality menu (you clicked Download): Pako starts
+    /// reading the video now, so the quality picked a moment later (`video_from_browser`) has
+    /// its read ready, or under way. Answered at once; nothing is added, said or noted here (a
+    /// read that fails is said by the send, as without this; one never picked expires unseen).
+    /// The same rules as the send: no cookies from a private window, and its read is kept apart.
+    pub fn video_prepare(self: &Arc<Self>, url: String, cookies: Vec<crate::extension::SiteCookie>, private: bool) {
+        let cookies = if private { Vec::new() } else { cookies };
+        // Already sent (being read for it, or downloading): nothing to read ahead.
+        if !crate::video::ready() || self.video_in_list(&url) || VIDEO_READING.lock().unwrap().contains(&url) {
+            return;
+        }
+        let key = crate::prepared::Key::new(&url, private, &cookies);
+        if let Some(task) = READ_AHEAD.prepare(key, &PREPARE_CHECKS, move || read_video(url, cookies)) {
+            tauri::async_runtime::spawn(task);
+        }
+    }
+
+    /// The quality menu closed without a pick (or its tab closed): the read ahead of `url` from
+    /// that kind of window stops at once (its yt-dlp ended) and goes. A read a pick took
+    /// already carries on.
+    pub fn video_prepare_cancel(&self, url: &str, private: bool) {
+        READ_AHEAD.cancel(url, private);
     }
 
     /// A video another of your PCs sent with the quality picked there (0 = audio only) and its

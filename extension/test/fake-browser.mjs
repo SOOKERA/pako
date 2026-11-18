@@ -70,8 +70,10 @@ export function browserProfile() {
  *   page before it slept)
  * - `manifestVersion`: the version its manifest says (another than its script's: the browser
  *   runs an older script than the folder's)
+ * - `firefox`: the browser is Firefox (its API is `browser`, with getBrowserInfo, and answers
+ *   with promises)
  */
-export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false, sessionRules = [] } = {}) {
+export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false, sessionRules = [], firefox = false } = {}) {
   const id = light ? LIGHT_ID : FULL_ID;
   const who = light ? "light" : "full";
   const sent = [];
@@ -119,8 +121,11 @@ export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false,
       // `sent` holds what was really asked of Pako.
       if (m?.kind === "ping") pings.push(plain(m));
       else sent.push(plain(m));
+      // (Firefox answers with a promise.)
+      if (typeof cb !== "function") return new Promise((resolve) => setTimeout(() => resolve(reply(m)), 2));
       setTimeout(() => cb(reply(m)), 2);
     },
+    ...(firefox ? { getBrowserInfo: async () => ({ name: "Firefox" }) } : {}),
     sendMessage: (toId, msg, cb) => profile.send(id, toId, msg, cb, runtime),
     getManifest: () => ({ version: manifestVersion }),
     reload: () => reloads.push(Date.now()),
@@ -255,7 +260,7 @@ export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false,
     return { ok: text != null, text: async () => text ?? "" };
   };
   const context = { chrome, console, URL, setTimeout, clearTimeout, AbortController, fetch: fakeFetch, crypto: globalThis.crypto };
-  if (alias) context.browser = chrome;
+  if (alias || firefox) context.browser = chrome;
   vm.runInContext(backgroundSource(light), vm.createContext(context), { filename: `${who}/background.js` });
   const edition = { id, who, rules, navigated, sent, pings, reloads, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, restarted, items, cookieStores, chrome };
   profile.installed.set(id, edition);

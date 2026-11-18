@@ -34,7 +34,7 @@ test("With the full extension on, Light shows no right-click items and says so i
   await full.listeners.installed();
   await light.listeners.installed();
   await settle();
-  assert.equal(full.menus.size, 4);
+  assert.equal(full.menus.size, 6, "link, image, video, audio, page, all links");
   assert.equal(light.menus.size, 0);
   const edition = await ask(light, { type: "edition", url: "https://news.example/" });
   assert.equal(edition.fullOn, true);

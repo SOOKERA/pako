@@ -31,6 +31,9 @@ test("Right-click items from a private window are private; from a normal one, as
   const items = [
     [{ menuItemId: "pako-link", linkUrl: "https://files.example.com/a.zip", pageUrl: PAGE }, tab(PRIV)],
     [{ menuItemId: "pako-media", srcUrl: "https://files.example.com/p.jpg", mediaType: "image", pageUrl: PAGE }, tab(PRIV)],
+    // "Download video with Pako" / "Download audio with Pako" on a player with its own address.
+    [{ menuItemId: "pako-media-video", srcUrl: "https://files.example.com/v.mp4", mediaType: "video", pageUrl: PAGE }, tab(PRIV)],
+    [{ menuItemId: "pako-media-audio", srcUrl: "https://files.example.com/s.mp3", mediaType: "audio", pageUrl: PAGE }, tab(PRIV)],
     [{ menuItemId: "pako-page", pageUrl: PAGE }, tab(PRIV)],
     // "Download video with Pako" on a video page.
     [{ menuItemId: "pako-page", pageUrl: VIDEO }, tab(PRIV, VIDEO)],

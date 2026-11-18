@@ -476,12 +476,14 @@ pub fn mark_checked() {
 /// time). Returns the names of the ones updated, and whether every tool could be looked at and
 /// brought up to date (false: tried again the next hour).
 pub async fn update_tools(http: &reqwest::Client) -> (Vec<String>, bool) {
-    use crate::components::{ALL, install, installed_version, is_installing, latest_version, same_version};
+    use crate::components::{ALL, install, installed_version, is_installing, latest_version, old_build, rebuild_due, same_version};
     let mut done = Vec::new();
     let mut complete = true;
     for k in ALL {
         let Some(have) = installed_version(k) else { continue };
-        if have == "installed" {
+        // An older kind of build (yt-dlp's single exe) is replaced even at the same version.
+        let rebuild = old_build(k);
+        if have == "installed" && !rebuild {
             continue;
         }
         if is_installing(k) {
@@ -492,7 +494,7 @@ pub async fn update_tools(http: &reqwest::Client) -> (Vec<String>, bool) {
             complete = false;
             continue;
         };
-        if same_version(k, &have, &latest) {
+        if same_version(k, &have, &latest) && !rebuild_due(k, &latest) {
             continue;
         }
         let quiet = |_: &str, _: u64, _: Option<u64>| {};

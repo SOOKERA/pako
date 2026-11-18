@@ -68,9 +68,12 @@ const START_WAIT: Duration = Duration::from_secs(30);
 #[serde(default)]
 pub struct Request {
     /// "download" (straight to Downloads), "links" (to Links, to pick from), "video" (the
-    /// player's Download button: one video straight to Downloads in `quality`), "stream" (a
-    /// video caught playing on the page: see `crate::stream`), "record" (Record this video:
-    /// `record`) or "ping". "stream" and "record" never come from Pako Light.
+    /// player's Download button: one video straight to Downloads in `quality`), "videoPrepare"
+    /// (that button's quality menu opened: Pako starts reading the video, no quality),
+    /// "videoPrepareCancel" (that menu closed without a pick: the read stops), "stream" (a video
+    /// caught playing on the page: see `crate::stream`), "record" (Record this video: `record`)
+    /// or "ping". "videoPrepare", "videoPrepareCancel", "stream" and "record" never come from
+    /// Pako Light.
     pub kind: String,
     pub urls: Vec<String>,
     pub referrer: String,
@@ -259,6 +262,11 @@ pub struct Reply {
     /// server's answer. Added by the native host, which knows its browser by its program.
     #[serde(rename = "asksFirst", skip_serializing_if = "std::ops::Not::not")]
     pub asks_first: bool,
+    /// This Pako reads a video ahead when the player's quality menu opens ("videoPrepare"; added
+    /// by the native host, never for Pako Light). Older Pakos don't say it: the extension then
+    /// never asks (they would only answer "Unknown request.").
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub prepares: bool,
 }
 
 /// Browsers that ask before their extensions see a download (by `seen::browser_id`).
@@ -335,7 +343,7 @@ pub fn light_rules(mut r: Request) -> Result<Request, String> {
             r.light = true;
             return Ok(r);
         }
-        "video" | "stream" | "record" => return Err(LIGHT_REFUSED.into()),
+        "video" | "videoPrepare" | "videoPrepareCancel" | "stream" | "record" => return Err(LIGHT_REFUSED.into()),
         _ => {}
     }
     r.urls.retain(|u| !crate::video::is_video_site(u) && !light_skips(u));
@@ -366,6 +374,8 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
         "held" => return validate_held(r),
         "follow" => return validate_follow(r),
         "video" => return validate_video(r),
+        "videoPrepare" => return validate_video_prepare(r),
+        "videoPrepareCancel" => return validate_video_prepare_cancel(r),
         "stream" => return crate::stream::validate_stream(r),
         "record" => return validate_record(r),
         "download" | "links" => {}
@@ -501,15 +511,41 @@ fn validate_held(r: Request) -> Result<Request, String> {
 /// The player's Download button: exactly one link to a video site Pako knows, and one of the
 /// offered qualities. Only the site's own cookies travel with it (no referrer or name).
 fn validate_video(r: Request) -> Result<Request, String> {
+    let quality = r.quality;
+    let (url, site_cookies, private) = one_video(r)?;
+    let quality = quality.filter(|q| VIDEO_QUALITIES.contains(q)).ok_or("Unknown video quality.")?;
+    Ok(Request { kind: "video".into(), urls: vec![url], quality: Some(quality), site_cookies, private, ..Default::default() })
+}
+
+/// The player's quality menu opened: the same checks as its "video", with no quality (the read
+/// doesn't depend on it).
+fn validate_video_prepare(r: Request) -> Result<Request, String> {
+    let (url, site_cookies, private) = one_video(r)?;
+    Ok(Request { kind: "videoPrepare".into(), urls: vec![url], site_cookies, private, ..Default::default() })
+}
+
+/// That menu closed without a pick: the same link checks, and nothing else (no cookies).
+fn validate_video_prepare_cancel(r: Request) -> Result<Request, String> {
+    let (url, _, private) = one_video(Request { site_cookies: Vec::new(), ..r })?;
+    Ok(Request { kind: "videoPrepareCancel".into(), urls: vec![url], private, ..Default::default() })
+}
+
+/// A read ahead or its cancel: a menu opening or closing. It never starts Pako (the pick does)
+/// and says nothing: no problem noted (the pick says what went wrong).
+fn read_ahead(kind: &str) -> bool {
+    matches!(kind, "videoPrepare" | "videoPrepareCancel")
+}
+
+/// Exactly one link to a video site Pako knows, with only that site's cookies (none at all from
+/// a private window: no cookie file for yt-dlp, no trace in Pako).
+fn one_video(r: Request) -> Result<(String, Vec<SiteCookie>, bool), String> {
     let [url] = r.urls.as_slice() else { return Err("Send one video at a time.".into()) };
     let url = (url.len() <= MAX_URL_LEN).then(|| web_link(url)).flatten().ok_or("Pako only takes http and https links.")?;
     if !crate::video::is_video_site(&url) {
         return Err("Pako can't download videos from this page.".into());
     }
-    let quality = r.quality.filter(|q| VIDEO_QUALITIES.contains(q)).ok_or("Unknown video quality.")?;
-    // A private window's: no cookies at all (no cookie file for yt-dlp), no trace in Pako.
     let site_cookies = if r.private { Vec::new() } else { clean_site_cookies(&url, r.site_cookies, unix_now()) };
-    Ok(Request { kind: "video".into(), urls: vec![url], quality: Some(quality), site_cookies, private: r.private, ..Default::default() })
+    Ok((url, site_cookies, r.private))
 }
 
 /// One step of "Record this video": checked (the checked form is made again where it is used),
@@ -624,8 +660,12 @@ pub fn run_host(args: &[String]) -> i32 {
         };
         let read = Instant::now();
         let version = msg.as_deref().ok().and_then(crate::seen::version_in);
-        let checked = msg.and_then(|m| serde_json::from_slice::<Request>(&m).map_err(|_| "Unreadable request.".to_string())).and_then(validate);
-        // A private window's: none of its problems in the problem list.
+        let parsed = msg.and_then(|m| serde_json::from_slice::<Request>(&m).map_err(|_| "Unreadable request.".to_string()));
+        // A private window's: none of its problems in the problem list. Nor a read ahead's or
+        // its cancel's (they say nothing; the send that follows says what went wrong), also
+        // when its checks fail.
+        let quiet = parsed.as_ref().is_ok_and(|r| r.private || read_ahead(&r.kind));
+        let checked = parsed.and_then(validate);
         let private = checked.as_ref().is_ok_and(|r| r.private);
         let mut reply = match checked.and_then(|r| if light { light_rules(r) } else { Ok(r) }) {
             // "Connected": the browser reached this helper (Pako itself starts when needed).
@@ -640,8 +680,9 @@ pub fn run_host(args: &[String]) -> i32 {
         reply.holds = true;
         if !light {
             reply.asks_first = asks_first(seen.browser());
+            reply.prepares = true;
         }
-        if let Some(e) = reply.error.as_deref().filter(|e| *e != LIGHT_REFUSED && !private) { crate::errorlog::note(crate::errorlog::Area::Extension, e); }
+        if let Some(e) = reply.error.as_deref().filter(|e| *e != LIGHT_REFUSED && !quiet) { crate::errorlog::note(crate::errorlog::Area::Extension, e); }
         let json = serde_json::to_vec(&reply).unwrap_or_default();
         if write_message(&mut output, &json).is_err() {
             return 1;
@@ -735,6 +776,10 @@ fn hand_over(r: &Request) -> Reply {
             // A browser download's progress never starts Pako (you may have closed it on
             // purpose): the extension keeps it and reports again once Pako runs.
             Err(Connect::NotRunning) if r.kind == "follow" => {
+                return Reply::error("Pako isn't running.");
+            }
+            // Nor does a quality menu opening or closing (the pick starts Pako, as before).
+            Err(Connect::NotRunning) if read_ahead(&r.kind) => {
                 return Reply::error("Pako isn't running.");
             }
             Err(Connect::NotRunning) if !started => {
@@ -1448,6 +1493,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("recorder-bridge.js", include_bytes!("../../extension/recorder-bridge.js")),
     ("pako-sent.html", include_bytes!("../../extension/pako-sent.html")),
     ("pako-sent.js", include_bytes!("../../extension/pako-sent.js")),
+    ("download-links.js", include_bytes!("../../extension/download-links.js")),
     ("icons/icon16.png", include_bytes!("../../extension/icons/icon16.png")),
     ("icons/icon32.png", include_bytes!("../../extension/icons/icon32.png")),
     ("icons/icon48.png", include_bytes!("../../extension/icons/icon48.png")),
@@ -1706,6 +1752,77 @@ mod tests {
         assert!(parse_pipe_message(br#"{"pako":1,"request":{"kind":"video","urls":["https://www.youtube.com/watch?v=x"],"quality":144}}"#).is_err());
         let back = parse_pipe_message(br#"{"pako":1,"request":{"kind":"video","urls":["https://www.youtube.com/watch?v=x"],"quality":0}}"#).unwrap();
         assert_eq!(back.quality, Some(0));
+    }
+
+    /// The quality menu opened: the same checks as "video", with no quality and nothing else.
+    #[test]
+    fn validates_video_prepare_requests() {
+        let prepare = |urls: &[&str], private: bool| Request {
+            kind: "videoPrepare".into(),
+            urls: urls.iter().map(|u| u.to_string()).collect(),
+            quality: Some(720),
+            cookies: "s=1".into(),
+            referrer: "https://www.youtube.com/".into(),
+            filename: "x.exe".into(),
+            takeover: true,
+            site_cookies: vec![site_cookie(".youtube.com", "SID", "x", 0), site_cookie(".other.example", "a", "b", 0)],
+            private,
+            ..Default::default()
+        };
+        let ok = validate(prepare(&["https://www.youtube.com/watch?v=dQw4w9WgXcQ"], false)).unwrap();
+        assert_eq!(ok.kind, "videoPrepare");
+        assert_eq!(ok.urls, vec!["https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string()]);
+        assert_eq!(ok.quality, None, "a read ahead has no quality");
+        assert!(ok.cookies.is_empty() && ok.referrer.is_empty() && ok.filename.is_empty() && !ok.takeover);
+        // Only the video site's own cookies; none at all from a private window.
+        assert_eq!(ok.site_cookies.len(), 1);
+        assert_eq!(ok.site_cookies[0].domain, ".youtube.com");
+        let private = validate(prepare(&["https://www.youtube.com/watch?v=dQw4w9WgXcQ"], true)).unwrap();
+        assert!(private.private && private.site_cookies.is_empty());
+        // One web link to a video site Pako knows.
+        assert!(validate(prepare(&[], false)).is_err());
+        assert!(validate(prepare(&["https://www.youtube.com/watch?v=a", "https://www.youtube.com/watch?v=b"], false)).is_err());
+        assert!(validate(prepare(&["https://example.org/movie.mp4"], false)).is_err());
+        assert!(validate(prepare(&["javascript:alert(1)"], false)).is_err());
+        // Never from Pako Light.
+        let mut buf = Vec::new();
+        let light = Request { light: true, ..prepare(&["https://www.youtube.com/watch?v=dQw4w9WgXcQ"], false) };
+        write_message(&mut buf, &pipe_message(&light)).unwrap();
+        assert_eq!(parse_pipe_message(&read_message(&mut &buf[..]).unwrap().unwrap()), Err(LIGHT_REFUSED.to_string()));
+        assert_eq!(light_rules(ok), Err(LIGHT_REFUSED.to_string()));
+        // The extension asks only a Pako that says it reads ahead.
+        let said = Reply { prepares: true, ..Reply::ok() };
+        assert_eq!(serde_json::to_string(&said).unwrap(), r#"{"ok":true,"prepares":true}"#);
+    }
+
+    /// The quality menu closed without a pick: the link checked like "video", nothing else kept
+    /// (no cookies); never from Pako Light; and, like the read ahead, it never starts Pako.
+    #[test]
+    fn validates_video_prepare_cancels() {
+        let cancel = |urls: &[&str], private: bool| Request {
+            kind: "videoPrepareCancel".into(),
+            urls: urls.iter().map(|u| u.to_string()).collect(),
+            quality: Some(720),
+            site_cookies: vec![site_cookie(".youtube.com", "SID", "x", 0)],
+            private,
+            ..Default::default()
+        };
+        let ok = validate(cancel(&["https://www.youtube.com/watch?v=dQw4w9WgXcQ"], false)).unwrap();
+        assert_eq!(ok.kind, "videoPrepareCancel");
+        assert_eq!(ok.urls, vec!["https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string()]);
+        assert!(ok.site_cookies.is_empty() && ok.quality.is_none() && !ok.private);
+        assert!(validate(cancel(&["https://www.youtube.com/watch?v=dQw4w9WgXcQ"], true)).unwrap().private);
+        assert!(validate(cancel(&[], false)).is_err());
+        assert!(validate(cancel(&["https://example.org/movie.mp4"], false)).is_err());
+        assert!(validate(cancel(&["file:///C:/x"], false)).is_err());
+        assert_eq!(light_rules(ok), Err(LIGHT_REFUSED.to_string()));
+        let mut buf = Vec::new();
+        let light = Request { light: true, ..cancel(&["https://www.youtube.com/watch?v=dQw4w9WgXcQ"], false) };
+        write_message(&mut buf, &pipe_message(&light)).unwrap();
+        assert_eq!(parse_pipe_message(&read_message(&mut &buf[..]).unwrap().unwrap()), Err(LIGHT_REFUSED.to_string()));
+        // A menu opening or closing never starts Pako and notes nothing; a pick does as before.
+        assert!(read_ahead("videoPrepare") && read_ahead("videoPrepareCancel"));
+        assert!(!read_ahead("video") && !read_ahead("download"));
     }
 
     #[test]

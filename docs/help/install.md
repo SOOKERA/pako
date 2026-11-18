@@ -20,6 +20,8 @@ Your downloaded files are never in these folders: they go to your download folde
 
 Pako Setup won't install Pako into `%LOCALAPPDATA%\Pako` or into a portable Pako's folder (**Next** stays greyed), so your settings and lists can't get mixed up. To move from a portable Pako to an installed one, see [From Portable to Setup](#from-portable-to-setup).
 
+It also needs a folder you can change without admin rights, because Pako updates itself without them. If Windows doesn't let you change the folder you picked (`Program Files`, for example), **Next** says "Pako Setup installs Pako for you only, without admin rights, so it needs a folder you can change" and suggests `%LOCALAPPDATA%\Programs\Pako`: pick another folder. Don't run Pako Setup as administrator to get past it: if you do, it warns before installing in `Program Files` or `Windows` that Pako won't be able to update itself there. A silent install (`/S /D=folder`) into such a folder stops before installing anything, with exit code 2.
+
 ## Terms of use
 
 Pako has terms of use, the same as on [sookera.com/terms](https://sookera.com/terms). In short: Pako is free and comes as it is, with no warranty; you're responsible for what you download, share, send and record with it; use it only for what you have the right to, and follow the rules of the sites you use.

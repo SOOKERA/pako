@@ -449,6 +449,9 @@ FunctionEnd
 
 ; 5. Choose install directory page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+; [Pako] Next refuses a folder this user can't change (installer/hooks.nsh: PakoDirLeave).
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE PakoDirLeave
+; [Pako] end
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -623,6 +626,11 @@ Function .onInit
     ${EndIf}
   ${EndIf}
   !endif
+
+  ; [Pako] A silent or passive install has no folder page: its folder is checked here
+  ; (installer/hooks.nsh: PAKO_CHECK_DIR_UNATTENDED).
+  !insertmacro PAKO_CHECK_DIR_UNATTENDED
+  ; [Pako] end
 FunctionEnd
 
 Section WebView2

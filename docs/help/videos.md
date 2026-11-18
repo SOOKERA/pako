@@ -4,7 +4,9 @@ Download videos from YouTube and many other sites, in the quality you choose, or
 
 ## Before the first video
 
-Videos need three free tools (yt-dlp, Deno and ffmpeg, about 200 MB). If they're missing, a video link in **Links** shows **Needs the video tools**: click **Install** next to it. You can also install them in **Settings › Features & updates › Download videos from YouTube and other sites**. With **Update Pako and its tools automatically** on (same place), Pako keeps them up to date.
+Videos need three free tools (yt-dlp, Deno and ffmpeg, about 600 MB on disk). If they're missing, a video link in **Links** shows **Needs the video tools**: click **Install** next to it. You can also install them in **Settings › Features & updates › Download videos from YouTube and other sites**. With **Update Pako and its tools automatically** on (same place), Pako keeps them up to date.
+
+Pako installs the edition of yt-dlp that starts fastest (a folder with yt-dlp.exe inside, not the single file). A yt-dlp installed by an older Pako keeps working and switches at its next update: by itself with automatic updates on, else with **Update** under **What Pako can do**.
 
 ## Download a video
 
@@ -37,15 +39,15 @@ Download and record only what you have the right to, and follow the rules of the
 
 With the full [browser extension](browser-extension.md) (not Pako Light), a **Download** button appears at the top right of a video when you point at it, on YouTube, Vimeo, Twitch, Facebook and Instagram:
 
-1. Click **Download**.
+1. Click **Download**. Pako starts reading the video right away, while you pick.
 2. Pick **Up to 1080p**, **Up to 720p**, **Up to 480p** or **Audio only**.
 3. The button says **Sent to Pako ✓**, and the video starts downloading in Pako. If **Ask before each browser download** is on, Pako first shows the **Download with Pako** window.
 
-The button answers in about a second, and Pako reads the video's title and qualities meanwhile. If Pako can tell at once that it can't get the video (the video tools aren't installed, or it's already in Pako), the button says why. Otherwise a pop-up says it once Pako knows, and the bell keeps it: **Pako couldn't get this video** (see [Notifications](notifications.md)). Clicking the button again while Pako is still reading the video says **Pako is already getting this video.**
+Pako starts reading the video's title and qualities as soon as you click **Download** (never when you only point at the video), so once you've picked a quality the video often starts at once. If you close the menu without picking, Pako stops and forgets that read as soon as you close it (or after two minutes at most), and nothing appears in Pako. The button answers in about a second. If Pako can tell at once that it can't get the video (the video tools aren't installed, or it's already in Pako), the button says why. Otherwise a pop-up says it once Pako knows, and the bell keeps it: **Pako couldn't get this video** (see [Notifications](notifications.md)). Clicking the button again while Pako is still reading the video says **Pako is already getting this video.**
 
 On Facebook and Instagram, the button takes the video you're pointing at, even in a feed with many videos.
 
-You can also right-click a video page › **Download video with Pako**, right-click a link to a video › **Download with Pako**, or click **Send this page to Pako** in the extension's small window. The video then downloads in your usual quality (**Settings › Downloads › Video quality**), through the **Download with Pako** window if it's on. A playlist goes to **Links** instead, so you can tick the videos you want (the pop-up says **Playlist sent to Pako**).
+You can also right-click a video page › **Download video with Pako**, right-click a link to a video › **Download link with Pako**, or click **Send this page to Pako** in the extension's small window. The video then downloads in your usual quality (**Settings › Downloads › Video quality**), through the **Download with Pako** window if it's on. A playlist goes to **Links** instead, so you can tick the videos you want (the pop-up says **Playlist sent to Pako**).
 
 ## Private and logged-in videos
 

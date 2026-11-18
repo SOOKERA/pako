@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toLight, LIGHT_BANNED } from "../light.mjs";
@@ -103,11 +103,16 @@ test("node extension/build.mjs: both zips are right", () => {
   assert.ok(chromium.permissions.includes("declarativeNetRequestWithHostAccess"));
   assert.ok(!chromium.permissions.includes("declarativeNetRequest"), "the one without an install warning");
   assert.deepEqual(chromium.web_accessible_resources, [{ resources: ["pako-sent.html"], matches: ["<all_urls>"], use_dynamic_url: true }]);
-  for (const f of ["pako-sent.html", "pako-sent.js"]) assert.ok(readFileSync(join(dist, "chromium", f)), f);
+  for (const f of ["pako-sent.html", "pako-sent.js", "download-links.js"]) assert.ok(readFileSync(join(dist, "chromium", f)), f);
   for (const m of [manifest, folder]) {
     assert.ok(!m.permissions.some((p) => p.startsWith("declarativeNetRequest")));
     assert.equal(m.web_accessible_resources, undefined);
   }
-  for (const zip of [light, firefox]) assert.ok(!zip.some((e) => e.name.startsWith("pako-sent")));
+  for (const zip of [light, firefox]) assert.ok(!zip.some((e) => e.name.startsWith("pako-sent") || e.name === "download-links.js"));
+  // Pako writes the full extension's folder itself (src-tauri/src/extension.rs): every file of it.
+  const rs = readFileSync(join(here, "..", "..", "src-tauri", "src", "extension.rs"), "utf8");
+  for (const f of readdirSync(join(dist, "chromium")).filter((n) => /\.(js|html|css)$/.test(n))) {
+    assert.ok(rs.includes(`("${f}", include_bytes!("../../extension/${f}"))`), `extension.rs writes ${f}`);
+  }
   assert.match(light.find((e) => e.name === "background.js").data.toString("utf8"), /^const LIGHT = true;$/m);
 });

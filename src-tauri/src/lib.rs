@@ -24,6 +24,7 @@ mod updates;
 pub mod extension;
 mod seen;
 mod video;
+mod prepared;
 mod hls;
 mod stream;
 mod send;
@@ -1061,8 +1062,9 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
     if !consent::ok() {
         // Something was asked of Pako (not just the toolbar window checking the line): Pako
         // opens on its terms, even when it was started hidden for this request or sits in the
-        // tray, so the answer isn't only a "!" on the browser's button.
-        if r.kind != "ping" {
+        // tray, so the answer isn't only a "!" on the browser's button. Not for a read ahead or
+        // its cancel (a menu opening or closing): the pick that follows opens it.
+        if !matches!(r.kind.as_str(), "ping" | "videoPrepare" | "videoPrepareCancel") {
             tray::show_main(&app);
         }
         return Reply::error(consent::NOT_YET);
@@ -1106,6 +1108,28 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
             Ok(()) => Reply::ok(),
             Err(e) => Reply::error(e),
         };
+    }
+    // The player's Download button opened its quality menu: Pako starts reading the video (the
+    // quality picked next uses that read). Answered at once, never with a problem; never from
+    // Pako Light (refused when it came in, and here again).
+    if r.kind == "videoPrepare" {
+        if r.light {
+            return Reply::error(extension::LIGHT_REFUSED);
+        }
+        if let Some(url) = r.urls.first().cloned() {
+            engine.video_prepare(url, r.site_cookies.clone(), r.private);
+        }
+        return Reply::ok();
+    }
+    // That menu closed without a pick (or its tab closed): the read ahead stops at once.
+    if r.kind == "videoPrepareCancel" {
+        if r.light {
+            return Reply::error(extension::LIGHT_REFUSED);
+        }
+        if let Some(url) = r.urls.first() {
+            engine.video_prepare_cancel(url, r.private);
+        }
+        return Reply::ok();
     }
     // The player's Download button (in the chosen quality), and "Download video with Pako" on
     // a video page or link (in the usual quality): one video, with the site's login.

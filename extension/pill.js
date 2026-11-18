@@ -194,9 +194,16 @@
    *   `{ sep: true }` (a line) or `{ info }` (grey text).
    * - `pick(item, video)`: what a click on an item does; answers `{ ok, error?, detail? }`
    *   (null: nothing was done). On success the pill says the item's `done`, else "Sent to Pako ✓".
+   * - `prepare(video)` (optional): called when you click the pill and its menu opens (never on
+   *   hover), so Pako can start on the video before an item is picked. Its answer isn't waited
+   *   for, and what goes wrong there is never shown (the pick says it).
+   * - `unprepare(video)` (optional): the menu `prepare` was called for closed without a pick
+   *   (Escape, a click elsewhere, the pill hidden, the page going away): Pako stops that read.
+   *   Never called for the pick itself (the pick uses the read).
+   * Only your own clicks count (`isTrusted`): a page's script can't open the menu or pick.
    * Returns `{ hide }`: hides the pill unless it is sending.
    */
-  function make({ find, items, pick }) {
+  function make({ find, items, pick, prepare, unprepare }) {
     let host, wrap, main, label, menu, note;
     let enabled = true;
     let current = null;
@@ -211,6 +218,8 @@
     let resetTimer = 0;
     /** Each menu opening; an answer for an older one is dropped. */
     let opening = 0;
+    /** The video Pako was asked to read ahead for the menu open now (see `prepare`). */
+    let readied = null;
 
     function build() {
       if (host) return;
@@ -244,8 +253,11 @@
       wrap.append(main, menu);
       root.append(wrap);
 
-      main.addEventListener("click", () => {
-        if (!busy) setMenu(!menuOpen);
+      main.addEventListener("click", (e) => {
+        if (busy || !e.isTrusted) return;
+        const opens = !menuOpen;
+        setMenu(opens);
+        if (opens) ready(current);
       });
       wrap.addEventListener("mouseenter", () => (overButton = true));
       wrap.addEventListener("mouseleave", () => {
@@ -292,7 +304,7 @@
             side.title = it.side;
             item.append(side);
           }
-          item.addEventListener("click", () => choose(it));
+          item.addEventListener("click", (e) => e.isTrusted && choose(it));
           nodes.push(item);
         }
       }
@@ -318,6 +330,29 @@
           },
         );
       } else fill(list);
+    }
+
+    /** You opened the menu: Pako may start on this video now (see `prepare`). */
+    function ready(video) {
+      if (!prepare || !video) return;
+      readied = video;
+      try {
+        Promise.resolve(prepare(video)).catch(() => {});
+      } catch {
+        // the extension can't be reached: the pick says so
+      }
+    }
+
+    /** The menu closed without a pick: Pako stops the read it started for it (see `unprepare`). */
+    function unready() {
+      const video = readied;
+      readied = null;
+      if (!unprepare || !video) return;
+      try {
+        Promise.resolve(unprepare(video)).catch(() => {});
+      } catch {
+        // the extension can't be reached: the read ends on its own in Pako
+      }
     }
 
     function place() {
@@ -363,6 +398,7 @@
       main.setAttribute("aria-expanded", String(open));
       if (open) clearTimeout(idleTimer);
       else {
+        unready();
         opening++;
         setNote("");
         if (shown) restartIdle();
@@ -409,6 +445,8 @@
       },
       { capture: true },
     );
+    // The page goes away (a link, a reload, the tab closing) with the menu open: no pick.
+    addEventListener("pagehide", () => menuOpen && setMenu(false));
     addEventListener("scroll", () => shown && place(), { capture: true, passive: true });
     addEventListener("resize", () => shown && place(), { passive: true });
     document.addEventListener("fullscreenchange", () => {
@@ -424,6 +462,8 @@
 
     async function choose(item) {
       if (busy) return;
+      // The pick uses the read ahead: the menu closing for it cancels nothing.
+      readied = null;
       setMenu(false);
       busy = true;
       clearTimeout(resetTimer);

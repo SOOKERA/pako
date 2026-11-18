@@ -33,7 +33,13 @@ test("Light's media item is for images only; the full extension's covers video a
   const full = loadEdition({ light: false });
   await full.listeners.installed();
   await settle();
-  assert.deepEqual(full.menus.get("pako-media").contexts, ["image", "video", "audio"]);
+  assert.deepEqual(full.menus.get("pako-media").contexts, ["image"]);
+  assert.deepEqual(full.menus.get("pako-media-video").contexts, ["video"]);
+  assert.deepEqual(full.menus.get("pako-media-audio").contexts, ["audio"]);
+  // Each item says what it takes: an image that is a link shows two, never two alike.
+  assert.equal(full.menus.get("pako-link").title, "Download link with Pako");
+  assert.equal(full.menus.get("pako-media").title, "Download image with Pako");
+  assert.equal(new Set([...full.menus.values()].map((m) => m.title)).size, full.menus.size);
 });
 
 test("Send all links on a video site: nothing is read or sent", async () => {

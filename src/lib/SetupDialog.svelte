@@ -181,7 +181,7 @@
       <span class="body">
         <span class="t">Download videos from YouTube and other sites</span>
         <span class="d">Paste a video or playlist link, pick the quality (or audio only), and Pako does the rest.</span>
-        <span class="tool">{videoReady ? "Ready · uses yt-dlp, Deno and ffmpeg" : "Uses yt-dlp, Deno and ffmpeg · about 200 MB"}</span>
+        <span class="tool">{videoReady ? "Ready · uses yt-dlp, Deno and ffmpeg" : "Uses yt-dlp, Deno and ffmpeg · about 600 MB"}</span>
       </span>
     </button>
 
@@ -203,7 +203,7 @@
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
       </span>
       <span class="body">
-        <span class="t">Add Pako to my browsers (right-click › Download with Pako)</span>
+        <span class="t">Add Pako to my browsers (right-click › Download link with Pako)</span>
         <span class="d">Links, files and videos go from your browser to Pako, plus a Download button on video players (YouTube, Vimeo, Twitch, Facebook, Instagram). Everything stays on this PC.</span>
       </span>
     </button>

@@ -25,15 +25,16 @@ function scriptVersion(source) {
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const out = join(root, "dist", "extension");
-const shared = ["background.js", "pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "popup.html", "popup.css", "popup.js", "pako-sent.html", "pako-sent.js", "icons"];
-/** Only the full extension has these: the Download pill on videos and "Record this video". */
-const FULL_ONLY_FILES = ["pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "pako-sent.html", "pako-sent.js"];
+const shared = ["background.js", "pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "popup.html", "popup.css", "popup.js", "pako-sent.html", "pako-sent.js", "download-links.js", "icons"];
+/** Only the full extension has these: the Download pill on videos, "Record this video", and the
+ *  catch in the browsers that ask before downloading. */
+const FULL_ONLY_FILES = ["pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "pako-sent.html", "pako-sent.js", "download-links.js"];
 /** Only the full extension asks for these: noticing the videos a page plays, and catching a
  *  download at the server's answer in the browsers that ask before downloading. */
 const FULL_ONLY_PERMISSIONS = ["webRequest", "declarativeNetRequestWithHostAccess"];
 /** Only the Chromium folder has these: the page a download caught at the server's answer turns
- *  into (Firefox keeps its own way). */
-const CHROMIUM_ONLY_FILES = ["pako-sent.html", "pako-sent.js"];
+ *  into, and the script for download links on pages (Firefox keeps its own way). */
+const CHROMIUM_ONLY_FILES = ["pako-sent.html", "pako-sent.js", "download-links.js"];
 /** The licence and its additional terms travel with every copy. */
 const legal = ["LICENSE", "NOTICE.md"];
 

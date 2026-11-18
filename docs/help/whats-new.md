@@ -1,5 +1,22 @@
 # What's new
 
+## 1.2.8
+
+### Improved
+
+- Videos start faster: Pako now installs the edition of yt-dlp that starts in about a third of a second instead of a second and a half. One installed by an older Pako switches at its next update.
+- The video player's **Download** button is quicker: Pako starts reading the video as soon as you click it, while you pick a quality, so the video often starts at once.
+- In Vivaldi, a page's download links now go straight to Pako too, without Vivaldi's question first (**Catch download links on pages** in the Pako button's window).
+
+### Fixed
+
+- The right-click menu no longer shows two items both called **Download with Pako** on an image that is also a link: they're now **Download link with Pako** and **Download image with Pako** (or video, or audio).
+- When Pako can't rename a file your browser downloaded for it, it now says the file is already in your folder (with the name it has), instead of that it couldn't move it.
+- Pako no longer updates or removes a tool while something runs with it: an automatic update could stop a video that was downloading with a yt-dlp installed by an older Pako. It's updated once the video is done.
+- The video tools take about 600 MB on disk, not 200 MB as Pako said before.
+- Pako Setup no longer lets you pick a folder you can't change, such as `Program Files`, where it used to stop with "Error opening file for writing": it says so when you click **Next** and suggests a folder that works.
+- **Add Pako to your browser** now finds browsers installed in another folder or on another drive (Opera GX, for example).
+
 ## 1.2.7
 
 ### Improved

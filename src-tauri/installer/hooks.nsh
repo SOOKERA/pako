@@ -42,6 +42,218 @@ Function .onVerifyInstDir
   ${EndIf}
 FunctionEnd
 
+; ---------- a folder Pako can update itself in ----------
+; Pako Setup installs without admin rights, and Pako updates itself by writing next to Pako.exe,
+; without admin rights too: the folder must be one this Windows user can change. Windows only
+; refuses a folder like Program Files once files are being copied ("Error opening file for
+; writing"), so the folder page checks it when Next is clicked (installer.nsi:
+; MUI_PAGE_CUSTOMFUNCTION_LEAVE), and a silent or passive install before anything is done
+; (installer.nsi: .onInit).
+
+; "" = fine; "write" = this user can't change the folder; "admin" = Setup runs as administrator
+; and the folder is one only administrators can change (Pako, run without, couldn't update there).
+Var PakoDirProblem
+
+; Sets $PakoDirProblem for $INSTDIR. Tried for real, with this Setup's rights (none asked for): a
+; file of a unique name is made in $INSTDIR and deleted again or, when $INSTDIR isn't there yet,
+; a folder with a file in it, in the nearest folder that is there (where Setup will make it).
+Function PakoCheckDir
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $PakoDirProblem ""
+  ; The folder in full ("..", "." and "/" resolved), without a "\" at the end (but "D:\").
+  StrCpy $0 $INSTDIR
+  ; A drive's own folder: NSIS keeps "D:\" as "D:", which Windows reads as D:'s current folder.
+  StrLen $1 $0
+  StrCpy $2 $0 1 1
+  ${If} $1 = 2
+  ${AndIf} $2 == ":"
+    StrCpy $0 "$0\"
+  ${EndIf}
+  System::Call 'kernel32::GetFullPathNameW(w r0, i ${NSIS_MAX_STRLEN}, w .r3, p 0)i.r1'
+  ; 0 = failed; NSIS_MAX_STRLEN or more = didn't fit (nothing was written).
+  ${If} $1 = 0
+  ${OrIf} $1 >= ${NSIS_MAX_STRLEN}
+    StrCpy $3 $INSTDIR
+  ${EndIf}
+  StrLen $1 $3
+  ${If} $1 > 3
+    StrCpy $2 $3 1 -1
+    ${IfThen} $2 == "\" ${|} StrCpy $3 $3 -1 ${|}
+  ${EndIf}
+  StrCpy $0 $3
+  ; Asked by its attributes: a folder this user can't open is still there (FileExists says no).
+  ${Do}
+    System::Call 'kernel32::GetFileAttributesW(w r0)i.r1'
+    ${If} $1 <> -1
+      IntOp $1 $1 & 0x10 ; FILE_ATTRIBUTE_DIRECTORY
+      ${IfThen} $1 = 0 ${|} StrCpy $PakoDirProblem "write" ${|} ; a file
+      ${Break}
+    ${EndIf}
+    ${GetParent} $0 $1
+    ; Not even the drive or the network share is there. Above "\\server\share" GetParent gives
+    ; "\\server", then "\": Windows reads "\" as the root of Setup's current drive, so the walk
+    ; must stop there (the test folder was made, and left, in C:\ for an unreachable share).
+    ${If} $1 == ""
+    ${OrIf} $1 == $0
+    ${OrIf} $1 == "\"
+      StrCpy $PakoDirProblem "write"
+      ${Break}
+    ${EndIf}
+    ; "D:" alone is D:'s current folder to Windows: its root is "D:\".
+    StrLen $2 $1
+    ${If} $2 = 2
+      StrCpy $2 $1 1 1
+      ${IfThen} $2 == ":" ${|} StrCpy $1 "$1\" ${|}
+    ${EndIf}
+    StrCpy $0 $1
+  ${Loop}
+  ${IfThen} $PakoDirProblem != "" ${|} Goto pako_check_done ${|}
+  ${IfThen} $0 == "$3" ${|} StrCpy $0 "" ${|}
+  ; "" = $INSTDIR is there; else the folder Setup will make it in.
+  System::Call 'kernel32::GetCurrentProcessId()i.r1'
+  System::Call 'kernel32::GetTickCount()i.r2'
+  StrCpy $1 ".pako-setup-check-$1-$2"
+  ${If} $0 == ""
+    StrCpy $2 $3 1 -1
+    ${If} $2 == "\" ; a drive: "D:\"
+      StrCpy $0 "$3$1.tmp"
+    ${Else}
+      StrCpy $0 "$3\$1.tmp"
+    ${EndIf}
+    ClearErrors
+    FileOpen $2 $0 w
+    ${If} ${Errors}
+      StrCpy $PakoDirProblem "write"
+    ${Else}
+      FileClose $2
+      System::Call 'kernel32::DeleteFileW(w r0)i'
+    ${EndIf}
+  ${Else}
+    ; One folder, made by Windows itself (NSIS' CreateDirectory would make every missing one).
+    StrCpy $2 $0 1 -1
+    ${If} $2 == "\" ; a drive: "D:\"
+      StrCpy $0 "$0$1"
+    ${Else}
+      StrCpy $0 "$0\$1"
+    ${EndIf}
+    System::Call 'kernel32::CreateDirectoryW(w r0, p 0)i.r2'
+    ${If} $2 = 0
+      StrCpy $PakoDirProblem "write"
+    ${Else}
+      ClearErrors
+      FileOpen $2 "$0\check.tmp" w
+      ${If} ${Errors}
+        StrCpy $PakoDirProblem "write"
+      ${Else}
+        FileClose $2
+        StrCpy $2 "$0\check.tmp"
+        System::Call 'kernel32::DeleteFileW(w r2)i'
+      ${EndIf}
+      ; Removed by Windows too: NSIS' RMDir refuses some paths CreateDirectoryW takes.
+      System::Call 'kernel32::RemoveDirectoryW(w r0)i'
+    ${EndIf}
+  ${EndIf}
+  ; Run as administrator, Setup can write almost anywhere: what matters is whether Pako can,
+  ; later, without. That can't be tried from here, so the folders Windows keeps for
+  ; administrators are recognised by name.
+  ${If} $PakoDirProblem == ""
+    System::Call 'shell32::IsUserAnAdmin()i.r1'
+    ${If} $1 <> 0
+      Push $3
+      Call PakoIsAdminFolder
+      Pop $1
+      ${IfThen} $1 = 1 ${|} StrCpy $PakoDirProblem "admin" ${|}
+    ${EndIf}
+  ${EndIf}
+  pako_check_done:
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+!macro PakoIfUnder BASE
+  StrLen $2 "${BASE}\"
+  StrCpy $1 "$0\" $2
+  ${IfThen} $1 == "${BASE}\" ${|} StrCpy $3 1 ${|}
+!macroend
+
+; Stack: a folder -> 1 if it is in a folder only administrators can change (a folder named
+; "Program Files" or "Program Files (x86)" on any drive, or Windows' own Program Files or Windows
+; folder), else 0. Windows ignores case in paths, and so does ==.
+Function PakoIsAdminFolder
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $3 0
+  StrCpy $1 $0
+  ${Do}
+    ${GetFileName} $1 $2
+    ${If} $2 == "Program Files"
+    ${OrIf} $2 == "Program Files (x86)"
+      StrCpy $3 1
+      ${Break}
+    ${EndIf}
+    ${GetParent} $1 $2
+    ${If} $2 == ""
+    ${OrIf} $2 == $1
+      ${Break}
+    ${EndIf}
+    StrCpy $1 $2
+  ${Loop}
+  !insertmacro PakoIfUnder $WINDIR
+  !insertmacro PakoIfUnder $PROGRAMFILES
+  !insertmacro PakoIfUnder $PROGRAMFILES64
+  StrCpy $0 $3
+  Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
+FunctionEnd
+
+; The folder page's Next.
+Function PakoDirLeave
+  Call PakoCheckDir
+  ${If} $PakoDirProblem == "write"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "$(pakoDirNotWritable)"
+    Abort
+  ${ElseIf} $PakoDirProblem == "admin"
+    MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "$(pakoDirAdminOnly)" IDYES pako_dir_ok
+    Abort
+    pako_dir_ok:
+  ${EndIf}
+FunctionEnd
+
+; A silent (/S) or passive (/P) install shows no folder page: the same check, at the end of
+; .onInit, before anything is changed (an older version isn't removed either). A folder this user
+; can't change ends Setup with exit code 2 and the message (in the console that started a silent
+; Setup). One only administrators can change, with Setup run as administrator, is accepted
+; there: no one can be asked.
+!macro PAKO_CHECK_DIR_UNATTENDED
+  ${If} ${Silent}
+  ${OrIf} $PassiveMode = 1
+    Call PakoInstallDir
+    Call PakoCheckDir
+    ${If} $PakoDirProblem == "write"
+      ${If} ${Silent}
+        System::Call 'kernel32::AttachConsole(i -1)i.r0'
+        ${If} $0 <> 0
+          System::Call 'kernel32::GetStdHandle(i -11)i.r0'
+          FileWrite $0 "$(pakoDirNotWritableSilent)"
+        ${EndIf}
+      ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "$(pakoDirNotWritable)"
+      ${EndIf}
+      SetErrorLevel 2
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   ; A silent install (/S) shows no window, so the function above hasn't run yet.
   ${If} ${Silent}

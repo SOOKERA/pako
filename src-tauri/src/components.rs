@@ -33,7 +33,122 @@ pub fn seven_zip() -> Option<PathBuf> {
 
 /// A tool's program, if installed.
 pub fn path(kind: Kind) -> Option<PathBuf> {
+    restore_interrupted(kind);
     Some(kind.exe()).filter(|p| p.is_file())
+}
+
+/// yt-dlp's Windows folder build: yt-dlp.exe with its `_internal` folder next to it. It starts in
+/// about a third of a second; the single yt-dlp.exe older Pako versions installed unpacks itself
+/// on every run (about a second and a half).
+const YTDLP_ZIP: &str = "yt-dlp_win.zip";
+
+/// yt-dlp's folder holds the single yt-dlp.exe of an older Pako (no `_internal` next to it).
+fn single_exe_in(folder: &Path) -> bool {
+    folder.join("yt-dlp.exe").is_file() && !folder.join("_internal").is_dir()
+}
+
+/// The installed copy is an older kind of build, replaced at the next update even when its
+/// version is the latest (yt-dlp's single exe -> its folder build). It keeps working until then.
+pub fn old_build(kind: Kind) -> bool {
+    kind == Kind::YtDlp && single_exe_in(&dir().join(kind.folder()))
+}
+
+/// The note a failed move to the new kind of build leaves (the release it tried).
+fn rebuild_note(base: &Path, kind: Kind) -> PathBuf {
+    base.join(format!(".rebuild-failed-{}", kind.folder()))
+}
+
+/// An older kind of build is to be replaced now, at the same version (`latest`): not when moving
+/// it already failed for that release (the new build didn't start on this PC, say). Else a
+/// failure that stays would download yt-dlp again every hour; the next release tries again.
+pub fn rebuild_due(kind: Kind, latest: &str) -> bool {
+    rebuild_due_in(&dir(), kind, latest)
+}
+
+fn rebuild_due_in(base: &Path, kind: Kind, latest: &str) -> bool {
+    kind == Kind::YtDlp
+        && single_exe_in(&base.join(kind.folder()))
+        && std::fs::read_to_string(rebuild_note(base, kind)).map_or(true, |v| v.trim() != latest)
+}
+
+/// A program is running from `folder` (or a folder in it). Windows lets a folder be moved while
+/// a program in it runs when nothing else in it is open: yt-dlp's single exe is, and it then
+/// stops with "appears to have been moved or deleted". So "in use" isn't left to the move alone.
+#[cfg(windows)]
+fn running_from(folder: &Path) -> bool {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    let norm = |p: &Path| p.to_string_lossy().trim_start_matches(r"\\?\").replace('/', "\\").to_lowercase();
+    let Ok(real) = std::fs::canonicalize(folder) else { return false };
+    let mut prefix = norm(&real);
+    if !prefix.ends_with('\\') {
+        prefix.push('\\');
+    }
+    let mut found = false;
+    // SAFETY: the snapshot and process handles are checked and closed; the entry's size is set
+    // before use; the buffer holds `len` UTF-16 units and Windows writes at most that many.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE || snap.is_null() {
+            return false;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut buf = vec![0u16; 32 * 1024];
+        let mut ok = Process32FirstW(snap, &mut e);
+        while ok != 0 && !found {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, e.th32ProcessID);
+            if !h.is_null() {
+                let mut len = buf.len() as u32;
+                if QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
+                    let image = PathBuf::from(std::ffi::OsString::from_wide(&buf[..len as usize]));
+                    let image = std::fs::canonicalize(&image).unwrap_or(image);
+                    found = norm(&image).starts_with(&prefix);
+                }
+                CloseHandle(h);
+            }
+            ok = Process32NextW(snap, &mut e);
+        }
+        CloseHandle(snap);
+    }
+    found
+}
+
+#[cfg(not(windows))]
+fn running_from(_folder: &Path) -> bool {
+    false
+}
+
+/// What an install, an update or a removal may leave next to a tool's folder.
+fn leftovers(kind: Kind) -> [String; 5] {
+    let f = kind.folder();
+    [format!(".new-{f}"), format!(".download-{f}"), format!(".check-{f}"), format!(".prev-{f}"), format!(".old-{f}")]
+}
+
+/// An update cut off between its two moves (Pako closed or crashed) leaves the tool's folder
+/// aside: it is put back, so the tool keeps working. Never while it is installing.
+fn restore_interrupted(kind: Kind) {
+    if !is_installing(kind) {
+        restore_in(&dir(), kind);
+    }
+}
+
+/// `restore_interrupted` in a given folder: `.prev-<folder>` (an update's) or `.check-<folder>`
+/// (the in-use check's) holding the program goes back in place when the folder is missing.
+fn restore_in(base: &Path, kind: Kind) {
+    let folder = kind.folder();
+    let target = base.join(folder);
+    if target.exists() {
+        return;
+    }
+    for aside in [format!(".prev-{folder}"), format!(".check-{folder}")] {
+        let aside = base.join(aside);
+        if aside.join(kind.exe_name()).is_file() && std::fs::rename(&aside, &target).is_ok() {
+            return;
+        }
+    }
 }
 
 /// ffmpeg, if installed (video preview of MKV/AVI, joining video and sound).
@@ -61,14 +176,16 @@ impl Kind {
             Kind::Deno => "deno",
         }
     }
-    fn exe(self) -> PathBuf {
-        let name = match self {
+    fn exe_name(self) -> &'static str {
+        match self {
             Kind::SevenZip => "7z.exe",
             Kind::Ffmpeg => "ffmpeg.exe",
             Kind::YtDlp => "yt-dlp.exe",
             Kind::Deno => "deno.exe",
-        };
-        dir().join(self.folder()).join(name)
+        }
+    }
+    fn exe(self) -> PathBuf {
+        dir().join(self.folder()).join(self.exe_name())
     }
     /// The tool's own name.
     pub fn label(self) -> &'static str {
@@ -125,19 +242,27 @@ pub fn remove(kind: Kind) -> Result<()> {
 /// Removes several tools together (a feature's tools): every folder is moved aside first, and
 /// if one of them is in use, the others are put back, so a feature is never half removed.
 pub fn remove_all(kinds: &[Kind]) -> Result<()> {
-    if let Some(k) = kinds.iter().find(|k| is_installing(**k)) {
-        bail!("{} is being installed right now.", k.label());
-    }
+    // Held while removing: no install (daily, "site changed") starts in between.
+    let _guards = kinds
+        .iter()
+        .map(|k| InstallGuard::take(*k).map_err(|_| anyhow!("{} is being installed right now.", k.label())))
+        .collect::<Result<Vec<_>>>()?;
+    remove_in(&dir(), kinds)
+}
+
+/// `remove_all` in a given folder.
+fn remove_in(base: &Path, kinds: &[Kind]) -> Result<()> {
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     for &kind in kinds {
-        let target = dir().join(kind.folder());
+        let target = base.join(kind.folder());
         if !target.exists() {
             continue;
         }
-        // Moving it aside fails while the tool runs: nothing is half-deleted then.
-        let old = dir().join(format!(".old-{}", kind.folder()));
+        // Moving it aside fails while the tool runs (and is never tried then): nothing is
+        // half-deleted.
+        let old = base.join(format!(".old-{}", kind.folder()));
         let _ = std::fs::remove_dir_all(&old);
-        if std::fs::rename(&target, &old).is_err() {
+        if running_from(&target) || std::fs::rename(&target, &old).is_err() {
             for (target, old) in moved.iter().rev() {
                 let _ = std::fs::rename(old, target);
             }
@@ -145,8 +270,13 @@ pub fn remove_all(kinds: &[Kind]) -> Result<()> {
         }
         moved.push((target, old));
     }
-    for (_, old) in moved {
-        let _ = std::fs::remove_dir_all(&old);
+    // What an install or update cut off earlier left goes too: it would take space, and an
+    // update's (or the in-use check's) copy aside must not bring a removed tool back.
+    for &kind in kinds {
+        for name in leftovers(kind) {
+            let _ = std::fs::remove_dir_all(base.join(name));
+        }
+        let _ = std::fs::remove_file(rebuild_note(base, kind));
     }
     Ok(())
 }
@@ -183,7 +313,7 @@ fn can_swap(kind: Kind) -> Result<()> {
     }
     let probe = dir().join(format!(".check-{}", kind.folder()));
     let _ = std::fs::remove_dir_all(&probe);
-    if std::fs::rename(&target, &probe).is_err() {
+    if running_from(&target) || std::fs::rename(&target, &probe).is_err() {
         bail!("{} is in use (a preview, a video or an extraction is running). Close it, then try again.", kind.label());
     }
     std::fs::rename(&probe, &target).map_err(|e| anyhow!("Couldn't put {} back in place: {e}", kind.label()))
@@ -196,9 +326,10 @@ impl Serialize for Status {
         st.serialize_field("kind", &self.kind)?;
         st.serialize_field("installed", &self.installed)?;
         st.serialize_field("latest", &self.latest)?;
-        // A newer version than the one installed (compared the way updates compare).
+        // A newer version than the one installed (compared the way updates compare), or the
+        // same one in the kind of build Pako now installs.
         let update = match (&self.installed, &self.latest) {
-            (Some(have), Some(latest)) => have != "installed" && !same_version(self.kind, have, latest),
+            (Some(have), Some(latest)) => rebuild_due(self.kind, latest) || (have != "installed" && !same_version(self.kind, have, latest)),
             _ => false,
         };
         st.serialize_field("update", &update)?;
@@ -247,7 +378,8 @@ struct Asset {
     browser_download_url: String,
 }
 
-/// Runs a tool once to read its version (hidden, no console window).
+/// Runs a tool once to read its version (hidden, no console window). Never yt-dlp's own `-U`:
+/// Pako updates its tools itself.
 fn run_version(exe: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(exe);
     cmd.args(args);
@@ -264,6 +396,7 @@ fn run_version(exe: &Path, args: &[&str]) -> Option<String> {
 /// The installed version: the release Pako noted when it installed the tool, else read from the
 /// tool itself.
 pub fn installed_version(kind: Kind) -> Option<String> {
+    restore_interrupted(kind);
     let exe = kind.exe();
     if !exe.is_file() {
         return None;
@@ -274,7 +407,8 @@ pub fn installed_version(kind: Kind) -> Option<String> {
     let text = match kind {
         Kind::SevenZip => run_version(&exe, &[]),
         Kind::Ffmpeg => run_version(&exe, &["-version"]),
-        Kind::YtDlp | Kind::Deno => run_version(&exe, &["--version"]),
+        Kind::YtDlp => run_version(&exe, &["--no-config", "--no-update", "--version"]),
+        Kind::Deno => run_version(&exe, &["--version"]),
     }?;
     Some(parse_version(kind, &text).unwrap_or_else(|| "installed".into()))
 }
@@ -422,6 +556,94 @@ fn asset<'a>(rel: &'a Release, name: &str) -> Result<&'a Asset> {
     rel.assets.iter().find(|a| a.name == name).ok_or_else(|| anyhow!("{name} is missing from the release"))
 }
 
+/// Unpacks a whole zip into `out`, folders included. A name that would land outside `out`
+/// (`..`, an absolute path, a drive) refuses the whole zip.
+fn unzip_tree(zip_path: &Path, out: &Path) -> Result<usize> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
+    let mut n = 0;
+    for i in 0..archive.len() {
+        let mut f = archive.by_index(i)?;
+        let raw = f.name().to_string();
+        // A "\" in a zip name is a folder too on Windows.
+        let parts: Vec<&str> = raw.trim_end_matches(['/', '\\']).split(['/', '\\']).collect();
+        if parts.iter().any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':')) {
+            bail!("The download holds a file that would land outside its folder ({raw})");
+        }
+        let dest = parts.iter().fold(out.to_path_buf(), |d, p| d.join(p));
+        if f.is_dir() {
+            std::fs::create_dir_all(&dest)?;
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(&dest)?;
+        std::io::copy(&mut f, &mut file)?;
+        // On the disk before the folder is swapped in: a power cut right after must not leave
+        // an empty yt-dlp in place of the old one.
+        file.sync_all()?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// yt-dlp's folder build, once downloaded: checked against the published checksum before
+/// anything is unpacked, then unpacked whole into `out` (yt-dlp.exe and `_internal`).
+fn unpack_yt_dlp(zip_path: &Path, got: &str, want: &str, out: &Path) -> Result<()> {
+    if !got.eq_ignore_ascii_case(want) {
+        bail!("The downloaded file doesn't match yt-dlp's published checksum");
+    }
+    unzip_tree(zip_path, out)?;
+    if !out.join("yt-dlp.exe").is_file() || !out.join("_internal").is_dir() {
+        bail!("yt-dlp.exe wasn't in the download");
+    }
+    Ok(())
+}
+
+/// The unpacked yt-dlp runs and says its version, before it replaces the working one.
+fn yt_dlp_runs(exe: &Path) -> bool {
+    run_version(exe, &["--no-config", "--no-update", "--version"])
+        .and_then(|t| parse_version(Kind::YtDlp, &t))
+        .is_some_and(|v| v.chars().any(|c| c.is_ascii_digit()) && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
+/// A rename, tried a few times: right after unpacking or a run, an antivirus may still hold a
+/// file for a moment.
+fn rename_patiently(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if tries >= 3 || !from.exists() => return Err(e),
+            Err(_) => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
+
+/// Puts the folder `new` in place of `target` (`name` = the tool, for errors). The old copy is
+/// moved aside to `prev` first: if that fails, the tool is in use and nothing has been touched.
+/// If the new one then can't be moved in, the old copy is put back, so the tool keeps working.
+/// The old copy is deleted last. (Pako closing between the two moves: `restore_in`.)
+fn swap_in(new: &Path, target: &Path, prev: &Path, name: &str) -> Result<()> {
+    let _ = std::fs::remove_dir_all(prev);
+    if target.exists() && (running_from(target) || rename_patiently(target, prev).is_err()) {
+        let _ = std::fs::remove_dir_all(new);
+        bail!("{name} is in use (a preview, a video or an extraction is running). Close it, then try again.");
+    }
+    if let Err(e) = rename_patiently(new, target) {
+        if prev.exists() {
+            let _ = rename_patiently(prev, target);
+        }
+        let _ = std::fs::remove_dir_all(new);
+        return Err(anyhow!("Couldn't put the new files in place: {e}"));
+    }
+    let _ = std::fs::remove_dir_all(prev);
+    Ok(())
+}
+
 /// Unpacks the files of a zip whose name matches `keep` into `out` (flat).
 fn unzip(zip_path: &Path, out: &Path, keep: impl Fn(&str) -> bool) -> Result<usize> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
@@ -447,6 +669,11 @@ fn unzip(zip_path: &Path, out: &Path, keep: impl Fn(&str) -> bool) -> Result<usi
 /// old ones only when everything worked.
 pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>) -> Result<String> {
     let _guard = InstallGuard::take(kind)?;
+    // An update cut off earlier: its folder goes back first (the guard keeps `path` from it).
+    restore_in(&dir(), kind);
+    let _ = std::fs::remove_dir_all(dir().join(format!(".old-{}", kind.folder())));
+    // Moving an older kind of build to the new one (a failure is noted, see `rebuild_due`).
+    let rebuilding = old_build(kind);
     // In use: say so now, not after a 150 MB download.
     can_swap(kind)?;
     progress("Checking the latest version", 0, None);
@@ -460,17 +687,29 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
 
+    // The new files arrived whole: a failure from here on (unpacking, the new build not
+    // starting) is not a cut line, and stops an older build's move for this release.
+    let mut arrived = false;
     let result: Result<()> = async {
         let asset_name: String;
         match kind {
             Kind::YtDlp => {
-                let a = asset(&rel, "yt-dlp.exe")?;
+                // The folder build: it starts much faster than the single yt-dlp.exe.
+                let a = asset(&rel, YTDLP_ZIP)?;
                 asset_name = a.name.clone();
-                let got = fetch(http, &a.browser_download_url, &tmp.join("yt-dlp.exe"), progress).await?;
+                let zip_path = work.join(YTDLP_ZIP);
+                let got = fetch(http, &a.browser_download_url, &zip_path, progress).await?;
                 progress("Checking the file", 0, None);
-                let want = published_sha256(http, &asset(&rel, "SHA2-256SUMS")?.browser_download_url, "yt-dlp.exe").await?;
-                if got != want {
-                    bail!("The downloaded file doesn't match yt-dlp's published checksum");
+                let want = published_sha256(http, &asset(&rel, "SHA2-256SUMS")?.browser_download_url, YTDLP_ZIP).await?;
+                arrived = got.eq_ignore_ascii_case(&want);
+                progress("Unpacking", 0, None);
+                let (z, t) = (zip_path.clone(), tmp.clone());
+                tauri::async_runtime::spawn_blocking(move || unpack_yt_dlp(&z, &got, &want, &t))
+                    .await
+                    .map_err(|e| anyhow!("Couldn't unpack yt-dlp: {e}"))??;
+                let exe = tmp.join("yt-dlp.exe");
+                if !tauri::async_runtime::spawn_blocking(move || yt_dlp_runs(&exe)).await.unwrap_or(false) {
+                    bail!("The new yt-dlp didn't start");
                 }
             }
             Kind::Deno => {
@@ -560,24 +799,19 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
     let _ = std::fs::remove_dir_all(&work);
     if let Err(e) = result {
         let _ = std::fs::remove_dir_all(&tmp);
+        if rebuilding && arrived {
+            let _ = std::fs::write(rebuild_note(&base, kind), release_version(kind, &rel).unwrap_or_default());
+        }
         return Err(e);
     }
-    // Swap safely: move the old copy aside first. If that fails, the tool is in use and
-    // nothing has been touched; the new files only replace the old ones once moved.
-    let target = base.join(kind.folder());
-    let old = base.join(format!(".old-{}", kind.folder()));
-    let _ = std::fs::remove_dir_all(&old);
-    if target.exists() && std::fs::rename(&target, &old).is_err() {
-        let _ = std::fs::remove_dir_all(&tmp);
-        bail!("{} is in use (a preview, a video or an extraction is running). Close it, then try again.", kind.label());
-    }
-    if let Err(e) = std::fs::rename(&tmp, &target) {
-        // Put the old copy back so the tool keeps working.
-        let _ = std::fs::rename(&old, &target);
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err(anyhow!("Couldn't put the new files in place: {e}"));
-    }
-    let _ = std::fs::remove_dir_all(&old);
+    // The whole folder is replaced (from an older kind of build too, such as yt-dlp's single
+    // exe), and only once everything worked. (Off the async threads: it may wait a moment.)
+    let (target, prev) = (base.join(kind.folder()), base.join(format!(".prev-{}", kind.folder())));
+    let new = tmp.clone();
+    tauri::async_runtime::spawn_blocking(move || swap_in(&new, &target, &prev, kind.label()))
+        .await
+        .map_err(|e| anyhow!("Couldn't put the new files in place: {e}"))??;
+    let _ = std::fs::remove_file(rebuild_note(&base, kind));
     progress("Done", 0, None);
     Ok(installed_version(kind).unwrap_or_else(|| release_version(kind, &rel).unwrap_or_default()))
 }
@@ -640,6 +874,28 @@ mod tests {
         });
     }
 
+    /// Against GitHub today (network): yt-dlp's folder build downloads, matches SHA2-256SUMS,
+    /// unpacks and runs (in a temporary folder). `cargo test --lib -- --ignored yt_dlp_on_github`.
+    #[test]
+    #[ignore]
+    fn yt_dlp_on_github() {
+        tauri::async_runtime::block_on(async {
+            let http = reqwest::Client::new();
+            let rel = latest_release(&http, Kind::YtDlp).await.unwrap();
+            let d = scratch("github");
+            let zip = d.join(YTDLP_ZIP);
+            let quiet = |_: &str, _: u64, _: Option<u64>| {};
+            let got = fetch(&http, &asset(&rel, YTDLP_ZIP).unwrap().browser_download_url, &zip, &quiet).await.unwrap();
+            let want = published_sha256(&http, &asset(&rel, "SHA2-256SUMS").unwrap().browser_download_url, YTDLP_ZIP).await.unwrap();
+            let out = d.join("yt-dlp");
+            std::fs::create_dir_all(&out).unwrap();
+            unpack_yt_dlp(&zip, &got, &want, &out).unwrap();
+            assert!(yt_dlp_runs(&out.join("yt-dlp.exe")));
+            println!("yt-dlp {} ({YTDLP_ZIP})", rel.tag_name);
+            let _ = std::fs::remove_dir_all(&d);
+        });
+    }
+
     #[test]
     fn picks_the_newest_stable_ffmpeg() {
         let a = |n: &str| Asset { name: n.into(), browser_download_url: String::new() };
@@ -684,6 +940,219 @@ mod tests {
         };
         assert_eq!(status("9.0.2", "9.0")["update"], false);
         assert_eq!(status("9.0", "9.1")["update"], true);
+    }
+
+    /// A fresh empty folder for one test.
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("pako-components-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A zip with these (name, content) entries; a name ending in "/" is a folder.
+    fn make_zip(path: &Path, entries: &[(&str, &str)]) {
+        let mut w = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, body) in entries {
+            if name.ends_with('/') {
+                w.add_directory(*name, opts).unwrap();
+            } else {
+                w.start_file(*name, opts).unwrap();
+                w.write_all(body.as_bytes()).unwrap();
+            }
+        }
+        w.finish().unwrap();
+    }
+
+    fn files_in(d: &Path) -> usize {
+        std::fs::read_dir(d).map(|rd| rd.count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn yt_dlp_folder_build_unpacks_whole() {
+        let d = scratch("unpack");
+        let zip = d.join("yt-dlp_win.zip");
+        make_zip(&zip, &[("yt-dlp.exe", "exe"), ("_internal/", ""), ("_internal/python314.dll", "dll"), ("_internal/yt_dlp\\x.pyc", "pyc")]);
+        let out = d.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        unpack_yt_dlp(&zip, "ABC", "abc", &out).unwrap();
+        assert_eq!(std::fs::read_to_string(out.join("yt-dlp.exe")).unwrap(), "exe");
+        assert!(out.join("_internal").join("python314.dll").is_file());
+        assert!(out.join("_internal").join("yt_dlp").join("x.pyc").is_file());
+        assert!(!single_exe_in(&out));
+        // A zip without `_internal` isn't the folder build.
+        let bare = d.join("bare.zip");
+        make_zip(&bare, &[("yt-dlp.exe", "exe")]);
+        assert!(unpack_yt_dlp(&bare, "a", "a", &d.join("out2")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_wrong_checksum_unpacks_nothing() {
+        let d = scratch("hash");
+        let zip = d.join("yt-dlp_win.zip");
+        make_zip(&zip, &[("yt-dlp.exe", "exe"), ("_internal/a.dll", "dll")]);
+        let out = d.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let err = unpack_yt_dlp(&zip, &"a".repeat(64), &"b".repeat(64), &out).unwrap_err();
+        assert!(err.to_string().contains("checksum"), "{err}");
+        assert_eq!(files_in(&out), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_zip_reaching_outside_its_folder_is_refused() {
+        let d = scratch("slip");
+        let out = d.join("out");
+        for (i, bad) in ["../evil.txt", "_internal/../../evil.txt", "..\\evil.txt", "/abs.txt", "\\abs.txt", "C:/evil.txt", "C:evil.txt", "a/./b.txt"]
+            .into_iter()
+            .enumerate()
+        {
+            let zip = d.join(format!("bad{i}.zip"));
+            make_zip(&zip, &[("yt-dlp.exe", "exe"), ("_internal/a.dll", "dll"), (bad, "x")]);
+            let _ = std::fs::remove_dir_all(&out);
+            std::fs::create_dir_all(&out).unwrap();
+            assert!(unzip_tree(&zip, &out).is_err(), "{bad} was unpacked");
+            assert!(unpack_yt_dlp(&zip, "h", "h", &out).is_err(), "{bad} was unpacked");
+            assert!(!d.join("evil.txt").exists() && !std::env::temp_dir().join("evil.txt").exists());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_failed_swap_keeps_the_old_copy() {
+        let d = scratch("swap");
+        let target = d.join("yt-dlp");
+        let prev = d.join(".prev-yt-dlp");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("yt-dlp.exe"), "old").unwrap();
+        // The new folder can't be moved in (here: it's gone): the old copy goes back in place.
+        let err = swap_in(&d.join(".new-yt-dlp"), &target, &prev, "yt-dlp").unwrap_err();
+        assert!(err.to_string().contains("new files"), "{err}");
+        assert_eq!(std::fs::read_to_string(target.join("yt-dlp.exe")).unwrap(), "old");
+        assert!(!prev.exists());
+        // Pako closed between the two moves: the old copy is put back when it's next looked for.
+        std::fs::rename(&target, &prev).unwrap();
+        restore_in(&d, Kind::YtDlp);
+        assert_eq!(std::fs::read_to_string(target.join("yt-dlp.exe")).unwrap(), "old");
+        assert!(!prev.exists());
+        // ... but never over a copy that is in place.
+        std::fs::create_dir_all(&prev).unwrap();
+        std::fs::write(prev.join("yt-dlp.exe"), "older").unwrap();
+        restore_in(&d, Kind::YtDlp);
+        assert_eq!(std::fs::read_to_string(target.join("yt-dlp.exe")).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_single_exe_moves_to_the_folder_build() {
+        let d = scratch("migrate");
+        // What an older Pako installed: the single yt-dlp.exe and Pako's note.
+        let target = d.join("yt-dlp");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("yt-dlp.exe"), "single").unwrap();
+        std::fs::write(target.join(RECORD), r#"{"version":"2026.10.26","asset":"yt-dlp.exe"}"#).unwrap();
+        assert!(single_exe_in(&target));
+        // The update: the folder build unpacked next to it, then swapped in whole.
+        let zip = d.join("yt-dlp_win.zip");
+        make_zip(&zip, &[("yt-dlp.exe", "folder"), ("_internal/python314.dll", "dll")]);
+        let new = d.join(".new-yt-dlp");
+        std::fs::create_dir_all(&new).unwrap();
+        unpack_yt_dlp(&zip, "h", "h", &new).unwrap();
+        std::fs::write(new.join(RECORD), r#"{"version":"2026.10.26","asset":"yt-dlp_win.zip"}"#).unwrap();
+        swap_in(&new, &target, &d.join(".prev-yt-dlp"), "yt-dlp").unwrap();
+        assert!(!single_exe_in(&target));
+        assert_eq!(std::fs::read_to_string(target.join("yt-dlp.exe")).unwrap(), "folder");
+        assert!(target.join("_internal").join("python314.dll").is_file());
+        assert!(std::fs::read_to_string(target.join(RECORD)).unwrap().contains("yt-dlp_win.zip"));
+        assert!(!new.exists() && !d.join(".prev-yt-dlp").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A program running from the tool's folder: Windows would let the folder move (as with
+    /// yt-dlp's single exe, which then stops), so the update and Remove must refuse by themselves.
+    #[cfg(windows)]
+    #[test]
+    fn a_running_tool_is_never_moved() {
+        use std::os::windows::process::CommandExt;
+        let d = scratch("running");
+        let target = d.join("yt-dlp");
+        std::fs::create_dir_all(&target).unwrap();
+        let exe = target.join("yt-dlp.exe");
+        std::fs::copy(std::env::var("SystemRoot").map(PathBuf::from).unwrap_or("C:\\Windows".into()).join("System32").join("PING.EXE"), &exe).unwrap();
+        let mut child = Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while !running_from(&target) && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(running_from(&target));
+        std::fs::create_dir_all(d.join("yt-dl")).unwrap();
+        assert!(!running_from(&d.join("yt-dl")), "only the folder itself and what is in it");
+        // An update: refused, the running copy untouched, the new one dropped.
+        let new = d.join(".new-yt-dlp");
+        std::fs::create_dir_all(new.join("_internal")).unwrap();
+        std::fs::write(new.join("yt-dlp.exe"), "new").unwrap();
+        let err = swap_in(&new, &target, &d.join(".prev-yt-dlp"), "yt-dlp").unwrap_err();
+        assert!(err.to_string().contains("in use"), "{err}");
+        assert!(exe.is_file() && !new.exists() && !d.join(".prev-yt-dlp").exists());
+        // Remove: refused too.
+        assert!(remove_in(&d, &[Kind::YtDlp]).is_err());
+        assert!(exe.is_file());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!running_from(&target));
+        assert!(remove_in(&d, &[Kind::YtDlp]).is_ok());
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn remove_takes_the_leftovers_too() {
+        let d = scratch("leftovers");
+        std::fs::create_dir_all(d.join("yt-dlp")).unwrap();
+        std::fs::write(d.join("yt-dlp").join("yt-dlp.exe"), "exe").unwrap();
+        for name in leftovers(Kind::YtDlp) {
+            std::fs::create_dir_all(d.join(&name)).unwrap();
+            std::fs::write(d.join(&name).join("yt-dlp.exe"), "left").unwrap();
+        }
+        std::fs::write(rebuild_note(&d, Kind::YtDlp), "2026.11.01").unwrap();
+        // Another tool's folders stay.
+        std::fs::create_dir_all(d.join(".new-deno")).unwrap();
+        remove_in(&d, &[Kind::YtDlp]).unwrap();
+        for name in leftovers(Kind::YtDlp) {
+            assert!(!d.join(&name).exists(), "{name} was left");
+        }
+        assert!(!rebuild_note(&d, Kind::YtDlp).exists());
+        assert!(d.join(".new-deno").exists());
+        // Nothing brings the removed tool back.
+        restore_in(&d, Kind::YtDlp);
+        assert!(!d.join("yt-dlp").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_failed_move_to_the_folder_build_waits_for_the_next_release() {
+        let d = scratch("rebuild");
+        let target = d.join("yt-dlp");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("yt-dlp.exe"), "single").unwrap();
+        assert!(rebuild_due_in(&d, Kind::YtDlp, "2026.11.01"));
+        // The folder build didn't start on this PC: not downloaded again for this release...
+        std::fs::write(rebuild_note(&d, Kind::YtDlp), "2026.11.01").unwrap();
+        assert!(!rebuild_due_in(&d, Kind::YtDlp, "2026.11.01"));
+        // ... tried again with the next one.
+        assert!(rebuild_due_in(&d, Kind::YtDlp, "2026.11.09"));
+        // The folder build in place: nothing to move.
+        std::fs::create_dir_all(target.join("_internal")).unwrap();
+        assert!(!rebuild_due_in(&d, Kind::YtDlp, "2026.11.09"));
+        assert!(!rebuild_due_in(&d, Kind::Deno, "2026.11.09"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

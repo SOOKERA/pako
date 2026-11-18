@@ -436,7 +436,7 @@ async fn find_clip(source: &Source, owner: Option<&str>) -> Result<Clip, String>
     let jar = owner.and_then(crate::video::cookie_file_for);
     let mut cmd = tokio::process::Command::new(&t.yt_dlp);
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
-    cmd.args(["--no-config", "--encoding", "utf-8"]);
+    cmd.args(["--no-config", "--no-update", "--encoding", "utf-8"]);
     if let Some(deno) = &t.deno {
         cmd.arg("--js-runtimes").arg(format!("deno:{}", deno.display()));
         // Deno's cache next to Pako's tools (else %LOCALAPPDATA%\deno, left after uninstalling).

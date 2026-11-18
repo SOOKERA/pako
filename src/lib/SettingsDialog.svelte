@@ -535,7 +535,7 @@
     <div class="line">
       <div>
         <div class="t">Add Pako to your browser <HelpLink to="browser-extension.md#add-pako-to-your-browser" label="How to add Pako to your browser" /></div>
-        <div class="muted">Pick your browser: Pako opens its extensions page and shows the three steps. Then right-click a link › Download with Pako, or use the Download button on YouTube videos.</div>
+        <div class="muted">Pick your browser: Pako opens its extensions page and shows the three steps. Then right-click a link › Download link with Pako, or use the Download button on YouTube videos.</div>
       </div>
     </div>
     <div class="browsers"><AddToBrowser /></div>

@@ -568,7 +568,7 @@
             {:else if f.state === "checking"}
               <div class="cell link checking"><span class="ring"></span><span class="ell">{f.template.source.kind === "video" ? "Checking video…" : "Checking link"}</span></div>
             {:else if f.state === "needsTools"}
-              <div class="cell link needs" title="Downloading videos uses three free tools: yt-dlp, Deno and ffmpeg (about 200 MB).">
+              <div class="cell link needs" title="Downloading videos uses three free tools: yt-dlp, Deno and ffmpeg (about 600 MB on disk).">
                 <span class="ell">Needs the video tools</span>
                 <button
                   class="addg"

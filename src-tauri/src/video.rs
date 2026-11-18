@@ -512,7 +512,8 @@ fn add_referrer(cmd: &mut tokio::process::Command, referrer: Option<&str>) {
 fn base_command(t: &Tools) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&t.yt_dlp);
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
-    cmd.arg("--no-config").arg("--encoding").arg("utf-8");
+    // --no-update: yt-dlp never replaces itself (Pako updates it, see components.rs).
+    cmd.arg("--no-config").arg("--no-update").arg("--encoding").arg("utf-8");
     if let Some(deno) = &t.deno {
         cmd.arg("--js-runtimes").arg(format!("deno:{}", deno.display()));
         // Deno's cache next to Pako's tools (else %LOCALAPPDATA%\deno, left after uninstalling).
@@ -689,12 +690,20 @@ async fn run_json(mut cmd: tokio::process::Command, limit: Duration) -> Result<S
     // process tree is ended, or what it started (its Python part, Deno) is left behind.
     let wait = child.wait_with_output();
     tokio::pin!(wait);
+    // Dropped before it finished (a read ahead you closed the menu on, or one pushed out): what
+    // yt-dlp started (Deno) is ended with it, while yt-dlp still runs so its tree can be found.
+    // Declared after `wait`, so it runs before the child is dropped (and killed on its own).
+    let mut unfinished = EndTreeIfDropped(pid);
     let out = tokio::select! {
         r = &mut wait => match r {
             Ok(o) => o,
-            Err(e) => return Err((format!("The video tool stopped: {e}"), false)),
+            Err(e) => {
+                unfinished.0 = None;
+                return Err((format!("The video tool stopped: {e}"), false));
+            }
         },
         _ = tokio::time::sleep(limit) => {
+            unfinished.0 = None;
             if let Some(pid) = pid {
                 let _ = tokio::task::spawn_blocking(move || kill_tree(pid)).await;
             }
@@ -702,6 +711,7 @@ async fn run_json(mut cmd: tokio::process::Command, limit: Duration) -> Result<S
             return Err(("The site took too long to answer.".into(), false));
         }
     };
+    unfinished.0 = None;
     if !out.status.success() {
         return Err(friendly_error(&String::from_utf8_lossy(&out.stderr)));
     }
@@ -891,6 +901,18 @@ pub async fn lines<R: tokio::io::AsyncRead + Unpin>(r: R, mut each: impl FnMut(S
                 let l = String::from_utf8_lossy(&buf);
                 each(l.trim_end_matches(['\r', '\n']).to_string());
             }
+        }
+    }
+}
+
+/// Ends a yt-dlp read's whole process tree if the read is dropped before it finished (see
+/// `run_json`). Cleared once it finished or was ended another way.
+struct EndTreeIfDropped(Option<u32>);
+
+impl Drop for EndTreeIfDropped {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            kill_tree(pid);
         }
     }
 }

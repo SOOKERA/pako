@@ -327,6 +327,21 @@ $("player").addEventListener("click", async () => {
   $("player").setAttribute("aria-checked", String(on));
   await api.storage.local.set({ playerButton: on });
 });
+
+// "Catch download links on pages": only in a browser that asks before each download (Vivaldi).
+async function showLinks() {
+  const r = await api.runtime.sendMessage({ type: "asks-first" }).catch(() => null);
+  if (!r?.asks) return;
+  const { catchLinks = true } = await api.storage.local.get({ catchLinks: true });
+  $("links").setAttribute("aria-checked", String(catchLinks !== false));
+  $("links-line").hidden = false;
+}
+$("links").addEventListener("click", async () => {
+  const on = $("links").getAttribute("aria-checked") !== "true";
+  $("links").setAttribute("aria-checked", String(on));
+  await api.storage.local.set({ catchLinks: on });
+});
+if (!LIGHT) showLinks();
 /* full-only:end */
 
 // Private windows: the browser's own switch for Pako decides ("Allow in Incognito", "Allow in

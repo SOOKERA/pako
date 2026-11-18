@@ -27,7 +27,7 @@ const NOT_CONNECTED = "Pako isn't connected. Click the Pako button in the toolba
  *  browser can keep running the background script it took when the extension was added, after
  *  Pako wrote a newer one in the folder, even across restarts (seen in Vivaldi 8.3): it then
  *  reads the new manifest but runs the old script. Told apart by this, the extension reloads. */
-const SCRIPT_VERSION = "1.2.10";
+const SCRIPT_VERSION = "1.2.11";
 
 // The toolbar window and the pages ask through here. Registered first, at
 // once, so nothing else that runs at start-up (or fails there) can keep it from answering.
@@ -93,6 +93,7 @@ async function send(message) {
       learnHolds(reply);
       /* full-only:start */
       learnAsks(reply);
+      learnPrepares(reply);
       /* full-only:end */
       if (reply.ok && message.kind !== "follow") followsAgain();
       /* full-only:start */
@@ -315,6 +316,80 @@ async function sendVideo(url, quality, { incognito = false, storeId } = {}) {
   if (incognito) return send({ kind: "video", urls: [url], quality, siteCookies: [], private: true });
   return send({ kind: "video", urls: [url], quality, siteCookies: await siteCookiesFor(url, incognito, storeId) });
 }
+
+/** Reads ahead asked of Pako (or about to be) and neither picked nor cancelled yet, by tab and
+ *  link (`aheadKey`): what the menu closing, or the tab closing, stops. In memory only. */
+const readsAhead = new Map();
+/** Cancels on their way to Pako, by the same key: a read ahead of the same link waits for it
+ *  (so the cancel never stops the newer read). */
+const cancelling = new Map();
+const aheadKey = (tabId, url) => `${tabId} ${url}`;
+
+/** The player's Download button opened its quality menu (you clicked it, never on hover): Pako
+ *  starts reading the video now, so the quality picked next starts at once. The same checks and
+ *  cookies as the send, with no quality; only to a Pako that said it reads ahead (an older one
+ *  would answer "Unknown request."). Its answer says nothing: the send that follows does. */
+async function prepareVideo(url, { tabId, incognito = false, storeId } = {}) {
+  if (!isWebLink(url) || !isVideoSite(url)) return;
+  const key = aheadKey(tabId, url);
+  // Noted before anything is awaited: a close or a pick that comes meanwhile finds it.
+  const entry = { tabId, url, incognito, went: false, sent: null };
+  // The cancel of an earlier read of it still on its way (never one of this read: it waits for it).
+  const earlier = cancelling.get(key);
+  readsAhead.set(key, entry);
+  entry.sent = (async () => {
+    if (!(await pakoPrepares())) return;
+    const siteCookies = incognito ? [] : await siteCookiesFor(url, incognito, storeId);
+    await earlier;
+    // Picked, or closed again, meanwhile: nothing to read ahead.
+    if (readsAhead.get(key) !== entry) return;
+    entry.went = true;
+    if (incognito) await send({ kind: "videoPrepare", urls: [url], siteCookies: [], private: true });
+    else await send({ kind: "videoPrepare", urls: [url], siteCookies });
+  })().catch(() => {});
+  await entry.sent;
+}
+
+/** A quality was picked: its read ahead is the pick's now (nothing cancels it any more). */
+function pickedAhead(tabId, url) {
+  readsAhead.delete(aheadKey(tabId, url));
+}
+
+/** The quality menu closed without a pick, or its tab closed: Pako stops that read at once
+ *  (after the read ahead itself reached Pako, so the cancel never overtakes it). */
+async function cancelAhead(key) {
+  const entry = readsAhead.get(key);
+  if (!entry) return;
+  readsAhead.delete(key);
+  const done = (async () => {
+    await entry.sent;
+    if (!entry.went) return;
+    if (entry.incognito) await send({ kind: "videoPrepareCancel", urls: [entry.url], private: true });
+    else await send({ kind: "videoPrepareCancel", urls: [entry.url] });
+  })().catch(() => {});
+  cancelling.set(key, done);
+  await done;
+  if (cancelling.get(key) === done) cancelling.delete(key);
+}
+
+/** A tab closed (or was swapped): its reads ahead stop. */
+function cancelAheadIn(tabId) {
+  for (const [key, entry] of readsAhead) if (entry.tabId === tabId) cancelAhead(key);
+}
+
+/** Does this Pako read a video ahead (`prepares` in its answers)? Saved: the background page is
+ *  started again often. */
+let preparesNow = null;
+async function pakoPrepares() {
+  if (preparesNow === null) preparesNow = (await Promise.resolve(api.storage.local.get({ pakoPrepares: false })).catch(() => ({ pakoPrepares: false }))).pakoPrepares === true;
+  return preparesNow;
+}
+function learnPrepares(reply) {
+  const v = reply.prepares === true;
+  if (v === preparesNow) return;
+  preparesNow = v;
+  saveState({ pakoPrepares: v });
+}
 /* full-only:end */
 
 async function settings() {
@@ -360,6 +435,8 @@ api.runtime.onMessageExternal?.addListener((msg, sender, respond) => {
 /** Whether the right-click items are there now (Pako Light takes them away while the full
  *  extension is on). */
 let menusShown = null;
+/** The media items: "pako-media" (images) and, in the full extension, its other kinds. */
+const isMediaItem = (id) => typeof id === "string" && id.startsWith("pako-media");
 
 function makeMenus() {
   return new Promise((resolve) => {
@@ -367,12 +444,14 @@ function makeMenus() {
     const make = () => {
       if (made) return;
       made = true;
-      api.contextMenus.create({ id: "pako-link", title: "Download with Pako", contexts: ["link"] });
-      let media = ["image"];
+      // Named for what they take: on an image that is also a link, both show, and two items
+      // both called "Download with Pako" couldn't be told apart.
+      api.contextMenus.create({ id: "pako-link", title: "Download link with Pako", contexts: ["link"] });
+      api.contextMenus.create({ id: "pako-media", title: "Download image with Pako", contexts: ["image"] });
       /* full-only:start */
-      media = ["image", "video", "audio"];
+      api.contextMenus.create({ id: "pako-media-video", title: "Download video with Pako", contexts: ["video"] });
+      api.contextMenus.create({ id: "pako-media-audio", title: "Download audio with Pako", contexts: ["audio"] });
       /* full-only:end */
-      api.contextMenus.create({ id: "pako-media", title: "Download with Pako", contexts: media });
       api.contextMenus.create({ id: "pako-page", title: "Send this page to Pako", contexts: ["page"] });
       api.contextMenus.create({ id: "pako-all", title: "Send all links on this page to Pako (to pick from)", contexts: ["page"] });
       resolve();
@@ -466,13 +545,13 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
   /* full-only:start */
   // A player built from parts has no address of its own (blob:): its page on a video site,
   // else what the Pako button offers for this page.
-  else if (info.menuItemId === "pako-media" && /^(video|audio)$/.test(info.mediaType || "") && !/^https?:/i.test(info.srcUrl || "")) {
+  else if (isMediaItem(info.menuItemId) && /^(video|audio)$/.test(info.mediaType || "") && !/^https?:/i.test(info.srcUrl || "")) {
     if (tab?.url && isVideoSite(tab.url)) reply = await download(tab.url, "", "", { incognito, storeId, isPrivate });
     else reply = { ok: false, error: "This player doesn't give its video's address. Click the Pako button: Videos on this page, or Record this video." };
   }
   /* full-only:end */
   else if (info.menuItemId === "pako-link") reply = await download(info.linkUrl, referrer, "", { incognito, storeId, isPrivate });
-  else if (info.menuItemId === "pako-media") reply = await download(info.srcUrl, referrer, "", { incognito, storeId, isPrivate });
+  else if (isMediaItem(info.menuItemId)) reply = await download(info.srcUrl, referrer, "", { incognito, storeId, isPrivate });
   else if (info.menuItemId === "pako-page") reply = await download(tab?.url, "", "", { incognito, storeId, isPrivate });
   else if (info.menuItemId === "pako-all" && tab?.id != null) {
     // Pako Light doesn't even read the page's links on a site it leaves alone.
@@ -1368,12 +1447,13 @@ function syncCatch() {
   catchWork = catchWork.then(syncCatchNow, syncCatchNow);
   return catchWork;
 }
-async function syncCatchNow() {
-  const dnr = api.declarativeNetRequest;
-  // Firefox keeps its own way (no question comes before its extensions' downloads.onCreated).
-  if (!dnr?.updateSessionRules || FIREFOX) return;
-  const s = await Promise.resolve(api.storage.local.get({ takeOver: true, pakoHolds: false, pakoAway: false, asksFirst: false, toldAsks: false })).catch(() => null);
-  if (!s) return;
+/** Whether downloads are caught now, as things are: `asks` (this browser asks first), `on` (the
+ *  catch is on: it asks first, the takeover switch is on, Pako's helper answers and answers
+ *  takeovers at once), `links` (download links on pages are caught too, see catchLinks), and the
+ *  browser's tabs. Null when the extension's storage can't be read. */
+async function catchState() {
+  const s = await Promise.resolve(api.storage.local.get({ takeOver: true, pakoHolds: false, pakoAway: false, asksFirst: false, toldAsks: false, catchLinks: true })).catch(() => null);
+  if (!s) return null;
   const tabs = (await Promise.resolve(api.tabs.query({})).catch(() => [])) || [];
   // Pako said so (it knows its browser by its program: `asksFirst` in its answers; kept, so a
   // background page started again keeps the rule before it next talks to Pako), seen asking
@@ -1382,8 +1462,21 @@ async function syncCatchNow() {
   // What this run learnt wins over what was saved (a save the browser refused never lands).
   const away = pakoAwayNow ?? s.pakoAway === true;
   const holds = holdsNow ?? s.pakoHolds === true;
+  const on = asks && s.takeOver !== false && holds && !away;
+  return { asks, away, on, links: on && s.catchLinks !== false, tabs };
+}
+
+async function syncCatchNow() {
+  const dnr = api.declarativeNetRequest;
+  // Firefox keeps its own way (no question comes before its extensions' downloads.onCreated).
+  if (!dnr?.updateSessionRules || FIREFOX) return;
+  const state = await catchState();
+  if (!state) return;
+  const { tabs, away } = state;
   if (away) pingLater();
-  const want = !catchRefused && asks && s.takeOver !== false && holds && !away;
+  // Download links on pages (no rule needed for them: also in a browser that refused the rule).
+  await syncLinks(state.links);
+  const want = !catchRefused && state.on;
   const rule = want ? catchRule(tabs.filter((t) => t?.incognito && Number.isInteger(t.id)).map((t) => t.id)) : null;
   const key = rule ? JSON.stringify(rule) : "";
   if (key === catchApplied) return;
@@ -1604,10 +1697,121 @@ function dropOldAllows() {
     .catch(() => {});
 }
 
+// ---------- download links on pages (browsers that ask first) ----------
+// A page's link made to download (`<a download href="…">`, on the page's own site) starts its
+// download without loading anything in the tab, so the catch rule never sees it, and Vivaldi
+// asks first. While the catch is on and "Catch download links on pages" is on (catchLinks, on
+// by default), a small script of the extension's own is in every web page's top frame
+// (download-links.js): it reads nothing of the page, and only when you click such a link (a
+// real click, Enter on it, or the middle button) and the page didn't handle that click itself,
+// it stops the browser's download and tells the extension the link. The extension hands it to
+// Pako like a caught download; if Pako can't take it, the browser downloads it after all
+// (startAgain). Never in a private window (like the rule: the browser asks, then the file-name
+// step takes it), never on a video site, never a link to another site (the browser loads that as
+// a page, where the rule sees it), nor one built inside the page (blob:, data:). The script is in
+// the browser only while all that is on; a page opened before keeps it until it reloads, and its
+// clicks then go to the browser as usual (the extension says no, the page starts it again).
+
+/** The script's ID in the browser (scripting.registerContentScripts). */
+const LINKS_SCRIPT = "pako-links";
+/** The same link from the same tab within this: a double click, handed once. */
+const LINK_AGAIN = 3000;
+/** Whether the script is registered now (null: not checked since this background page started). */
+let linksApplied = null;
+/** "tab address" → when it was handed last (see LINK_AGAIN). */
+const linksLately = new Map();
+
+/** Puts the link script in the browser, or takes it away. Called by syncCatchNow (one at a time). */
+async function syncLinks(want) {
+  const sc = api.scripting;
+  if (FIREFOX || !sc?.registerContentScripts) return;
+  if (want === linksApplied) return;
+  try {
+    // (Registered scripts outlive the background page, not the browser.)
+    const there = (await sc.getRegisteredContentScripts({ ids: [LINKS_SCRIPT] })).length > 0;
+    if (want && !there) {
+      await sc.registerContentScripts([
+        {
+          id: LINKS_SCRIPT,
+          js: ["download-links.js"],
+          matches: ["http://*/*", "https://*/*"],
+          // ("*.site" is the site and every part of it.)
+          excludeMatches: LIGHT_SKIPS_SITES.map((d) => `*://*.${d}/*`),
+          allFrames: false,
+          runAt: "document_start",
+          persistAcrossSessions: false,
+        },
+      ]);
+    } else if (!want && there) await sc.unregisterContentScripts({ ids: [LINKS_SCRIPT] });
+    linksApplied = want;
+  } catch (e) {
+    console.warn("Pako: the browser didn't take the script for download links:", e?.message || e);
+  }
+}
+
+/** The address without its "#…" (never sent to a server). */
+function withoutHash(url) {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return u.href;
+  } catch {
+    return "";
+  }
+}
+
+/** A download link clicked on a page (download-links.js). `{ taken: true }`: the extension has it
+ *  (Pako, or the browser if Pako can't); `{ taken: false }`: the page lets the browser download
+ *  it as usual. Answered at once: Pako may wait for you in its window. */
+async function linkClicked(msg, sender) {
+  const no = { ok: true, taken: false };
+  const tab = sender?.tab;
+  // Only a normal window's tab (a private window's: the browser's way, like the rule), its top frame.
+  if (FIREFOX || !tab || tab.incognito || sender.frameId !== 0 || !Number.isInteger(tab.id)) return no;
+  const url = withoutHash(msg?.url);
+  const page = withoutHash(sender.url);
+  if (!isWebLink(url) || !isWebLink(page) || url.length > MAX_LINK) return no;
+  // The page's own site only (the browser loads a link to another site as a page: the rule's).
+  if (new URL(url).origin !== new URL(page).origin) return no;
+  if (onSkippedSite(url) || onSkippedSite(page)) return no;
+  // Switched off, or Pako away, since the page got its script.
+  if (!(await catchState())?.links) return no;
+  const now = Date.now();
+  for (const [k, at] of linksLately) if (now - at > LINK_AGAIN || linksLately.size > 50) linksLately.delete(k);
+  const key = `${tab.id} ${url}`;
+  if (linksLately.has(key)) return { ok: true, taken: true };
+  // Pako just couldn't get it (and the browser got it again, or couldn't): clicked once more, the
+  // page's own download, as the browser makes it (with the page's own way to the file: its
+  // service worker, its login), never Pako's again, or the link could never be downloaded.
+  if (restarted.has(url)) return no;
+  linksLately.set(key, now);
+  const name = baseName(typeof msg.filename === "string" ? msg.filename : "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, 255);
+  const referrer = msg.noReferrer === true ? "" : page;
+  // No reload for an update until Pako (or the browser) has it.
+  inFlight++;
+  handLink(url, referrer, name)
+    .catch((e) => console.warn("Pako:", e?.message || e))
+    .finally(() => inFlight--);
+  return { ok: true, taken: true };
+}
+
+/** Pako gets a clicked download link, like a caught download (its size isn't known yet). If Pako
+ *  can't, the browser downloads it after all (marked, so it isn't taken again), with the "!". */
+async function handLink(url, referrer, name) {
+  const { takeOver: on } = await settings();
+  let reply = { ok: false };
+  if (on !== false) reply = await handOver(url, referrer, name, { totalBytes: 0, mime: "", hold: true, isPrivate: false });
+  if (!reply.ok) await startAgain(url, name, undefined, reply, false);
+}
+
 api.webRequest?.onBeforeRedirect?.addListener(onCaught, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] });
-// The takeover switch (the toolbar window sets it), and a new private tab (never caught).
+// The takeover switch and "Catch download links on pages" (the toolbar window sets them), and a
+// new private tab (never caught).
 api.storage.onChanged?.addListener((changes, area) => {
-  if (area === "local" && changes && "takeOver" in changes) syncCatch();
+  if (area === "local" && changes && ("takeOver" in changes || "catchLinks" in changes)) syncCatch();
 });
 api.tabs.onCreated?.addListener((t) => {
   if (t?.incognito) syncCatch();
@@ -1629,6 +1833,7 @@ function forgetTab(tabId) {
   Promise.resolve(api.storage.session?.remove(caughtKey(tabId))).catch(() => {});
   Promise.resolve(api.storage.session?.remove(postKey(tabId))).catch(() => {});
   forgetPill(tabId);
+  cancelAheadIn(tabId);
 }
 api.tabs.onRemoved?.addListener((tabId) => {
   forgetTab(tabId);
@@ -2007,9 +2212,21 @@ function onMessage(msg, sender, respond) {
     /* full-only:start */
     // From the Download button on a video player (only from a page in a tab).
     else if (msg?.type === "video" && sender?.tab && !LIGHT) {
+      // The pick wins over the menu closing: its read ahead is never cancelled now.
+      pickedAhead(sender.tab.id, msg.url);
       const reply = await sendVideo(msg.url, msg.quality, { incognito: !!sender.tab.incognito, storeId: sender.tab.cookieStoreId });
       if (!reply.ok && reply.error) flag(reply.error, reply.detail, !!sender.tab.incognito);
       respond(reply);
+    }
+    // The same button's quality menu opened: answered at once (the pill never waits for it).
+    else if (msg?.type === "video-prepare" && sender?.tab && !LIGHT) {
+      respond({ ok: true });
+      await prepareVideo(msg.url, { tabId: sender.tab.id, incognito: !!sender.tab.incognito, storeId: sender.tab.cookieStoreId }).catch(() => {});
+    }
+    // That menu closed without a pick: Pako stops the read at once (answered at once too).
+    else if (msg?.type === "video-prepare-cancel" && sender?.tab && !LIGHT) {
+      respond({ ok: true });
+      await cancelAhead(aheadKey(sender.tab.id, msg.url));
     }
     // The toolbar window's "Videos on this page" (never from a page in a tab).
     else if (msg?.type === "videos" && !sender?.tab && !LIGHT) respond(await videosOf(Number(msg.tabId)));
@@ -2027,6 +2244,11 @@ function onMessage(msg, sender, respond) {
     else if (msg?.type === "pill-record" && sender?.tab && !LIGHT) respond(await recordFromPill(sender.tab.id));
     // The extension's own sent page, in a tab: go back, or stay (see sentPageAnswer).
     else if (msg?.type === "sent-page" && sender?.tab && sender.id === api.runtime.id && isSentPage(sender.url) && !LIGHT) respond(await sentPageAnswer(sender.tab.id));
+    // A download link clicked on a page (download-links.js, only from a page in a tab).
+    else if (msg?.type === "link-download" && sender?.tab && !LIGHT) respond(await linkClicked(msg, sender));
+    // The toolbar window: does this browser ask before downloads (then it shows "Catch download
+    // links on pages")?
+    else if (msg?.type === "asks-first" && !sender?.tab && !LIGHT) respond({ ok: true, asks: !FIREFOX && !!api.declarativeNetRequest?.updateSessionRules && !!(await catchState())?.asks });
     /* full-only:end */
     else respond({ ok: false, error: "Pako's extension didn't understand this request.", detail: String(msg?.type || "") });
   })().catch((e) => {

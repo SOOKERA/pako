@@ -412,19 +412,171 @@ pub fn command_starts(command: &str, exe: &Path) -> bool {
     command.trim().to_lowercase().starts_with(&quoted)
 }
 
-/// Can `p` be this browser's program? One of its file names, and for Opera not Opera GX's
-/// (both are started by a `launcher.exe`).
+/// Can `p` be this browser's program? One of its file names, and for Opera and Opera GX (both
+/// started by a `launcher.exe`) the right one: Opera GX's is in a folder named "Opera GX".
+#[cfg(test)]
 fn fits(b: &Known, p: &Path) -> bool {
-    let named = p.file_name().is_some_and(|n| b.files.iter().any(|f| n.to_string_lossy().eq_ignore_ascii_case(f)));
-    let in_gx = p.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("Opera GX"));
-    named && !(b.id == "opera" && in_gx)
+    fits_as(b, p, in_opera_gx(p))
 }
 
-/// Where a browser's program is: Windows' "App Paths" list first, then the usual folders.
-fn find_exe(b: &Known) -> Option<PathBuf> {
+fn in_opera_gx(p: &Path) -> bool {
+    p.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("Opera GX"))
+}
+
+/// `fits`, with whether `p` is known to be Opera GX's (`gx`).
+fn fits_as(b: &Known, p: &Path, gx: bool) -> bool {
+    let named = p.file_name().is_some_and(|n| b.files.iter().any(|f| n.to_string_lossy().eq_ignore_ascii_case(f)));
+    named
+        && match b.id {
+            "opera" => !gx,
+            "operagx" => gx,
+            _ => true,
+        }
+}
+
+/// Can a browser Windows lists (its key `name` under StartMenuInternet, its program `p`) be this
+/// one? As `fits`; Opera GX is also known by its key ("Opera GXStable"), wherever it was put.
+#[cfg(test)]
+fn fits_registered(b: &Known, name: &str, p: &Path) -> bool {
+    fits_as(b, p, in_opera_gx(p) || key_is_opera_gx(name))
+}
+
+fn key_is_opera_gx(name: &str) -> bool {
+    name.replace(' ', "").to_ascii_lowercase().contains("operagx")
+}
+
+/// Is `p` Opera GX's: in a folder named "Opera GX", or in (or below) the folder of a program
+/// Windows lists under an Opera GX key. Opera GX put in another folder ("D:\Games\OGX") can also
+/// be what Windows' "App Paths" entry for opera.exe names: without this, it was listed as Opera
+/// too.
+fn is_opera_gx(p: &Path, registered: &[(String, PathBuf)]) -> bool {
+    in_opera_gx(p) || registered.iter().any(|(name, q)| key_is_opera_gx(name) && q.parent().is_some_and(|dir| under(p, dir)))
+}
+
+/// Is `p` below `dir` (never a drive's own folder: too wide)? Windows ignores case.
+fn under(p: &Path, dir: &Path) -> bool {
+    let parts = |x: &Path| x.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect::<Vec<_>>();
+    let (p, d) = (parts(p), parts(dir));
+    d.len() >= 3 && p.len() > d.len() && p[..d.len()] == d[..]
+}
+
+/// The program a registered command starts: `"C:\…\launcher.exe" --single-argument %1` gives
+/// `C:\…\launcher.exe`. Unquoted, a path with spaces ends at its ".exe". `%Name%` is replaced by
+/// what `env` has for it (left as it is when nothing).
+fn command_exe(command: &str, env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let c = expand_env(command.trim(), env);
+    let c = c.trim();
+    let path = if let Some(rest) = c.strip_prefix('"') {
+        rest.split('"').next().unwrap_or_default()
+    } else {
+        let lower = c.to_ascii_lowercase(); // the same byte positions as `c`
+        let mut from = 0;
+        let mut end = None;
+        while let Some(i) = lower[from..].find(".exe") {
+            let j = from + i + 4;
+            if c[j..].chars().next().is_none_or(char::is_whitespace) {
+                end = Some(j);
+                break;
+            }
+            from = j;
+        }
+        match end {
+            Some(j) => &c[..j],
+            None => c.split_whitespace().next().unwrap_or_default(),
+        }
+    };
+    let path = path.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// `%Name%` replaced by `env(Name)`; unknown names (and a lone `%`, as in `%1`) stay as they are.
+fn expand_env(s: &str, env: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let value = after
+            .find('%')
+            .filter(|&j| j > 0 && !after[..j].contains(char::is_whitespace))
+            .and_then(|j| env(&after[..j]).map(|v| (j, v)));
+        match value {
+            Some((j, v)) => {
+                out.push_str(&v);
+                rest = &after[j + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The names of a registry key's subkeys (`view`: KEY_WOW64_32KEY for the 32-bit one, or 0).
+fn reg_subkeys(root: windows_sys::Win32::System::Registry::HKEY, key: &str, view: u32) -> Vec<String> {
+    use windows_sys::Win32::System::Registry::{HKEY, KEY_READ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW};
+    let k = wide(key);
+    let mut h: HKEY = std::ptr::null_mut();
+    // SAFETY: NUL-terminated key name; `h` receives the opened key, closed below.
+    if unsafe { RegOpenKeyExW(root, k.as_ptr(), 0, KEY_READ | view, &mut h) } != 0 {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    // A key name is at most 255 characters; no PC has hundreds of browsers.
+    for i in 0..512 {
+        let mut buf = [0u16; 256];
+        let mut len = buf.len() as u32;
+        // SAFETY: `h` is open; the buffer and its length in characters match; the rest is optional.
+        let r = unsafe {
+            RegEnumKeyExW(
+                h,
+                i,
+                buf.as_mut_ptr(),
+                &mut len,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if r != 0 {
+            break;
+        }
+        names.push(String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())]));
+    }
+    // SAFETY: opened above, closed once.
+    unsafe { RegCloseKey(h) };
+    names
+}
+
+/// The browsers Windows lists (Settings › Apps › Default apps), for this user and for the PC:
+/// each one's key name and program, from
+/// `SOFTWARE\Clients\StartMenuInternet\<name>\shell\open\command`. They find a browser installed
+/// outside its usual folders (on another drive, for example).
+fn registered_browsers() -> Vec<(String, PathBuf)> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, RRF_SUBKEY_WOW6432KEY};
+    const KEY: &str = r"SOFTWARE\Clients\StartMenuInternet";
+    let mut out = Vec::new();
+    for (root, view, flags) in [(HKEY_CURRENT_USER, 0, 0), (HKEY_LOCAL_MACHINE, 0, 0), (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, RRF_SUBKEY_WOW6432KEY)] {
+        for name in reg_subkeys(root, KEY, view) {
+            let command = reg_get_value(root, &format!(r"{KEY}\{name}\shell\open\command"), None, flags);
+            if let Some(exe) = command.and_then(|c| command_exe(&c, |v| std::env::var(v).ok())) {
+                out.push((name, exe));
+            }
+        }
+    }
+    out
+}
+
+/// Where a browser's program is: Windows' "App Paths" list first, then the browsers Windows
+/// lists (`registered`), then the usual folders.
+fn find_exe(b: &Known, registered: &[(String, PathBuf)]) -> Option<PathBuf> {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY};
     let key = b.app_path.map(|exe| format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe}"));
-    let registered = [(HKEY_CURRENT_USER, 0), (HKEY_LOCAL_MACHINE, 0), (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY)]
+    let app_paths = [(HKEY_CURRENT_USER, 0), (HKEY_LOCAL_MACHINE, 0), (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY)]
         .into_iter()
         .filter_map(|(root, flags)| reg_get(root, key.as_deref()?, flags))
         .map(PathBuf::from);
@@ -433,14 +585,32 @@ fn find_exe(b: &Known) -> Option<PathBuf> {
         .iter()
         .filter_map(|(env, sub)| std::env::var_os(env).map(|d| PathBuf::from(d).join(sub)))
         .flat_map(|dir| b.files.iter().map(move |f| dir.join(f)));
-    registered.chain(usual).find(|p| p.is_file() && fits(b, p))
+    pick_exe(b, app_paths, registered, usual, |p| p.is_file())
+}
+
+/// `find_exe` once the places are read: the first that is this browser's program and is there
+/// (`exists`), from App Paths, then the browsers Windows lists, then the usual folders.
+fn pick_exe(
+    b: &Known,
+    app_paths: impl IntoIterator<Item = PathBuf>,
+    registered: &[(String, PathBuf)],
+    usual: impl IntoIterator<Item = PathBuf>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let fits_here = |p: &PathBuf| fits_as(b, p, is_opera_gx(p, registered));
+    let listed = registered
+        .iter()
+        .filter(|(name, p)| fits_as(b, p, is_opera_gx(p, registered) || key_is_opera_gx(name)))
+        .map(|(_, p)| p.clone());
+    app_paths.into_iter().filter(fits_here).chain(listed).chain(usual.into_iter().filter(fits_here)).find(|p| exists(p))
 }
 
 /// The browsers installed on this PC, in a fixed order.
 pub fn installed_browsers() -> Vec<Browser> {
+    let registered = registered_browsers();
     BROWSERS
         .iter()
-        .filter_map(|b| find_exe(b).map(|exe| Browser { id: b.id, name: b.name, family: b.family, exe }))
+        .filter_map(|b| find_exe(b, &registered).map(|exe| Browser { id: b.id, name: b.name, family: b.family, exe }))
         .collect()
 }
 
@@ -813,5 +983,92 @@ mod tests {
             assert!(!fits(known("firefox"), &p(&format!(r"C:\Program Files\{folder}\{exe}"))), "{id}");
         }
         assert!(fits(known("zen"), &p(r"C:\Users\me\AppData\Local\Zen Twilight\zen.exe")));
+    }
+
+    #[test]
+    fn registered_browser_commands() {
+        let env = |v: &str| match v.to_ascii_lowercase().as_str() {
+            "programfiles" => Some(r"C:\Program Files".to_string()),
+            "localappdata" => Some(r"C:\Users\me\AppData\Local".to_string()),
+            _ => None,
+        };
+        let exe = |c: &str| command_exe(c, env).map(|p| p.to_string_lossy().into_owned());
+        let s = |x: &str| Some(x.to_string());
+        // Quoted, with arguments or without.
+        assert_eq!(
+            exe(r#""C:\Program Files\Google\Chrome\Application\chrome.exe" --single-argument %1"#),
+            s(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        );
+        assert_eq!(exe(r#""D:\Opera GX\launcher.exe""#), s(r"D:\Opera GX\launcher.exe"));
+        assert_eq!(exe(r#"  "D:\Opera GX\launcher.exe"  "#), s(r"D:\Opera GX\launcher.exe"));
+        // Not quoted, with spaces: up to ".exe".
+        assert_eq!(exe(r#"C:\Program Files\Mozilla Firefox\firefox.exe -osint -url "%1""#), s(r"C:\Program Files\Mozilla Firefox\firefox.exe"));
+        assert_eq!(exe(r"D:\My Apps\Opera GX\LAUNCHER.EXE"), s(r"D:\My Apps\Opera GX\LAUNCHER.EXE"));
+        assert_eq!(exe(r"C:\Apps\Waterfox.exe.d\waterfox.exe --new"), s(r"C:\Apps\Waterfox.exe.d\waterfox.exe"));
+        assert_eq!(exe(r"C:\Browsers\zen"), s(r"C:\Browsers\zen"));
+        // Environment variables, quoted or not; one Pako doesn't know stays as it is.
+        assert_eq!(exe(r"%ProgramFiles%\Waterfox\waterfox.exe"), s(r"C:\Program Files\Waterfox\waterfox.exe"));
+        assert_eq!(
+            exe(r#""%LOCALAPPDATA%\Programs\Opera GX\launcher.exe" --single-argument %1"#),
+            s(r"C:\Users\me\AppData\Local\Programs\Opera GX\launcher.exe")
+        );
+        assert_eq!(exe(r#"%NOPE%\x.exe "%1""#), s(r"%NOPE%\x.exe"));
+        assert_eq!(expand_env("100% sure %1 %", env), "100% sure %1 %");
+        assert_eq!(expand_env("%ProgramFiles%%LOCALAPPDATA%", env), r"C:\Program FilesC:\Users\me\AppData\Local");
+        // Nothing to start.
+        assert_eq!(exe(""), None);
+        assert_eq!(exe("   "), None);
+        assert_eq!(exe(r#""""#), None);
+    }
+
+    #[test]
+    fn registered_browsers_found_by_their_program() {
+        let which = |name: &str, path: &str| -> Vec<&str> {
+            let exe = command_exe(&format!("\"{path}\" --single-argument %1"), |_| None).unwrap();
+            BROWSERS.iter().filter(|b| fits_registered(b, name, &exe)).map(|b| b.id).collect()
+        };
+        // Opera GX on another drive is Opera GX, not Opera: by its folder, or by its key.
+        assert_eq!(which("Opera GXStable", r"D:\Opera GX\launcher.exe"), ["operagx"]);
+        assert_eq!(which("OperaStable", r"D:\Opera GX\launcher.exe"), ["operagx"]);
+        assert_eq!(which("Opera GXStable", r"D:\Games\OGX\launcher.exe"), ["operagx"]);
+        assert_eq!(which("OperaStable", r"D:\Browsers\Opera\launcher.exe"), ["opera"]);
+        // The others by their program's name; Firefox's forks aren't Firefox.
+        assert_eq!(which("FIREFOX.EXE", r"E:\Mozilla Firefox\firefox.exe"), ["firefox"]);
+        assert_eq!(which("LibreWolf", r"E:\Tools\LibreWolf\librewolf.exe"), ["librewolf"]);
+        assert_eq!(which("Zen", r"E:\Zen Browser\zen.exe"), ["zen"]);
+        assert_eq!(which("Google Chrome", r"E:\Chrome\Application\chrome.exe"), ["chrome"]);
+        assert_eq!(which("Vivaldi.ABC", r"E:\Vivaldi\Application\vivaldi.exe"), ["vivaldi"]);
+        assert!(which("IEXPLORE.EXE", r"C:\Program Files\Internet Explorer\iexplore.exe").is_empty());
+        // fits() itself now tells Opera GX's launcher from Opera's too.
+        assert!(!fits(known("operagx"), &PathBuf::from(r"C:\Users\me\AppData\Local\Programs\Opera\launcher.exe")));
+        // Edge is listed under "Microsoft Edge".
+        assert_eq!(which("Microsoft Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"), ["edge"]);
+    }
+
+    #[test]
+    fn opera_gx_in_its_own_folder_is_never_listed_as_opera() {
+        let p = |s: &str| PathBuf::from(s);
+        // Opera GX put in D:\Games\OGX; Windows' App Paths entry for opera.exe names its program.
+        let registered = vec![("Opera GXStable".to_string(), p(r"D:\Games\OGX\launcher.exe"))];
+        let app_paths = [p(r"D:\Games\OGX\opera.exe")];
+        let there = |_: &Path| true;
+        let none: [PathBuf; 0] = [];
+        assert_eq!(pick_exe(known("opera"), app_paths.clone(), &registered, none.clone(), there), None);
+        assert_eq!(pick_exe(known("operagx"), app_paths.clone(), &registered, none.clone(), there), Some(p(r"D:\Games\OGX\launcher.exe")));
+        // A version folder below it too (Opera keeps its opera.exe there).
+        let deeper = [p(r"d:\games\ogx\120.0.5543.61\opera.exe")];
+        assert_eq!(pick_exe(known("opera"), deeper, &registered, none.clone(), there), None);
+        // Opera itself, next to it, is still Opera.
+        let both = vec![registered[0].clone(), ("OperaStable".to_string(), p(r"D:\Games\Opera\launcher.exe"))];
+        assert_eq!(pick_exe(known("opera"), app_paths.clone(), &both, none.clone(), there), Some(p(r"D:\Games\Opera\launcher.exe")));
+        // A GX program at a drive's own folder doesn't make the whole drive Opera GX.
+        let at_root = vec![("Opera GXStable".to_string(), p(r"D:\launcher.exe"))];
+        assert_eq!(pick_exe(known("opera"), [p(r"D:\Opera\opera.exe")], &at_root, none.clone(), there), Some(p(r"D:\Opera\opera.exe")));
+        // A listed program that isn't there is skipped; the usual folder is next.
+        let gone = |q: &Path| !q.starts_with(r"D:\Games");
+        assert_eq!(
+            pick_exe(known("operagx"), none.clone(), &registered, [p(r"C:\Users\me\AppData\Local\Programs\Opera GX\launcher.exe")], gone),
+            Some(p(r"C:\Users\me\AppData\Local\Programs\Opera GX\launcher.exe"))
+        );
     }
 }
