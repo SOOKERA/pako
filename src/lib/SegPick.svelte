@@ -68,7 +68,8 @@
     display: inline-flex;
     gap: 2px;
     padding: 2px;
-    border: 1px solid var(--line-strong);
+    /* the same edge as a button, so the switcher reads as one control on any card */
+    border: 1px solid var(--btn-line);
     border-radius: var(--radius);
     background: var(--panel);
     justify-self: start;
@@ -85,7 +86,6 @@
   /* Light: a white marker with a soft shadow on a grey track. */
   :global(:root[data-theme="light"]) .seg {
     background: var(--raise);
-    border-color: var(--line);
   }
   :global(:root[data-theme="light"]) .thumb {
     background: var(--bg);

@@ -448,9 +448,9 @@
     gap: 6px;
     height: 28px;
     padding: 0 11px;
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--btn-line);
     border-radius: 14px;
-    background: var(--panel);
+    background: var(--btn);
     color: var(--text-2);
     font-size: 12px;
     transition:
@@ -463,7 +463,7 @@
     color: var(--accent-strong);
   }
   .chip:hover {
-    background: var(--raise-hover);
+    background: var(--btn-hover);
     color: var(--text);
   }
   .chip:active {

@@ -1,5 +1,11 @@
 # What's new
 
+## 1.2.10
+
+### Fixed
+
+- Buttons such as **Check for updates** now stand out clearly from the panels they sit on, in both looks.
+
 ## 1.2.9
 
 ### Fixed

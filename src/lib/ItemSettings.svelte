@@ -142,9 +142,10 @@
     align-items: center;
     gap: 8px;
     padding: 0 10px;
-    border: 1px solid var(--line);
+    /* a field you pick a folder in: the same edge as the other fields */
+    border: 1px solid var(--control);
     border-radius: var(--radius);
-    background: var(--bar);
+    background: var(--field);
     color: var(--text);
     text-align: left;
     transition:
@@ -152,10 +153,11 @@
       background var(--fast) ease;
   }
   .folder:hover:not(:disabled) {
-    border-color: var(--line-strong);
+    border-color: var(--control-hover);
     background: var(--raise);
   }
   .folder:disabled {
+    border-color: var(--line-strong);
     cursor: default;
     color: var(--text-2);
   }
@@ -185,7 +187,7 @@
     padding: 2px;
     border-radius: var(--radius);
     background: var(--bar);
-    border: 1px solid var(--line);
+    border: 1px solid var(--btn-line);
   }
   .seg button {
     height: 28px;

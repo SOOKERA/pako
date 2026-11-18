@@ -28,6 +28,15 @@
   /* hover on raised things (buttons, cards) and the picked option of a switcher */
   --raise-hover: #22262d;
   --active: #262c35;
+  /* buttons: their own fill, a step lighter than any card they sit on, and an edge of 3:1 or
+     more on the page, the panels and the cards */
+  --btn: #20242a;
+  --btn-hover: #292e36;
+  --btn-line: #3a404a;
+  /* the Downloads toolbar group, like the buttons */
+  --seg-fill: var(--btn);
+  --seg-hover: var(--btn-hover);
+  --seg-line: var(--btn-line);
   /* edges of things you type in or tick (fields, tick boxes, switches): 3:1 or more on every surface */
   --control: #737b88;
   --control-hover: #9299a5;
@@ -174,6 +183,13 @@
   --head: #f9fafb;
   --raise-hover: #e5e9ef;
   --active: #e2e7ee;
+  --btn: #ffffff;
+  --btn-hover: #f1f4f8;
+  --btn-line: #828b9b;
+  /* the Downloads toolbar group: in light, like the buttons */
+  --seg-fill: var(--btn);
+  --seg-hover: var(--btn-hover);
+  --seg-line: var(--btn-line);
   --control: #7a8394;
   --control-hover: #5d6677;
   --track: #dce1ea;
@@ -358,9 +374,11 @@ textarea {
   height: 32px;
   padding: 0 12px;
   border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: var(--raise);
-  color: var(--text-2);
+  /* Its own fill and edge, so it reads as a button on any card (cards use --raise). */
+  border: 1px solid var(--btn-line);
+  background: var(--btn);
+  color: var(--text);
+  font-weight: 500;
   white-space: nowrap;
   transition:
     background var(--fast) ease,
@@ -370,7 +388,7 @@ textarea {
     opacity var(--fast) ease;
 }
 .btn:hover:not(:disabled) {
-  background: var(--raise-hover);
+  background: var(--btn-hover);
   color: var(--text);
 }
 .btn:active:not(:disabled) {
@@ -389,6 +407,10 @@ textarea {
 .btn.primary:hover:not(:disabled) {
   background: var(--accent-hover);
   color: var(--accent-ink);
+}
+/* Light: coral alone is under 3:1 on white, so its edge takes the darker coral (as ticks do). */
+:root[data-theme="light"] .btn.primary:not(:disabled) {
+  border-color: var(--accent-strong);
 }
 /* Not ready yet: plain grey, not a washed-out red. */
 .btn.primary:disabled,

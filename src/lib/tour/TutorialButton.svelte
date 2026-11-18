@@ -31,7 +31,7 @@
     gap: 5px;
     height: 24px;
     padding: 0 8px;
-    border: 1px solid var(--line);
+    border: 1px solid var(--btn-line);
     border-radius: 12px;
     background: transparent;
     color: var(--text-3);
@@ -44,8 +44,7 @@
       transform var(--fast) var(--ease);
   }
   .tut:hover {
-    background: var(--raise);
-    border-color: var(--line-strong);
+    background: var(--btn-hover);
     color: var(--text);
   }
   .tut:active {

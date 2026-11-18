@@ -278,7 +278,7 @@
     display: inline-flex;
     align-items: center;
     height: 22px;
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--btn-line);
     border-radius: var(--radius);
     overflow: hidden;
   }
@@ -289,14 +289,14 @@
     place-items: center;
     padding: 0;
     border: none;
-    background: var(--raise);
+    background: var(--btn);
     color: var(--text);
     transition:
       background var(--fast) ease,
       transform var(--fast) var(--ease);
   }
   .stepper button:hover:not(:disabled) {
-    background: var(--active);
+    background: var(--btn-hover);
   }
   .stepper button:active:not(:disabled) {
     transform: scale(0.85);
@@ -310,8 +310,8 @@
     align-items: center;
     gap: 6px;
     padding: 0 8px;
-    border-left: 1px solid var(--line-strong);
-    border-right: 1px solid var(--line-strong);
+    border-left: 1px solid var(--btn-line);
+    border-right: 1px solid var(--btn-line);
     height: 100%;
   }
   .slots {

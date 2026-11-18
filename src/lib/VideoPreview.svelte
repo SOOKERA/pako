@@ -193,7 +193,7 @@
     padding: 2px;
     border-radius: var(--radius);
     background: var(--bar);
-    border: 1px solid var(--line);
+    border: 1px solid var(--btn-line);
   }
   .seg button {
     height: 26px;

@@ -828,10 +828,12 @@
   .spacer {
     flex: 1;
   }
+  /* The toolbar group: the button colours (--seg-* in app.css, with the old soft look as fallback);
+     in dark an in-between of the old soft look and a clear edge, as the user asked. */
   .seg {
     flex: none;
     display: flex;
-    border: 1px solid var(--line);
+    border: 1px solid var(--seg-line, var(--line));
     border-radius: var(--radius);
     overflow: hidden;
   }
@@ -842,8 +844,8 @@
     gap: 6px;
     padding: 0 12px;
     border: none;
-    border-right: 1px solid var(--line);
-    background: var(--raise);
+    border-right: 1px solid var(--seg-line, var(--line));
+    background: var(--seg-fill, var(--raise));
     color: var(--text-2);
     white-space: nowrap;
     transition:
@@ -854,7 +856,7 @@
     border-right: none;
   }
   .seg button:hover:not(:disabled) {
-    background: var(--raise-hover);
+    background: var(--seg-hover, var(--raise-hover));
     color: var(--text);
   }
   .seg button:active:not(:disabled) :global(svg) {
