@@ -8,13 +8,14 @@
   import { untrack } from "svelte";
   import { open as pick } from "@tauri-apps/plugin-dialog";
   import { app } from "./state.svelte";
-  import { api, inApp, type DirectHistory, type DirectTransfer } from "./api";
+  import { api, inApp, type DirectHistory, type DirectItem, type DirectTransfer } from "./api";
   import { devices, devicesApi, dropOnDevice, onLan, sendToDevice, type Device, type DevicesState } from "./devices.svelte";
-  import { ago, pathLabel, percent } from "./direct";
+  import { ago, hasList, itemsCount, pathLabel, percent } from "./direct";
   import { bytes, shortDate, speed } from "./format";
   import Icon from "./Icon.svelte";
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
+  import TransferItems from "./TransferItems.svelte";
   import Modal from "./Modal.svelte";
   import SegPick from "./SegPick.svelte";
   import DeviceLinks from "./DeviceLinks.svelte";
@@ -79,6 +80,12 @@
     if (t.state === "checking") return "Checking the files…";
     if (t.state === "waiting") return `Waiting for ${x.name} to continue · ${percent(t.done, t.size)}% done`;
     return `${percent(t.done, t.size)}% · ${bytes(t.done)} of ${bytes(t.size)}`;
+  }
+  /** Cards unfolded (what was in them shown). */
+  let unfolded = $state<Record<string, boolean>>({});
+  /** One file or folder of a received transfer (a program or script is shown in its folder). */
+  async function openPart(id: string, part: number, reveal: boolean) {
+    if (await api.directOpen(id, reveal, part)) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
   }
   async function openReceived(id: string) {
     if (await api.directOpen(id, false)) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
@@ -165,6 +172,27 @@
   }
 </script>
 
+<!-- A card's chevron, and what was in it unfolded (as in Direct). -->
+{#snippet chev(key: string, name: string)}
+  <button
+    class="chev"
+    class:open={unfolded[key]}
+    aria-expanded={!!unfolded[key]}
+    aria-controls="items-{key}"
+    aria-label={unfolded[key] ? `Hide what was in ${name}` : `Show what was in ${name}`}
+    title={unfolded[key] ? "Hide the files" : "Show the files"}
+    onclick={() => (unfolded[key] = !unfolded[key])}><Icon name="chevron" size={12} stroke={2.4} /></button
+  >
+{/snippet}
+
+{#snippet fold(key: string, items: DirectItem[] | undefined, more: number | undefined, openId: string | null)}
+  {#if unfolded[key] && items?.length}
+    <div class="mlist" transition:rowSlide={{ duration: 220 }}>
+      <TransferItems {items} more={more ?? 0} id="items-{key}" open={openId ? (i, reveal) => app.run(() => openPart(openId, i, reveal)) : null} />
+    </div>
+  {/if}
+{/snippet}
+
 <section class="pane card" role="presentation" data-tour="devices-pane" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping}
     <div class="dropzone" aria-hidden="true" transition:fadeIn={{ duration: 120 }}>
@@ -213,8 +241,8 @@
               {@const h = r.h}
               <div class="msg" class:out={h.outgoing} class:bad={h.result !== "done"} in:pop={{ duration: 240, from: 0.98, y: 8, origin: h.outgoing ? "right bottom" : "left bottom" }}>
                 <div class="bubble">
-                  <div class="mtop"><FileIcon name={h.name} kind={h.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={h.name} class="mname" /></div>
-                  <div class="mmeta">{plural(h.files, "file")} · {bytes(h.size)}{#if h.relayTo}{` · for ${h.relayTo}`}{/if}</div>
+                  <div class="mtop"><FileIcon name={h.name} kind={h.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={h.name} class="mname" />{#if hasList(h.items, h.more)}{@render chev(`i:${h.outgoing ? "o" : "i"}:${h.id}`, h.name)}{/if}</div>
+                  <div class="mmeta">{itemsCount(h.files, h.items, h.more)} · {bytes(h.size)}{#if h.relayTo}{` · for ${h.relayTo}`}{/if}</div>
                   <div class="mfoot">
                     <span class="res" class:ok={h.result === "done"}>{resultText(h)}</span>
                     <span class="dim">{shortDate(h.date)}{#if h.path}{" · " + pathLabel(h.path)}{/if}</span>
@@ -225,19 +253,21 @@
                       </span>
                     {/if}
                   </div>
+                  {@render fold(`i:${h.outgoing ? "o" : "i"}:${h.id}`, h.items, h.more, !h.outgoing && h.result === "done" && h.savedTo ? h.id : null)}
                 </div>
               </div>
             {:else}
               {@const t = r.t}
               <div class="msg live" class:out={t.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: t.outgoing ? "right bottom" : "left bottom" }}>
                 <div class="bubble">
-                  <div class="mtop"><FileIcon name={t.name} kind={t.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={t.name} class="mname" /></div>
-                  <div class="mmeta">{plural(t.files, "file")} · {bytes(t.size)}{#if t.relayTo}{` · for ${t.relayTo}`}{/if}</div>
+                  <div class="mtop"><FileIcon name={t.name} kind={t.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={t.name} class="mname" />{#if hasList(t.items, t.more)}{@render chev(`i:${t.outgoing ? "o" : "i"}:${t.id}`, t.name)}{/if}</div>
+                  <div class="mmeta">{itemsCount(t.files, t.items, t.more)} · {bytes(t.size)}{#if t.relayTo}{` · for ${t.relayTo}`}{/if}</div>
                   <div class="bar" class:waiting={t.state === "waiting"}><i style:transform="scaleX({Math.min(1, t.done / Math.max(1, t.size))})"></i></div>
                   <div class="mfoot">
                     <span class="dim">{movingText(t)}{#if t.state === "sending" || t.state === "receiving"}{" · " + speed(speedOf(t))}{/if}{#if t.path}{" · " + pathLabel(t.path)}{/if}</span>
                     <button class="link end" onclick={() => app.run(() => api.directCancel(t.id))}>Cancel</button>
                   </div>
+                  {@render fold(`i:${t.outgoing ? "o" : "i"}:${t.id}`, t.items, t.more, null)}
                 </div>
               </div>
             {/if}
@@ -525,6 +555,47 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
+  }
+  .bubble {
+    --ti-hover: var(--active);
+    --ti-meta: var(--bubble-meta);
+  }
+  .chev {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    margin: -2px -4px -2px 0;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius);
+    background: none;
+    color: var(--bubble-meta);
+    cursor: pointer;
+    transition:
+      background var(--fast) ease,
+      color var(--fast) ease;
+  }
+  .chev:hover {
+    background: var(--active);
+    color: var(--text);
+  }
+  .chev :global(svg) {
+    transition: transform var(--mid) var(--ease);
+  }
+  .chev.open :global(svg) {
+    transform: rotate(180deg);
+  }
+  /* What was in it, unfolded under the card's foot. */
+  .mlist {
+    margin: 8px -4px 0 18px;
+    padding-top: 6px;
+    border-top: 1px solid var(--bubble-line);
+  }
+  .mlist :global(.tis) {
+    max-height: 240px;
+    overflow-y: auto;
   }
   .mtop :global(.mname) {
     font-weight: 500;

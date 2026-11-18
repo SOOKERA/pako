@@ -19,12 +19,13 @@
   // Direct › details panel (Ctrl+I, like Downloads): the picked contact's connection, what went
   // between you (all time, from the Dashboard's numbers), speeds, and their settings.
   import { app } from "./state.svelte";
-  import { api, type ContactNumbers, type DirectCheck, type DirectContact, type DirectTransfer } from "./api";
+  import { api, type ContactNumbers, type DirectCheck, type DirectContact, type DirectItem, type DirectTransfer } from "./api";
   import { bytes, shortDate, speed } from "./format";
   import Icon from "./Icon.svelte";
   import SegPick from "./SegPick.svelte";
-  import { rowSlide } from "./motion";
-  import { isLocal, pathLabel } from "./direct";
+  import TransferItems from "./TransferItems.svelte";
+  import { fadeIn, rowSlide } from "./motion";
+  import { isLocal, itemsCount, pathLabel } from "./direct";
   import { quintOut } from "svelte/easing";
   import type { TransitionConfig } from "svelte/transition";
 
@@ -34,6 +35,9 @@
     moving,
     speedOf,
     historyCount,
+    transfer = null,
+    onopen,
+    onletgo,
     ontags,
     onfolder,
   }: {
@@ -45,6 +49,11 @@
     speedOf: (t: DirectTransfer) => number;
     /** Changes when a transfer with them ends (the numbers are read again). */
     historyCount: number;
+    /** The card picked in the conversation: what was in it (`openId`: received, opens). */
+    transfer?: { name: string; outgoing: boolean; files: number; size: number; items: DirectItem[]; more: number; openId: string | null } | null;
+    onopen?: (id: string, part: number, reveal: boolean) => void;
+    /** Back to the contact's details. */
+    onletgo?: () => void;
     ontags: () => void;
     onfolder: () => void;
   } = $props();
@@ -172,142 +181,159 @@
 </script>
 
 <aside class="details" data-tour="direct-details" class:drawer aria-label="About {c.name}" transition:drawerSlide|global>
-  <section>
-    <div class="label">Connection</div>
-    <dl>
-      <dt>Status</dt>
-      <dd>
-        <span class="sdot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span>{c.online ? "Online" : c.waiting ? "Waiting for them" : c.unchecked ? "Not checked lately" : c.idle ? "Seen lately" : "Offline"}
-      </dd>
-      {#if c.online}
-        <dt>Route</dt>
-        <dd title={routeTip[c.path ?? ""] ?? ""}>{pathLabel(c.path) || "Connected"}</dd>
-      {:else}
-        <dt>Last seen</dt>
-        <dd>{c.lastSeen ? shortDate(c.lastSeen) : "Not yet"}</dd>
-      {/if}
-      <dt>Speed now</dt>
-      <dd class="mono">
-        {#if moving.length}
-          {#if moving.some((t) => t.outgoing)}<span title="Sending to {c.name}: {speed(up)}">↑ {speed(up)}</span>{/if}
-          {#if moving.some((t) => t.outgoing) && moving.some((t) => !t.outgoing)}<span class="sep">·</span>{/if}
-          {#if moving.some((t) => !t.outgoing)}<span title="Receiving from {c.name}: {speed(down)}">↓ {speed(down)}</span>{/if}
-        {:else}
-          <span class="dim">Nothing moving</span>
-        {/if}
-      </dd>
-    </dl>
-    {#if c.unchecked}
-      <div class="xrow" transition:rowSlide={{ duration: 200 }}>
-        <span class="xt dim">Not called by itself.</span>
-        <button class="btn small" onclick={() => app.run(() => api.directConnect(c.id))}><Icon name="retry" size={12} />Check now</button>
+  {#if transfer}
+    {@const x = transfer}
+    <section class="picked" aria-label="What was in {x.name}" in:fadeIn={{ duration: 160 }}>
+      <div class="phead">
+        <div class="label">{x.outgoing ? `Sent to ${c.name}` : `Received from ${c.name}`}</div>
+        <button class="icon-btn sm" aria-label="Back to {c.name}'s details (Esc)" title="Back to {c.name}'s details (Esc)" onclick={() => onletgo?.()}><Icon name="x" size={12} /></button>
       </div>
-    {/if}
-    <div class="checkpick">
-      <span class="k">Check this contact</span>
-      <div class="picks">
-        <SegPick small options={CHECKS} value={check} label="Check this contact" onpick={pickCheck} />
-        {#if check === "often"}
-          <div transition:rowSlide={{ duration: 200 }}>
-            <div class="spans"><SegPick small options={SPANS} value={span} label="Check often for" onpick={setOften} /></div>
+      <div class="pname" title={x.name}>{x.name}</div>
+      <div class="psub">{itemsCount(x.files, x.items, x.more)} · {bytes(x.size)}</div>
+      <div class="plist">
+        <TransferItems compact items={x.items} more={x.more} open={x.openId && onopen ? (i, reveal) => onopen(x.openId!, i, reveal) : null} />
+      </div>
+    </section>
+  {:else}
+    <div class="about" in:fadeIn={{ duration: 160 }}>
+      <section>
+        <div class="label">Connection</div>
+        <dl>
+          <dt>Status</dt>
+          <dd>
+            <span class="sdot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span>{c.online ? "Online" : c.waiting ? "Waiting for them" : c.unchecked ? "Not checked lately" : c.idle ? "Seen lately" : "Offline"}
+          </dd>
+          {#if c.online}
+            <dt>Route</dt>
+            <dd title={routeTip[c.path ?? ""] ?? ""}>{pathLabel(c.path) || "Connected"}</dd>
+          {:else}
+            <dt>Last seen</dt>
+            <dd>{c.lastSeen ? shortDate(c.lastSeen) : "Not yet"}</dd>
+          {/if}
+          <dt>Speed now</dt>
+          <dd class="mono">
+            {#if moving.length}
+              {#if moving.some((t) => t.outgoing)}<span title="Sending to {c.name}: {speed(up)}">↑ {speed(up)}</span>{/if}
+              {#if moving.some((t) => t.outgoing) && moving.some((t) => !t.outgoing)}<span class="sep">·</span>{/if}
+              {#if moving.some((t) => !t.outgoing)}<span title="Receiving from {c.name}: {speed(down)}">↓ {speed(down)}</span>{/if}
+            {:else}
+              <span class="dim">Nothing moving</span>
+            {/if}
+          </dd>
+        </dl>
+        {#if c.unchecked}
+          <div class="xrow" transition:rowSlide={{ duration: 200 }}>
+            <span class="xt dim">Not called by itself.</span>
+            <button class="btn small" onclick={() => app.run(() => api.directConnect(c.id))}><Icon name="retry" size={12} />Check now</button>
           </div>
         {/if}
-      </div>
-      <span class="note">{checkNote}</span>
-    </div>
-  </section>
+        <div class="checkpick">
+          <span class="k">Check this contact</span>
+          <div class="picks">
+            <SegPick small options={CHECKS} value={check} label="Check this contact" onpick={pickCheck} />
+            {#if check === "often"}
+              <div transition:rowSlide={{ duration: 200 }}>
+                <div class="spans"><SegPick small options={SPANS} value={span} label="Check often for" onpick={setOften} /></div>
+              </div>
+            {/if}
+          </div>
+          <span class="note">{checkNote}</span>
+        </div>
+      </section>
 
-  <section>
-    <div class="label">Between you</div>
-    <div class="totals">
-      <div title="Sent to {c.name}: {bytes(n?.sent ?? 0)} in {plural(n?.sentCount ?? 0, 'transfer')}">
-        <span class="k"><b class="up">↑</b> Sent</span>
-        <span class="v mono">{bytes(n?.sent ?? 0)}</span>
-      </div>
-      <div title="Received from {c.name}: {bytes(n?.received ?? 0)} in {plural(n?.receivedCount ?? 0, 'transfer')}">
-        <span class="k"><b class="down">↓</b> Received</span>
-        <span class="v mono">{bytes(n?.received ?? 0)}</span>
-      </div>
-    </div>
-    <dl>
-      <dt>Transfers</dt>
-      <dd>{(n?.sentCount ?? 0) + (n?.receivedCount ?? 0)}</dd>
-      <dt>Last exchange</dt>
-      <dd>{n?.last ? shortDate(n.last) : "None yet"}</dd>
-    </dl>
-  </section>
+      <section>
+        <div class="label">Between you</div>
+        <div class="totals">
+          <div title="Sent to {c.name}: {bytes(n?.sent ?? 0)} in {plural(n?.sentCount ?? 0, 'transfer')}">
+            <span class="k"><b class="up">↑</b> Sent</span>
+            <span class="v mono">{bytes(n?.sent ?? 0)}</span>
+          </div>
+          <div title="Received from {c.name}: {bytes(n?.received ?? 0)} in {plural(n?.receivedCount ?? 0, 'transfer')}">
+            <span class="k"><b class="down">↓</b> Received</span>
+            <span class="v mono">{bytes(n?.received ?? 0)}</span>
+          </div>
+        </div>
+        <dl>
+          <dt>Transfers</dt>
+          <dd>{(n?.sentCount ?? 0) + (n?.receivedCount ?? 0)}</dd>
+          <dt>Last exchange</dt>
+          <dd>{n?.last ? shortDate(n.last) : "None yet"}</dd>
+        </dl>
+      </section>
 
-  <section>
-    <div class="label">Speed with {c.name}</div>
-    {#if n && (n.peakSent || n.peakReceived)}
-      <dl>
-        <dt>Fastest</dt>
-        <dd class="mono">
-          <span title="Fastest send to {c.name}">↑ {n.peakSent ? speed(n.peakSent) : "—"}</span><span class="sep">·</span><span title="Fastest from {c.name}">↓ {n.peakReceived ? speed(n.peakReceived) : "—"}</span>
-        </dd>
-        <dt>Average</dt>
-        <dd class="mono">
-          <span title="Average while sending to {c.name}">↑ {n.avgSent ? speed(n.avgSent) : "—"}</span><span class="sep">·</span><span title="Average while receiving from {c.name}">↓ {n.avgReceived ? speed(n.avgReceived) : "—"}</span>
-        </dd>
-      </dl>
-    {:else}
-      <p class="none">Speeds show up after your first transfer together.</p>
-    {/if}
-    {#if share}
-      <div class="share" role="img" aria-label={share.map((p) => `${p.label} ${p.pct}%`).join(", ")}>
-        {#each share as p (p.key)}
-          {#if p.bytes > 0}<i class={p.key} style="flex: {p.bytes}" title="{p.tip}: {bytes(p.bytes)}"></i>{/if}
-        {/each}
-      </div>
-      <div class="sharetext" class:three={share.length > 2}>{#each share as p (p.key)}<span><i class={p.key}></i>{p.label} {p.pct}%</span>{/each}</div>
-    {/if}
-  </section>
+      <section>
+        <div class="label">Speed with {c.name}</div>
+        {#if n && (n.peakSent || n.peakReceived)}
+          <dl>
+            <dt>Fastest</dt>
+            <dd class="mono">
+              <span title="Fastest send to {c.name}">↑ {n.peakSent ? speed(n.peakSent) : "—"}</span><span class="sep">·</span><span title="Fastest from {c.name}">↓ {n.peakReceived ? speed(n.peakReceived) : "—"}</span>
+            </dd>
+            <dt>Average</dt>
+            <dd class="mono">
+              <span title="Average while sending to {c.name}">↑ {n.avgSent ? speed(n.avgSent) : "—"}</span><span class="sep">·</span><span title="Average while receiving from {c.name}">↓ {n.avgReceived ? speed(n.avgReceived) : "—"}</span>
+            </dd>
+          </dl>
+        {:else}
+          <p class="none">Speeds show up after your first transfer together.</p>
+        {/if}
+        {#if share}
+          <div class="share" role="img" aria-label={share.map((p) => `${p.label} ${p.pct}%`).join(", ")}>
+            {#each share as p (p.key)}
+              {#if p.bytes > 0}<i class={p.key} style="flex: {p.bytes}" title="{p.tip}: {bytes(p.bytes)}"></i>{/if}
+            {/each}
+          </div>
+          <div class="sharetext" class:three={share.length > 2}>{#each share as p (p.key)}<span><i class={p.key}></i>{p.label} {p.pct}%</span>{/each}</div>
+        {/if}
+      </section>
 
-  <section>
-    <div class="label">About them</div>
-    <dl>
-      <dt>Pako ID</dt>
-      <dd class="idline">
-        <span class="mono" title={c.id}>{c.id.slice(0, 6)}…{c.id.slice(-6)}</span>
-        <button class="icon-btn sm" aria-label="Copy {c.name}'s Pako ID" title="Copy" onclick={copyId}><Icon name="copy" size={12} /></button>
-      </dd>
-      <dt>Their name</dt>
-      <dd title="The name they chose for themselves">{c.theirName ?? "Not shared"}</dd>
-      <dt>Tags</dt>
-      <dd>
-        <button class="linkish" onclick={ontags}>
-          {#if c.tags?.length}
-            {#each c.tags as t, i (i)}<span class="chip">{t}</span>{/each}
-          {:else}
-            Add tags
-          {/if}
-        </button>
-      </dd>
-      <dt>Favourite</dt>
-      <dd>
-        <button class="icon-btn sm star" class:on={c.favourite} role="switch" aria-checked={c.favourite} aria-label="Favourite" title={c.favourite ? "Remove from favourites" : "Add to favourites"} onclick={() => app.run(() => api.directSetFavourite(c.id, !c.favourite))}>
-          <Icon name="star" size={14} />
-        </button>
-      </dd>
-      <dt>Added</dt>
-      <dd>{added}</dd>
-    </dl>
-    <div class="xrow">
-      <span class="xt">Mute<span class="xsub">No pop-ups or sounds from them</span></span>
-      <button class="switch" class:on={c.muted} role="switch" aria-checked={!!c.muted} aria-label="Mute" onclick={() => app.run(() => api.directSetMuted(c.id, !c.muted))}></button>
+      <section>
+        <div class="label">About them</div>
+        <dl>
+          <dt>Pako ID</dt>
+          <dd class="idline">
+            <span class="mono" title={c.id}>{c.id.slice(0, 6)}…{c.id.slice(-6)}</span>
+            <button class="icon-btn sm" aria-label="Copy {c.name}'s Pako ID" title="Copy" onclick={copyId}><Icon name="copy" size={12} /></button>
+          </dd>
+          <dt>Their name</dt>
+          <dd title="The name they chose for themselves">{c.theirName ?? "Not shared"}</dd>
+          <dt>Tags</dt>
+          <dd>
+            <button class="linkish" onclick={ontags}>
+              {#if c.tags?.length}
+                {#each c.tags as t, i (i)}<span class="chip">{t}</span>{/each}
+              {:else}
+                Add tags
+              {/if}
+            </button>
+          </dd>
+          <dt>Favourite</dt>
+          <dd>
+            <button class="icon-btn sm star" class:on={c.favourite} role="switch" aria-checked={c.favourite} aria-label="Favourite" title={c.favourite ? "Remove from favourites" : "Add to favourites"} onclick={() => app.run(() => api.directSetFavourite(c.id, !c.favourite))}>
+              <Icon name="star" size={14} />
+            </button>
+          </dd>
+          <dt>Added</dt>
+          <dd>{added}</dd>
+        </dl>
+        <div class="xrow">
+          <span class="xt">Mute<span class="xsub">No pop-ups or sounds from them</span></span>
+          <button class="switch" class:on={c.muted} role="switch" aria-checked={!!c.muted} aria-label="Mute" onclick={() => app.run(() => api.directSetMuted(c.id, !c.muted))}></button>
+        </div>
+        <div class="xrow" data-tour="direct-trust">
+          <span class="xt">Can send to me without asking</span>
+          <button class="switch" class:on={c.autoAccept} role="switch" aria-checked={c.autoAccept} aria-label="Can send to me without asking" onclick={() => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept }))}></button>
+        </div>
+        <div class="folder">
+          <span class="k">Their files go to</span>
+          <div class="fline">
+            <span class="path" title={c.folder}>{c.folder}</span>
+            <button class="btn small" onclick={onfolder}>Change…</button>
+          </div>
+        </div>
+      </section>
     </div>
-    <div class="xrow" data-tour="direct-trust">
-      <span class="xt">Can send to me without asking</span>
-      <button class="switch" class:on={c.autoAccept} role="switch" aria-checked={c.autoAccept} aria-label="Can send to me without asking" onclick={() => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept }))}></button>
-    </div>
-    <div class="folder">
-      <span class="k">Their files go to</span>
-      <div class="fline">
-        <span class="path" title={c.folder}>{c.folder}</span>
-        <button class="btn small" onclick={onfolder}>Change…</button>
-      </div>
-    </div>
-  </section>
+  {/if}
 </aside>
 
 <style>
@@ -345,6 +371,52 @@
   }
   section:last-child {
     border-bottom: none;
+  }
+  /* The card picked in the conversation: its files and folders, in place of the contact's
+     details until you let go (Esc, the ×, a click elsewhere). */
+  .picked {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-bottom: none;
+    --ti-hover: var(--hover);
+  }
+  .about {
+    display: flex;
+    flex-direction: column;
+  }
+  .phead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: -4px -6px 0 0;
+  }
+  .phead .label {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .pname {
+    margin-top: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .psub {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  /* A long list scrolls inside the panel. */
+  .plist {
+    flex: 1;
+    min-height: 0;
+    margin: 10px -8px 0;
+    overflow-y: auto;
   }
   .label {
     margin-bottom: 10px;

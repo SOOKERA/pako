@@ -942,6 +942,21 @@ export interface DirectTransfer {
   via?: string | null;
   /** The first leg of a relay (between your devices): who it's for ("for Rado"). */
   relayTo?: string | null;
+  /** Its files and folders (the first 200), and how many more. */
+  items?: DirectItem[];
+  more?: number;
+}
+
+/** One file or folder of a Direct transfer, as it was sent (a folder with everything in it). */
+export interface DirectItem {
+  name: string;
+  size: number;
+  /** Files in it (1 for a file). */
+  files: number;
+  /** A folder. */
+  dir?: boolean;
+  /** Received: its place in the folder it was saved to (opened by Pako, never a path). */
+  at?: string;
 }
 
 /** A Direct relay through one of your devices (Direct › From: Home PC). `mine`: this PC asked;
@@ -971,6 +986,9 @@ export interface DirectRelay {
   keep: boolean;
   /** The first leg got there (the relaying PC has the files). */
   reached: boolean;
+  /** Its files and folders (the first 200), and how many more. */
+  items?: DirectItem[];
+  more?: number;
 }
 
 /** One of your devices Direct can send from (the "From" menu). */
@@ -1031,6 +1049,9 @@ export interface DirectHistory {
   via?: string | null;
   /** The first leg of a relay: who it's for ("for Rado"). */
   relayTo?: string | null;
+  /** Its files and folders (the first 200), and how many more. Not in an older history. */
+  items?: DirectItem[];
+  more?: number;
 }
 
 export interface DirectState {
@@ -1115,10 +1136,26 @@ function mockDirect(): DirectState {
       typeof location !== "undefined" && location.search.includes("offer")
         ? [{ id: "o-mia", contact: mia, contactName: "Mia", name: "Holiday photos", files: 48, size: 1.3e9, sample: ["IMG_0412.jpg", "IMG_0413.jpg", "IMG_0415.jpg"], folder: "C:\\Users\\me\\Downloads\\From Mia" }]
         : [],
-    transfers: [{ id: "t3", contact: rado, outgoing: true, name: "Render final v3.mp4", files: 1, size: 2.4e9, done: 0.9e9, state: "sending", path: "direct6", message: null }],
+    transfers: [{ id: "t3", contact: rado, outgoing: true, name: "Render final v3.mp4", files: 1, size: 2.4e9, done: 0.9e9, state: "sending", path: "direct6", message: null, items: [{ name: "Render final v3.mp4", size: 2.4e9, files: 1 }] }],
     history: [
-      { id: "t1", contact: rado, outgoing: true, name: "Wedding photos", files: 214, size: 3.2e9, date: now - 86400000, path: "direct6", result: "done", message: null, savedTo: null },
-      { id: "t2", contact: rado, outgoing: false, name: "Project.zip", files: 1, size: 1.2e9, date: now - 7200000, path: "relay", result: "done", message: null, savedTo: "C:\\Users\\me\\Downloads\\From Rado\\Project.zip" },
+      {
+        id: "t1", contact: rado, outgoing: true, name: "Wedding photos", files: 214, size: 3.2e9, date: now - 86400000, path: "direct6", result: "done", message: null, savedTo: null,
+        items: [
+          { name: "Ceremony", size: 1.8e9, files: 121, dir: true },
+          { name: "Reception and first dance (best ones picked by Mia)", size: 1.38e9, files: 90, dir: true },
+          { name: "Guest list.xlsx", size: 48e3, files: 1 },
+          { name: "Speeches.docx", size: 210e3, files: 1 },
+          { name: "Thank-you card.pdf", size: 19.7e6, files: 1 },
+        ],
+      },
+      { id: "t2", contact: rado, outgoing: false, name: "Project.zip", files: 1, size: 1.2e9, date: now - 7200000, path: "relay", result: "done", message: null, savedTo: "C:\\Users\\me\\Downloads\\From Rado\\Project.zip", items: [{ name: "Project.zip", size: 1.2e9, files: 1 }] },
+      {
+        id: "t5", contact: rado, outgoing: false, name: "2 files", files: 2, size: 73.7e3, date: now - 3600000, path: "local", result: "done", message: null, savedTo: "C:\\Users\\me\\Downloads\\From Rado\\2 files",
+        items: [
+          { name: "Invoice March.pdf", size: 61.2e3, files: 1, at: "Invoice March.pdf" },
+          { name: "notes.txt", size: 12.5e3, files: 1, at: "notes.txt" },
+        ],
+      },
       { id: "t4", contact: mia, outgoing: true, name: "Contract final.pdf", files: 1, size: 2.1e6, date: now - 86400000 * 2, path: "direct", result: "declined", message: "They declined it.", savedTo: null },
     ],
   };
@@ -1306,7 +1343,8 @@ export const api = {
   directRelayCancel: (id: string) => invoke<void>("direct_relay_cancel", { id }),
   directClearHistory: (contact: string | null) => invoke<void>("direct_clear_history", { contact }),
   /** True: it's a program or script, so it was shown in its folder instead of opened. */
-  directOpen: (id: string, reveal: boolean) => invoke<boolean>("direct_open", { id, reveal }),
+  /** `part`: one file or folder of it (its place in `items`), else all of it. */
+  directOpen: (id: string, reveal: boolean, part?: number) => invoke<boolean>("direct_open", { id, reveal, part: part ?? null }),
   // Help › Report a problem
   /** Pako's version, Setup or portable, Windows' version and the problems noted (oldest first). */
   reportInfo: () => invoke<ReportInfo>("report_info"),

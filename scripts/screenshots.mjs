@@ -361,6 +361,16 @@ const SHOTS = {
       await settle(page);
     },
   },
+  /** The tray window with a video downloading at the top (its quality isn't on the small rows). */
+  "tray-video": {
+    path: "/mini?showcase=video",
+    viewport: MINI,
+    transparent: true,
+    async run(page) {
+      await park(page, 0, 0);
+      await settle(page);
+    },
+  },
   notification: {
     path: "/popup?showcase",
     viewport: { width: POPUP_W, height: 420 },
@@ -833,7 +843,7 @@ try {
   process.exit(1);
 }
 for (const { dir } of SCALES) mkdirSync(dir, { recursive: true });
-const browser = await chromium.launch();
+const browser = await chromium.launch({ headless: true, args: ["--disable-notifications"] });
 let failed = 0;
 try {
   for (const name of wanted.length ? wanted : Object.keys(SHOTS)) {

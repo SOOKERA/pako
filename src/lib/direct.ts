@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // Small helpers shared by the sidebar's contact list and the Direct tab.
-import type { DirectContact, DirectState } from "./api";
+import type { DirectContact, DirectItem, DirectState } from "./api";
 import { shortDate } from "./format";
 
 /** How a connection travels: "local" (the home network), "direct6", "direct" or "relay". */
@@ -83,3 +83,18 @@ export function matchesFilter(c: DirectContact, filter: DirectFilter, waitingIds
 
 /** Ready-made tags offered while you have none yet. */
 export const SUGGESTED_TAGS = ["Friends", "Family", "Work"];
+
+const count = (n: number, one: string) => `${n.toLocaleString()} ${n === 1 ? one : `${one}s`}`;
+
+/** A transfer card's count: "214 files" as before; with folders among several items, which
+ *  ("2 folders · 211 files", "2 folders, 3 files · 214 files in all"). */
+export function itemsCount(files: number, items?: DirectItem[], more = 0): string {
+  if (!items?.length || items.length < 2 || more) return count(files, "file");
+  const dirs = items.filter((i) => i.dir).length;
+  if (!dirs) return count(files, "file");
+  const loose = items.length - dirs;
+  return loose ? `${count(dirs, "folder")}, ${count(loose, "file")} · ${count(files, "file")} in all` : `${count(dirs, "folder")} · ${count(files, "file")}`;
+}
+
+/** Worth unfolding on the card: more than one thing in it (one file or folder is its title). */
+export const hasList = (items?: DirectItem[], more = 0) => (items?.length ?? 0) + more > 1;

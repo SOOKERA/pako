@@ -280,6 +280,8 @@ struct Outgoing {
     contact: String,
     name: String,
     files: Vec<(PathBuf, OfferFile)>,
+    /// Its files and folders (see `store::items_of`).
+    items: (Vec<store::TransferItem>, u32),
     total: u64,
     sent: Arc<AtomicU64>,
     state: String,
@@ -361,6 +363,8 @@ struct Incoming {
     contact: String,
     name: String,
     files: Vec<OfferFile>,
+    /// Its files and folders (see `store::items_of`).
+    items: (Vec<store::TransferItem>, u32),
     total: u64,
     received: Arc<AtomicU64>,
     state: String,
@@ -535,6 +539,15 @@ pub struct TransferView {
     /// The first leg of a relay: who it's for ("for Rado").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay_to: Option<String>,
+    /// Its files and folders (the first `store::MAX_ITEMS`, and how many more).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<store::TransferItem>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub more: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Serialize)]
@@ -637,6 +650,7 @@ impl Node {
                     retried: n.retried,
                     base: received,
                     since: n.since,
+                    items: store::items_of(&n.files),
                     files: n.files,
                 },
             );
@@ -650,6 +664,7 @@ impl Node {
                     name: n.name,
                     total: n.files.iter().map(|f| f.file.size).sum(),
                     mtimes: n.files.iter().map(|f| f.mtime).collect(),
+                    items: store::items_of(n.files.iter().map(|f| &f.file)),
                     files: n.files.into_iter().map(|f| (f.path, f.file)).collect(),
                     sent: Arc::new(AtomicU64::new(n.done)),
                     state: "waiting".into(),
@@ -834,6 +849,8 @@ impl Node {
                 message: t.message.clone(),
                 via: self.via_of(&inner, id),
                 relay_to: Self::relay_to_of(&inner, id),
+                items: t.items.0.clone(),
+                more: t.items.1,
             })
             .collect();
         transfers.extend(inner.incoming.iter().filter(|(_, t)| t.state != "asking").map(|(id, t)| TransferView {
@@ -849,6 +866,8 @@ impl Node {
             message: t.message.clone(),
             via: None,
             relay_to: Self::relay_to_of(&inner, id),
+            items: t.items.0.clone(),
+            more: t.items.1,
         }));
         State {
             my_id: me,
@@ -2145,6 +2164,7 @@ impl Node {
                 Outgoing {
                     contact: contact.to_string(),
                     name: title.clone(),
+                    items: store::items_of(files.iter().map(|(_, f)| f)),
                     files: files.clone(),
                     total,
                     sent: Arc::new(AtomicU64::new(0)),
@@ -2610,6 +2630,8 @@ impl Node {
             peak_speed,
             via,
             relay_to,
+            items: t.items.0,
+            more: t.items.1,
         });
         // A relay's leg: the relay goes on (or ends) from here.
         self.relay_leg1_ended(id, result, message.clone(), Vec::new());
@@ -2697,6 +2719,7 @@ impl Node {
                 Incoming {
                     contact: peer.to_string(),
                     name: name.clone(),
+                    items: store::items_of(&files),
                     files,
                     total,
                     received: Arc::new(AtomicU64::new(0)),
@@ -3362,6 +3385,13 @@ impl Node {
         let (duration_ms, avg_speed, peak_speed) = t.meter.summary(t.received.load(Ordering::Relaxed).saturating_sub(t.base));
         // A relay's copy: never offered for anything else (no Open, no Folder).
         let relay_to = Self::relay_to_of(&self.inner.lock().unwrap(), id);
+        let saved_to = if result == "done" && relay_to.is_none() { t.saved_to.clone() } else { None };
+        let mut items = t.items.0.clone();
+        // Several files: each item's place in the folder they went to (one file: `saved_to`
+        // is the file itself).
+        if let Some(root) = saved_to.as_ref().filter(|r| t.targets.len() > 1 || r.is_dir()) {
+            store::place_items(&mut items, &t.files, &t.targets, root);
+        }
         self.record(HistoryItem {
             id: id.to_string(),
             contact: t.contact.clone(),
@@ -3373,12 +3403,14 @@ impl Node {
             path,
             result: result.into(),
             message: message.clone(),
-            saved_to: if result == "done" && relay_to.is_none() { t.saved_to.clone().map(|p| p.display().to_string()) } else { None },
+            saved_to: saved_to.map(|p| p.display().to_string()),
             duration_ms,
             avg_speed,
             peak_speed,
             via: None,
             relay_to: relay_to.clone(),
+            items,
+            more: t.items.1,
         });
         if relay_to.is_some() {
             let got = if result == "done" { t.targets.iter().cloned().zip(t.files.iter().cloned()).collect() } else { Vec::new() };
@@ -4289,6 +4321,18 @@ mod tests {
         // Marked as coming from another computer, like a browser download.
         let zone = std::fs::read_to_string(format!("{}:Zone.Identifier", got.join("big.bin").display())).unwrap_or_default();
         assert!(zone.contains("ZoneId=3"), "{zone:?}");
+        // Both sides remember what was in it: the file, and the folder with its 2 files.
+        let sent = a.state().history.into_iter().find(|h| h.result == "done").unwrap();
+        let recv = b.state().history.into_iter().find(|h| h.result == "done").unwrap();
+        for h in [&sent, &recv] {
+            let items: Vec<(&str, u64, u32, bool)> = h.items.iter().map(|i| (i.name.as_str(), i.size, i.files, i.dir)).collect();
+            assert_eq!(items, [("big.bin", big.len() as u64, 1, false), ("Folder", 5, 2, true)], "outgoing: {}", h.outgoing);
+            assert_eq!(h.more, 0);
+        }
+        // Received: each one opens where it was saved; a send has nothing to open.
+        assert!(sent.items.iter().all(|i| i.at.is_none()) && sent.place_of(Some(0)).is_none());
+        assert_eq!(recv.place_of(Some(0)), Some(got.join("big.bin")));
+        assert_eq!(recv.place_of(Some(1)), Some(got.join("Folder")));
 
         // A stranger is asked about, and declined: nothing from them is ever written.
         let c = node(&root.join("c"), "Mallory").await;
@@ -4401,6 +4445,11 @@ mod tests {
 
         let had = b.full_state().transfers[0].done;
         assert!(had > 0 && had < big.len() as u64, "{had}");
+        // What's in it is known on both sides from the start.
+        for n in [&a, &b] {
+            let t = n.full_state().transfers.into_iter().find(|t| t.id == id).unwrap();
+            assert_eq!(t.items.iter().map(|i| (i.name.as_str(), i.files)).collect::<Vec<_>>(), [("big.bin", 1)]);
+        }
         // Kept on both sides, and not "busy" while waiting.
         assert!(root.join(format!("b/direct_resume/{id}.in.json")).exists());
         assert!(root.join(format!("a/direct_resume/{id}.out.json")).exists());
@@ -4958,7 +5007,7 @@ mod tests {
         a.reach(&fakes[1]);
         assert!(a.inner.lock().unwrap().contacts[1].last_activity.unwrap() > old);
         // A transfer (any end) with a quiet one wakes them too.
-        a.record(HistoryItem { id: "t".into(), contact: fakes[1].clone(), outgoing: false, name: "x".into(), files: 1, size: 1, date: now_ms(), path: None, result: "declined".into(), message: None, saved_to: None, duration_ms: 0, avg_speed: 0, peak_speed: 0, via: None, relay_to: None });
+        a.record(HistoryItem { id: "t".into(), contact: fakes[1].clone(), outgoing: false, name: "x".into(), files: 1, size: 1, date: now_ms(), path: None, result: "declined".into(), message: None, saved_to: None, duration_ms: 0, avg_speed: 0, peak_speed: 0, via: None, relay_to: None, items: Vec::new(), more: 0 });
         {
             let inner = a.inner.lock().unwrap();
             assert!(in_round(&inner, &inner.contacts[1], now_ms()));

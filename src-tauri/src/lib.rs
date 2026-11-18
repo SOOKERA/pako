@@ -227,11 +227,17 @@ fn direct_clear_history(d: Dir<'_>, contact: Option<String>) -> Result<(), Strin
 /// Opens what was received (or shows it in its folder). A program or script is never started
 /// from here: it's shown in its folder instead (true = that happened).
 #[tauri::command]
-fn direct_open(app: tauri::AppHandle, d: Dir<'_>, id: String, reveal: bool) -> Result<bool, String> {
+/// `part`: one file or folder of it (its place in the list), else all of it.
+fn direct_open(app: tauri::AppHandle, d: Dir<'_>, id: String, reveal: bool, part: Option<usize>) -> Result<bool, String> {
     let item = d.node()?.history_item(&id).ok_or("Not in the history any more.")?;
-    let path = std::path::PathBuf::from(item.saved_to.ok_or("Nothing was saved for this one.")?);
+    let path = item.place_of(part).ok_or("Nothing was saved for this one.")?;
     if !path.exists() {
         return Err("It's not there any more (moved or deleted).".into());
+    }
+    // One folder of it: Folder shows it where it is.
+    if path.is_dir() && part.is_some() && reveal {
+        app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())?;
+        return Ok(false);
     }
     if path.is_dir() {
         app.opener().open_path(path.display().to_string(), None::<&str>).map_err(|e| e.to_string())?;

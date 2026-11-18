@@ -357,7 +357,7 @@ function mockState(): DevicesState {
     transfers: [{ id: "m1", contact: showcase ? HOME : LAPTOP, outgoing: true, name: "Project backup", files: 312, size: 2.4e9, done: mockDone, state: "sending", path: showcase ? "local" : "direct", message: null }],
     history: [
       { id: "h1", contact: HOME, outgoing: true, name: "Tax papers 2026.pdf", files: 1, size: 3.4e6, date: now - 86400000 * 2, path: "local", result: "done", message: null, savedTo: null },
-      { id: "h2", contact: HOME, outgoing: false, name: "Holiday photos", files: 148, size: 1.9e9, date: now - 3600_000 * 6, path: "local", result: "done", message: null, savedTo: `${DL}\\From Home PC\\Holiday photos` },
+      { id: "h2", contact: HOME, outgoing: false, name: "Holiday photos", files: 148, size: 1.9e9, date: now - 3600_000 * 6, path: "local", result: "done", message: null, savedTo: `${DL}\\From Home PC\\Holiday photos`, items: [{ name: "Beach", size: 1.15e9, files: 90, dir: true, at: "Beach" }, { name: "Mountains", size: 0.75e9, files: 58, dir: true, at: "Mountains" }] },
       { id: "h3", contact: HOME, outgoing: false, name: "Movie night.mkv", files: 1, size: 4.1e9, date: now - 3600_000, path: "local", result: "done", message: null, savedTo: `${DL}\\From Home PC\\Movie night.mkv` },
       { id: "h4", contact: LAPTOP, outgoing: false, name: "Slides final.pptx", files: 1, size: 18e6, date: now - 86400000, path: "direct", result: "done", message: null, savedTo: `${DL}\\From Laptop\\Slides final.pptx` },
     ],

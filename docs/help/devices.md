@@ -54,6 +54,7 @@ Its **Files** tab shows everything sent between the two PCs, with progress, spee
 - **Drop files or folders** anywhere on the device's page, or on the device in the list, or click **Choose files** / **Choose folder**. They go at once.
 - The other PC doesn't ask: files from your own devices come in by themselves, into that device's folder. (If a send is very big for the drive there, it still asks.)
 - **Cancel** stops a file on its way. **Open** and **Folder** show what you received. Programs and scripts are never started from Pako: they're shown in their folder.
+- The arrow on a card of several files or folders unfolds what was in it, each with its size (and **Open** / **Folder** on each one you received).
 - If the connection drops (a PC sleeps, the Wi-Fi goes, Pako is closed), the file waits: "Waiting for Home PC to continue · 62% done". It continues by itself from where it stopped when both PCs are connected again, as in [Direct](direct.md#your-history-with-someone). **Cancel** deletes what had arrived; after 7 days it's cleared.
 
 ## See and control the other PC's downloads

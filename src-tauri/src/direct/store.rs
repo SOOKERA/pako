@@ -206,6 +206,132 @@ pub struct HistoryItem {
     /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_to: Option<String>,
+    /// What was in it: its files and folders as they were sent (the first `MAX_ITEMS`; `more`
+    /// counts the rest). Empty in an older history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<TransferItem>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub more: u32,
+}
+
+impl HistoryItem {
+    /// Where a received transfer was saved (`item`: one of its items, else all of it). Only
+    /// ever `saved_to` or a name right inside it, never anywhere else.
+    pub fn place_of(&self, item: Option<usize>) -> Option<PathBuf> {
+        let root = PathBuf::from(self.saved_to.as_ref()?);
+        let Some(i) = item else { return Some(root) };
+        let it = self.items.get(i)?;
+        match &it.at {
+            // (One name, as Pako itself made it: no folder, no "..".)
+            Some(at) if super::proto::safe_part(at).as_deref() == Some(at.as_str()) => Some(root.join(at)),
+            Some(_) => None,
+            // A single file: `saved_to` is the file itself.
+            None if self.items.len() == 1 && !it.dir => Some(root),
+            None => None,
+        }
+    }
+}
+
+/// Most items of one transfer kept in its history entry (the rest are only counted).
+pub const MAX_ITEMS: usize = 200;
+
+/// One file or folder of a transfer, as it was sent (a folder with everything in it).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferItem {
+    pub name: String,
+    pub size: u64,
+    /// Files in it (1 for a file).
+    pub files: u32,
+    /// A folder (else a file).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dir: bool,
+    /// Received: where it was saved, inside the transfer's `saved_to` folder (one name, never a
+    /// path). Left out for a single file (`saved_to` is the file itself) and for sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// A top-level name of a transfer as it's kept and shown: the name it gets on this PC (hidden
+/// characters such as right-to-left overrides gone, at most 180 characters, never a reserved
+/// device name), so a list never shows a name disguised by the other side.
+pub fn item_name(top: &str) -> String {
+    super::proto::safe_part(top).unwrap_or_else(|| "file".into())
+}
+
+/// The key an item is found by: Windows ignores case, so "Photos/a" and "photos/b" land in one
+/// folder.
+fn item_key(top: &str) -> String {
+    item_name(top).to_uppercase()
+}
+
+fn top_of(path: &str) -> (&str, bool) {
+    match path.split_once('/') {
+        Some((top, _)) => (top, true),
+        None => (path, false),
+    }
+}
+
+/// The files and folders of a transfer, from its files ("Folder/sub/a.txt" counts in the
+/// item "Folder"), in the order they first come: the first `MAX_ITEMS`, and how many more.
+pub fn items_of<'a>(files: impl IntoIterator<Item = &'a super::proto::OfferFile>) -> (Vec<TransferItem>, u32) {
+    let mut items: Vec<TransferItem> = Vec::new();
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut extra: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for f in files {
+        let (top, dir) = top_of(&f.path);
+        let key = item_key(top);
+        if let Some(&i) = seen.get(&key) {
+            let it = &mut items[i];
+            it.size = it.size.saturating_add(f.size);
+            it.files = it.files.saturating_add(1);
+            it.dir |= dir;
+        } else if items.len() < MAX_ITEMS {
+            seen.insert(key, items.len());
+            items.push(TransferItem { name: item_name(top), size: f.size, files: 1, dir, at: None });
+        } else {
+            extra.insert(key);
+        }
+    }
+    (items, extra.len().min(u32::MAX as usize) as u32)
+}
+
+/// Received into the folder `root`: each item's place in it (the first part of where its first
+/// file went), so it can be opened from the list.
+pub fn place_items(items: &mut [TransferItem], files: &[super::proto::OfferFile], targets: &[PathBuf], root: &std::path::Path) {
+    let mut place: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (f, target) in files.iter().zip(targets.iter()) {
+        let key = item_key(top_of(&f.path).0);
+        if place.contains_key(&key) {
+            continue;
+        }
+        if let Some(std::path::Component::Normal(first)) = target.strip_prefix(root).ok().and_then(|r| r.components().next()) {
+            place.insert(key, first.to_string_lossy().into_owned());
+        }
+    }
+    for it in items {
+        it.at = place.get(&it.name.to_uppercase()).cloned();
+    }
+}
+
+/// Most items kept across the whole history: the newest transfers keep their lists, older
+/// ones only their counts (as before lists were kept). The history goes to the window twice a
+/// second while files move, and is written whole after each transfer.
+pub const MAX_HISTORY_ITEMS: usize = 2000;
+
+/// Lets go of the lists of older transfers past `MAX_HISTORY_ITEMS` (`list`: oldest first).
+pub fn keep_recent_items(list: &mut [HistoryItem]) {
+    let mut total = 0usize;
+    let mut full = false;
+    for h in list.iter_mut().rev() {
+        if !full && total + h.items.len() <= MAX_HISTORY_ITEMS {
+            total += h.items.len();
+            continue;
+        }
+        full = true;
+        h.items = Vec::new();
+        h.more = 0;
+    }
 }
 
 /// Most relays kept (ended ones go first).
@@ -479,7 +605,9 @@ impl Store {
     }
 
     pub fn load_history(&self) -> Vec<HistoryItem> {
-        read(&self.history_path())
+        let mut list: Vec<HistoryItem> = read(&self.history_path());
+        keep_recent_items(&mut list);
+        list
     }
 
     pub fn save_history(&self, list: &mut Vec<HistoryItem>) {
@@ -487,6 +615,7 @@ impl Store {
             let extra = list.len() - MAX_HISTORY;
             list.drain(..extra);
         }
+        keep_recent_items(list);
         write(&self.history_path(), list);
     }
 }
@@ -831,12 +960,184 @@ mod tests {
                 peak_speed: 0,
                 via: None,
                 relay_to: None,
+                items: Vec::new(),
+                more: 0,
             })
             .collect();
         store.save_history(&mut h);
         let back = store.load_history();
         assert_eq!(back.len(), MAX_HISTORY);
         assert_eq!(back[0].id, "5", "the oldest go first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn file(path: &str, size: u64) -> super::super::proto::OfferFile {
+        super::super::proto::OfferFile { path: path.into(), size }
+    }
+
+    /// A transfer's items: a folder with everything in it, a file on its own, in the order
+    /// they first come.
+    #[test]
+    fn a_transfers_items_are_its_files_and_folders() {
+        let files = [file("Photos/a.jpg", 10), file("notes.txt", 3), file("Photos/sub/b.jpg", 20), file("Photos/c.jpg", 5), file("Song.mp3", 7)];
+        let (items, more) = items_of(&files);
+        assert_eq!(more, 0);
+        let got: Vec<(&str, u64, u32, bool)> = items.iter().map(|i| (i.name.as_str(), i.size, i.files, i.dir)).collect();
+        assert_eq!(got, [("Photos", 35, 3, true), ("notes.txt", 3, 1, false), ("Song.mp3", 7, 1, false)]);
+        // A folder holding a single file is still a folder.
+        assert!(items_of(&[file("F/only.txt", 1)]).0[0].dir);
+        assert_eq!(items_of(&[]).0, Vec::new());
+    }
+
+    /// A huge send keeps its first items only, and counts the rest (each once).
+    #[test]
+    fn a_transfers_items_are_capped() {
+        let mut files: Vec<super::super::proto::OfferFile> = (0..MAX_ITEMS + 50).map(|i| file(&format!("f{i}.txt"), 1)).collect();
+        files.push(file("f0.txt/x", 1)); // (counts in an item already kept)
+        files.push(file("late/a", 1));
+        files.push(file("late/b", 1));
+        let (items, more) = items_of(&files);
+        assert_eq!(items.len(), MAX_ITEMS);
+        assert_eq!(more, 51, "50 files and one folder past the cap");
+        assert_eq!((items[0].files, items[0].dir), (2, true));
+    }
+
+    /// The items go to the history file and back; an entry without them (an older file, or a
+    /// transfer before this) loads as before and is written without them.
+    #[test]
+    fn history_items_round_trip() {
+        let dir = std::env::temp_dir().join(format!("pako-history-items-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.clone());
+        let (mut items, _) = items_of(&[file("Photos/a.jpg", 10), file("notes.txt", 3)]);
+        items[0].at = Some("Photos".into());
+        items[1].at = Some("notes.txt".into());
+        let with = HistoryItem {
+            id: "t1".into(),
+            contact: "a".into(),
+            outgoing: false,
+            name: "Holiday".into(),
+            files: 2,
+            size: 13,
+            date: 5,
+            path: None,
+            result: "done".into(),
+            message: None,
+            saved_to: Some("D:/Downloads/Holiday".into()),
+            duration_ms: 0,
+            avg_speed: 0,
+            peak_speed: 0,
+            via: None,
+            relay_to: None,
+            items,
+            more: 4,
+        };
+        // Each item opens where it was saved, never outside that folder.
+        assert_eq!(with.place_of(Some(0)), Some(PathBuf::from("D:/Downloads/Holiday").join("Photos")));
+        assert_eq!(with.place_of(None), Some(PathBuf::from("D:/Downloads/Holiday")));
+        assert_eq!(with.place_of(Some(9)), None);
+        let mut bad = with.clone();
+        bad.items[0].at = Some("../../Windows".into());
+        assert_eq!(bad.place_of(Some(0)), None);
+        bad.items[0].at = Some("a/b".into());
+        assert_eq!(bad.place_of(Some(0)), None);
+        bad.saved_to = None;
+        assert_eq!(bad.place_of(Some(1)), None, "a send: nothing to open");
+        let without = HistoryItem { id: "t2".into(), items: Vec::new(), more: 0, ..with.clone() };
+        store.save_history(&mut vec![with.clone(), without.clone()]);
+        assert_eq!(store.load_history(), vec![with, without.clone()]);
+        let json = serde_json::to_string(&without).unwrap();
+        assert!(!json.contains("items") && !json.contains("more"), "{json}");
+        // An older history file (no items) still loads.
+        std::fs::write(dir.join("direct_history.json"), r#"[{"id":"t1","contact":"a","outgoing":true,"name":"x","files":2,"size":10,"date":5,"result":"done"}]"#).unwrap();
+        let old = store.load_history();
+        assert_eq!(old.len(), 1);
+        assert!(old[0].items.is_empty() && old[0].more == 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other side's names are kept and shown as they're saved here: a right-to-left override
+    /// can't make "photo<RLO>gpj.exe" show as "photoexe.jpg", a name is never longer than a saved
+    /// one, and names Windows treats as one ("a?" and "a*", "Photos" and "photos") are one item.
+    #[test]
+    fn a_transfers_item_names_are_the_saved_ones() {
+        let long = "x".repeat(5000);
+        let files = [
+            file("photo\u{202E}gpj.exe", 1),
+            file("a\u{200B}b\u{0007}.txt", 1),
+            file(&format!("{long}/a"), 1),
+            file("CON", 1),
+            file("Pics?/a.jpg", 2),
+            file("Pics*/b.jpg", 3),
+            file("pics_/c.jpg", 4),
+        ];
+        let (items, more) = items_of(&files);
+        assert_eq!(more, 0);
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names[..2], ["photogpj.exe", "ab_.txt"]);
+        assert!(items[2].name.chars().count() <= 180 && items[2].dir);
+        assert_eq!(names[3], "_CON");
+        assert_eq!((names[4], items[4].files, items[4].size), ("Pics_", 3, 9));
+        assert_eq!(items.len(), 5);
+    }
+
+    /// Each received item's place is found by the name it's kept under (not the other side's).
+    #[test]
+    fn received_items_find_their_place() {
+        let root = PathBuf::from("D:/Downloads/From Rado/Holiday");
+        let files = [file("Be\u{200B}ach/a.jpg", 1), file("notes\u{202E}.txt", 1), file("Beach/b.jpg", 1)];
+        let targets = [root.join("Beach").join("a.jpg"), root.join("notes (2).txt"), root.join("Beach").join("b.jpg")];
+        let (mut items, _) = items_of(&files);
+        place_items(&mut items, &files, &targets, &root);
+        let got: Vec<(&str, Option<&str>)> = items.iter().map(|i| (i.name.as_str(), i.at.as_deref())).collect();
+        assert_eq!(got, [("Beach", Some("Beach")), ("notes.txt", Some("notes (2).txt"))]);
+    }
+
+    /// A long history keeps the lists of its newest transfers only (it goes to the window twice
+    /// a second while files move): older ones keep their counts, as before lists were kept.
+    #[test]
+    fn history_items_have_a_total_budget() {
+        let dir = std::env::temp_dir().join(format!("pako-history-budget-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.clone());
+        let big: Vec<TransferItem> = (0..MAX_ITEMS).map(|i| TransferItem { name: format!("{i}{}", "\u{4E00}".repeat(170)), size: 1, files: 1, ..Default::default() }).collect();
+        let entry = |i: usize| HistoryItem {
+            id: i.to_string(),
+            contact: "a".into(),
+            outgoing: true,
+            name: "x".into(),
+            files: 300,
+            size: 1,
+            date: i as u64,
+            path: None,
+            result: "declined".into(),
+            message: None,
+            saved_to: None,
+            duration_ms: 0,
+            avg_speed: 0,
+            peak_speed: 0,
+            via: None,
+            relay_to: None,
+            items: big.clone(),
+            more: 100,
+        };
+        let mut h: Vec<HistoryItem> = (0..MAX_HISTORY).map(entry).collect();
+        store.save_history(&mut h);
+        let kept: usize = h.iter().map(|x| x.items.len()).sum();
+        assert!(kept <= MAX_HISTORY_ITEMS && kept >= MAX_HISTORY_ITEMS - MAX_ITEMS, "{kept}");
+        // The newest keep theirs; once one is let go, every older one is too (and its "more").
+        let last = h.iter().rposition(|x| x.items.is_empty()).unwrap();
+        assert!(h[..=last].iter().all(|x| x.items.is_empty() && x.more == 0));
+        assert!(h[last + 1..].iter().all(|x| x.items.len() == MAX_ITEMS && x.more == 100));
+        assert_eq!(h.len(), MAX_HISTORY, "every transfer is still there");
+        // What's written (and so what the window gets) stays small.
+        let bytes = std::fs::metadata(dir.join("direct_history.json")).unwrap().len();
+        assert!(bytes < 8 * 1024 * 1024, "{bytes}");
+        // A file written without the budget is held to it when read.
+        std::fs::write(dir.join("direct_history.json"), serde_json::to_vec(&(0..40).map(entry).collect::<Vec<_>>()).unwrap()).unwrap();
+        let back = store.load_history();
+        assert!(back.iter().map(|x| x.items.len()).sum::<usize>() <= MAX_HISTORY_ITEMS);
+        assert_eq!(back.last().unwrap().items.len(), MAX_ITEMS);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

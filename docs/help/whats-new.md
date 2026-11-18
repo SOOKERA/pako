@@ -1,5 +1,11 @@
 # What's new
 
+## 1.2.9
+
+### Fixed
+
+- In Direct, a send of several files now shows which files were in it: click the arrow on its card to see each file and folder with its size (**Open** and **Folder** on each one you received), or click the card to see the list in the details panel.
+
 ## 1.2.8
 
 ### Improved

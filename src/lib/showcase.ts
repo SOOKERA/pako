@@ -11,7 +11,8 @@ export const showcase = typeof location !== "undefined" && new URLSearchParams(l
  *  "share" (a fresh upload and the same files received in Links), "hosts" (the same file on
  *  several hosts in Links, and a download that went on from a backup host), "local" (Direct
  *  with a contact on the same home network), "browser" (a download made by the browser for
- *  Pako) or "parts" (Upload with a ZIP in parts on its way); none = the usual set. */
+ *  Pako), "parts" (Upload with a ZIP in parts on its way) or "video" (a video downloading at
+ *  the top of the tray window, above three usual downloads); none = the usual set. */
 const scene = showcase ? new URLSearchParams(location.search).get("showcase") : null;
 
 const now = Date.now();
@@ -95,7 +96,23 @@ const viaBrowser: Download[] = scene === "browser"
     ]
   : [];
 
-const downloads: Download[] = [
+/** "?showcase=video": a video from a video site, about 40% down, first in the list. */
+const VIDEO_DL_LINK = "https://media.example.com/watch/lake-at-sunrise";
+const videoDl: Download[] = scene === "video"
+  ? [
+      dl({
+        name: "Lake at sunrise.mp4",
+        size: 1.3 * GB,
+        downloaded: 0.53 * GB,
+        link: VIDEO_DL_LINK,
+        source: { kind: "video", url: VIDEO_DL_LINK, quality: 1080, audio: null, duration: 612 },
+      }),
+    ]
+  : [];
+/** The usual downloads shown under it in "?showcase=video". */
+const VIDEO_SCENE_KEEP = new Set(["Holiday photos 2025.zip", "Interview A-cam.mov", "Wallpapers 4K.zip"]);
+
+const allDownloads: Download[] = [
   ...switched,
   ...viaBrowser,
   dl({ name: "Holiday photos 2025.zip", size: 6.4 * GB, downloaded: 3.71 * GB, ...drive("1hP7sQ2"), notify: true }),
@@ -107,10 +124,12 @@ const downloads: Download[] = [
   dl({ name: "Podcast season 2.zip", status: "queued", size: 2.3 * GB }),
   dl({ name: "Course materials.zip", status: "completed", size: 2.7 * GB, downloaded: 2.7 * GB, ...drive("1cM8tR3"), date: now - 3 * HOUR, finishedAt: now - 52 * MIN }),
 ];
+const downloads: Download[] = scene === "video" ? [...videoDl, ...allDownloads.filter((d) => VIDEO_SCENE_KEEP.has(d.name))] : allDownloads;
 
 /** Speed (bytes/s) and connections of each running one. */
 const running: Record<string, [number, number]> = {
   "Live set.flac": [22_300_000, 8],
+  "Lake at sunrise.mp4": [14_600_000, 1],
   "Holiday photos 2025.zip": [26_400_000, 8],
   "Project final cut.mp4": [18_900_000, 8],
   "Interview A-cam.mov": [21_700_000, 6],

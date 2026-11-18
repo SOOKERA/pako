@@ -8,7 +8,7 @@
   import { untrack } from "svelte";
   import { open as pick } from "@tauri-apps/plugin-dialog";
   import { app } from "./state.svelte";
-  import { api, listen, type DirectContact, type DirectFrom, type DirectHistory, type DirectRelay, type DirectTransfer, type DirectVisible, type RemoteBook, type RemoteContact, type RemoteTalk } from "./api";
+  import { api, listen, type DirectContact, type DirectFrom, type DirectHistory, type DirectItem, type DirectRelay, type DirectTransfer, type DirectVisible, type RemoteBook, type RemoteContact, type RemoteTalk } from "./api";
   import type { MenuItem } from "./menu";
   import { bytes, shortDate, speed } from "./format";
   import Icon from "./Icon.svelte";
@@ -17,8 +17,9 @@
   import MiddleText from "./MiddleText.svelte";
   import Modal from "./Modal.svelte";
   import DirectDetails from "./DirectDetails.svelte";
+  import TransferItems from "./TransferItems.svelte";
   import SegPick from "./SegPick.svelte";
-  import { directExtra, initial, isLocal, nearbyNote, pathLabel, percent, sortContacts, statusOf, SUGGESTED_TAGS } from "./direct";
+  import { directExtra, hasList, initial, isLocal, itemsCount, nearbyNote, pathLabel, percent, sortContacts, statusOf, SUGGESTED_TAGS } from "./direct";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
@@ -297,6 +298,48 @@
   // Moving now (one waiting for them to come back isn't).
   const movingNow = $derived(current ? (d?.transfers ?? []).filter((t) => t.contact === current.id && t.state !== "waiting") : []);
   const endedWithThem = $derived(current ? (d?.history ?? []).filter((h) => h.contact === current.id).length : 0);
+
+  // ---------- what was in a transfer: unfolded on its card, and in the details panel ----------
+  /** A card's own key: the same while it moves and once it's in the history. */
+  const cardKey = (r: Row) => (r.kind === "history" ? `${r.h.outgoing ? "o" : "i"}:${r.h.id}` : r.kind === "relay" ? `r:${r.r.id}` : `${r.t.outgoing ? "o" : "i"}:${r.t.id}`);
+  /** Cards unfolded (their list of files and folders shown). */
+  let unfolded = $state<Record<string, boolean>>({});
+  /** The card picked (its list shows in the details panel); Esc or a click elsewhere lets go. */
+  let pickedCard = $state<string | null>(null);
+  $effect(() => {
+    void current?.id;
+    void fromId;
+    untrack(() => (pickedCard = null));
+  });
+  const pickedInfo = $derived.by(() => {
+    if (!pickedCard || fromId) return null;
+    const r = rows.find((x) => cardKey(x) === pickedCard);
+    if (!r) return null;
+    const x = r.kind === "history" ? r.h : r.kind === "relay" ? r.r : r.t;
+    if (!x.items?.length) return null;
+    const outgoing = r.kind === "history" ? r.h.outgoing : r.kind === "relay" ? true : r.t.outgoing;
+    const openId = r.kind === "history" && !r.h.outgoing && r.h.result === "done" && r.h.savedTo ? r.h.id : null;
+    return { name: x.name, outgoing, files: x.files, size: x.size, items: x.items, more: x.more ?? 0, openId };
+  });
+  /** Back to the contact's details: the keyboard, if it was in the list that goes, goes back
+   *  to the card (never taken from a field you're typing in). */
+  function letGo() {
+    const k = pickedCard;
+    const a = document.activeElement;
+    const lost = !a || a === document.body || !!a.closest(".details .picked");
+    pickedCard = null;
+    if (k && lost) timeline?.querySelector<HTMLElement>(`[data-card="${CSS.escape(k)}"]`)?.focus({ preventScroll: true });
+  }
+  function cardKeydown(e: KeyboardEvent, key: string) {
+    if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    pickedCard = key;
+  }
+  /** One file or folder of a received transfer: opened (a program or script is shown in its
+   *  folder instead), or shown in its folder. */
+  async function openPart(id: string, part: number, reveal: boolean) {
+    if (await api.directOpen(id, reveal, part)) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
+  }
   let timeline: HTMLDivElement | undefined = $state();
   /** Whose conversation was last scrolled: a new item glides into view, a new contact opens at the end. */
   let scrolledFor: string | null = null;
@@ -704,7 +747,34 @@
   {/if}
 {/snippet}
 
-<svelte:window onresize={() => (fromMenu = false)} onblur={() => (fromMenu = false)} />
+<!-- A card's chevron: unfolds what was in it (only when there's more than one thing). -->
+{#snippet chev(key: string, name: string)}
+  <button
+    class="chev"
+    class:open={unfolded[key]}
+    aria-expanded={!!unfolded[key]}
+    aria-controls="items-{key}"
+    aria-label={unfolded[key] ? `Hide what was in ${name}` : `Show what was in ${name}`}
+    title={unfolded[key] ? "Hide the files" : "Show the files"}
+    onclick={() => (unfolded[key] = !unfolded[key])}><Icon name="chevron" size={12} stroke={2.4} /></button
+  >
+{/snippet}
+
+{#snippet fold(key: string, items: DirectItem[] | undefined, more: number | undefined, openId: string | null)}
+  {#if unfolded[key] && items?.length}
+    <div class="mlist" transition:rowSlide={{ duration: 220 }}>
+      <TransferItems {items} more={more ?? 0} id="items-{key}" open={openId ? (i, reveal) => app.run(() => openPart(openId, i, reveal)) : null} />
+    </div>
+  {/if}
+{/snippet}
+
+<svelte:window
+  onresize={() => (fromMenu = false)}
+  onblur={() => (fromMenu = false)}
+  onkeydown={(e) => {
+    if (e.key === "Escape" && pickedCard && !app.modals && !e.defaultPrevented) letGo();
+  }}
+/>
 
 <div class="direct" role="presentation" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping && current}
@@ -942,17 +1012,24 @@
 
           <div class="mid">
           {#key current.id}
-          <div class="timeline" bind:this={timeline} in:fadeIn={{ duration: 160 }}>
+          <!-- A click outside the cards lets go of the one picked (the keyboard: Esc). -->
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+          <div class="timeline" bind:this={timeline} in:fadeIn={{ duration: 160 }} onclick={(e) => !(e.target as Element).closest(".bubble") && (pickedCard = null)}>
             {#each rows as r (r.kind === "history" ? `h:${r.h.outgoing ? "out" : "in"}:${r.h.id}` : r.kind === "relay" ? `r:${r.r.id}` : `t:${r.t.outgoing ? "out" : "in"}:${r.t.id}`)}
               {#if r.kind === "history"}
                 {@const h = r.h}
+                {@const key = cardKey(r)}
+                {@const openId = !h.outgoing && h.result === "done" && h.savedTo ? h.id : null}
                 <div class="msg" class:out={h.outgoing} class:bad={h.result !== "done"} in:pop={{ duration: 240, from: 0.98, y: 8, origin: h.outgoing ? "right bottom" : "left bottom" }}>
-                  <div class="bubble">
+                  <!-- A group, not a button: it holds buttons of its own (Cancel, Open…), which a button would hide from screen readers. -->
+                  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label="{h.outgoing ? 'Sent' : 'Received'}: {h.name}" onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
                     <div class="mtop">
                       <FileIcon name={h.name} kind={h.files > 1 ? "folder" : undefined} size={18} />
                       <MiddleText text={h.name} class="mname" />
+                      {#if hasList(h.items, h.more)}{@render chev(key, h.name)}{/if}
                     </div>
-                    <div class="mmeta">{plural(h.files, "file")} · {bytes(h.size)}{#if h.via}<span class="via" title="Sent on for {h.via}">from {h.via}</span>{/if}</div>
+                    <div class="mmeta">{itemsCount(h.files, h.items, h.more)} · {bytes(h.size)}{#if h.via}<span class="via" title="Sent on for {h.via}">from {h.via}</span>{/if}</div>
                     <div class="mfoot">
                       <span class="res" class:ok={h.result === "done"}>{resultText(h)}</span>
                       <span class="dim">{shortDate(h.date)}{#if h.path}{" · " + pathLabel(h.path)}{/if}</span>
@@ -963,33 +1040,43 @@
                         </span>
                       {/if}
                     </div>
+                    {@render fold(key, h.items, h.more, openId)}
                   </div>
                 </div>
               {:else if r.kind === "moving"}
                 {@const t = r.t}
+                {@const key = cardKey(r)}
                 <div class="msg live" class:out={t.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: t.outgoing ? "right bottom" : "left bottom" }}>
-                  <div class="bubble">
+                  <!-- A group, not a button: it holds buttons of its own (Cancel, Open…), which a button would hide from screen readers. -->
+                  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label="{t.outgoing ? 'Sending' : 'Receiving'}: {t.name}" onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
                     <div class="mtop">
                       <FileIcon name={t.name} kind={t.files > 1 ? "folder" : undefined} size={18} />
                       <MiddleText text={t.name} class="mname" />
+                      {#if hasList(t.items, t.more)}{@render chev(key, t.name)}{/if}
                     </div>
-                    <div class="mmeta">{plural(t.files, "file")} · {bytes(t.size)}{#if t.via}<span class="via" title="Sent on for {t.via}">from {t.via}</span>{/if}</div>
+                    <div class="mmeta">{itemsCount(t.files, t.items, t.more)} · {bytes(t.size)}{#if t.via}<span class="via" title="Sent on for {t.via}">from {t.via}</span>{/if}</div>
                     <div class="bar" class:waiting={t.state === "waiting"}><i style:width="{Math.min(100, (t.done / Math.max(1, t.size)) * 100)}%"></i></div>
                     <div class="mfoot">
                       <span class="dim">{movingText(t)}{#if t.state === "sending" || t.state === "receiving"}{" · " + speed(speedOf(t))}{/if}{#if t.path}{" · " + pathLabel(t.path)}{/if}</span>
                       {#if !fromId}<button class="link" onclick={() => app.run(() => api.directCancel(t.id))}>Cancel</button>{/if}
                     </div>
+                    {@render fold(key, t.items, t.more, null)}
                   </div>
                 </div>
               {:else if r.kind === "relay"}
                 {@const x = r.r}
+                {@const key = cardKey(r)}
                 <div class="msg out" class:live={!x.ended} class:bad={!!x.ended} in:pop={{ duration: 240, from: 0.98, y: 8, origin: "right bottom" }}>
-                  <div class="bubble">
+                  <!-- A group, not a button: it holds buttons of its own (Cancel, Open…), which a button would hide from screen readers. -->
+                  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label="Sent through {x.deviceName}: {x.name}" onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
                     <div class="mtop">
                       <FileIcon name={x.name} kind={x.files > 1 ? "folder" : undefined} size={18} />
                       <MiddleText text={x.name} class="mname" />
+                      {#if hasList(x.items, x.more)}{@render chev(key, x.name)}{/if}
                     </div>
-                    <div class="mmeta">{plural(x.files, "file")} · {bytes(x.size)}<span class="via" title={x.mine ? `Through ${x.deviceName}` : `Sent on for ${x.deviceName}`}>{x.mine ? `through ${x.deviceName}` : `from ${x.deviceName}`}</span></div>
+                    <div class="mmeta">{itemsCount(x.files, x.items, x.more)} · {bytes(x.size)}<span class="via" title={x.mine ? `Through ${x.deviceName}` : `Sent on for ${x.deviceName}`}>{x.mine ? `through ${x.deviceName}` : `from ${x.deviceName}`}</span></div>
                     {#if !x.ended}
                       <div class="bar" class:waiting={x.state === "paused" || x.state === "waiting"}><i style:width="{relayPct(x)}%"></i></div>
                     {/if}
@@ -1002,6 +1089,7 @@
                         <button class="link" onclick={() => app.run(() => api.directRelayCancel(x.id))}>Cancel</button>
                       {/if}
                     </div>
+                    {@render fold(key, x.items, x.more, null)}
                   </div>
                 </div>
               {/if}
@@ -1011,7 +1099,7 @@
           </div>
           {/key}
           {#if showDetails && !detailsInline}
-            <DirectDetails drawer contact={current} moving={movingNow} {speedOf} historyCount={endedWithThem} ontags={() => openTags(current!)} onfolder={() => chooseFolder(current!)} />
+            <DirectDetails drawer contact={current} moving={movingNow} {speedOf} historyCount={endedWithThem} transfer={pickedInfo} onopen={(id, i, reveal) => app.run(() => openPart(id, i, reveal))} onletgo={letGo} ontags={() => openTags(current!)} onfolder={() => chooseFolder(current!)} />
           {/if}
           </div>
 
@@ -1062,7 +1150,7 @@
       </section>
       {#if detailsInline && current}
         <div class="dside" class:open={showDetails} aria-hidden={!showDetails} inert={!showDetails}>
-          <DirectDetails contact={current} moving={movingNow} {speedOf} historyCount={endedWithThem} ontags={() => openTags(current!)} onfolder={() => chooseFolder(current!)} />
+          <DirectDetails contact={current} moving={movingNow} {speedOf} historyCount={endedWithThem} transfer={pickedInfo} onopen={(id, i, reveal) => app.run(() => openPart(id, i, reveal))} onletgo={letGo} ontags={() => openTags(current!)} onfolder={() => chooseFolder(current!)} />
         </div>
       {/if}
     </div>
@@ -1983,6 +2071,58 @@
   .mtop :global(.mname) {
     font-weight: 500;
     min-width: 0;
+  }
+  /* A card can be picked (its files show in the details panel). */
+  .bubble {
+    cursor: default;
+    transition:
+      border-color var(--fast) ease,
+      box-shadow var(--fast) ease;
+    --ti-hover: var(--active);
+    --ti-meta: var(--bubble-meta);
+  }
+  .bubble.picked {
+    border-color: var(--focus);
+    box-shadow:
+      0 0 0 1px var(--focus),
+      var(--bubble-shadow);
+  }
+  .chev {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    margin: -2px -4px -2px 0;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius);
+    background: none;
+    color: var(--bubble-meta);
+    cursor: pointer;
+    transition:
+      background var(--fast) ease,
+      color var(--fast) ease;
+  }
+  .chev:hover {
+    background: var(--active);
+    color: var(--text);
+  }
+  .chev :global(svg) {
+    transition: transform var(--mid) var(--ease);
+  }
+  .chev.open :global(svg) {
+    transform: rotate(180deg);
+  }
+  /* What was in it, unfolded under the card's foot. */
+  .mlist {
+    margin: 8px -4px 0 18px;
+    padding-top: 6px;
+    border-top: 1px solid var(--bubble-line);
+  }
+  .mlist :global(.tis) {
+    max-height: 240px;
+    overflow-y: auto;
   }
   .mmeta {
     margin: 4px 0 0 26px;

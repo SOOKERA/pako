@@ -146,6 +146,15 @@ pub struct RelayView {
     pub keep: bool,
     /// The first leg got there (the relaying PC has the files).
     pub reached: bool,
+    /// Its files and folders (from its first leg), and how many more.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<super::store::TransferItem>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub more: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A relay's end as a few words ("delivered", "Rado declined"…), for the history lines.
@@ -270,8 +279,10 @@ fn clean_seen(mut s: Seen) -> Seen {
         h.message = h.message.as_deref().map(|m| line(m, 300)).filter(|m| !m.is_empty());
         h.via = h.via.as_deref().map(|m| line(m, 60)).filter(|m| !m.is_empty());
         h.relay_to = None;
-        // Never a place on that PC.
+        // Never a place on that PC; what was in each transfer stays there.
         h.saved_to = None;
+        h.items.clear();
+        h.more = 0;
         h.path = h.path.take().filter(|p| matches!(p.as_str(), "local" | "direct6" | "direct" | "relay"));
     }
     s.moving.truncate(MAX_REMOTE_MOVING);
@@ -440,8 +451,11 @@ impl Node {
                         history.drain(..n - MAX_REMOTE_HISTORY);
                     }
                     for h in &mut history {
-                        // Never a place on this PC (also not inside a reason).
+                        // Never a place on this PC (also not inside a reason), nor what was
+                        // in each transfer: those names stay on this PC.
                         h.saved_to = None;
+                        h.items.clear();
+                        h.more = 0;
                         h.message = h.message.as_deref().map(no_places);
                     }
                     let via_of = |tid: &str| self.via_of(&inner, tid);
@@ -523,6 +537,14 @@ impl Node {
             .map(|r| {
                 let leg1 = if r.mine { inner.outgoing.get(&r.id).map(|t| (t.sent.load(Ordering::Relaxed), t.state.clone())) } else { inner.incoming.get(&r.id).map(|t| (t.received.load(Ordering::Relaxed), t.state.clone())) };
                 let leg2 = r.leg2.as_ref().and_then(|l| inner.outgoing.get(l)).map(|t| t.sent.load(Ordering::Relaxed));
+                // What's in it: from its first leg (moving, else its history line).
+                let (items, more) = inner
+                    .outgoing
+                    .get(&r.id)
+                    .map(|t| t.items.clone())
+                    .or_else(|| inner.incoming.get(&r.id).map(|t| t.items.clone()))
+                    .or_else(|| inner.history.iter().rev().find(|h| h.id == r.id).map(|h| (h.items.clone(), h.more)))
+                    .unwrap_or_default();
                 RelayView {
                     id: r.id.clone(),
                     mine: r.mine,
@@ -546,6 +568,8 @@ impl Node {
                     done: leg2.unwrap_or(r.done).min(r.size),
                     keep: r.keep,
                     reached: !matches!(r.state.as_str(), "leg1" | "receiving") && inner.history.iter().any(|h| h.id == r.id && h.result == "done"),
+                    items: items.into_iter().map(|it| super::store::TransferItem { at: None, ..it }).collect(),
+                    more,
                 }
             })
             .collect()
@@ -1215,12 +1239,16 @@ mod tests {
                 peak_speed: 0,
                 via: Some("Lap\u{200B}top".into()),
                 relay_to: Some("x".into()),
+                items: vec![super::super::store::TransferItem { name: "a".into(), size: 1, files: 1, dir: false, at: Some("a".into()) }],
+                more: 3,
             }],
             ..Default::default()
         });
         assert_eq!(s.contacts.len(), 1);
         assert_eq!((s.contacts[0].name.as_str(), s.contacts[0].path.as_deref()), ("Rado", None));
         assert_eq!((s.history[0].saved_to.as_deref(), s.history[0].via.as_deref(), s.history[0].path.as_deref()), (None, Some("Laptop"), Some("relay")));
+        // What was in each transfer stays on that PC (never sent, never taken from it).
+        assert!(s.history[0].items.is_empty() && s.history[0].more == 0);
     }
 
     // ---------- three PCs: the laptop, Home PC (passes files on) and Rado (Home PC's contact) ----------
@@ -1647,6 +1675,8 @@ mod tests {
             peak_speed: 0,
             via: None,
             relay_to: None,
+            items: vec![super::super::store::TransferItem { name: "plan.txt".into(), size: 1, files: 1, ..Default::default() }],
+            more: 0,
         };
         {
             let mut inner = home.inner.lock().unwrap();
