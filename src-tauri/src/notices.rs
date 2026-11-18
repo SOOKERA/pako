@@ -28,7 +28,8 @@ pub const KINDS: &[Kind] = &[
     Kind { id: "download-done", label: "Download finished", bell: false },
     Kind { id: "download-failed", label: "Download stopped", bell: false },
     Kind { id: "browser", label: "Sent from your browser", bell: false },
-    Kind { id: "video-failed", label: "Couldn't get a video", bell: false },
+    // Bell too: the player's button said "Sent" before Pako knew (see `video_from_browser`).
+    Kind { id: "video-failed", label: "Couldn't get a video", bell: true },
     Kind { id: "upload-done", label: "Upload finished", bell: false },
     Kind { id: "upload-failed", label: "Couldn't upload", bell: false },
     Kind { id: "upload-deleted", label: "Upload deleted on its date", bell: false },
@@ -675,8 +676,8 @@ mod tests {
         for k in KINDS {
             let p = pref(&s, k.id);
             assert!(p.popup, "{} pops up by default", k.id);
-            // Questions, and a new Pako waiting for a restart.
-            let bell = matches!(k.id, "direct-request" | "direct-offer" | "needs-you" | "update-ready");
+            // Questions, a new Pako waiting for a restart, and a video the button said was sent.
+            let bell = matches!(k.id, "direct-request" | "direct-offer" | "needs-you" | "update-ready" | "video-failed");
             assert_eq!(p.bell, bell, "{} bell default", k.id);
         }
         // Unknown kinds are "other".

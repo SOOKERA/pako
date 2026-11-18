@@ -506,12 +506,15 @@ impl Engine {
         self.update_video_tool();
     }
 
+    /// How long the player's button waits for Pako (it says "Sending…" meanwhile).
+    pub(crate) const VIDEO_ANSWER_WAIT: Duration = Duration::from_millis(1500);
+
     /// The player's Download button in the browser: one video straight to Downloads in the
-    /// chosen quality (0 = audio only). Answers right away; yt-dlp then reads the video's title
-    /// and qualities in the background and a Windows notification says how it went. A playlist
-    /// link goes to Links instead (to pick the videos).
-    /// The player's Download button. Waits a little for yt-dlp's answer so the button can say
-    /// what went wrong (DRM, private video...); a slow site is answered "sent" and carries on.
+    /// chosen quality (0 = audio only). A playlist link goes to Links instead (to pick the
+    /// videos). Answers within VIDEO_ANSWER_WAIT: what's known at once (no video tools, already
+    /// in Pako, a quick refusal) goes back to the button; yt-dlp reading the video (seconds on
+    /// most sites) carries on, and what goes wrong then is said in a "Couldn't get a video"
+    /// notification (pop-up and bell: the button already said "Sent").
     /// `private`: from a private window: a private download (no trace beyond the file), and
     /// never any cookies (no cookie file for yt-dlp).
     pub async fn video_from_browser(self: &Arc<Self>, url: String, quality: u32, cookies: Vec<crate::extension::SiteCookie>, private: bool) -> Result<(), String> {
@@ -521,8 +524,12 @@ impl Engine {
         if !crate::video::ready() {
             return Err(NEEDS_VIDEO_TOOLS.into());
         }
-        if self.video_in_list(&url) ||!READING.lock().unwrap().insert(url.clone()) {
+        if self.video_in_list(&url) {
             return Err("This video is already in Pako.".into());
+        }
+        // Answered "Sent" already, and still being read (a second click, maybe another quality).
+        if !READING.lock().unwrap().insert(url.clone()) {
+            return Err("Pako is already getting this video.".into());
         }
         let me = self.clone();
         let (answer, answered) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -578,7 +585,7 @@ impl Engine {
             }
             READING.lock().unwrap().remove(&url);
         });
-        match tokio::time::timeout(Duration::from_secs(25), answered).await {
+        match tokio::time::timeout(Self::VIDEO_ANSWER_WAIT, answered).await {
             Ok(Ok(result)) => result,
             // Still checking (a slow site), or a playlist: it goes on in Pako.
             _ => Ok(()),

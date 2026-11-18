@@ -33,6 +33,7 @@ By default, it keeps:
 - **Files waiting for your answer**
 - **Pako needs you**
 - **New Pako ready**: a new version is downloaded, with **Restart now**
+- **Couldn't get a video**: a video sent from the player's **Download** button that Pako couldn't get (the button had already said **Sent to Pako ✓**)
 
 Other kinds can go in too: turn on their **Bell** switch in **Settings › Notifications**.
 

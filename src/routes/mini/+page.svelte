@@ -12,6 +12,7 @@
   import WinButton from "$lib/WinButton.svelte";
   import Toasts from "$lib/Toasts.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "$lib/motion";
+  import { confirmClick, CONFIRM_FOR, type Armed } from "$lib/confirm";
 
   onMount(() => app.start());
 
@@ -24,6 +25,9 @@
     const un = listen<{ from: "bottom" | "top" }>("mini-show", (e) => {
       from = e.payload.from;
       opening++;
+      // A "Remove" left waiting when the window closed asks again.
+      clearTimeout(confirmTimer);
+      armed = null;
     });
     return () => {
       un.then((f) => f());
@@ -87,6 +91,26 @@
   function upPct(j: { sent: number; total: number | null; size: number }) {
     const of = j.total ?? j.size;
     return of ? Math.min(100, (j.sent / of) * 100) : 0;
+  }
+
+  /** Remove asks once: the ✕ turns into "Remove" for a few seconds, a second click removes it
+   *  (what was downloaded so far is deleted, as in the full window). One button that changes,
+   *  so the keyboard focus stays on it; a double-click on ✕ doesn't remove. */
+  let armed = $state<Armed>(null);
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+  async function removeClick(d: Download) {
+    const now = performance.now();
+    const what = confirmClick(armed, d.id, now);
+    if (what === "arm") {
+      armed = { id: d.id, at: now };
+      clearTimeout(confirmTimer);
+      confirmTimer = setTimeout(() => (armed = null), CONFIRM_FOR);
+    } else if (what === "confirm") {
+      clearTimeout(confirmTimer);
+      armed = null;
+      await app.run(() => api.remove([d.id], false));
+      await app.refresh();
+    }
   }
 
   function pct(d: Download) {
@@ -202,6 +226,14 @@
             {:else}
               <button class="icon-btn" aria-label="Resume {d.name}" onclick={() => app.run(() => api.resume([d.id]))}><Icon name="play" size={12} /></button>
             {/if}
+            <button
+              class={armed?.id === d.id ? "act danger" : "icon-btn"}
+              aria-label={armed?.id === d.id ? `Remove ${d.name} now: what was downloaded so far is deleted` : `Remove ${d.name}`}
+              title={armed?.id === d.id ? "What was downloaded so far is deleted" : "Remove"}
+              onclick={() => removeClick(d)}
+            >
+              {#if armed?.id === d.id}<span in:fadeIn={{ duration: 120 }}>Remove</span>{:else}<Icon name="x" size={12} />{/if}
+            </button>
           </div>
           <div class="bar"><div class="fill" style="width: {pct(d)}%; background: {look.color}"></div></div>
           <div class="sub">
@@ -489,6 +521,9 @@
   }
   .act:hover {
     background: var(--raise);
+  }
+  .act.danger {
+    color: var(--st-fail-text);
   }
   .more {
     padding: 10px 14px;

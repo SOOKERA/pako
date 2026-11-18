@@ -7,6 +7,22 @@
   let { children } = $props();
   // Light or dark, in every window.
   onMount(() => theme.start());
+
+  /** The browser's own right-click menu (Back, Refresh, Print…) never shows in Pako's windows:
+   *  Pako's own menus open where they're made for. Text boxes and selected text keep it (copy,
+   *  paste). */
+  function noBrowserMenu(e: MouseEvent) {
+    const t = e.target as HTMLElement | null;
+    // (A switch, slider or colour box isn't a text box: the browser would show its page menu.)
+    const text = "input:not([type=checkbox], [type=radio], [type=range], [type=color], [type=button], [type=submit])";
+    if (t?.closest?.(`${text}, textarea, [contenteditable]:not([contenteditable='false'])`)) return;
+    if (window.getSelection()?.toString().trim()) return;
+    // Development: Shift+right-click keeps it (Inspect).
+    if (import.meta.env.DEV && e.shiftKey) return;
+    e.preventDefault();
+  }
 </script>
+
+<svelte:window oncontextmenu={noBrowserMenu} />
 
 {@render children()}

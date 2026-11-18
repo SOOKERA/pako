@@ -41,7 +41,7 @@ export const KINDS: KindInfo[] = [
   { id: "download-done", label: "Download finished", group: "Downloads", icon: "check", tone: "done", bell: false },
   { id: "download-failed", label: "Download stopped", group: "Downloads", icon: "alert", tone: "fail", bell: false },
   { id: "browser", label: "Sent from your browser", group: "Downloads", icon: "globe", tone: "info", bell: false },
-  { id: "video-failed", label: "Couldn't get a video", group: "Downloads", icon: "alert", tone: "fail", bell: false },
+  { id: "video-failed", label: "Couldn't get a video", group: "Downloads", icon: "alert", tone: "fail", bell: true },
   { id: "upload-done", label: "Upload finished", group: "Upload", icon: "link", tone: "done", bell: false },
   { id: "upload-failed", label: "Couldn't upload", group: "Upload", icon: "alert", tone: "fail", bell: false },
   { id: "upload-deleted", label: "Upload deleted on its date", group: "Upload", icon: "trash", tone: "info", bell: false },

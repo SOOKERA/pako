@@ -41,7 +41,7 @@ With the full [browser extension](browser-extension.md) (not Pako Light), a **Do
 2. Pick **Up to 1080p**, **Up to 720p**, **Up to 480p** or **Audio only**.
 3. The button says **Sent to Pako ✓**, and the video starts downloading in Pako. If **Ask before each browser download** is on, Pako first shows the **Download with Pako** window.
 
-If Pako can't get the video, the button says why. When finding out takes longer, a pop-up says it instead: **Pako couldn't get this video** (see [Notifications](notifications.md)).
+The button answers in about a second, and Pako reads the video's title and qualities meanwhile. If Pako can tell at once that it can't get the video (the video tools aren't installed, or it's already in Pako), the button says why. Otherwise a pop-up says it once Pako knows, and the bell keeps it: **Pako couldn't get this video** (see [Notifications](notifications.md)). Clicking the button again while Pako is still reading the video says **Pako is already getting this video.**
 
 On Facebook and Instagram, the button takes the video you're pointing at, even in a feed with many videos.
 

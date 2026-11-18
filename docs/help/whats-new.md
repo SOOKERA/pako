@@ -1,5 +1,16 @@
 # What's new
 
+## 1.2.7
+
+### Improved
+
+- The video player's **Download** button answers in about a second instead of several. When Pako finds out later that it can't get the video, it says so in a pop-up and now in the bell too (**Couldn't get a video**).
+- The small tray window has a **✕** to remove an unfinished download (click it, then **Remove**).
+
+### Fixed
+
+- Right-clicking in Pako's windows no longer opens the browser's own menu (Back, Refresh, Print).
+
 ## 1.2.6
 
 ### Fixed

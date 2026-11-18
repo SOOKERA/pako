@@ -94,7 +94,7 @@ Pako lives in the taskbar's tray, next to the clock. Its icon gives you a small 
 - **One click** on the tray icon opens or closes it. **Double-click** opens Pako's main window. **Right-click** gives a short menu: **Open Pako**, **Settings…**, **Pause all**, **Resume all** and **Quit Pako**.
 - It shows what's downloading, waiting or paused, the ones that stopped today (failed, **Google limit**, **Only in the browser**), and what finished **today**, with **Open** and **Folder**. Older ones stay in the main window. When there are many, it says "and 5 more in Pako" (for example).
 - When nothing is left to do and something finished, it says **All done**. With nothing at all, it says "Nothing downloading."
-- Pause or resume one download with its button, or everything with **Pause all** / **Resume all**. **Open Pako** opens the main window, and the gear opens **Settings**.
+- Pause or resume one download with its button, or everything with **Pause all** / **Resume all**. To remove an unfinished one, click its **✕**, then **Remove** within a few seconds (what was downloaded so far is deleted, as in the main window; for a **Via browser** one, the browser cancels its download). **Open Pako** opens the main window, and the gear opens **Settings**.
 - At the top, a switch shows **Downloads** or **Uploads**. **Uploads** lists what's uploading and your latest uploads, with a button to copy each one's link (see [Upload](upload.md)).
 
 ### Pin, minimise, close
