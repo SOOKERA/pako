@@ -376,6 +376,45 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
+    /// GitHub's own SHA-256 of the file ("sha256:…"), when it gives one.
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+/// 7-Zip publishes no checksums, and 7zr.exe is run straight from its download: the files of the
+/// versions Pako knows are pinned here (tag, 7zr.exe, the 64-bit installer), so a release
+/// replaced after the fact is refused. A newer version is checked against GitHub's own SHA-256
+/// of each file instead (add it here with the next Pako).
+const SEVEN_ZIP_PINNED: &[(&str, &str, &str)] = &[
+    ("26.06", "e80db2dad715a6c5adabe292d31ed54e11f4e9b99ca349827b50573b175891bc", "9b697f65ecc2d9b0152f5ee96d72dde522a7827690349d9307935dacf40f42ec"),
+    ("26.05", "9bf582b894dfa665f852d7e9112b02290a1c303c2d95a21fcdc41ffcb03143b7", "fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0"),
+    ("26.04", "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282", "d54bf805f9f3704d1e8db2fa3498ae7ef2df0312b40b558e7c71c734430a665d"),
+    ("26.03", "ad4c82fadcbdf93c03b4fc440f300509c7d60c5c2f4d183e35d9d70d6957037d", "0859c524b8a63551848f0c246abddcb1d0b7b656b0fbfe879f8d85e61a9e6edd"),
+];
+
+/// What a downloaded 7-Zip file must hash to: the pinned value for a version Pako knows, else
+/// GitHub's own digest. None = nothing to check against (an old release without digests).
+fn seven_zip_expected(tag: &str, installer: bool, github_digest: Option<&str>) -> Option<String> {
+    if let Some((_, zr, inst)) = SEVEN_ZIP_PINNED.iter().find(|(t, _, _)| *t == tag.trim_start_matches('v')) {
+        return Some(if installer { inst } else { zr }.to_string());
+    }
+    github_digest.and_then(|d| d.strip_prefix("sha256:")).map(|d| d.to_ascii_lowercase())
+}
+
+/// A tool runs from its own folder, never from Pako's working folder: Windows looks for the
+/// DLLs a program loads in its working folder too, and a portable Pako's is often Downloads
+/// (where a browser can save a DLL). `SetDefaultDllDirectories` isn't passed on to the tools.
+pub fn in_own_folder(cmd: &mut Command, exe: &Path) {
+    if let Some(dir) = exe.parent().filter(|d| d.is_dir()) {
+        cmd.current_dir(dir);
+    }
+}
+
+/// The same, for a tool started with tokio.
+pub fn in_own_folder_async(cmd: &mut tokio::process::Command, exe: &Path) {
+    if let Some(dir) = exe.parent().filter(|d| d.is_dir()) {
+        cmd.current_dir(dir);
+    }
 }
 
 /// Runs a tool once to read its version (hidden, no console window). Never yt-dlp's own `-U`:
@@ -383,6 +422,7 @@ struct Asset {
 fn run_version(exe: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(exe);
     cmd.args(args);
+    in_own_folder(&mut cmd, exe);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -762,13 +802,25 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                     .find(|a| a.name.starts_with("7z") && a.name.ends_with("-x64.exe"))
                     .ok_or_else(|| anyhow!("No 64-bit 7-Zip in the latest release"))?;
                 let zr = work.join("7zr.exe");
-                fetch(http, &asset(&rel, "7zr.exe")?.browser_download_url, &zr, progress).await?;
+                let zr_asset = asset(&rel, "7zr.exe")?;
+                let zr_got = fetch(http, &zr_asset.browser_download_url, &zr, progress).await?;
                 let inst = work.join(&installer.name);
                 asset_name = installer.name.clone();
-                fetch(http, &installer.browser_download_url, &inst, progress).await?;
+                let inst_got = fetch(http, &installer.browser_download_url, &inst, progress).await?;
+                // Checked before anything from the download is run.
+                progress("Checking the file", 0, None);
+                for (got, want) in [
+                    (zr_got, seven_zip_expected(&rel.tag_name, false, zr_asset.digest.as_deref())),
+                    (inst_got, seven_zip_expected(&rel.tag_name, true, installer.digest.as_deref())),
+                ] {
+                    if want.is_some_and(|w| !w.eq_ignore_ascii_case(&got)) {
+                        bail!("The downloaded 7-Zip doesn't match the one Pako knows");
+                    }
+                }
                 progress("Unpacking", 0, None);
                 let mut cmd = Command::new(&zr);
                 cmd.arg("x").arg("-y").arg(format!("-o{}", work.join("full").display())).arg(&inst);
+                in_own_folder(&mut cmd, &zr);
                 #[cfg(windows)]
                 {
                     use std::os::windows::process::CommandExt;
@@ -818,6 +870,16 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
 
 #[cfg(test)]
 mod tests {
+    /// A known 7-Zip version must match its pinned files; a newer one GitHub's digest.
+    #[test]
+    fn seven_zip_is_checked() {
+        let pinned = super::seven_zip_expected("26.06", false, Some("sha256:00")).unwrap();
+        assert_eq!(pinned, "e80db2dad715a6c5adabe292d31ed54e11f4e9b99ca349827b50573b175891bc", "the pin wins over GitHub's digest");
+        assert!(super::seven_zip_expected("26.06", true, None).unwrap().starts_with("9b697f65"));
+        assert_eq!(super::seven_zip_expected("27.00", true, Some("sha256:ABCD")).as_deref(), Some("abcd"));
+        assert_eq!(super::seven_zip_expected("27.00", true, None), None);
+    }
+
     use super::*;
 
     #[test]
@@ -898,7 +960,7 @@ mod tests {
 
     #[test]
     fn picks_the_newest_stable_ffmpeg() {
-        let a = |n: &str| Asset { name: n.into(), browser_download_url: String::new() };
+        let a = |n: &str| Asset { name: n.into(), browser_download_url: String::new(), digest: None };
         let assets = vec![
             a("ffmpeg-master-latest-win64-gpl.zip"),
             a("ffmpeg-n9.0-latest-win64-gpl-9.0.zip"),

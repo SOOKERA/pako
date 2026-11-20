@@ -78,6 +78,9 @@ pub struct Preview {
     port: u16,
     http: reqwest::Client,
     entries: Mutex<HashMap<String, Entry>>,
+    /// Private mode's videos: the vault file and its name, read only while Private mode is
+    /// open (decrypted as the player asks; nothing readable is written anywhere).
+    vault: Mutex<HashMap<String, (std::path::PathBuf, String)>>,
 }
 
 /// Formats the player in Pako's window plays as they are.
@@ -94,7 +97,7 @@ pub fn is_video(name: &str) -> bool {
 impl Preview {
     pub async fn start(http: reqwest::Client) -> Result<Arc<Self>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let me = Arc::new(Self { port: listener.local_addr()?.port(), http, entries: Mutex::new(HashMap::new()) });
+        let me = Arc::new(Self { port: listener.local_addr()?.port(), http, entries: Mutex::new(HashMap::new()), vault: Mutex::new(HashMap::new()) });
         let server = me.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -135,6 +138,21 @@ impl Preview {
         );
         let kind = if site { "site" } else if convert { "low" } else { "raw" };
         format!("http://127.0.0.1:{}/{kind}/{token}", self.port)
+    }
+
+    /// A player address for a video in Private mode's vault. `convert`: through ffmpeg (for
+    /// kinds the player can't show as they are), reading the decrypted bytes from this same
+    /// server, never from a file.
+    pub fn register_vault(&self, path: std::path::PathBuf, name: String, quality: u32, convert: bool) -> String {
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        self.vault.lock().unwrap().insert(token.clone(), (path, name));
+        let kind = if convert { format!("vaultlow/{}", quality.clamp(240, 720)) } else { "vault".into() };
+        format!("http://127.0.0.1:{}/{kind}/{token}", self.port)
+    }
+
+    /// Private mode locked: its player addresses stop working.
+    pub fn forget_vault(&self) {
+        self.vault.lock().unwrap().clear();
     }
 
     /// A video-site preview: asks yt-dlp for its streams (once; later calls reuse them), so the
@@ -184,6 +202,21 @@ impl Preview {
             .map(|(_, v)| v.trim().to_string());
         let mut parts = path.trim_start_matches('/').splitn(2, '/');
         let (kind, mut token) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+        // Private mode's videos.
+        if kind == "vault" || kind == "vaultlow" {
+            let (quality, t) = if kind == "vaultlow" {
+                let (q, t) = token.split_once('/').unwrap_or(("480", token));
+                (q.parse().unwrap_or(480u32).clamp(240, 720), t)
+            } else {
+                (0, token)
+            };
+            let found = self.vault.lock().unwrap().get(t).cloned();
+            let Some((file, name)) = found.filter(|_| crate::vault::get().is_unlocked()) else {
+                sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await?;
+                return Ok(());
+            };
+            return if kind == "vault" { serve_vault(sock, file, &name, range.as_deref()).await } else { self.vault_low(sock, t, quality).await };
+        }
         // /part/<token>/<n>: stream n of a video-site preview.
         let mut part = usize::MAX;
         if kind == "part" {
@@ -229,7 +262,9 @@ impl Preview {
             return Ok(());
         };
         let input = format!("http://127.0.0.1:{}/raw/{token}", self.port);
-        let mut cmd = tokio::process::Command::new(ffmpeg);
+        let mut cmd = tokio::process::Command::new(&ffmpeg);
+        // From its own folder, never Pako's working folder (DLLs placed there aren't loaded).
+        crate::components::in_own_folder_async(&mut cmd, AsRef::<std::path::Path>::as_ref(&ffmpeg));
         // The file comes from any link: ffmpeg may only read it through this proxy, and only
         // as a plain video file. Playlist formats (HLS, DASH, concat...) are refused, since
         // they would make ffmpeg open other addresses, e.g. on the local network.
@@ -246,7 +281,9 @@ impl Preview {
             Err(m) => return refuse(sock, &m).await,
         };
         let Some(ffmpeg) = crate::components::ffmpeg() else { return refuse(sock, NEEDS_TOOLS).await };
-        let mut cmd = tokio::process::Command::new(ffmpeg);
+        let mut cmd = tokio::process::Command::new(&ffmpeg);
+        // From its own folder, never Pako's working folder (DLLs placed there aren't loaded).
+        crate::components::in_own_folder_async(&mut cmd, AsRef::<std::path::Path>::as_ref(&ffmpeg));
         cmd.args(site_args(&clip, self.port, token));
         // In Pako's job (it ends with Pako), without a window.
         stream_ffmpeg(sock, cmd, true).await
@@ -272,6 +309,73 @@ impl Preview {
             Err(_) => refuse(sock, "No connection to the site.").await,
         }
     }
+}
+
+impl Preview {
+    /// A private video converted on the fly like /low, from the decrypted /vault address.
+    async fn vault_low(&self, mut sock: TcpStream, token: &str, quality: u32) -> Result<()> {
+        let Some(ffmpeg) = crate::components::ffmpeg() else {
+            sock.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await?;
+            return Ok(());
+        };
+        let input = format!("http://127.0.0.1:{}/vault/{token}", self.port);
+        let mut cmd = tokio::process::Command::new(&ffmpeg);
+        // From its own folder, never Pako's working folder (DLLs placed there aren't loaded).
+        crate::components::in_own_folder_async(&mut cmd, AsRef::<std::path::Path>::as_ref(&ffmpeg));
+        cmd.args(["-hide_banner", "-loglevel", "error"])
+            .args(["-protocol_whitelist", "http,tcp", "-format_whitelist", VIDEO_DEMUXERS, "-i", &input])
+            .args(small_mp4(quality));
+        stream_ffmpeg(sock, cmd, true).await
+    }
+}
+
+/// Serves the asked piece of a private video, decrypted block by block.
+async fn serve_vault(mut sock: TcpStream, file: std::path::PathBuf, name: &str, range: Option<&str>) -> Result<()> {
+    let reader = match tauri::async_runtime::spawn_blocking(move || crate::vault::get().reader(&file)).await {
+        Ok(Ok(r)) => Arc::new(r),
+        _ => return refuse(sock, "This private video can't be read now.").await,
+    };
+    let len = reader.len();
+    let (from, to) = parse_range(range);
+    if len == 0 || from >= len {
+        sock.write_all(format!("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{len}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await?;
+        return Ok(());
+    }
+    let to = to.unwrap_or(len - 1).min(len - 1);
+    let ctype = mime_for(name).unwrap_or("application/octet-stream");
+    let head = if range.is_some() {
+        format!("HTTP/1.1 206 Partial Content\r\nContent-Type: {ctype}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{to}/{len}\r\n\r\n", to - from + 1)
+    } else {
+        format!("HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: {len}\r\n\r\n")
+    };
+    sock.write_all(head.as_bytes()).await?;
+    let mut at = from;
+    while at <= to {
+        // Private mode locked meanwhile: not one more decrypted byte (the player, or ffmpeg
+        // converting it for /vault-low, stops here).
+        if !crate::vault::get().is_unlocked() {
+            break;
+        }
+        let n = ((to - at + 1) as usize).min(256 * 1024);
+        let r = reader.clone();
+        let chunk = tauri::async_runtime::spawn_blocking(move || {
+            let mut buf = zeroize::Zeroizing::new(vec![0u8; n]);
+            let got = r.read_at(&mut buf, at)?;
+            buf.truncate(got);
+            Ok::<_, std::io::Error>(buf)
+        })
+        .await;
+        let Ok(Ok(buf)) = chunk else { break };
+        if buf.is_empty() {
+            break;
+        }
+        // The player closed this piece (seeked elsewhere): stop quietly.
+        if sock.write_all(&buf).await.is_err() {
+            break;
+        }
+        at += buf.len() as u64;
+    }
+    Ok(())
 }
 
 /// A plain-text error for the player (or for ffmpeg reading /part).
@@ -435,6 +539,8 @@ async fn find_clip(source: &Source, owner: Option<&str>) -> Result<Clip, String>
     // The browser's login for this video, when it came from the browser (deleted right after).
     let jar = owner.and_then(crate::video::cookie_file_for);
     let mut cmd = tokio::process::Command::new(&t.yt_dlp);
+    // From its own folder, never Pako's working folder (DLLs placed there aren't loaded).
+    crate::components::in_own_folder_async(&mut cmd, AsRef::<std::path::Path>::as_ref(&t.yt_dlp));
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     cmd.args(["--no-config", "--no-update", "--encoding", "utf-8"]);
     if let Some(deno) = &t.deno {
@@ -625,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn video_sites_get_a_short_clip_address() {
-        let p = Preview { port: 1, http: reqwest::Client::new(), entries: Mutex::new(HashMap::new()) };
+        let p = Preview { port: 1, http: reqwest::Client::new(), entries: Mutex::new(HashMap::new()), vault: Mutex::new(HashMap::new()) };
         let site = p.register_item(Some("d1"), video("https://www.youtube.com/watch?v=x"), "Song.mp4".into(), 720, true);
         assert!(site.contains("/site/"), "{site}");
         let low = p.register_item(None, Source::Http { url: "https://example.com/a.mkv".into() }, "a.mkv".into(), 720, true);

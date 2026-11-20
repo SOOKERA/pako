@@ -47,6 +47,35 @@ export function rowSlide(node: Element, { duration = 220 }: { duration?: number 
   };
 }
 
+/** Side panels: open/close in width from their edge (the private list's details panel). */
+export function sideSlide(node: Element, { duration = 240 }: { duration?: number } = {}): TransitionConfig {
+  if (reduced() || duration === 0) return { duration: 0 };
+  const w = (node as HTMLElement).offsetWidth;
+  return {
+    duration,
+    easing: quintOut,
+    css: (t) => `width:${t * w}px;opacity:${Math.min(1, t * 1.4)};overflow:hidden`,
+  };
+}
+
+/** One page giving way to another in the same place (the normal list and the private list):
+ *  the new one fades and slides in a little; the old one, laid over it while it goes, fades out.
+ *  `duration` 0: an instant change (the swap isn't between those two). */
+export function viewIn(_node: Element, { duration = 240, x = 10 }: { duration?: number; x?: number } = {}): TransitionConfig {
+  if (reduced() || duration === 0) return { duration: 0 };
+  return { duration, easing: quintOut, css: (t) => `opacity:${t};transform:translateX(${(1 - t) * x}px)` };
+}
+export function viewOut(node: Element, { duration = 180, x = -10 }: { duration?: number; x?: number } = {}): TransitionConfig {
+  if (reduced() || duration === 0) return { duration: 0 };
+  // Laid over the page coming in while it goes (where it is can't be animated: set at once).
+  const s = (node as HTMLElement).style;
+  s.position = "absolute";
+  s.inset = "0";
+  s.zIndex = "1";
+  s.pointerEvents = "none";
+  return { duration, easing: cubicOut, css: (t) => `opacity:${t};transform:translateX(${(1 - t) * x}px)` };
+}
+
 /** Toasts: slide up from the bottom. */
 export function toastIn(_node: Element, { duration = 260 }: { duration?: number } = {}): TransitionConfig {
   if (reduced()) return { duration: 0 };

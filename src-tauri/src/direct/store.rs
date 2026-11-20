@@ -699,30 +699,13 @@ pub fn delete_tag(tags: &mut Vec<String>, contacts: &mut [Contact], name: &str) 
     }
 }
 
-/// A list file; an unreadable one is set aside (never overwritten) and the list starts empty.
-fn read<T: for<'de> Deserialize<'de>>(path: &PathBuf) -> Vec<T> {
-    // Briefly busy (a backup or a virus scan has it open): tried again a moment later, so the
-    // list isn't taken as empty and then saved over.
-    let mut tries = 0;
-    let bytes = loop {
-        match std::fs::read(path) {
-            Ok(b) => break b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(_) if tries < 4 => {
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
-            Err(_) => {
-                // Still unreadable: kept aside (never overwritten) when that works.
-                let mut aside = path.clone();
-                aside.set_extension(format!("unreadable-{}.json", crate::model::now_secs()));
-                let _ = std::fs::rename(path, aside);
-                return Vec::new();
-            }
-        }
-    };
-    match serde_json::from_slice::<Vec<T>>(&bytes) {
-        Ok(v) => v,
+/// A list file, read as Pako's other lists are (`paths::read_list_checked`): entries that
+/// can't be read are kept aside, a damaged file is moved aside and its ".bak" copy (a save
+/// older at most) is used. Still locked after a moment, with no whole ".bak": the file is set
+/// aside (never overwritten) and the list starts empty.
+fn read<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Vec<T> {
+    match crate::paths::read_list_checked::<T>(path) {
+        Ok(r) => r.items,
         Err(_) => {
             let mut aside = path.clone();
             aside.set_extension(format!("unreadable-{}.json", crate::model::now_secs()));
@@ -932,16 +915,26 @@ mod tests {
             their_relay: Some(super::super::proto::RelayFrom { name: "Sam".into(), contacts: 4 }),
         };
         store.save_contacts(&[c.clone()]);
-        assert_eq!(store.load_contacts(), vec![c]);
+        assert_eq!(store.load_contacts(), vec![c.clone()]);
         // An older file without the newer fields still reads.
         std::fs::write(dir.join("contacts.json"), r#"[{"id":"x","name":"Old"}]"#).unwrap();
         let old = store.load_contacts();
         assert_eq!(old[0].name, "Old");
         assert!(!old[0].trusted && !old[0].auto_accept);
-        // A damaged file is set aside, not lost.
+        // A damaged file is set aside, not lost, and its ".bak" copy (the save before) is used.
+        store.save_contacts(&[c.clone()]);
+        store.save_contacts(&[c.clone()]);
         std::fs::write(dir.join("contacts.json"), b"{not json").unwrap();
+        assert_eq!(store.load_contacts(), vec![c.clone()], "the .bak copy");
+        assert!(std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("damaged")));
+        // No .bak either: the list starts empty.
+        let _ = std::fs::remove_file(dir.join("contacts.json.bak"));
+        let _ = std::fs::remove_file(dir.join("contacts.bak"));
+        std::fs::write(dir.join("contacts.json"), b"{not json").unwrap();
+        let _ = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".bak")).for_each(|e| {
+            let _ = std::fs::remove_file(e.path());
+        });
         assert!(store.load_contacts().is_empty());
-        assert!(std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("unreadable")));
         let mut h: Vec<HistoryItem> = (0..(MAX_HISTORY + 5))
             .map(|i| HistoryItem {
                 id: i.to_string(),

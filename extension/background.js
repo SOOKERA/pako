@@ -27,7 +27,7 @@ const NOT_CONNECTED = "Pako isn't connected. Click the Pako button in the toolba
  *  browser can keep running the background script it took when the extension was added, after
  *  Pako wrote a newer one in the folder, even across restarts (seen in Vivaldi 8.3): it then
  *  reads the new manifest but runs the old script. Told apart by this, the extension reloads. */
-const SCRIPT_VERSION = "1.2.11";
+const SCRIPT_VERSION = "1.2.12";
 
 // The toolbar window and the pages ask through here. Registered first, at
 // once, so nothing else that runs at start-up (or fails there) can keep it from answering.
@@ -683,7 +683,9 @@ async function handOff(item, url, seen, holds, firstSize, isPrivate, storeId, re
     hold: holds,
     // The browser holds its copy paused: Pako checks the file before asking you anything, so
     // the browser's paused copy (a form's answer can't be asked for again) isn't kept waiting.
-    paused: holds,
+    // Firefox's private window, asked with a plain GET: its copy can wait for your answer, and
+    // is only dropped once Pako downloads it (nothing lost if Pako quits while it asks).
+    paused: holds && !(FIREFOX && isPrivate && (!seen?.method || seen.method === "GET") && !seen?.auth),
     isPrivate,
   });
   if (reply.ok) {
@@ -704,10 +706,10 @@ async function handOff(item, url, seen, holds, firstSize, isPrivate, storeId, re
  *  browser asked, so it never assumes it can. */
 function canStartAgain(seen, isPrivate = false) {
   if (LIGHT) return false;
-  // A private window's download in Chrome, Edge and similar: the extension could only start it
-  // again in your normal window, with your normal login and in its history. It stays paused in
-  // the private window instead. (Firefox starts it again in a private window.)
-  if (isPrivate && !FIREFOX) return false;
+  // A private window's download: kept paused in the browser until Pako really has it (Chrome,
+  // Edge and similar could only start it again in your normal window; and a private download
+  // isn't saved in Pako's list until it runs, so Pako quitting meanwhile mustn't lose it).
+  if (isPrivate) return false;
   // Asked with a login other than cookies (a site's own sign-in box): Pako can't send it, so it
   // would never get the file, and the browser keeps its copy (paused) instead.
   if (seen?.auth) return false;
@@ -880,7 +882,10 @@ async function reportFollow(browserId, now = false) {
   }
   let state = item.state === "in_progress" && item.paused ? "paused" : item.state;
   if (!["in_progress", "paused", "complete", "interrupted"].includes(state)) state = "in_progress";
-  const changed = state !== f.state;
+  // Changed since the last report Pako took, or (when that last one failed) since the one that
+  // failed: a failed report never counts as a change again every second (Pako closed: one try
+  // a minute, not a Pako.exe helper started every second).
+  const changed = state !== (f.tried ?? f.state);
   const every = state === "in_progress" || state === "complete" ? FOLLOW_EVERY : FOLLOW_IDLE_EVERY;
   if (!now && !changed && Date.now() - f.sent < every) return;
   if (!changed && Date.now() < followQuietUntil) return;
@@ -905,10 +910,12 @@ async function reportFollow(browserId, now = false) {
   if (!reply.ok) {
     // Pako closed or busy: kept, sent again later (the finished file is listed then).
     if (reply.error && !reply.followed) followQuietUntil = Date.now() + 60_000;
+    f.tried = state;
     saveFollows();
     return;
   }
   followQuietUntil = 0;
+  delete f.tried;
   f.state = state;
   if (typeof reply.followed === "string") f.pako = reply.followed;
   if (reply.command === "pause") await api.downloads.pause(item.id).catch(() => {});
@@ -1317,8 +1324,22 @@ const ASKED_FIRST = 1000;
 const ASKED_TWICE = 2;
 /** Pako's helper didn't answer: asked again after this, until it does. */
 const AWAY_RETRY = 60 * 1000;
-/** The same file caught again in the same tab within this: the page asked for it again by itself. */
+/** How long a tab's sent page waits to be told what to say (see sentPageAnswer). */
 const CAUGHT_AGAIN = 30 * 1000;
+/** The same file caught again in the same tab within this, while Pako has (or is getting) the
+ *  first one: the page asked for it again by itself (back on a "your download starts..." page).
+ *  Later, or when Pako didn't take the first one, it is handed again (Pako itself still answers
+ *  a repeat of one it is checking with the same answer). */
+const CAUGHT_REPEAT = 8 * 1000;
+/** Catches from one tab within this many ms are counted (see CATCH_MAX). */
+const CATCH_BURST = 10 * 1000;
+/** At most this many catches per tab in CATCH_BURST, and only one of them from a frame (a page
+ *  pushing files by itself through hidden frames): it never gets around the browser's own
+ *  "download multiple files?" question or its question before downloads. Past it, nothing more
+ *  is handed to Pako from that tab, and the tab isn't caught for CATCH_QUIET, so the browser
+ *  asks as usual. (Clicking a few files one after another on a page stays well under it.) */
+const CATCH_MAX = 4;
+const CATCH_QUIET = 60 * 1000;
 /** Kinds of file no browser shows itself: a page's answer of one of them is a download. */
 const DOWNLOAD_TYPES = [
   "application/octet-stream", "application/zip", "application/x-zip-compressed", "application/x-7z-compressed",
@@ -1339,8 +1360,13 @@ let awayTimer = null;
 let allowNext = 0;
 /** The one-time exceptions in the browser now: rule ID → { tabId, url, timer }. */
 const allowRules = new Map();
-/** "tab address" → when it was caught last (see CAUGHT_AGAIN). */
+/** "tab address" → { at, took } for the last catch of that file there (see CAUGHT_REPEAT);
+ *  `took`: Pako took it (true), didn't (false), not known yet (undefined). */
 const caughtLately = new Map();
+/** By tab: when it was caught lately ({ at, frame }), for CATCH_MAX. */
+const catchCounts = new Map();
+/** By tab: not caught until then (CATCH_QUIET), so the browser asks as usual. */
+const quietTabs = new Map();
 /** By tab: what its sent page is told (see sentPageAnswer). */
 const sentPages = new Map();
 /** By tab: how its page was asked for ("POST": a form's answer, which going back would send again). */
@@ -1477,7 +1503,10 @@ async function syncCatchNow() {
   // Download links on pages (no rule needed for them: also in a browser that refused the rule).
   await syncLinks(state.links);
   const want = !catchRefused && state.on;
-  const rule = want ? catchRule(tabs.filter((t) => t?.incognito && Number.isInteger(t.id)).map((t) => t.id)) : null;
+  const now = Date.now();
+  for (const [id, until] of quietTabs) if (until <= now) quietTabs.delete(id);
+  const left = [...tabs.filter((t) => t?.incognito && Number.isInteger(t.id)).map((t) => t.id), ...quietTabs.keys()];
+  const rule = want ? catchRule([...new Set(left)]) : null;
   const key = rule ? JSON.stringify(rule) : "";
   if (key === catchApplied) return;
   try {
@@ -1575,25 +1604,56 @@ function catchReferrer(tab, seen, url) {
 function onCaught(details) {
   if (!isSentPage(details.redirectUrl)) return;
   const now = Date.now();
-  for (const [k, at] of caughtLately) if (now - at > CAUGHT_AGAIN || caughtLately.size > 50) caughtLately.delete(k);
+  for (const [k, c] of caughtLately) if (now - c.at > CAUGHT_REPEAT || caughtLately.size > 50) caughtLately.delete(k);
   const seen = responseFor(details.url);
   const keys = sameFileKeys(details.tabId, details.url, seen);
-  const again = keys.some((k) => caughtLately.has(k));
-  for (const k of keys) caughtLately.set(k, now);
+  // The page asked for the same file again by itself, a moment after Pako took it (or while it
+  // still gets it): not handed twice. Pako didn't take it, or it's later: handed again (a new
+  // click, or the first one was cancelled in Pako).
+  const again = keys.some((k) => caughtLately.has(k) && caughtLately.get(k).took !== false);
   // (Asked now, while the tab is surely there: its sent page waits for this before it closes it.)
   const tab = Promise.resolve(seen?.tab || (details.tabId >= 0 ? api.tabs.get(details.tabId) : null)).catch(() => null);
-  // The page asked for the same file again by itself: Pako has it (or the browser, if Pako
-  // couldn't), so it isn't handed twice.
-  let handed = null;
+  const frame = details.type !== "main_frame";
+  let over = false;
   if (!again) {
+    const counts = (catchCounts.get(details.tabId) || []).filter((c) => now - c.at < CATCH_BURST);
+    over = counts.length >= CATCH_MAX || (frame && counts.some((c) => c.frame));
+    counts.push({ at: now, frame });
+    catchCounts.set(details.tabId, counts);
+    if (catchCounts.size > 50) catchCounts.delete(catchCounts.keys().next().value);
+  }
+  let handed = null;
+  if (over) {
+    // A page pushing files by itself: this one isn't handed to Pako, and the tab isn't caught
+    // for a while, so the browser asks as usual. The "!" says so (never a silent loss).
+    if (details.tabId >= 0) {
+      quietTabs.set(details.tabId, now + CATCH_QUIET);
+      syncCatch();
+      const t = setTimeout(syncCatch, CATCH_QUIET + 50);
+      t?.unref?.();
+    }
+    const name = seen?.filename || "";
+    const what = name ? `"${name}"` : "the others";
+    flag(`This page asked for several downloads at once, so Pako took only the first ones. To download ${what}, use the page again.`, "", false);
+  } else if (!again) {
+    const entry = { at: now, took: undefined };
+    for (const k of keys) caughtLately.set(k, entry);
     // Counted from now (the browser's copy is already gone): no reload for an update meanwhile.
     inFlight++;
     handed = handCaught(details, seen, tab)
-      .catch((e) => console.warn("Pako:", e?.message || e))
+      .then((v) => {
+        entry.took = v === "pako";
+        return v;
+      })
+      .catch((e) => {
+        entry.took = false;
+        console.warn("Pako:", e?.message || e);
+      })
       .finally(() => inFlight--);
   }
   if (details.type === "main_frame" && details.tabId >= 0) {
-    sentPages.set(details.tabId, { tab, stay: again || pageIsPost(details.tabId), handed, at: now });
+    const said = over ? "This page asked for several downloads at once, so Pako didn't take this one. Use Back, then download it again." : "";
+    sentPages.set(details.tabId, { tab, stay: over || again || pageIsPost(details.tabId), handed, at: now, said });
   }
 }
 
@@ -1609,6 +1669,7 @@ async function sentPageAnswer(tabId) {
     if ((await s.handed) === false) return { ok: true, stay: true, said: "This private window's download couldn't go on in your browser. Use Back and download it once more." };
     return { ok: true, stay: true, said: "This private window's download goes on in your browser." };
   }
+  if (s.said) return { ok: true, stay: true, said: s.said };
   if (await s.stay) return { ok: true, stay: true, said: "This download went to Pako. Use Back to return to your page." };
   return { ok: true, stay: false };
 }
@@ -1633,7 +1694,7 @@ async function handCaught(details, seen, tabNow) {
   if (on !== false && !seen?.auth) {
     reply = await handOver(url, catchReferrer(tab, seen, url), name, { storeId, totalBytes: seen?.size || 0, mime: seen?.type || "", hold: true, isPrivate });
   }
-  if (reply.ok) return;
+  if (reply.ok) return "pako";
   if (isPrivate) {
     const why = (reply.error || "Pako couldn't take this download").replace(/[.\s]+$/, "");
     flag(`${why}. Download it once more from the page.`, reply.detail, true);

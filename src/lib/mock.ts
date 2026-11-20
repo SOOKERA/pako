@@ -51,7 +51,7 @@ const MB = 1024 ** 2;
 const chanel = "C:\\Users\\me\\Downloads\\Chanel assets";
 
 const downloads: Download[] = [
-  base({ name: "Big dataset part 1.7z", size: 44.7 * GB, downloaded: 20 * GB, source: drive, link: "https://drive.google.com/file/d/abc/view", md5: "x" }),
+  base({ name: "Big dataset part 1.7z", size: 44.7 * GB, downloaded: 20 * GB, source: drive, link: "https://drive.google.com/file/d/abc/view", md5: "x", alert: "important" }),
   base({ name: "Scene_02.uasset", status: "completed", size: 690 * MB, downloaded: 690 * MB, source: drive, group: "Chanel assets", destDir: chanel, md5: "x" }),
   base({ name: "Scene_03.uasset", status: "retrying", size: 782 * MB, downloaded: 296 * MB, source: drive, group: "Chanel assets", destDir: chanel, message: "No connection to the server. Trying again in 8s" }),
   base({ name: "Scene_04.uasset", status: "queued", size: 706 * MB, source: drive, group: "Chanel assets", destDir: chanel }),
@@ -59,7 +59,7 @@ const downloads: Download[] = [
   base({ name: "Course videos.zip", status: "needsAccount", size: 12.4 * GB, downloaded: 4.1 * GB, source: drive, message: "Google only gives this file to people it's shared with. Open it in your browser and download it there: Pako catches the download." }),
   base({ name: "Textures pack 4K.rar", status: "verifying", size: 8.2 * GB, downloaded: 8.2 * GB, link: "https://mega.nz/file/abc", message: "Checking the file" }),
   base({ name: "Brand guidelines.pdf", status: "starting", size: null, source: drive, priority: "first" }),
-  base({ name: "ubuntu-24.04-desktop-amd64.iso", priority: "later", status: "paused", size: 5.5 * GB, downloaded: 1.1 * GB, link: "https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso" }),
+  base({ name: "ubuntu-24.04-desktop-amd64.iso", priority: "later", alert: "off", status: "paused", size: 5.5 * GB, downloaded: 1.1 * GB, link: "https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso" }),
   base({ name: "setup-tools.exe", status: "failed", size: null, message: "File not found on the server (404)." }),
   // The same file on several hosts: the first host failed, it goes on from a backup.
   base({
@@ -160,6 +160,12 @@ for (let i = 0; i < many; i++) {
   foundItems.push(found({ name: `Long list link ${String(i + 1).padStart(4, "0")}.rar`, size: (i % 50) * MB + MB, folder: i % 30 < 3 ? `Pack ${Math.floor(i / 30)}` : undefined, relDir: "", link: i % 30 < 3 ? `https://drive.google.com/drive/folders/p${Math.floor(i / 30)}` : `https://example.com/f${i}` }));
 }
 
+// Design preview only: ?privatetip adds a finished private window's download ("Done · private"),
+// with the one-time Private mode tip under it.
+if (typeof location !== "undefined" && new URLSearchParams(location.search).has("privatetip")) {
+  downloads.unshift(base({ name: "Boarding pass.pdf", status: "completed", size: 240_000, downloaded: 240_000, private: true }));
+}
+
 const demoSnapshot: Snapshot = {
   downloads,
   found: foundItems,
@@ -174,7 +180,7 @@ const demoSnapshot: Snapshot = {
   ],
   downloadSets: [],
   foundMirrors: mockMirrors(foundItems, ["Holiday video.mp4", "Project_files.part1.rar", "Project_files.part2.rar"]),
-  settings: { downloadDir: "C:\\Users\\me\\Downloads", autoConnections: true, connections: 8, maxActive: 3, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, playDoneSound: true, extractDefault: false, minimizeToTray: false, closeToTray: false, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: false, startInTray: true, videoQuality: 1080, setupDone: true, videoAsked: false, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: false, browserConnect: false, sendCompression: "off", sendMode: null, sendPartMb: 500, sendPartCustom: false, resumeUploadsOnStart: true, askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7, whatsNewSeen: "0.1.1", tourOffered: true, toursDone: [] },
+  settings: { downloadDir: "C:\\Users\\me\\Downloads", autoConnections: true, connections: 8, maxActive: 3, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, playDoneSound: true, playSentSound: true, extractDefault: false, minimizeToTray: false, closeToTray: false, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: false, startInTray: true, videoQuality: 1080, setupDone: true, videoAsked: false, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: false, browserConnect: false, installerChoices: false, sendCompression: "off", sendMode: null, sendPartMb: 500, sendPartCustom: false, resumeUploadsOnStart: true, askBrowser: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7, whatsNewSeen: "0.1.1", tourOffered: true, toursDone: [] },
   dataDir: "C:\\Pako\\data",
   sevenZip: false,
   ffmpeg: false,

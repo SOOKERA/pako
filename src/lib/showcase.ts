@@ -254,10 +254,10 @@ export const showcaseSnapshot: Snapshot = {
         : [],
   downloadSets: [],
   settings: {
-    downloadDir: HOME, autoConnections: true, connections: 8, maxActive: 5, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, playDoneSound: true,
+    downloadDir: HOME, autoConnections: true, connections: 8, maxActive: 5, speedLimitKb: 0, verifyChecksum: true, notifyDone: true, notices: {}, quiet: false, followWindowsQuiet: true, playDoneSound: true, playSentSound: true,
     extractDefault: true, minimizeToTray: true, closeToTray: true, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: true, startInTray: true,
-    videoQuality: 1080, setupDone: true, videoAsked: true, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: true, browserConnect: true,
-    sendCompression: "off", sendMode: "files", sendPartMb: 500, sendPartCustom: false, resumeUploadsOnStart: true, askBrowser: true, askNotify: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7,
+    videoQuality: 1080, setupDone: true, videoAsked: true, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: true, browserConnect: true, installerChoices: false,
+    sendCompression: "off", sendMode: "files", sendPartMb: 500, sendPartCustom: false, resumeUploadsOnStart: true, askBrowser: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7,
     whatsNewSeen: "1.0.0", tourOffered: true, toursDone: ["downloads", "found", "send", "direct", "devices", "dashboard", "settings", "full"],
   },
   dataDir: "C:\\Users\\Sam\\AppData\\Roaming\\Pako",

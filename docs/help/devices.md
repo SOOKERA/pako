@@ -151,7 +151,7 @@ On the other PC, open **My devices**, pick this PC, then **Settings**, and turn 
 No. Only a PC that both sides paired as "my device", and that you allow, can see your downloads or give orders. Contacts can only offer you files, which you accept or decline.
 
 **One of my Direct contacts says this PC is one of its devices.**
-Only click **This is my device** if that contact is really your own PC: once paired, it can send files here without asking, see and add to this PC's downloads, and get finished ones. **Not now** hides the question until Pako restarts.
+Only click **This is my device** if that contact is really your own PC: once paired, it can send files here without asking, see and add to this PC's downloads, get finished ones, see your Direct contacts and your history with them, and send files to them through this PC. **Not now** hides the question until Pako restarts.
 
 **The device stays "Connected · not confirmed on it yet".**
 The other PC has an older Pako that doesn't know My devices: update Pako there, then add this PC there under **Add a device**.

@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
-  // Settings: the "Advanced" fold at the bottom of a tab, for what most people never change.
+  // Settings: the "Advanced" fold at the bottom of a tab, for what most people never change,
+  // under the same group titles as the tab's other settings (SetGroup.svelte).
   // Shut by default; open or shut is remembered per tab on this PC. Settings' search opens it
   // (`data-fold` / `data-fold-toggle`) to show a setting inside.
   import type { Snippet } from "svelte";
@@ -43,10 +44,9 @@
 </div>
 
 <style>
+  /* Below the tab's groups; inside, the advanced settings sit under the same group titles. */
   .adv {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--line-soft);
+    margin-top: 22px;
   }
   /* The same look as "What Pako can do" (UpdatesSection.svelte). */
   .fold {
@@ -55,7 +55,7 @@
     gap: 8px;
     min-width: 0;
     max-width: 100%;
-    padding: 2px 0;
+    padding: 2px 0 2px 2px;
     border: 0;
     border-radius: var(--radius-sm);
     background: none;

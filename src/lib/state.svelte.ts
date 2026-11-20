@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // All window state in one place: the list, live progress, filters, selection, folders, panels.
+import { untrack } from "svelte";
 import { api, canDownload, isActive, isProblem, listen, type ComponentKind, type Download, type FoundItem, type MirrorView, type Progress, type SetView, type Settings, type Status, type UpdateView, type WhenDone, type SendJob, type SentItem, type SendMode, type SendHost, type PathSize, type DirectState, inApp } from "./api";
 import { mostUrgent, sourceOf } from "./format";
 import { matchesFilter, sortContacts, type DirectFilter } from "./direct";
@@ -158,6 +159,8 @@ export function uploadsStopNote(u: number) {
 export interface BasketItem {
   path: string;
   name: string;
+  /** From Private mode (read decrypted as it goes up): leaves the basket when Private mode locks. */
+  private?: boolean;
   dir: boolean;
   size: number | null;
   files: number | null;
@@ -378,10 +381,11 @@ class AppState {
     deleteDays: number | null = null,
     host: SendHost | null = null,
     partMb: number | null = null,
+    password: string | null = null,
   ) {
     if (!paths.length) return;
     this.view = "send";
-    await this.run(() => api.sendStart(paths, mode, name, deleteDays, host, partMb));
+    await this.run(() => api.sendStart(paths, mode, name, deleteDays, host, partMb, password));
     await this.refreshSends();
   }
 
@@ -397,19 +401,20 @@ class AppState {
         ],
   );
   /** Adds picked or dropped files and folders (each path once), then measures them. */
-  async addToBasket(paths: string[]) {
+  async addToBasket(paths: string[], fromPrivate = false) {
     const have = new Set(this.basket.map((b) => b.path.toLowerCase()));
     const fresh = [...new Set(paths)].filter((p) => p && !have.has(p.toLowerCase()));
     this.view = "send";
     if (!fresh.length) return;
     const nameOf = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
-    this.basket = [...this.basket, ...fresh.map((path) => ({ path, name: nameOf(path), dir: false, size: null, files: null, error: null }))];
+    // A private file's real name comes with its size (never its vault file's name, even for a moment).
+    this.basket = [...this.basket, ...fresh.map((path) => ({ path, name: fromPrivate ? "…" : nameOf(path), private: fromPrivate, dir: false, size: null, files: null, error: null }))];
     try {
       const sizes = await api.sendSizes(fresh);
       const by = new Map(sizes.map((s: PathSize) => [s.path, s]));
       this.basket = this.basket.map((b) => {
         const s = by.get(b.path);
-        return s ? { ...b, dir: s.dir, size: s.size, files: s.files, error: s.error } : b;
+        return s ? { ...b, name: s.name ?? b.name, dir: s.dir, size: s.size, files: s.files, error: s.error } : b;
       });
     } catch (e) {
       this.toast(String(e), "error");
@@ -442,6 +447,18 @@ class AppState {
 
   /** Header sorting (null = queue order for Downloads, found order for Found). */
   sortDownloads = $state<Sort | null>(LS.get("sortDownloads", { key: "date", dir: -1 }));
+  /** The pointer is over the Downloads list: a sort by Speed or Progress holds its order, so
+   *  rows don't move under the mouse. */
+  listHover = $state(false);
+  /** Speed and progress as the sort last saw them (taken every few seconds, not on every tick). */
+  sortSnap = $state<Record<string, { s: number; p: number }>>({});
+  private snapSort() {
+    const key = this.sortDownloads?.key;
+    if ((key !== "speed" && key !== "progress") || this.listHover) return;
+    const next: Record<string, { s: number; p: number }> = {};
+    for (const d of this.downloads) next[d.id] = { s: this.live[d.id]?.speed ?? 0, p: d.status === "completed" ? 1 : d.size ? d.downloaded / d.size : 0 };
+    this.sortSnap = next;
+  }
   sortFound = $state<Sort | null>(LS.get("sortFound", null));
 
   library = $state<Library>("all");
@@ -455,8 +472,9 @@ class AppState {
   anchor: string | null = null;
   collapsed = $state<Set<string>>(new Set(LS.get<string[]>("collapsed", [])));
   panelOpen = $state<boolean>(LS.get("panelOpen", true));
-  columns = $state<Record<string, number>>({ date: 112, ...LS.get("columns", { source: 128, progress: 156, speed: 92, status: 122 }) });
   toasts = $state<Toast[]>([]);
+  /** Bumped when room was made in your Google Drive: Upload's "does it fit" asks again. */
+  driveTick = $state(0);
   private toastSeq = 0;
 
   // ---------- derived ----------
@@ -502,11 +520,12 @@ class AppState {
         case "size":
           return d.size ?? d.downloaded;
         case "progress":
-          return pct(d);
+          // As last taken (every few seconds), so rows don't reshuffle on every tick.
+          return this.sortSnap[d.id]?.p ?? pct(d);
         case "date":
           return d.date || d.addedAt;
         case "speed":
-          return this.live[d.id]?.speed ?? 0;
+          return this.sortSnap[d.id]?.s ?? 0;
         default:
           return d.status;
       }
@@ -617,7 +636,10 @@ class AppState {
   downloadSets = $state<SetView[]>([]);
   /** Found sets with their items, for the rows and the details panel. */
   foundSets = $derived(
-    this.foundSetViews.map((s) => ({ ...s, members: this.found.filter((f) => s.ids.includes(f.id)) })),
+    this.foundSetViews.map((s) => {
+      const want = new Set(s.ids);
+      return { ...s, members: this.found.filter((f) => want.has(f.id)) };
+    }),
   );
 
   /** The same file on several hosts, as the engine sees it. */
@@ -829,7 +851,12 @@ class AppState {
     }
   }
 
-  totalSpeed = $derived(Object.values(this.live).reduce((s, p) => s + p.speed, 0));
+  /** The normal list's speed (Private mode's downloads, live while it's open, never count here:
+   *  this is what the tray window and the bottom bar show). */
+  totalSpeed = $derived.by(() => {
+    const ids = new Set(this.downloads.map((d) => d.id));
+    return Object.entries(this.live).reduce((s, [id, p]) => (ids.has(id) ? s + p.speed : s), 0);
+  });
   runningCount = $derived(this.downloads.filter((d) => isActive(d.status)).length);
   waitingCount = $derived(this.downloads.filter((d) => d.status === "queued").length);
 
@@ -879,6 +906,18 @@ class AppState {
   }
 
   start() {
+    // Sorting by Speed or Progress: the order is taken again every 3 s (held while the pointer
+    // is over the list), and at once when that sort is picked.
+    setInterval(() => this.snapSort(), 3000);
+    $effect.root(() => {
+      $effect(() => {
+        void this.sortDownloads?.key;
+        untrack(() => {
+          this.listHover = false;
+          this.snapSort();
+        });
+      });
+    });
     this.refresh();
     const u1 = listen("list-changed", () => this.refreshSoon());
     const u2 = listen<Progress[]>("progress", (e) => {
@@ -992,6 +1031,18 @@ class AppState {
     }
   }
 
+  /** A column was hidden: a list sorted by it goes back to its usual order (Downloads: newest
+   *  first, also when the date column itself is hidden; Links: the order they came in). */
+  unsortIf(list: "downloads" | "found", key: string) {
+    if (list === "downloads" && this.sortDownloads?.key === key) {
+      this.sortDownloads = { key: "date", dir: -1 };
+      LS.set("sortDownloads", this.sortDownloads);
+    } else if (list === "found" && this.sortFound?.key === key) {
+      this.sortFound = null;
+      LS.set("sortFound", null);
+    }
+  }
+
   // ---------- keyboard: moving the focus ----------
 
   /** Rows in screen order, as focus keys ("g:<folder>" for a folder row, else the id). */
@@ -1048,7 +1099,8 @@ class AppState {
       const [lo, hi] = from < target ? [from, target] : [target, from];
       const ids = keys.slice(lo, hi + 1).flatMap((k) => this.itemsOf(k));
       if (this.view === "found") {
-        this.setTicked(this.found.filter((f) => ids.includes(f.id)), true);
+        const want = new Set(ids);
+        this.setTicked(this.found.filter((f) => want.has(f.id)), true);
       } else {
         this.selected = new Set(ids);
       }
@@ -1066,7 +1118,8 @@ class AppState {
     if (!key) return;
     const ids = this.itemsOf(key);
     if (this.view === "found") {
-      const items = this.found.filter((f) => ids.includes(f.id));
+      const want = new Set(ids);
+      const items = this.found.filter((f) => want.has(f.id));
       this.setTicked(items, !items.every((f) => this.isTicked(f)));
     } else {
       const next = new Set(this.selected);
@@ -1245,8 +1298,19 @@ class AppState {
     await this.run(() => api.noticesClear());
   }
 
-  /** Shows where a notification leads: its page, and its item there (selected and scrolled to). */
+  /** Private mode, while open, decides first where a notification may lead: leaving its lists
+   *  locks it (asked first while something runs there). Set by private.svelte.ts (no import
+   *  both ways). */
+  leaveGuard: ((page: string, go: () => void) => void) | null = null;
+
+  /** Shows where a notification leads: its page, and its item there (selected and scrolled to).
+   *  With Private mode open, only once it's settled (see leaveGuard). */
   goTo(go: Go) {
+    if (this.leaveGuard) this.leaveGuard(go.page, () => this.goNow(go));
+    else this.goNow(go);
+  }
+
+  private goNow(go: Go) {
     const id = go.id;
     switch (go.page) {
       case "downloads": {
@@ -1337,11 +1401,6 @@ class AppState {
   togglePanel() {
     this.panelOpen = !this.panelOpen;
     LS.set("panelOpen", this.panelOpen);
-  }
-
-  setColumn(name: string, width: number) {
-    this.columns = { ...this.columns, [name]: Math.round(width) };
-    LS.set("columns", this.columns);
   }
 
   // ---------- actions ----------
@@ -1447,9 +1506,22 @@ class AppState {
     // The newest few: a burst never covers the window (an Undo that scrolled away still works
     // with Ctrl+Z).
     this.toasts = [...this.toasts, { id, text, kind, action }].slice(-5);
-    setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), kind === "error" ? 9000 : action ? 8000 : 3500);
+    // Paused while the pointer or the keyboard is on the messages (so "Restart now" or "Show"
+    // can be reached), and a moment more after leaving them.
+    const end = () => {
+      if (this.toastHold || performance.now() - this.toastFree < 2000) {
+        setTimeout(end, 500);
+        return;
+      }
+      this.toasts = this.toasts.filter((t) => t.id !== id);
+    };
+    setTimeout(end, kind === "error" ? 9000 : action ? 8000 : 3500);
     return id;
   }
+  /** The pointer or the keyboard is on the messages: they wait. */
+  toastHold = false;
+  /** When they were last let go (they stay a moment after). */
+  toastFree = 0;
 
   folderStatus(files: Download[]): Status {
     return mostUrgent(files.map((f) => f.status));

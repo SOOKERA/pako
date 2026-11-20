@@ -2,11 +2,13 @@
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
   // Per-item settings, the same in both details panels: where it's saved, its place in the
-  // queue, and whether to notify when it's done.
+  // queue, and how it tells you it's done (Off · Pop-up · Important).
   import type { Snippet } from "svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import type { Priority } from "./api";
+  import { ALERTS, type Alert } from "./alert";
   import Icon from "./Icon.svelte";
+  import { rowSlide } from "./motion";
 
   let {
     dest,
@@ -14,12 +16,12 @@
     destLocked = false,
     priority,
     priorityOff,
-    notify,
+    alert,
     count = 1,
     onDest,
     onResetDest,
     onPriority,
-    onNotify,
+    onAlert,
     extra,
   }: {
     dest: string;
@@ -30,13 +32,14 @@
     priority: Priority;
     /** Why the priority doesn't apply to it (a download your browser makes), else unset. */
     priorityOff?: string;
-    notify: boolean;
+    /** null: several items set differently. */
+    alert: Alert | null;
     /** How many items these settings change (folder of files, several picked). */
     count?: number;
     onDest: (dir: string) => void;
     onResetDest?: () => void;
     onPriority: (p: Priority) => void;
-    onNotify: (on: boolean) => void;
+    onAlert: (a: Alert) => void;
     extra?: Snippet;
   } = $props();
 
@@ -83,9 +86,16 @@
     {#if priorityOff}<span class="note">{priorityOff}</span>{/if}
   </div>
 
-  <div class="field row">
+  <div class="field" data-tour="notify-when-done">
     <span class="k">Notify when done</span>
-    <button class="switch" class:on={notify} role="switch" aria-checked={notify} aria-label="Notify when done" onclick={() => onNotify(!notify)}></button>
+    <div class="seg" role="radiogroup" aria-label="Notify when done">
+      {#each ALERTS as a (a.id)}
+        <button role="radio" aria-checked={alert === a.id} class:on={alert === a.id} title={a.hint} onclick={() => onAlert(a.id)}>
+          {#if a.id === "off"}<Icon name="bell-off" size={11} stroke={2.4} />{:else if a.id === "important"}<Icon name="bell" size={11} stroke={2.4} />{/if}{a.label}
+        </button>
+      {/each}
+    </div>
+    {#if alert === "important"}<span class="note" transition:rowSlide>A big pop-up in the middle of the screen that stays until you click it.</span>{/if}
   </div>
 
   {@render extra?.()}
@@ -116,18 +126,9 @@
     flex-direction: column;
     gap: 6px;
   }
-  .field.row {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-  }
   .k {
     font-size: 12px;
     color: var(--text-3);
-  }
-  .field.row .k {
-    color: var(--text-2);
-    font-size: 12.5px;
   }
   .dest {
     display: flex;

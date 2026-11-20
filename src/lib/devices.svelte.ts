@@ -263,12 +263,17 @@ class Devices {
     }
   }
 
-  /** Follows Direct's changes (devices ride on it) and the lists devices send. Once. */
-  start() {
+  /** Whether changes are worth asking for now (the tray window: only while it shows). */
+  private wanted: () => boolean = () => true;
+
+  /** Follows Direct's changes (devices ride on it) and the lists devices send. Once.
+   *  `wanted`: changes that come while it says no are skipped (ask again with `refresh`). */
+  start(wanted?: () => boolean) {
     if (this.started) return;
     this.started = true;
-    listen("direct-changed", () => this.refresh());
-    listen("devices-changed", () => this.refresh());
+    if (wanted) this.wanted = wanted;
+    listen("direct-changed", () => this.wanted() && this.refresh());
+    listen("devices-changed", () => this.wanted() && this.refresh());
     this.refresh();
   }
 }

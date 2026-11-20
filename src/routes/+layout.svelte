@@ -4,9 +4,12 @@
   import "../app.css";
   import { onMount } from "svelte";
   import { theme } from "$lib/theme.svelte";
+  import { prewarm } from "$lib/prewarm";
   let { children } = $props();
   // Light or dark, in every window.
   onMount(() => theme.start());
+  // First opens as smooth as later ones (fonts' other letter sets, in idle time).
+  onMount(prewarm);
 
   /** The browser's own right-click menu (Back, Refresh, Print…) never shows in Pako's windows:
    *  Pako's own menus open where they're made for. Text boxes and selected text keep it (copy,

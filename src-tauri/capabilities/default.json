@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "mini", "ask", "popup"],
+  "windows": ["main", "mini", "ask", "popup", "important"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

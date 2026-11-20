@@ -419,13 +419,15 @@ fn sweep_jars_in(dir: &Path) {
     }
 }
 
-/// The folder for cookie files, made so only this Windows user can open it (when it is new).
+/// The folder for cookie files (and Private mode's), made so only this Windows user can open it.
+/// One already there gets that again (made by an older Pako, or by something else), whatever is
+/// in it: nothing inside is touched but who may open it.
 #[cfg(windows)]
-fn make_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn make_private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
     if dir.is_dir() {
-        return Ok(());
+        return owner_only_again(dir);
     }
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)?;
@@ -444,8 +446,43 @@ fn make_private_dir(dir: &Path) -> std::io::Result<()> {
     })
 }
 
+/// Only this Windows user may open `dir` and what's in it, from now on (the list of who may is
+/// set again on the folder and passed down to everything inside).
+#[cfg(windows)]
+fn owner_only_again(dir: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
+    use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION};
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+    with_owner_only(|sa| {
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        // SAFETY: the descriptor `with_owner_only` made, alive for this call.
+        if unsafe { GetSecurityDescriptorDacl((*sa).lpSecurityDescriptor, &mut present, &mut dacl, &mut defaulted) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: valid NUL-terminated path; the list lives as long as the descriptor.
+        let r = unsafe {
+            SetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            )
+        };
+        if r != 0 {
+            return Err(std::io::Error::from_raw_os_error(r as i32));
+        }
+        Ok(())
+    })
+}
+
 #[cfg(not(windows))]
-fn make_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn make_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
@@ -511,6 +548,8 @@ fn add_referrer(cmd: &mut tokio::process::Command, referrer: Option<&str>) {
 
 fn base_command(t: &Tools) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&t.yt_dlp);
+    // From its own folder, never Pako's working folder (DLLs placed there aren't loaded).
+    crate::components::in_own_folder_async(&mut cmd, AsRef::<std::path::Path>::as_ref(&t.yt_dlp));
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     // --no-update: yt-dlp never replaces itself (Pako updates it, see components.rs).
     cmd.arg("--no-config").arg("--no-update").arg("--encoding").arg("utf-8");
@@ -1907,4 +1946,27 @@ mod tests {
         make_private_dir(&dir).unwrap(); // already there: fine
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A private folder already there with a file in it: only its owner may open it afterwards,
+    /// and the file stays.
+    #[cfg(windows)]
+    #[test]
+    fn a_private_folder_already_there_is_owner_only_again() {
+        let d = std::env::temp_dir().join(format!("pako-acl-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("waiting copy.txt"), b"keep me").unwrap();
+        let wide = |p: &Path| p.display().to_string();
+        let before = std::process::Command::new("icacls").arg(wide(&d)).output().unwrap();
+        assert!(String::from_utf8_lossy(&before.stdout).contains("(I)"), "inherited rights before");
+        super::make_private_dir(&d).unwrap();
+        for p in [d.clone(), d.join("waiting copy.txt")] {
+            let out = String::from_utf8_lossy(&std::process::Command::new("icacls").arg(wide(&p)).output().unwrap().stdout).to_string();
+            let entries: Vec<&str> = out.lines().filter(|l| l.contains(":(") ).collect();
+            assert_eq!(entries.len(), 1, "one entry, the owner: {out}");
+            assert!(!out.contains("BUILTIN") && !out.contains("Everyone") && !out.contains("Authenticated"), "{out}");
+        }
+        assert_eq!(std::fs::read(d.join("waiting copy.txt")).unwrap(), b"keep me");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
 }

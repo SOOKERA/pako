@@ -12,8 +12,9 @@
     onpick,
     small = false,
   }: {
-    options: { value: T; label: string; icon?: string }[];
-    value: T;
+    options: { value: T; label: string; icon?: string; hint?: string }[];
+    /** null: none of them (several items set differently). */
+    value: T | null;
     /** For screen readers. */
     label: string;
     onpick: (v: T) => void;
@@ -22,18 +23,36 @@
   } = $props();
 
   let box = $state<HTMLDivElement | null>(null);
-  let thumb = $state<{ x: number; w: number } | null>(null);
+  let thumb = $state<{ x: number; y: number; w: number; h: number } | null>(null);
   /** The first placement doesn't slide in from the left edge. */
   let placed = $state(false);
 
+  /** Arrow keys move the choice (and the keyboard) like any radio group; Home/End the ends. */
+  function keys(e: KeyboardEvent) {
+    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!step && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const i = Math.max(0, options.findIndex((o) => o.value === value));
+    const to = e.key === "Home" ? 0 : e.key === "End" ? options.length - 1 : (i + step + options.length) % options.length;
+    onpick(options[to].value);
+    requestAnimationFrame(() => box?.querySelectorAll<HTMLButtonElement>("button")[to]?.focus());
+  }
+
   function measure() {
     const i = options.findIndex((o) => o.value === value);
+    // None picked (several items that differ): no highlight.
+    if (i < 0) {
+      thumb = null;
+      return;
+    }
     const b = box?.querySelectorAll<HTMLButtonElement>("button")[i];
     if (!b) return;
     const x = b.offsetLeft;
+    const y = b.offsetTop;
     const w = b.offsetWidth;
-    if (thumb && thumb.x === x && thumb.w === w) return;
-    thumb = { x, w };
+    const h = b.offsetHeight;
+    if (thumb && thumb.x === x && thumb.y === y && thumb.w === w && thumb.h === h) return;
+    thumb = { x, y, w, h };
   }
   $effect(() => {
     void value;
@@ -53,10 +72,10 @@
   });
 </script>
 
-<div class="seg" class:small role="radiogroup" aria-label={label} bind:this={box}>
-  {#if thumb}<span class="thumb" class:placed style="transform: translateX({thumb.x - 2}px); width: {thumb.w}px" aria-hidden="true"></span>{/if}
-  {#each options as o (o.value)}
-    <button role="radio" aria-checked={value === o.value} class:on={value === o.value} onclick={() => onpick(o.value)}>
+<div class="seg" class:small role="radiogroup" tabindex="-1" aria-label={label} bind:this={box} onkeydown={keys}>
+  {#if thumb}<span class="thumb" class:placed style="transform: translate({thumb.x - 2}px, {thumb.y - 2}px); width: {thumb.w}px; height: {thumb.h}px" aria-hidden="true"></span>{/if}
+  {#each options as o, i (o.value)}
+    <button role="radio" aria-checked={value === o.value} tabindex={value === o.value || (i === 0 && !options.some((x) => x.value === value)) ? 0 : -1} class:on={value === o.value} title={o.hint} onclick={() => onpick(o.value)}>
       {#if o.icon}<Icon name={o.icon} size={13} />{/if}{o.label}
     </button>
   {/each}
@@ -66,6 +85,10 @@
   .seg {
     position: relative;
     display: inline-flex;
+    /* A narrow place (Upload's basket in a small window): the choices wrap onto a second line
+       instead of pushing a sideways scrollbar; the highlight follows them. */
+    flex-wrap: wrap;
+    max-width: 100%;
     gap: 2px;
     padding: 2px;
     /* the same edge as a button, so the switcher reads as one control on any card */
@@ -77,7 +100,6 @@
   .thumb {
     position: absolute;
     top: 2px;
-    bottom: 2px;
     left: 2px;
     border-radius: var(--radius-sm);
     background: var(--active);
@@ -96,7 +118,8 @@
   .thumb.placed {
     transition:
       transform var(--mid) var(--ease),
-      width var(--mid) var(--ease);
+      width var(--mid) var(--ease),
+      height var(--mid) var(--ease);
   }
   button {
     position: relative;

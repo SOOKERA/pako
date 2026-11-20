@@ -697,7 +697,10 @@ pub fn run_host(args: &[String]) -> i32 {
                 reply.held.is_some()
             ));
         }
-        seen.note(light, version, unix_now());
+        // A private window's request leaves no "last seen" time on disk either.
+        if !private {
+            seen.note(light, version, unix_now());
+        }
     }
 }
 
@@ -1055,6 +1058,10 @@ where
 const SAME_TAKEOVER: Duration = Duration::from_secs(30);
 /// How long a second request waits for the first one's answer.
 const SAME_TAKEOVER_WAIT: Duration = Duration::from_secs(50);
+/// Once the first one has its answer, how long a repeat still counts as the same takeover (the
+/// other extension a moment later, a double click). Later, it's another click: a new takeover,
+/// unless the first is still being checked (held).
+const SAME_TAKEOVER_AFTER: Duration = Duration::from_secs(5);
 
 /// Takeovers in flight, by (link, size the browser was told): the first one is worked out, the
 /// same one arriving again within `window` waits for it and gets the same answer (ok stays ok,
@@ -1063,7 +1070,30 @@ const SAME_TAKEOVER_WAIT: Duration = Duration::from_secs(50);
 /// can wait too gets the same token, an older one waits for the check's result.
 pub struct TakeoverGate {
     window: Duration,
-    seen: Mutex<HashMap<(String, u64), (Instant, tokio::sync::watch::Receiver<Option<(bool, Option<String>)>>)>>,
+    seen: Mutex<HashMap<(String, u64), Seen>>,
+}
+
+/// One takeover the gate answers repeats of.
+struct Seen {
+    since: Instant,
+    rx: tokio::sync::watch::Receiver<Option<(bool, Option<String>)>>,
+    /// When the first one got its answer (None: still running).
+    done: Option<Instant>,
+}
+
+impl Seen {
+    /// Still "the same takeover" for a repeat: running (within the window); or answered a moment
+    /// ago; or answered "held" and still being checked. A takeover cancelled or removed in
+    /// Pako is forgotten (`forget`), so clicking the link again takes it again.
+    fn alive(&self, window: Duration) -> bool {
+        match self.done {
+            None => self.since.elapsed() < window,
+            Some(done) => {
+                done.elapsed() < SAME_TAKEOVER_AFTER.min(window)
+                    || self.rx.borrow().as_ref().and_then(|(_, t)| t.as_deref()).is_some_and(|t| HELD.checking(t))
+            }
+        }
+    }
 }
 
 impl TakeoverGate {
@@ -1071,17 +1101,25 @@ impl TakeoverGate {
         TakeoverGate { window, seen: Mutex::new(HashMap::new()) }
     }
 
+    /// A takeover cancelled or removed in Pako (its held token, or the download's id): a repeat
+    /// of it is a new takeover, never the old answer replayed (the browser already dropped its
+    /// copy, so a replayed "ok" would lose the download).
+    pub fn forget(&self, token: &str) {
+        self.seen.lock().unwrap().retain(|_, s| s.rx.borrow().as_ref().and_then(|(_, t)| t.as_deref()) != Some(token));
+    }
+
     /// Runs `work` for the first request with this key; an identical one meanwhile waits for it.
     /// `hold`: this request can take a "held" answer (see `Request::hold`).
     pub async fn run(&self, key: (String, u64), hold: bool, work: impl std::future::Future<Output = Reply>) -> Reply {
         let (first, mut follow) = {
             let mut seen = self.seen.lock().unwrap();
-            seen.retain(|_, (since, _)| since.elapsed() < self.window);
+            let window = self.window;
+            seen.retain(|_, s| s.alive(window));
             match seen.get(&key) {
-                Some((_, rx)) => (None, rx.clone()),
+                Some(s) => (None, s.rx.clone()),
                 None => {
                     let (tx, rx) = tokio::sync::watch::channel(None);
-                    seen.insert(key, (Instant::now(), rx.clone()));
+                    seen.insert(key.clone(), Seen { since: Instant::now(), rx: rx.clone(), done: None });
                     (Some(tx), rx)
                 }
             }
@@ -1089,6 +1127,9 @@ impl TakeoverGate {
         if let Some(tx) = first {
             let reply = work.await;
             let _ = tx.send(Some((reply.ok, reply.held.clone())));
+            if let Some(s) = self.seen.lock().unwrap().get_mut(&key) {
+                s.done = Some(Instant::now());
+            }
             return reply;
         }
         let answer = match tokio::time::timeout(SAME_TAKEOVER_WAIT, follow.wait_for(|v| v.is_some())).await {
@@ -1291,6 +1332,16 @@ impl HeaderStore {
         }
     }
 
+    /// Kept in memory only from now on (the download went into Private mode): out of the file.
+    fn make_private(&mut self, id: &str) {
+        if let Some(k) = self.map.get_mut(id) {
+            if !k.headers.private {
+                k.headers.private = true;
+                self.save();
+            }
+        }
+    }
+
     fn retain(&mut self, grace: Duration, keep: impl Fn(&str) -> bool) {
         let before = self.map.len();
         self.map.retain(|id, k| keep(id) || k.since.elapsed() < grace);
@@ -1353,6 +1404,12 @@ pub fn headers_for(download_id: &str) -> Option<BrowserHeaders> {
 
 pub fn forget_headers(download_id: &str) {
     HEADERS.lock().unwrap().remove(download_id);
+}
+
+/// A download sent into Private mode (Download privately): its browser login and page stay in
+/// memory only, never in browser-headers.dat (taken out of it now).
+pub fn mark_headers_private(download_id: &str) {
+    HEADERS.lock().unwrap().make_private(download_id);
 }
 
 /// Drops the headers of downloads that finished or are gone (`keep` = still needs them). Headers
@@ -2165,11 +2222,26 @@ mod tests {
         // Another size is another file.
         rt.block_on(gate.run(("https://e.org/big.zip".to_string(), 1), false, work(Reply::ok())));
         assert_eq!(added.load(Ordering::SeqCst), 3);
+        // Cancelled or removed in Pako (forgotten): clicking again takes it again.
+        let held = || ("https://e.org/held-again.zip".to_string(), 9u64);
+        HELD.open("tok-forget");
+        assert_eq!(rt.block_on(gate.run(held(), true, work(Reply::held("tok-forget")))), Reply::held("tok-forget"));
+        assert_eq!(added.load(Ordering::SeqCst), 4);
+        gate.forget("tok-forget");
+        HELD.finish("tok-forget", Ok(()));
+        assert_eq!(rt.block_on(gate.run(held(), true, work(Reply::held("tok-new")))), Reply::held("tok-new"));
+        assert_eq!(added.load(Ordering::SeqCst), 5);
+        // Answered a while ago (not held): a repeat is a new click, taken again.
+        if let Some(s) = gate.seen.lock().unwrap().get_mut(&key()) {
+            s.done = Some(Instant::now() - SAME_TAKEOVER_AFTER - Duration::from_secs(1));
+        }
+        rt.block_on(gate.run(key(), false, work(Reply::ok())));
+        assert_eq!(added.load(Ordering::SeqCst), 6);
         // After the window, the same file is taken again.
         let quick = TakeoverGate::new(Duration::ZERO);
         rt.block_on(quick.run(key(), false, work(Reply::ok())));
         rt.block_on(quick.run(key(), false, work(Reply::ok())));
-        assert_eq!(added.load(Ordering::SeqCst), 5);
+        assert_eq!(added.load(Ordering::SeqCst), 8);
     }
 
     #[test]
@@ -2373,6 +2445,10 @@ mod tests {
         let kept = read_kept_headers(&file);
         assert!(kept.contains_key("pub"));
         assert!(!kept.contains_key("priv"));
+        // Sent into Private mode afterwards (Download privately): out of the file, still usable.
+        s.make_private("pub");
+        assert!(!read_kept_headers(&file).contains_key("pub"));
+        assert_eq!(s.map.get("pub").unwrap().headers.cookies, "normal=1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

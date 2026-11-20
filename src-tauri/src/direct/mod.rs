@@ -264,11 +264,17 @@ fn begin(app: AppHandle) {
             let _ = em.emit("direct-changed", ());
         });
         let na = app.clone();
-        // Pako's window in front shows Direct's news itself: no pop-up then (the bell still
-        // gets its kinds).
+        // Pako's window in front on the page the news is about (Direct, My devices) shows it
+        // itself: no pop-up then (the bell still gets its kinds). On another page, it pops up,
+        // except Direct's questions, which the window asks on every page.
+        // Files offered to you or received: the arrived chime too (also with the window in
+        // front; never for a muted contact, whose notices don't come here).
         let notify: node::Notify2 = Arc::new(move |kind: &str, title: &str, body: &str, go: crate::notices::Go| {
+            if let Some(s) = crate::notices::sound_of_notice(kind) {
+                crate::notices::sound(s);
+            }
             if let Some(e) = na.try_state::<Arc<crate::engine::Engine>>() {
-                let pop = if window_in_view(&na) { crate::notices::Pop::Skip } else { crate::notices::Pop::Pref };
+                let pop = crate::notices::pop_unless_on_page(window_in_view(&na), kind, &go);
                 e.notify_pop(kind, title, body, go, pop);
             }
         });
@@ -569,8 +575,9 @@ fn engine_of(app: &AppHandle) -> Option<Arc<crate::engine::Engine>> {
 type Dir<'a> = tauri::State<'a, Direct>;
 
 #[tauri::command]
-pub fn devices_state(d: Dir<'_>) -> Result<devices::DevicesState, String> {
-    Ok(d.node()?.devices_state())
+pub async fn devices_state(app: AppHandle) -> Result<devices::DevicesState, String> {
+    // Built off the window's thread (the tray window asks for it while files move).
+    tauri::async_runtime::spawn_blocking(move || Ok(app.state::<Direct>().node()?.devices_state())).await.map_err(|e| e.to_string())?
 }
 
 /// The suggested receiving folder for a device named so.
@@ -581,10 +588,20 @@ pub fn devices_default_folder(d: Dir<'_>, name: String) -> Result<String, String
 
 /// Names this PC for your devices (they see it at once); Direct's name for people stays.
 #[tauri::command]
-pub fn devices_set_pc_name(d: Dir<'_>, name: String) -> Result<String, String> {
-    let kept = d.node()?.set_pc_name(&name)?;
-    save_profile(&Profile { pc_name: kept.clone(), ..load_profile() });
-    Ok(kept)
+pub async fn devices_set_pc_name(d: Dir<'_>, name: String) -> Result<String, String> {
+    let node = d.node()?;
+    off(move || {
+        let kept = node.set_pc_name(&name)?;
+        save_profile(&Profile { pc_name: kept.clone(), ..load_profile() });
+        Ok(kept)
+    })
+    .await
+}
+
+/// Saving work (contacts, the profile, the history: written and synced to the disk) is done
+/// off the window's thread, so a click never makes the window wait for the disk.
+async fn off<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
 }
 
 /// Pairs a PC as yours ("This is my device"), with its receiving folder.
@@ -612,18 +629,21 @@ pub fn devices_answer(window: tauri::Window, d: Dir<'_>, peer: String, accept: b
 }
 
 #[tauri::command]
-pub fn devices_set_control(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
-    d.node()?.set_control(&id, on)
+pub async fn devices_set_control(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
+    let node = d.node()?;
+    off(move || node.set_control(&id, on)).await
 }
 
 #[tauri::command]
-pub fn devices_set_folder(d: Dir<'_>, id: String, folder: String) -> Result<(), String> {
-    d.node()?.set_device_folder(&id, &folder)
+pub async fn devices_set_folder(d: Dir<'_>, id: String, folder: String) -> Result<(), String> {
+    let node = d.node()?;
+    off(move || node.set_device_folder(&id, &folder)).await
 }
 
 #[tauri::command]
-pub fn devices_rename(d: Dir<'_>, id: String, name: String) -> Result<(), String> {
-    d.node()?.edit_contact(&id, Some(name), None, None)
+pub async fn devices_rename(d: Dir<'_>, id: String, name: String) -> Result<(), String> {
+    let node = d.node()?;
+    off(move || node.edit_contact(&id, Some(name), None, None)).await
 }
 
 #[tauri::command]
@@ -633,9 +653,13 @@ pub fn devices_watch(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn devices_clear_log(d: Dir<'_>, id: String) -> Result<(), String> {
-    d.node()?.clear_device_log(&id);
-    Ok(())
+pub async fn devices_clear_log(d: Dir<'_>, id: String) -> Result<(), String> {
+    let node = d.node()?;
+    off(move || {
+        node.clear_device_log(&id);
+        Ok(())
+    })
+    .await
 }
 
 #[derive(Serialize)]
@@ -857,7 +881,7 @@ pub async fn devices_send_ask(app: AppHandle, d: Dir<'_>, id: String, device: St
     let (text, _) = d.node()?.device_add_named(&device, vec![link], &names).await?;
     // It went: whatever happens here now, the window must not say "Not sent". (Answered
     // meanwhile, it stays as it was answered.)
-    let _ = crate::ask::answer(crate::model::AskAnswer { id, action: "cancel".into(), stem: String::new(), dir: String::new(), quality: None, notify: false, dont_ask: false });
+    let _ = crate::ask::answer(crate::model::AskAnswer { id, action: "cancel".into(), stem: String::new(), dir: String::new(), quality: None, alert: None, dont_ask: false, private: false });
     Ok(text)
 }
 

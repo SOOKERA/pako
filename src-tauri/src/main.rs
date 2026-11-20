@@ -25,6 +25,10 @@ fn main() {
     if args.first().map(|a| a == pako_lib::install::UNINSTALL_CLEANUP).unwrap_or(false) {
         std::process::exit(pako_lib::install::uninstall_cleanup(&args));
     }
+    // Started by Pako Setup's window with its choices: do them, open no window.
+    if args.first().map(|a| a == pako_lib::install::INSTALL_CHOICES).unwrap_or(false) {
+        std::process::exit(pako_lib::install::install_choices(&args));
+    }
     // Started by a browser for the Pako extension: answer it, never open a window.
     if pako_lib::extension::is_host_launch(&args) {
         std::process::exit(pako_lib::extension::run_host(&args));

@@ -1,14 +1,17 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
+  import MiddleText from "./MiddleText.svelte";
   import { app, hostName, hostSwitch } from "./state.svelte";
   import { api, isActive, type Download, type Part } from "./api";
   import { bytes, bytesOf, downloadLook, sourceOf, speed, statusLook, timeLeft, wordColor } from "./format";
   import Icon from "./Icon.svelte";
   import HelpLink from "./help/HelpLink.svelte";
   import ItemSettings from "./ItemSettings.svelte";
+  import { alertOf, doneAlert } from "./alert";
   import VideoPreview from "./VideoPreview.svelte";
   import { isVideo } from "./format";
+  import { NEEDS_PASSWORD, extracting } from "./extract.svelte";
 
   let { onremove }: { onremove: (ids: string[]) => void } = $props();
 
@@ -88,7 +91,7 @@
   }
 </script>
 
-<div class="panel">
+<div class="panel details-panel">
   {#if d}
     {@const look = downloadLook(d)}
     {@const p = app.live[d.id]}
@@ -156,7 +159,10 @@
       {#if d.message && d.status === "completed"}
         <div class="callout" class:ok-note={d.message === "Extracted"}>
           <Icon name={d.message === "Extracted" ? "check" : "alert"} size={14} />
-          <span>{d.message === "Extracted" ? "The split archive was extracted into this folder." : d.message}</span>
+          <span
+            >{d.message === "Extracted" ? "The split archive was extracted into this folder." : d.message === NEEDS_PASSWORD ? "It's locked with a password: type it to extract the files." : d.message}
+            {#if d.message === NEEDS_PASSWORD}<button class="linkish" onclick={() => (extracting.asking = d)}>Type the password…</button>{/if}</span
+          >
         </div>
       {/if}
       {#if d.status === "needsAccount"}
@@ -217,17 +223,17 @@
         destLocked={!d.viaBrowser && (isActive(d.status) || d.downloaded > 0)}
         priority={d.priority}
         priorityOff={d.viaBrowser ? "Your browser downloads it: Pako's queue doesn't apply." : undefined}
-        notify={d.notify}
+        alert={alertOf(d, doneAlert(app.settings))}
         onDest={(dir) => app.run(() => api.setFolder([d.id], dir))}
         onPriority={(p) => app.run(() => api.setPriority([d.id], p))}
-        onNotify={(on) => app.run(() => api.setNotify([d.id], on))}
+        onAlert={(a) => app.run(() => api.setAlert([d.id], a))}
       />
     {/if}
 
     <section class="details">
       <div class="label">Details</div>
       <dl>
-        <dt>Source</dt><dd>{sourceDetail(d)}</dd>
+        <dt>Source</dt><dd><MiddleText text={sourceDetail(d)} /></dd>
         {#if d.mirrors?.length || d.tried?.length}
           {@const left = d.mirrors ?? []}
           <dt>Backups</dt>
@@ -237,7 +243,7 @@
           {#if d.tried?.length}<dt>Tried</dt><dd title={d.tried.map((m) => `${hostName(m)}: ${m.why ?? "didn't work"}`).join("\n")}>{d.tried.map(hostName).join(", ")}</dd>{/if}
         {/if}
         <dt>Saved to</dt>
-        <dd><button class="linkish" onclick={() => app.run(() => api.openItem(d.id, true))} title={d.destDir}>{d.destDir}</button></dd>
+        <dd><button class="linkish" onclick={() => app.run(() => api.openItem(d.id, true))}><MiddleText text={d.destDir} /></button></dd>
         {#if d.md5}<dt>File check</dt><dd title="Compared with Google's own record of the file (MD5)">{d.status === "completed" ? "Passed: the file is complete" : "Checked when it finishes"}</dd>{/if}
         {#if d.source.kind === "video"}
           <dt>Quality</dt><dd>{d.source.audio ? `Audio only (${d.source.audio.toUpperCase()})` : d.source.quality ? `Up to ${d.source.quality}p` : `Up to ${app.settings?.videoQuality || 1080}p (default)`}</dd>
@@ -253,10 +259,10 @@
       </dl>
     </section>
 
-    <div class="actions">
-      <button class="btn" disabled={!!pr.off} title={pr.off} onclick={() => app.run(pr.run)}><Icon name={pr.icon} size={13} />{pr.label}</button>
-      <button class="btn" onclick={() => app.run(() => api.openItem(d.id, true))}><Icon name="folder" size={13} />Folder</button>
-      <button class="btn danger" onclick={() => onremove([d.id])}><Icon name="trash" size={13} />Remove</button>
+    <div class="panel-actions">
+      <button class="btn" disabled={!!pr.off} title={pr.off} onclick={() => app.run(pr.run)}><Icon name={pr.icon} size={13} /><span class="l">{pr.label}</span></button>
+      <button class="btn" onclick={() => app.run(() => api.openItem(d.id, true))}><Icon name="folder" size={13} /><span class="l">Folder</span></button>
+      <button class="btn danger" onclick={() => onremove([d.id])}><Icon name="trash" size={13} /><span class="l">Remove</span></button>
     </div>
   {:else if folderFiles && folderFiles.kind === "folder"}
     {@const files = folderFiles.files}
@@ -300,10 +306,10 @@
         {/each}
       </dl>
     </section>
-    <div class="actions">
-      <button class="btn" onclick={() => app.run(() => api.resume(files.map((f) => f.id)))}><Icon name="play" size={13} />Resume</button>
-      <button class="btn" onclick={() => app.run(() => api.pause(files.map((f) => f.id)))}><Icon name="pause" size={13} />Pause</button>
-      <button class="btn danger" onclick={() => onremove(files.map((f) => f.id))}><Icon name="trash" size={13} />Remove</button>
+    <div class="panel-actions">
+      <button class="btn" onclick={() => app.run(() => api.resume(files.map((f) => f.id)))}><Icon name="play" size={13} /><span class="l">Resume</span></button>
+      <button class="btn" onclick={() => app.run(() => api.pause(files.map((f) => f.id)))}><Icon name="pause" size={13} /><span class="l">Pause</span></button>
+      <button class="btn danger" onclick={() => onremove(files.map((f) => f.id))}><Icon name="trash" size={13} /><span class="l">Remove</span></button>
     </div>
   {:else}
     <div class="none">
@@ -320,7 +326,7 @@
 
 <style>
   .panel {
-    width: 320px;
+    width: var(--pw, 320px);
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -555,7 +561,7 @@
   }
   .details dl {
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 8px 14px;
     margin: 0;
     font-size: 12px;
@@ -570,12 +576,12 @@
     color: var(--text-2);
   }
   .linkish {
+    max-width: 100%;
     border: none;
     background: none;
     padding: 0;
     color: var(--text-2);
     text-align: right;
-    overflow-wrap: anywhere;
     text-decoration: underline;
     text-decoration-color: var(--underline);
     text-underline-offset: 3px;
@@ -583,14 +589,6 @@
   .linkish:hover {
     color: var(--text);
     text-decoration-color: var(--text-3);
-  }
-  .actions {
-    margin-top: auto;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    padding: 14px 18px;
-    border-top: 1px solid var(--line);
   }
   .none {
     height: 100%;

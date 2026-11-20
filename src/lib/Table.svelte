@@ -9,18 +9,30 @@
   import { flipIf, flipOpts, rowSlide } from "./motion";
   import { VIRTUAL_MIN, layout, reveal, visible } from "./virtual";
   import Icon from "./Icon.svelte";
+  import { alertLabel, alertOf, doneAlert, nextAlert } from "./alert";
+  import { priv } from "./private.svelte";
+  /** Height of the one-time Private mode tip under its row (see `.tip`). */
+  const TIP_H = 40;
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
+  import ColumnGrip from "./ColumnGrip.svelte";
+  import ColumnsButton from "./ColumnsButton.svelte";
+  import { listColumns } from "./columns.svelte";
+  import { LISTS, gridTemplate, shownColumns } from "./columns";
+  import type { MenuItem } from "./menu";
 
   let {
     oncontext,
     onadd,
     onempty,
+    onmenu,
   }: {
     oncontext: (e: MouseEvent, ids: string[], clicked?: string) => void;
     onadd: () => void;
     /** Right-click on empty space in the list. */
     onempty: (e: MouseEvent) => void;
+    /** Opens a menu (the columns menu). */
+    onmenu: (x: number, y: number, items: MenuItem[]) => void;
   } = $props();
 
   // ---------- drag a row to change its place in the queue ----------
@@ -109,9 +121,28 @@
     if (ids.length) app.run(() => api.moveBefore(ids, d.id));
   }
 
-  const cols = $derived(
-    `--w-source: ${app.columns.source}px; --w-progress: ${app.columns.progress}px; --w-speed: ${app.columns.speed}px; --w-status: ${app.columns.status}px; --w-date: ${app.columns.date}px`,
+  // ---------- columns: widths, shown or hidden (columns.ts) ----------
+  const LIST = LISTS.downloads;
+  /** The column titles' width: the list's room, without the scrollbar's. */
+  let headW = $state(0);
+  const colState = $derived(listColumns.state("downloads"));
+  const frozen = $derived(listColumns.frozen?.list === "downloads" ? listColumns.frozen : null);
+  const shown = $derived(frozen ? { keys: frozen.keys, tight: false } : shownColumns(LIST, colState, headW));
+  const cols = $derived(`--cols: ${gridTemplate(LIST, colState, shown.keys, shown.tight)}`);
+  /** Columns not shown (hidden by you, or no room): their cells are left out of the grid. */
+  const hideCls = $derived(
+    LIST.cols
+      .filter((c) => !shown.keys.includes(c.key))
+      .map((c) => `h-${c.key}`)
+      .join(" "),
   );
+  const unsort = (key: string) => app.unsortIf("downloads", key);
+  /** Ticked columns the list has no room for now. */
+  const noRoom = $derived(LIST.cols.filter((c) => !colState.hidden.includes(c.key) && !shown.keys.includes(c.key)).map((c) => c.key));
+  function columnsMenu(e: MouseEvent) {
+    e.preventDefault();
+    onmenu(e.clientX, e.clientY, listColumns.menu("downloads", unsort, () => noRoom));
+  }
 
   // ---------- row motion ----------
   // Sliding and re-ordering rows is nice on a short list but measures every row, which makes
@@ -129,8 +160,9 @@
     layout(
       app.rows.map((r) => {
         if (r.kind === "folder") return { h: 46 + (r.open ? 0 : 8), top: 8, bottom: 0 };
-        if (r.kind === "child") return { h: 46 + (r.last ? 8 : 0), top: 0, bottom: 0 };
-        return { h: 46, top: 0, bottom: 0 };
+        if (r.kind === "child") return { h: 46 + (r.last ? 8 : 0) + (r.d.id === priv.tipRow ? TIP_H : 0), top: 0, bottom: 0 };
+        // The one-time Private mode tip sits right under its row.
+        return { h: 46 + (r.d.id === priv.tipRow ? TIP_H : 0), top: 0, bottom: 0 };
       }),
     ),
   );
@@ -168,25 +200,6 @@
   });
   function motionMs(ms: number) {
     return bigList || performance.now() < quietUntil ? 0 : ms;
-  }
-
-  // ---------- column resizing (drag the left edge of a column) ----------
-  function startResize(e: PointerEvent, name: string) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = app.columns[name];
-    const move = (ev: PointerEvent) => {
-      const w = Math.min(420, Math.max(70, startW - (ev.clientX - startX)));
-      app.setColumn(name, w);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      document.body.style.cursor = "";
-    };
-    document.body.style.cursor = "col-resize";
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
   }
 
   // ---------- per-row values ----------
@@ -296,8 +309,8 @@
 
 <svelte:window onpointermove={outMove} onpointerup={() => (outPress = null)} />
 
-<div class="table" data-tour="dl-list" style={cols}>
-  <div class="head">
+<div class="table {hideCls}" class:easing={listColumns.easing && app.rows.length <= ANIMATE_MAX_ROWS} data-tour="dl-list" style={cols}>
+  <div class="head" role="presentation" oncontextmenu={columnsMenu} bind:clientWidth={headW}>
     <div class="cell">
       <button
         class="check"
@@ -316,22 +329,30 @@
       </button>
     </div>
     <div class="cell">Type</div>
-    <button class="cell sorter" class:sorted={app.sortDownloads?.key === "name"} onclick={() => app.toggleSort("downloads", "name")} title="Sort by name">
+    <button class="cell sorter" class:sorted={app.sortDownloads?.key === "name"} onclick={() => app.toggleSort("downloads", "name")} title="Sort by name" aria-label="Name{app.sortDownloads?.key === 'name' ? (app.sortDownloads.dir > 0 ? ', sorted A to Z' : ', sorted Z to A') : ''}. Sort by name">
       Name{#if app.sortDownloads?.key === "name"}<Icon name={app.sortDownloads.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
     </button>
-    {#each [["source", "Source"], ["progress", "Progress"], ["speed", "Speed"], ["status", "Status"], ["date", "Date"]] as [key, label] (key)}
-      <div class="cell resizable c-{key}">
-        <span class="grip" role="separator" aria-orientation="vertical" aria-label="Resize {label} column" onpointerdown={(e) => startResize(e, key)}></span>
-        <button class="sorter" class:sorted={app.sortDownloads?.key === key} onclick={() => app.toggleSort("downloads", key as SortKey)} title="Sort by {label.toLowerCase()}">
-          {label}{#if app.sortDownloads?.key === key}<Icon name={app.sortDownloads.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
+    {#each LIST.cols as c (c.key)}
+      <div class="cell resizable c-{c.key}">
+        <ColumnGrip list="downloads" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />
+        <button class="sorter" class:sorted={app.sortDownloads?.key === c.key} onclick={() => app.toggleSort("downloads", c.key as SortKey)} title="Sort by {c.label.toLowerCase()}" aria-label="{c.label}{app.sortDownloads?.key === c.key ? (app.sortDownloads.dir > 0 ? ', sorted lowest first' : ', sorted highest first') : ''}. Sort by {c.label.toLowerCase()}">
+          {c.label}{#if app.sortDownloads?.key === c.key}<Icon name={app.sortDownloads.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
         </button>
       </div>
     {/each}
+    <div class="cell colcell"><ColumnsButton list="downloads" {onmenu} onhide={unsort} noRoom={() => noRoom} /></div>
   </div>
 
   <div
     class="body"
-    role="presentation"
+    role="grid"
+    tabindex="-1"
+    aria-label="Downloads"
+    aria-multiselectable="true"
+    aria-rowcount={app.rows.length}
+    aria-activedescendant={app.focus ? "drow-" + app.focus : undefined}
+    onpointerenter={() => (app.listHover = true)}
+    onpointerleave={() => (app.listHover = false)}
     bind:this={body}
     bind:clientHeight={viewH}
     onscroll={(e) => (scrollTop = (e.currentTarget as HTMLElement).scrollTop)}
@@ -416,7 +437,7 @@
                 <span class="dot" style="background: {sourceOf(r.files[0]).color}"></span>
                 <span class="ell">{sourceOf(r.files[0]).label}</span>
               </div>
-              <div class="cell prog">
+              <div class="cell prog c-progress">
                 <div class="barline">
                   <div class="bar"><div class="fill" style="width: {f.pct}%; background: {f.look.color}"></div></div>
                   <span class="pct mono">{Math.floor(f.pct)}%</span>
@@ -443,6 +464,9 @@
               class:tint-fail={d.status === "failed"}
               class:tint-limit={d.status === "quotaExceeded" || d.status === "needsAccount"}
               role="row"
+              id={"drow-" + d.id}
+              aria-selected={app.selected.has(d.id)}
+              aria-label="{d.name}, {look.label}"
               tabindex="-1"
               class:drop-before={dropTarget === d.id}
               data-key={d.id}
@@ -495,12 +519,33 @@
                 {:else if d.priority === "later"}
                   <span class="prio later" title="Priority: Later (runs when nothing else waits)"><Icon name="down" size={11} stroke={2.6} /></span>
                 {/if}
+                {#if d.status !== "completed"}
+                  {@const level = alertOf(d, doneAlert(app.settings))}
+                  <!-- How it tells you when it finishes: each click goes one step on. Pop-up (the
+                       usual) shows only while pointed at; Off and Important always show. -->
+                  <button
+                    class="bell {level}"
+                    title="Notify when done: {alertLabel(level)} (click to change)"
+                    aria-label="Notify when done: {alertLabel(level)}"
+                    tabindex="-1"
+                    draggable="false"
+                    onpointerdown={(e) => e.stopPropagation()}
+                    ondragstart={(e) => (e.preventDefault(), e.stopPropagation())}
+                    ondblclick={(e) => e.stopPropagation()}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      app.run(() => api.setAlert([d.id], nextAlert(level)));
+                    }}
+                  >
+                    <Icon name={level === "off" ? "bell-off" : "bell"} size={level === "important" ? 13 : 12} stroke={2.2} />
+                  </button>
+                {/if}
               </div>
               <div class="cell src c-source">
                 <span class="dot" style="background: {sourceOf(d).color}"></span>
                 <span class="ell" title={sourceOf(d).label}>{sourceOf(d).label}</span>
               </div>
-              <div class="cell prog">
+              <div class="cell prog c-progress">
                 <div class="barline">
                   <div class="bar"><div class="fill" class:pulse={d.status === "verifying"} style="width: {pct(d)}%; background: {look.color}"></div></div>
                   <span class="pct mono">{d.size || d.status === "completed" ? `${Math.floor(pct(d))}%` : ""}</span>
@@ -534,6 +579,17 @@
               </div>
               <div class="cell date mono c-date" title={dateTitle(d.date || d.addedAt, d.finishedAt)}>{shortDate(d.date || d.addedAt)}</div>
             </div>
+            {#if d.id === priv.tipRow}
+              <!-- Once, under the first "Done · private" row: Private mode keeps these behind a PIN. -->
+              <div class="tip" role="note" transition:rowSlide={{ duration: 240 }} {@attach () => priv.tipShown()}>
+                <span class="tip-in">
+                  <Icon name="lock" size={13} />
+                  <span class="tip-t" title="Want to keep these behind a PIN? Private mode, in Settings.">Want to keep these behind a PIN? <b>Private mode</b>, in Settings.</span>
+                  <button class="btn small tip-go" onclick={() => { priv.closeTip(); priv.setupOpen = true; }}>Turn on…</button>
+                  <button class="icon-btn" aria-label="Close this tip" title="Close" onclick={() => priv.closeTip()}><Icon name="x" size={12} /></button>
+                </span>
+              </div>
+            {/if}
           {/if}
         </div>
       {/each}
@@ -550,58 +606,54 @@
     flex-direction: column;
     container-type: inline-size;
   }
+  /* The columns as you set them (columns.ts): a narrow window drops the least important first
+     (the source, then the date, then the speed, then the status) instead of squeezing the
+     name, and never shows one you hid. */
   .head,
   .row {
     display: grid;
-    grid-template-columns: 30px 46px minmax(160px, 1fr) var(--w-source) var(--w-progress) var(--w-speed) var(--w-status) var(--w-date);
+    grid-template-columns: var(--cols);
     align-items: center;
     padding: 0 16px;
   }
-  /* Narrow window: drop the least important columns instead of squeezing the name. */
-  /* Narrower: the source goes first, then the date, then the speed. */
-  @container (max-width: 900px) {
-    .head,
-    .row {
-      grid-template-columns: 30px 46px minmax(150px, 1fr) var(--w-progress) var(--w-speed) var(--w-status) var(--w-date);
-    }
-    .table .c-source {
-      display: none !important;
-    }
+  .table.h-source .c-source,
+  .table.h-progress .c-progress,
+  .table.h-speed .c-speed,
+  .table.h-status .c-status,
+  .table.h-date .c-date {
+    /* Not shown: its place in the grid is at no width (see gridTemplate), nothing in it shows. */
+    visibility: hidden;
+    /* No sliver: its own padding or margin would still take room at no width. */
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden;
+    pointer-events: none;
   }
-  @container (max-width: 740px) {
-    .head,
-    .row {
-      grid-template-columns: 30px 46px minmax(140px, 1fr) var(--w-progress) var(--w-speed) var(--w-status);
-    }
-    .table .c-source,
-    .table .c-date {
-      display: none !important;
-    }
+  /* Shown or hidden from the columns menu: the columns ease to their new widths. */
+  .table.easing .head {
+    transition: grid-template-columns var(--mid) var(--ease);
   }
-  @container (max-width: 600px) {
-    .head,
-    .row {
-      grid-template-columns: 30px 46px minmax(120px, 1fr) minmax(110px, 140px) 104px;
-    }
-    .table .c-speed {
-      display: none !important;
-    }
+  .table.easing .row {
+    transition:
+      grid-template-columns var(--mid) var(--ease),
+      background var(--fast) ease,
+      --zb var(--mid) ease;
   }
-  /* Smallest window with the details panel open: the status word goes too. The colour of the
-     stripe and the bar still says it, and the panel next to it spells it out. */
-  @container (max-width: 440px) {
-    .head,
-    .row {
-      grid-template-columns: 30px 46px minmax(90px, 1fr) minmax(96px, 120px);
-    }
-    .table .c-speed,
-    .table .c-status {
-      display: none !important;
-    }
+  /* Meanwhile a column opening up keeps its content inside it (the titles keep their edges). */
+  .table.easing .row > * {
+    overflow: hidden;
+  }
+  .colcell {
+    justify-content: flex-end;
   }
   .head {
     height: 32px;
     flex: none;
+    /* The list's scrollbar takes room from the rows: the titles keep the same room free, so
+       each title stays right above its column whether the list scrolls or not. */
+    overflow: hidden;
+    scrollbar-gutter: stable;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -615,31 +667,11 @@
     display: flex;
     align-items: center;
   }
-  .grip {
-    position: absolute;
-    left: -9px;
-    top: 7px;
-    bottom: 7px;
-    width: 9px;
-    cursor: col-resize;
-  }
-  .grip::after {
-    content: "";
-    position: absolute;
-    left: 4px;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background: var(--line);
-    transition: background var(--fast) ease;
-  }
-  .grip:hover::after {
-    background: var(--accent);
-  }
   .body {
     /* Long lists draw only the rows on screen: the browser must not shift the scroll
        position when the space above them changes. */
     overflow-anchor: none;
+    scrollbar-gutter: stable;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -655,10 +687,12 @@
   .row {
     height: 46px;
     border-bottom: 1px solid var(--line-soft);
-    transition: background var(--fast) ease;
+    transition:
+      background var(--fast) ease,
+      --zb var(--mid) ease;
   }
   .row:hover {
-    background: var(--hover);
+    background: var(--row-hover);
   }
   .row.selected {
     background: var(--select);
@@ -836,6 +870,53 @@
     color: var(--text-3);
     background: var(--raise);
   }
+  /* The row's bell (Notify when done). Always the same size, so the name never moves. */
+  .bell {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin-left: auto;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-4);
+    cursor: pointer;
+    transition:
+      opacity var(--fast) ease,
+      color var(--fast) ease,
+      background var(--fast) ease;
+  }
+  .bell:hover {
+    color: var(--text);
+    background: var(--raise-hover);
+  }
+  .bell:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+  /* Pop-up is the usual: only while the row is pointed at. (No Tab stop on every row: the
+     keyboard reaches the same choice in the details and the right-click menu.) */
+  .bell.pop {
+    opacity: 0;
+  }
+  .row:hover .bell.pop {
+    opacity: 1;
+  }
+  /* Important: filled, in Pako's colour, always there. */
+  .bell.important {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .bell.important :global(path) {
+    fill: currentColor;
+  }
+  .bell.important:hover {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
   .rail {
     position: relative;
     width: 14px;
@@ -991,6 +1072,32 @@
     font-size: 12px;
     transition: color var(--mid) ease;
   }
+  /* The one-time Private mode tip under the first "Done · private" row. */
+  .tip {
+    height: 40px;
+    overflow: hidden;
+  }
+  .tip-in {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    margin: 0 8px 6px 44px;
+    padding: 0 6px 0 12px;
+    border-radius: var(--radius);
+    background: var(--priv-tint);
+    border: 1px solid var(--priv-line);
+    color: var(--priv-text);
+    font-size: 12.5px;
+  }
+  .tip-t {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
   /* The ✕ of a "Done · private" row, right after its status. */
   .icon-btn.forget {
     width: 24px;
@@ -1060,9 +1167,15 @@
       transform: translateY(8px);
     }
   }
-  /* Every other row a touch lighter, so rows are easy to follow across. Stacks on top of
-     the row's own colour (folder files, red/purple tints, hover, selection). */
-  .row.alt:not(.tint-fail):not(.tint-limit):not(.selected) {
-    background-image: linear-gradient(var(--zebra), var(--zebra));
+  /* Every other row a touch lighter, so rows are easy to follow across a long list: list rows
+     by their place in the list (a folder counts as one), a folder's files by their place inside
+     it (see `alt`). The stripe lies over the row's own colour (folder files, red/purple tints,
+     hover), so those still read; a selected row shows its selection alone. Every file row
+     carries the layer (transparent when not striped), so a row whose place changes eases. */
+  .table .row:not(.selected):not(.folder) {
+    background-image: linear-gradient(var(--zb), var(--zb));
+  }
+  .row.alt {
+    --zb: var(--zebra);
   }
 </style>

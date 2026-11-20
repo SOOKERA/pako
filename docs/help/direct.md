@@ -93,7 +93,7 @@ Right-click a contact, or click the gear above the conversation, for:
 - **Rename…**: your own name for them. If they call themselves something else, it shows next to their name ("calls themselves …"). When they change their name, connected contacts see it at once. A contact you never renamed takes their new name.
 - **Tags…**: tick their tags, or type a new one and click **Add**, then **Save**.
 - **Add to favourites** / **Remove from favourites**: favourites have a star and their own filter.
-- **Mute** / **Unmute**: no pop-ups, sounds or bell lines from them (files coming in, files waiting for your answer, files received). Their files still arrive: a send waiting for your answer stays in their conversation (a **!** on their row, and the count on **Waiting for you**), and Pako asks you when you open it. A muted contact has a crossed-out bell next to their name. Your devices can't be muted: pairing a muted contact as one of your devices unmutes it.
+- **Mute** / **Unmute**: no pop-ups, sounds or bell lines from them (files coming in, files waiting for your answer, files received), and no **Files delivered** pop-up when your files reach them. Their files still arrive: a send waiting for your answer stays in their conversation (a **!** on their row, and the count on **Waiting for you**), and Pako asks you when you open it. A muted contact has a crossed-out bell next to their name. Your devices can't be muted: pairing a muted contact as one of your devices unmutes it.
 - **Check now**, for someone "Not checked lately", and **Check often for 1 hour** (see [Check this contact](#check-this-contact)).
 - **Can send to me without asking** (see below).
 - **Save their files in…**: where their files go.
@@ -109,7 +109,11 @@ Right-click a contact, or click the gear above the conversation, for:
 
 They're asked whether they want the files, unless you may send to them without asking. Meanwhile your conversation shows "Waiting for them to accept…". Once they accept, the files go straight across.
 
+Pako plays a sound when your files are delivered, and a chime when files arrive for you or someone offers you files (see [Notifications](notifications.md#sounds-files-arriving-files-sent)). A **Files delivered** pop-up says so too ("Rado has received Holiday photos."), and pop-ups tell you when files are offered to you or start coming in (see [Notifications](notifications.md)).
+
 Files go only while you're both online: with someone offline, **Send to Rado** stays greyed. You can still pick the files, and send them once they're back.
+
+To send a file from [Private mode](private-mode.md#send-private-files), use **Send with Direct…** in the private list: Pako reads it decrypted as it goes, without a readable copy on your PC.
 
 ## Receive files
 
@@ -119,7 +123,7 @@ When a contact sends you files, Pako asks: "Rado wants to send you files". You s
 - **Accept** starts the transfer. **Decline** says no, and they're told. Closing the question (**×** or **Esc**) declines too.
 - A question takes your answer only after a short moment on screen, so a stray click or **Esc** can't decline it by accident. The same goes for someone who wants to connect.
 
-The question also goes in the bell, and shows as a pop-up when Pako's window isn't in front, both with **Accept** and **Decline** (see [Notifications](notifications.md)).
+The question also goes in the bell, and shows as a pop-up unless Pako's window is in front (it asks you there, on any page), both with **Accept** and **Decline** (see [Notifications](notifications.md)).
 
 ### Can send to me without asking
 
@@ -184,7 +188,7 @@ Only your own paired PCs that allow control can see each other's contacts and co
 
 ## The details panel
 
-Press **Ctrl+I**, or click the panel button above the conversation, to see more about the person you picked:
+Press **Ctrl+I**, or click the panel button above the conversation, to see more about the person you picked (drag its left edge to make it wider or narrower, see [Downloading](downloading.md#follow-your-downloads)):
 
 - **Connection**: **Status** (**Online**, **Waiting for them**, **Not checked lately**, **Seen lately** or **Offline**), the **Route** or when you last saw them, **Speed now**, **Check now** when they're not checked lately, and **Check this contact** (**Automatic**, **Often for…**, **When I ask**).
 - **Between you**: how much you **Sent** and **Received**, the number of **Transfers** and the **Last exchange**.

@@ -559,7 +559,9 @@ impl Node {
         if !c.device && !c.their_device {
             return;
         }
-        let pc_name = Some(inner.dev.pc_name.clone()).filter(|n| !n.is_empty());
+        // This PC's name only to a PC paired here as one of your devices: a contact that only
+        // claims this PC is one of its devices never learns it.
+        let pc_name = Some(inner.dev.pc_name.clone()).filter(|n| !n.is_empty() && c.device);
         let control = c.device && c.control;
         // Only to a device this PC lets control it: Direct's name and how many contacts (it
         // can then show them and send through this PC).
@@ -715,13 +717,16 @@ impl Node {
     /// Answers "… wants to pair as your device" (in Pako's window, after comparing the code).
     /// `folder`: where its files will be saved (None = the suggested one).
     pub fn answer_device_request(&self, peer: &str, accept: bool, folder: Option<String>) {
+        if !self.inner.lock().unwrap().requests.get(peer).is_some_and(|r| r.device) {
+            return;
+        }
         if accept {
             let mut inner = self.inner.lock().unwrap();
             let name = inner.requests.get(peer).map(|r| r.name.clone()).unwrap_or_default();
             let f = folder.filter(|f| !f.trim().is_empty()).unwrap_or_else(|| self.default_folder(&name));
             inner.dev.request_folders.insert(peer.to_string(), f);
         }
-        self.answer_request(peer, accept);
+        self.answer_request_of(peer, accept, true);
     }
 
     /// Where a device's files are saved (and only there). Never set by the other device.
@@ -1159,7 +1164,7 @@ impl Node {
                 let name = name_of(&item).unwrap_or_default();
                 match host.file_of(&item) {
                     None => Err(format!("{name} isn't finished, or isn't there any more.")),
-                    Some(path) => match self.send(&peer, vec![path], false, None).await {
+                    Some(path) => match self.send_ordered(&peer, vec![path]).await {
                         Ok(_) => Ok(format!("Sending {name}")),
                         Err(e) => Err(e),
                     },
@@ -1598,6 +1603,9 @@ mod tests {
         // Only into the folder picked for that device.
         assert_eq!(std::fs::read(inbox.join("notes.txt")).unwrap(), b"hello");
         assert!(!root.join("home/Downloads/From Laptop").exists());
+        // Delivered: the laptop's sent sound (Home PC's arrived chime goes with its notice).
+        until(|| laptop.sent_sounds.load(std::sync::atomic::Ordering::Relaxed) == 1).await;
+        assert_eq!(home.sent_sounds.load(std::sync::atomic::Ordering::Relaxed), 0);
 
         // The laptop renames itself: Home PC follows at once; Direct's name for people stays.
         let direct_name = laptop.devices_state().my_name;
@@ -1669,6 +1677,10 @@ mod tests {
         *host.file.lock().unwrap() = Some(src.join("report.pdf"));
         laptop.order_raw(&h, Order::Get { item: "d2".into() }).await.unwrap();
         until(|| std::fs::read(root.join("laptop/Downloads/From Home PC/report.pdf")).is_ok_and(|b| b == b"pdf")).await;
+        // Sent because the laptop asked: no sent sound on Home PC (nobody there sent anything;
+        // the laptop hears it arrive).
+        until(|| home.devices_state().history.iter().any(|h| h.outgoing && h.name == "report.pdf" && h.result == "done")).await;
+        assert_eq!(home.sent_sounds.load(std::sync::atomic::Ordering::Relaxed), 0, "Get this file: silent on the PC that sends it");
         assert_eq!(*host.did.lock().unwrap(), vec!["add https://example.com/a.zip", "pause d1"]);
         // The priority, changed from the other PC (My devices › Downloads).
         assert_eq!(laptop.order_raw(&h, Order::Priority { item: "d1".into(), priority: "first".into() }).await.unwrap(), "Priority of Movie.mkv: First");

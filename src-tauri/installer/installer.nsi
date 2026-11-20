@@ -172,22 +172,9 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
 ; Installer pages, must be ordered as they appear
-; 1. Welcome Page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!insertmacro MUI_PAGE_WELCOME
-
-; 2. License Page (if defined)
-!if "${LICENSE}" != ""
-  !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-  ; [Pako] The page is Pako's terms of use (bundle.licenseFile: TERMS.md as plain text, made by
-  ; build.rs), with its own titles (installer/English.nsh). "I Agree" goes on; Cancel ends Setup.
-  !define MUI_PAGE_HEADER_TEXT "$(pakoTermsTitle)"
-  !define MUI_PAGE_HEADER_SUBTEXT "$(pakoTermsSubtitle)"
-  !define MUI_LICENSEPAGE_TEXT_TOP "$(pakoTermsTop)"
-  !define MUI_LICENSEPAGE_TEXT_BOTTOM "$(pakoTermsBottom)"
-  ; [Pako] end
-  !insertmacro MUI_PAGE_LICENSE "${LICENSE}"
-!endif
+; [Pako] No Welcome or License page: Pako Setup's own window (installer/ui.nsh, page
+; PakoMainPage below) shows everything at once, with "By installing, you accept the terms of use"
+; (a link to them) under its Install button. A silent or passive install never showed them.
 
 ; 3. Install mode (if it is set to `both`)
 !if "${INSTALLMODE}" == "both"
@@ -232,6 +219,12 @@ Function FindWixInstall
 FunctionEnd
 
 Function PageReinstall
+  ; [Pako] Pako's own window (PakoMainPage) shows what is installed and does this page's
+  ; recommended choice itself (PakoMainLeave): only a passive install still goes through here.
+  ${If} $PassiveMode <> 1
+    Abort
+  ${EndIf}
+  ; [Pako] end
   ; Uninstall previous WiX installation if exists.
   Call FindWixInstall
   ${If} $R6 != ""
@@ -340,12 +333,30 @@ Function PageReinstallUpdateSelection
   ${EndIf}
 FunctionEnd
 Function PageLeaveReinstall
-  ${NSD_GetState} $R2 $R1
+  ; [Pako] From Pako's window: its choice (always the first, recommended one).
+  ${If} $PakoUiChoice != ""
+    StrCpy $R1 $PakoUiChoice
+  ${ElseIf} $PassiveMode = 1
+    ; [Pako] A passive run (/P: winget, scripts) has no buttons to read: the recommended,
+    ; first choice. Reading a missing button gave 0, which for the same version meant
+    ; "Uninstall": Pako lost start with Windows and its browser link on a plain reinstall.
+    StrCpy $R1 1
+  ${Else}
+    ${NSD_GetState} $R2 $R1
+  ${EndIf}
+  ; [Pako] end
 
   ; If migrating from Wix, always uninstall
   ${If} $WixMode = 1
     Goto reinst_uninstall
   ${EndIf}
+
+  ; [Pako] Pako moves to another folder (its own folder won't do, installer/ui.nsh:
+  ; PakoCheckFolder): the installed copy's files go, also for the same version.
+  ${If} $PakoMoved = 1
+    Goto reinst_uninstall
+  ${EndIf}
+  ; [Pako] end
 
   ; In update mode, always proceeds without uninstalling
   ${If} $UpdateMode = 1
@@ -388,9 +399,11 @@ Function PageLeaveReinstall
     StrCpy $PakoFilesOnly 0
     ${If} $WixMode = 0
     ${AndIf} $R0 <> 0
+    ${OrIf} $PakoMoved = 1
+    ${AndIf} $WixMode = 0
       StrCpy $PakoFilesOnly 1
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-      !insertmacro CheckIfAppIsRunning "$4\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+      !insertmacro PakoCheckRunning "$4\${MAINBINARYNAME}.exe"
     ${EndIf}
     ; [Pako] end
     HideWindow
@@ -431,6 +444,14 @@ Function PageLeaveReinstall
         Abort
       ${EndIf}
 
+      ; [Pako] Pako moves to another folder: its old copy couldn't be removed (Windows doesn't
+      ; let this user change that folder, the reason for moving). Pako is installed in the new
+      ; folder anyway; the old files stay there (installer/ui.nsh: PakoCheckFolder).
+      ${If} $PakoMoved = 1
+        Goto reinst_done
+      ${EndIf}
+      ; [Pako] end
+
       ; Other errors? show generic error message and return to select un/reinstall page
       MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)"
       Abort
@@ -447,12 +468,12 @@ Function PageLeaveReinstall
   reinst_done:
 FunctionEnd
 
-; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-; [Pako] Next refuses a folder this user can't change (installer/hooks.nsh: PakoDirLeave).
-!define MUI_PAGE_CUSTOMFUNCTION_LEAVE PakoDirLeave
+; [Pako] 5. Pako's own window: the slides, the folder, the options and Install, all at once
+; (installer/ui.nsh). It replaces Tauri's directory page: its folder is checked as soon as it is
+; shown or changed (a folder this user can't change, Pako's data folder, a portable Pako's
+; folder), and Install waits until it will do. Skipped in passive mode.
+Page custom PakoMainPage PakoMainLeave
 ; [Pako] end
-!insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
 Var AppStartMenuFolder
@@ -465,71 +486,38 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
 ; 7. Installation page
+; [Pako] In Pako's look: the slide stays, the bar and its line on the right (installer/ui.nsh).
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW PakoInstShow
+; [Pako] end
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Finish page
-;
-; Don't auto jump to finish page after installation page,
-; because the installation page has useful info that can be used debug any issues with the installer.
-!define MUI_FINISHPAGE_NOAUTOCLOSE
-; Use show readme button in the finish page as a button create a desktop shortcut
-!define MUI_FINISHPAGE_SHOWREADME
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
-; Show run app after installation.
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!insertmacro MUI_PAGE_FINISH
+; [Pako] Pako's own: "Pako is installed" and Open Pako (installer/ui.nsh). The desktop shortcut
+; is the window's first switch (done while installing, see the Install section). Skipped in
+; passive mode.
+Page custom PakoDonePage PakoDoneLeave
+; [Pako] end
 
 Function RunMainBinary
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
 FunctionEnd
 
 ; Uninstaller Pages
-; 1. Confirm uninstall page
-Var DeleteAppDataCheckbox
+; [Pako] Pako's own look (installer/ui.nsh): one page with "Also delete Pako's settings and
+; lists" (a switch, off; never in a silent or passive uninstall: no page, so never on), Cancel and
+; Uninstall; the progress; then "Pako is uninstalled". Tauri's confirm page and its added check
+; box are gone; $DeleteAppDataCheckboxState is still what the uninstall reads.
 Var DeleteAppDataCheckboxState
-!define /ifndef WS_EX_LAYOUTRTL         0x00400000
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
-Function un.ConfirmShow ; Add add a `Delete app data` check box
-  ; $1 inner dialog HWND
-  ; $2 window DPI
-  ; $3 style
-  ; $4 x
-  ; $5 y
-  ; $6 width
-  ; $7 height
-  FindWindow $1 "#32770" "" $HWNDPARENT ; Find inner dialog
-  System::Call "user32::GetDpiForWindow(p r1) i .r2"
-  ${If} $(^RTL) = 1
-    StrCpy $3 "${__NSD_CheckBox_EXSTYLE} | ${WS_EX_LAYOUTRTL}"
-    IntOp $4 50 * $2
-  ${Else}
-    StrCpy $3 "${__NSD_CheckBox_EXSTYLE}"
-    IntOp $4 0 * $2
-  ${EndIf}
-  IntOp $5 100 * $2
-  IntOp $6 400 * $2
-  IntOp $7 25 * $2
-  IntOp $4 $4 / 96
-  IntOp $5 $5 / 96
-  IntOp $6 $6 / 96
-  IntOp $7 $7 / 96
-  System::Call 'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "$(deleteAppData)", i ${__NSD_CheckBox_STYLE}, i r4, i r5, i r6, i r7, p r1, i0, i0, i0) i .s'
-  Pop $DeleteAppDataCheckbox
-  SendMessage $HWNDPARENT ${WM_GETFONT} 0 0 $1
-  SendMessage $DeleteAppDataCheckbox ${WM_SETFONT} $1 1
-FunctionEnd
-!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave
-Function un.ConfirmLeave
-  SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
-FunctionEnd
-!define MUI_PAGE_CUSTOMFUNCTION_PRE un.SkipIfPassive
-!insertmacro MUI_UNPAGE_CONFIRM
+; 1. Confirm uninstall page
+UninstPage custom un.PakoUnPage un.PakoUnLeave
 
 ; 2. Uninstalling Page
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.PakoInstShow
 !insertmacro MUI_UNPAGE_INSTFILES
+
+; 3. Done (not when a newer Setup replaces this version: /UPDATE)
+UninstPage custom un.PakoDonePage un.PakoDoneLeave
+; [Pako] end
 
 ;Languages
 ; PageReinstall reads the misspelled `choowHowToInstall` as a fallback, and makensis warns
@@ -546,6 +534,10 @@ LangString choowHowToInstall 0 ""
 {{#each language_files}}
   !include "{{this}}"
 {{/each}}
+
+; [Pako] Pako Setup's window (installer/ui.nsh).
+!insertmacro PAKO_UI_FUNCTIONS
+; [Pako] end
 
 Function .onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode
@@ -658,6 +650,9 @@ Section WebView2
           DetailPrint "$(webview2DownloadSuccess)"
         ${Else}
           DetailPrint "$(webview2DownloadError)"
+          ; [Pako] Said under the bar, with Close (installer/ui.nsh: PakoFail).
+          !insertmacro PakoFail "$(webview2AbortError)"
+          ; [Pako] end
           Abort "$(webview2AbortError)"
         ${EndIf}
         StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
@@ -690,6 +685,9 @@ Section WebView2
           DetailPrint "$(webview2InstallSuccess)"
         ${Else}
           DetailPrint "$(webview2InstallError)"
+          ; [Pako] Said under the bar, with Close (installer/ui.nsh: PakoFail).
+          !insertmacro PakoFail "$(webview2AbortError)"
+          ; [Pako] end
           Abort "$(webview2AbortError)"
         ${EndIf}
       webview2_done:
@@ -727,15 +725,33 @@ SectionEnd
 
 Section Install
   SetOutPath $INSTDIR
+  ; [Pako] Only the copying of Pako.exe ("Copying Pako.exe... 40%") is shown under the bar, and
+  ; what went wrong, with Close (installer/ui.nsh: PakoFail, from PakoCheckRunning and the hooks).
+  SetDetailsPrint none
+  ; [Pako] end
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  ; [Pako] Doesn't ask again when the window said Pako will be closed.
+  !insertmacro PakoCheckRunning "$INSTDIR\${MAINBINARYNAME}.exe"
 
   ; Copy main executable
+  ; [Pako] Never Windows' Abort / Retry / Ignore box: a file that can't be replaced stops the
+  ; install with a plain message and Close (installer/ui.nsh: PakoCanWrite).
+  !insertmacro PakoCanWrite "$INSTDIR\${MAINBINARYNAME}.exe" "${MAINBINARYNAME}.exe"
+  {{#each resources}}
+    !insertmacro PakoCanWrite "$INSTDIR\\{{this.[1]}}" "{{this.[1]}}"
+  {{/each}}
+  ; [Pako] External binaries too (none today; ready for when there are).
+  {{#each binaries}}
+    !insertmacro PakoCanWrite "$INSTDIR\\{{this}}" "{{this}}"
+  {{/each}}
+  SetDetailsPrint textonly
   File "${MAINBINARYSRCPATH}"
+  SetDetailsPrint none
+  ; [Pako] end
 
   ; Copy resources
   {{#each resources_dirs}}
@@ -818,6 +834,17 @@ Section Install
   ${If} $PassiveMode = 1
   ${OrIf} ${Silent}
     Call CreateOrUpdateDesktopShortcut
+  ; [Pako] Pako's window: its Desktop shortcut switch (off takes away this Pako's shortcut).
+  ${ElseIf} $PakoDesktop = 1
+    Call CreateOrUpdateDesktopShortcut
+  ${Else}
+    !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro UnpinShortcut "$DESKTOP\${PRODUCTNAME}.lnk"
+      Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+    ${EndIf}
+  ; [Pako] end
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTINSTALL
@@ -828,6 +855,9 @@ Section Install
   ${If} $PassiveMode = 1
     SetAutoClose true
   ${EndIf}
+  ; [Pako] The window goes on to "Pako is installed" by itself.
+  SetAutoClose true
+  ; [Pako] end
 SectionEnd
 
 Function .onInstSuccess
@@ -864,12 +894,17 @@ Function un.onInit
 FunctionEnd
 
 Section Uninstall
+  ; [Pako] Only what went wrong shows under the bar, with Close (installer/ui.nsh: PakoFail,
+  ; from PakoCheckRunning).
+  SetDetailsPrint none
+  ; [Pako] end
 
   !ifmacrodef NSIS_HOOK_PREUNINSTALL
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  ; [Pako] Doesn't ask again when the window said Pako will be closed.
+  !insertmacro PakoCheckRunning "$INSTDIR\${MAINBINARYNAME}.exe"
 
   ; Delete the app directory and its content from disk
   ; Copy main executable
@@ -982,6 +1017,9 @@ Section Uninstall
   ${OrIf} $UpdateMode = 1
     SetAutoClose true
   ${EndIf}
+  ; [Pako] The window goes on to "Pako is uninstalled" by itself.
+  SetAutoClose true
+  ; [Pako] end
 SectionEnd
 
 Function RestorePreviousInstallLocation

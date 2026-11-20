@@ -65,6 +65,8 @@ const RETRY_WAITING: Duration = Duration::from_secs(30);
 const RETRY_WAITING_FOR: u64 = 3600 * 1000;
 /// How often the receiver syncs what arrived to the disk and saves its note.
 const NOTE_EVERY: Duration = Duration::from_secs(1);
+/// From this many files, a transfer's progress note is saved every 5 seconds.
+const NOTE_MANY_FILES: usize = 2000;
 /// Why a transfer waiting for the other PC was cleared, on each side.
 const EXPIRED_OUT: &str = "Expired: the other PC didn't come back within 7 days.";
 const EXPIRED_IN: &str = "Expired: the other PC didn't come back within 7 days, so the part that arrived was deleted.";
@@ -300,6 +302,9 @@ struct Outgoing {
     base: u64,
     /// When it last moved or stopped (ms): a transfer waits 7 days for the other PC.
     since: u64,
+    /// Sent because another of your devices asked for this file (its "Get this file"): no
+    /// sent sound here (the PC that asked hears its arrived chime).
+    ordered: bool,
 }
 
 /// What arrived of a transfer coming in, per file: written (maybe not synced to the disk yet).
@@ -467,6 +472,8 @@ pub struct Node {
     pace: AtomicU64,
     /// Starts the round of calls now (the internet came back).
     round_now: Notify,
+    /// Times this PC asked for the sent sound (tests).
+    pub(super) sent_sounds: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -676,6 +683,7 @@ impl Node {
                     resume: true,
                     base: n.done,
                     since: n.since,
+                    ordered: n.ordered,
                 },
             );
         }
@@ -697,6 +705,7 @@ impl Node {
             old_pako: AtomicBool::new(false),
             pace: AtomicU64::new(0),
             round_now: Notify::new(),
+            sent_sounds: AtomicU64::new(0),
         });
         // Relays cut by Pako closing go on; the PC that asked hears how they go.
         node.relay_load();
@@ -1198,15 +1207,18 @@ impl Node {
     /// someone who declined before (they're asked again). Never waits for the round of calls,
     /// their wait between calls starts over, and it counts as something happening with them
     /// (Automatic calls them in the background again for 30 days).
+    /// Calls one of your contacts now (only a contact: anyone else is never dialled, and never
+    /// told this Pako's name).
     pub fn reach(self: &Arc<Self>, id: &str) {
         {
             let mut inner = self.inner.lock().unwrap();
-            inner.tries.reset(id);
-            if inner.contacts.iter().any(|c| c.id == id) {
-                inner.contacts.iter_mut().filter(|c| c.id == id).for_each(|c| c.declined = false);
-                Self::touch(&mut inner, id);
-                self.save_contacts(&inner);
+            if !inner.contacts.iter().any(|c| c.id == id) {
+                return;
             }
+            inner.tries.reset(id);
+            inner.contacts.iter_mut().filter(|c| c.id == id).for_each(|c| c.declined = false);
+            Self::touch(&mut inner, id);
+            self.save_contacts(&inner);
         }
         self.dial(id, true);
     }
@@ -1573,8 +1585,15 @@ impl Node {
         }
     }
 
+    /// Answers "… wants to connect" (Direct's question). A request to pair as one of your
+    /// devices isn't answered here (see `answer_device_request`): each question has its own way.
     pub fn answer_request(&self, peer: &str, accept: bool) {
-        let answer = self.inner.lock().unwrap().requests.get_mut(peer).and_then(|r| r.answer.take());
+        self.answer_request_of(peer, accept, false);
+    }
+
+    /// Answers the request from `peer` only if it's of the kind asked about (`device`).
+    pub(super) fn answer_request_of(&self, peer: &str, accept: bool, device: bool) {
+        let answer = self.inner.lock().unwrap().requests.get_mut(peer).filter(|r| r.device == device).and_then(|r| r.answer.take());
         if let Some(a) = answer {
             let _ = a.send(accept);
         }
@@ -2053,6 +2072,17 @@ impl Node {
     /// Like `send`; `relay`: to one of your devices, for it to pass on to one of its contacts
     /// (with that contact's name there).
     pub(super) async fn send_as(self: &Arc<Self>, contact: &str, paths: Vec<PathBuf>, compress: bool, name: Option<String>, relay: Option<(proto::RelayTo, String)>) -> Result<String, String> {
+        self.send_with(contact, paths, compress, name, relay, false).await
+    }
+
+    /// Sends a file another of your devices asked for (its "Get this file"): a normal send,
+    /// without the sent sound here.
+    pub(super) async fn send_ordered(self: &Arc<Self>, contact: &str, paths: Vec<PathBuf>) -> Result<String, String> {
+        self.send_with(contact, paths, false, None, None, true).await
+    }
+
+    /// `send_as`; `ordered`: see `Outgoing::ordered`.
+    async fn send_with(self: &Arc<Self>, contact: &str, paths: Vec<PathBuf>, compress: bool, name: Option<String>, relay: Option<(proto::RelayTo, String)>, ordered: bool) -> Result<String, String> {
         self.touch_now(contact);
         if !self.inner.lock().unwrap().live.contains_key(contact) {
             self.call_now(contact).await;
@@ -2062,6 +2092,10 @@ impl Node {
         }
         if paths.is_empty() {
             return Err("Add files first.".into());
+        }
+        // Private files are read decrypted as they go: never packed into a ZIP on disk.
+        if compress && paths.iter().any(|p| crate::private_send::is_private(p)) {
+            return Err("Private files are sent as they are: turn off packing them into a ZIP.".into());
         }
         let id = new_id();
         let (files, title, temp) = if compress {
@@ -2073,7 +2107,7 @@ impl Node {
             let title = name.filter(|n| !n.trim().is_empty()).map(|n| n.trim().to_string()).unwrap_or_else(|| default_title(&list));
             (list, title, None)
         };
-        self.offer_files(contact, id, files, title, temp, relay).await
+        self.offer_files(contact, id, files, title, temp, relay, ordered).await
     }
 
     /// You send to them: something happened with them.
@@ -2088,9 +2122,10 @@ impl Node {
     /// Offers files already listed (a relay's copy, passed on as a normal send of this PC).
     pub(super) async fn offer_list(self: &Arc<Self>, contact: &str, files: Vec<(PathBuf, OfferFile)>, title: String, temp: Option<PathBuf>) -> Result<String, String> {
         self.touch_now(contact);
-        self.offer_files(contact, new_id(), files, title, temp, None).await
+        self.offer_files(contact, new_id(), files, title, temp, None, false).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn offer_files(
         self: &Arc<Self>,
         contact: &str,
@@ -2099,6 +2134,7 @@ impl Node {
         title: String,
         temp: Option<PathBuf>,
         relay: Option<(proto::RelayTo, String)>,
+        ordered: bool,
     ) -> Result<String, String> {
         // The same checks the other side makes, so a problem shows here with a clear reason.
         let listed: Vec<OfferFile> = files.iter().map(|(_, f)| f.clone()).collect();
@@ -2120,7 +2156,7 @@ impl Node {
         // As they are now: a file changed by the time a cut transfer continues goes again from zero.
         let mtimes = {
             let paths: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
-            tokio::task::spawn_blocking(move || paths.iter().map(|p| std::fs::metadata(p).map(|m| resume::mtime_of(&m)).unwrap_or(0)).collect::<Vec<u64>>())
+            tokio::task::spawn_blocking(move || paths.iter().map(|p| crate::private_send::info(p).map(|(_, t)| crate::private_send::mtime_ms(t)).unwrap_or(0)).collect::<Vec<u64>>())
                 .await
                 .unwrap_or_default()
         };
@@ -2178,6 +2214,7 @@ impl Node {
                     mtimes,
                     base: 0,
                     since: now_ms(),
+                    ordered,
                 },
             );
             tx
@@ -2461,7 +2498,8 @@ impl Node {
         };
         let paths: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
         let now = tokio::task::spawn_blocking(move || {
-            paths.iter().map(|p| std::fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| (m.len(), resume::mtime_of(&m)))).collect::<Vec<_>>()
+            // (A private file: its real size, read decrypted; see private_send.)
+            paths.iter().map(|p| crate::private_send::info(p).map(|(len, t)| (len, crate::private_send::mtime_ms(t)))).collect::<Vec<_>>()
         })
         .await
         .unwrap_or_default();
@@ -2612,6 +2650,12 @@ impl Node {
             let inner = self.inner.lock().unwrap();
             (inner.live.get(&t.contact).and_then(|l| path_of(&l.conn)), self.via_of(&inner, id), Self::relay_to_of(&inner, id))
         };
+        // Delivered: the sent sound (a relay's legs wait for the relay to be delivered; a file
+        // another of your PCs asked for sounds there, as arrived).
+        if sent_sound_plays(result, via.is_some() || relay_to.is_some() || t.ordered) {
+            self.sent_sound();
+            self.tell_delivered(&t.contact, &t.name);
+        }
         let (duration_ms, avg_speed, peak_speed) = t.meter.summary(t.sent.load(Ordering::Relaxed).saturating_sub(t.base));
         self.record(HistoryItem {
             id: id.to_string(),
@@ -2864,12 +2908,19 @@ impl Node {
         let me = self.clone();
         let id = id.to_string();
         self.rt.spawn(async move {
+            let mut tick: u64 = 0;
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(NOTE_EVERY) => {}
                 }
-                let snap = me.inner.lock().unwrap().incoming.get(&id).and_then(|t| snapshot_in(t, &id, false));
+                tick += 1;
+                // A folder of thousands of files: its progress (one entry per file) is saved
+                // every 5 seconds instead of every second.
+                let snap = {
+                    let inner = me.inner.lock().unwrap();
+                    inner.incoming.get(&id).filter(|t| t.files.len() < NOTE_MANY_FILES || tick % 5 == 0).and_then(|t| snapshot_in(t, &id, false))
+                };
                 if let Some(snap) = snap {
                     let dir = me.data_dir.clone();
                     let _ = tokio::task::spawn_blocking(move || snap.save(&dir)).await;
@@ -2992,10 +3043,12 @@ impl Node {
     /// the unfinished files are opened again, and the sender hears "go" (`Accept`).
     /// Blocking: call it off the async threads.
     fn continue_in(self: &Arc<Self>, peer: &str, id: &str, restart: Vec<Restart>) {
-        let (files, parts) = {
+        let (files, parts, targets, others) = {
             let inner = self.inner.lock().unwrap();
             let Some(t) = inner.incoming.get(id).filter(|t| t.contact == peer && t.resume && t.state == "waiting") else { return };
-            (t.files.clone(), t.parts.clone())
+            // The unfinished files of every other transfer coming in: never opened as ours.
+            let others: HashSet<PathBuf> = inner.incoming.iter().filter(|(k, _)| k.as_str() != id).flat_map(|(_, o)| o.parts.iter().cloned()).collect();
+            (t.files.clone(), t.parts.clone(), t.targets.clone(), others)
         };
         let fail = |theirs: &str, here: String| {
             if let Some(tx) = self.inner.lock().unwrap().live.get(peer).map(|l| l.tx.clone()) {
@@ -3046,14 +3099,29 @@ impl Node {
         // that changed there, or isn't as it was left here, starts from zero.
         let mut handles = Vec::with_capacity(parts.len());
         let mut fresh = vec![false; parts.len()];
+        // Files whose unfinished file was deleted meanwhile: a free name is claimed again (the
+        // old one may be another transfer's by now), (place, new target, new unfinished file).
+        let mut moved: Vec<(usize, PathBuf, PathBuf)> = Vec::new();
         for (i, p) in parts.iter().enumerate() {
-            let opened = match std::fs::OpenOptions::new().read(true).write(true).open(p) {
-                Ok(f) => Ok(f),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    fresh[i] = true;
-                    std::fs::OpenOptions::new().create_new(true).read(true).write(true).open(p).inspect(|_| mark_received(p))
+            let mut reclaim = |i: usize| -> std::io::Result<std::fs::File> {
+                let target = targets.get(i).cloned().unwrap_or_else(|| p.clone());
+                let (t, part, f) = claim_file(&target).map_err(std::io::Error::other)?;
+                mark_received(&part);
+                moved.push((i, t, part));
+                Ok(f)
+            };
+            let opened = if others.contains(p) {
+                fresh[i] = true;
+                reclaim(i)
+            } else {
+                match std::fs::OpenOptions::new().read(true).write(true).open(p) {
+                    Ok(f) => Ok(f),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        fresh[i] = true;
+                        reclaim(i)
+                    }
+                    Err(e) => Err(e),
                 }
-                Err(e) => Err(e),
             };
             let sized = opened.and_then(|f| {
                 let len = f.metadata()?.len();
@@ -3092,11 +3160,21 @@ impl Node {
                     t.received.store(have, Ordering::Relaxed);
                     t.base = have;
                     t.handles = handles;
+                    for (i, target, part) in &moved {
+                        if let (Some(tg), Some(pt)) = (t.targets.get_mut(*i), t.parts.get_mut(*i)) {
+                            *tg = target.clone();
+                            *pt = part.clone();
+                        }
+                    }
                     t.state = "receiving".into();
                     t.since = now_ms();
                     t.meter = Arc::new(Meter::default());
                     t.meter.start(t.received.clone(), t.cancel.clone(), &self.rt);
-                    Some((t.received.clone(), t.cancel.clone(), snapshot_in(t, id, true)))
+                    let started = Some((t.received.clone(), t.cancel.clone(), snapshot_in(t, id, true)));
+                    if !moved.is_empty() {
+                        self.save_parts(&inner);
+                    }
+                    started
                 }
                 _ => None,
             }
@@ -3364,8 +3442,11 @@ impl Node {
             self.save_parts(&self.inner.lock().unwrap());
         }
         if result != "done" {
-            // Folders made for this transfer that stayed empty go too.
-            if let Some(root) = &t.saved_to {
+            // Folders made for this transfer that stayed empty go too (only a transfer of a
+            // folder or several files made one: a single file's place is a file's name, and a
+            // folder of that name that appeared meanwhile isn't ours).
+            let made_folder = t.files.len() > 1 || t.files.first().is_some_and(|f| f.path.contains('/'));
+            if let Some(root) = t.saved_to.as_ref().filter(|_| made_folder) {
                 if root.is_dir() {
                     remove_empty_dirs(root);
                 }
@@ -3430,6 +3511,38 @@ impl Node {
     }
 }
 
+impl Node {
+    /// "Files delivered": your send reached the person (or your other PC). Its sound is the sent
+    /// sound, played with it (`sent_sound`), so the notice brings none.
+    fn tell_delivered(&self, contact: &str, name: &str) {
+        let (who, page) = self
+            .inner
+            .lock()
+            .unwrap()
+            .contacts
+            .iter()
+            .find(|c| c.id == contact)
+            .map(|c| (c.name.clone(), if c.device { "devices" } else { "direct" }))
+            .unwrap_or_default();
+        let body = if who.is_empty() { format!("Delivered: {name}.") } else { format!("{who} has received {name}.") };
+        self.tell(contact, "direct-sent", "Files delivered", &body, Go::item(if page.is_empty() { "direct" } else { page }, contact));
+    }
+
+    /// The sent sound (counted, for tests).
+    pub(super) fn sent_sound(&self) {
+        self.sent_sounds.fetch_add(1, Ordering::Relaxed);
+        crate::notices::sound(crate::notices::Sound::Sent);
+    }
+}
+
+/// Whether a send that ended (`outcome`: a transfer's result, or a relay's end state) plays
+/// the sent sound: only once it reached the person it was for. A relay's legs don't (this PC's
+/// first leg only reached its other PC; the PC passing it on isn't the one who sent): the PC
+/// that asked plays it when its relay is delivered (`relay_leg` false there).
+fn sent_sound_plays(outcome: &str, relay_leg: bool) -> bool {
+    matches!(outcome, "done" | "delivered") && !relay_leg
+}
+
 /// A transfer with them waits to continue (after a cut).
 fn waits_for(inner: &Inner, id: &str) -> bool {
     inner.outgoing.values().any(|t| t.contact == id && t.state == "waiting") || inner.incoming.values().any(|t| t.contact == id && t.state == "waiting")
@@ -3472,6 +3585,8 @@ fn out_note(id: &str, t: &Outgoing) -> OutNote {
         temp: t.temp.clone(),
         done: t.sent.load(Ordering::Relaxed),
         since: t.since,
+        ordered: t.ordered,
+        sealed: None,
     }
 }
 
@@ -3479,10 +3594,19 @@ fn out_note(id: &str, t: &Outgoing) -> OutNote {
 /// write count, and the open file if there is one), the note, and its saving states.
 struct Snapshot {
     seq: u64,
-    sync: Vec<(usize, u64, Option<Arc<std::fs::File>>)>,
-    note: InNote,
+    /// Each file to sync: its place, write count, the open file (or, when not open here, its
+    /// ".pakorecv" path to open for the sync).
+    sync: Vec<(usize, u64, Option<Arc<std::fs::File>>, Option<PathBuf>)>,
+    note: SnapNote,
     state: Arc<Mutex<NoteState>>,
     got: Arc<Mutex<Got>>,
+}
+
+/// The whole note (accepted, continued, paused, ended), or only how far it got (every few
+/// seconds while it moves: a big folder's file list isn't copied and written each time).
+enum SnapNote {
+    Full(InNote),
+    Progress(String, resume::InProgress),
 }
 
 /// None when nothing arrived since the last one (unless `always`), or when it isn't kept.
@@ -3496,18 +3620,29 @@ fn snapshot_in(t: &Incoming, id: &str, always: bool) -> Option<Snapshot> {
     }
     let (seq, have, sync) = g.snapshot();
     drop(g);
-    let sync = sync.into_iter().map(|(i, w)| (i, w, t.handles.get(i).cloned())).collect();
-    let note = InNote {
-        id: id.to_string(),
-        contact: t.contact.clone(),
-        name: t.name.clone(),
-        files: t.files.clone(),
-        targets: t.targets.clone(),
-        parts: t.parts.clone(),
-        saved_to: t.saved_to.clone(),
-        have,
-        retried: t.retried.clone(),
-        since: t.since,
+    let sync = sync
+        .into_iter()
+        .map(|(i, w)| {
+            let open = t.handles.get(i).cloned();
+            let path = if open.is_none() { t.parts.get(i).cloned() } else { None };
+            (i, w, open, path)
+        })
+        .collect();
+    let note = if always {
+        SnapNote::Full(InNote {
+            id: id.to_string(),
+            contact: t.contact.clone(),
+            name: t.name.clone(),
+            files: t.files.clone(),
+            targets: t.targets.clone(),
+            parts: t.parts.clone(),
+            saved_to: t.saved_to.clone(),
+            have,
+            retried: t.retried.clone(),
+            since: t.since,
+        })
+    } else {
+        SnapNote::Progress(id.to_string(), resume::InProgress { have, retried: t.retried.clone(), since: t.since })
     };
     Some(Snapshot { seq, sync, note, state: t.note.clone(), got: t.got.clone() })
 }
@@ -3522,26 +3657,28 @@ impl Snapshot {
         if s.ended || self.seq < s.saved {
             return;
         }
-        for (i, _, f) in &self.sync {
-            let synced = match f {
-                Some(f) => f.sync_data(),
-                None => match self.note.parts.get(*i) {
-                    // Gone meanwhile: nothing to sync (it starts again from zero when it continues).
-                    Some(p) => match std::fs::OpenOptions::new().write(true).open(p) {
-                        Ok(f) => f.sync_data(),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                        Err(e) => Err(e),
-                    },
-                    None => Ok(()),
+        for (_, _, f, path) in &self.sync {
+            let synced = match (f, path) {
+                (Some(f), _) => f.sync_data(),
+                // Gone meanwhile: nothing to sync (it starts again from zero when it continues).
+                (None, Some(p)) => match std::fs::OpenOptions::new().write(true).open(p) {
+                    Ok(f) => f.sync_data(),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(e),
                 },
+                (None, None) => Ok(()),
             };
             if synced.is_err() {
                 return;
             }
         }
-        if resume::save_in(data_dir, &self.note).is_ok() {
+        let saved = match &self.note {
+            SnapNote::Full(n) => resume::save_in(data_dir, n),
+            SnapNote::Progress(id, p) => resume::save_in_progress(data_dir, id, p),
+        };
+        if saved.is_ok() {
             s.saved = self.seq;
-            let done: Vec<(usize, u64)> = self.sync.iter().map(|(i, w, _)| (*i, *w)).collect();
+            let done: Vec<(usize, u64)> = self.sync.iter().map(|(i, w, _, _)| (*i, *w)).collect();
             self.got.lock().unwrap().saved(&done);
         }
     }
@@ -3565,7 +3702,11 @@ async fn write_loop(mut send: SendStream, mut rx: mpsc::UnboundedReceiver<Msg>) 
 async fn send_part(conn: &Connection, path: &Path, part: &Part, sent: &AtomicU64, pace: u64) -> Result<(), String> {
     let mut stream = conn.open_uni().await.map_err(|e| e.to_string())?;
     proto::write_frame(&mut stream, part, MAX_HEADER).await.map_err(|e| e.to_string())?;
-    let file = Arc::new(std::fs::File::open(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?);
+    // A private file is read decrypted as it goes (no readable copy), only while Private mode is
+    // open: locking stops the send.
+    let private = crate::private_send::is_private(path);
+    let file = if private { None } else { Some(Arc::new(std::fs::File::open(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?)) };
+    let shown = crate::private_send::known(path).map(|(n, _)| n).unwrap_or_else(|| path.display().to_string());
     let mut buf = vec![0u8; BUF];
     let mut at = part.offset;
     let end = part.offset + part.len;
@@ -3573,17 +3714,21 @@ async fn send_part(conn: &Connection, path: &Path, part: &Part, sent: &AtomicU64
         let want = ((end - at) as usize).min(BUF);
         // The disk read is off the async threads.
         let f = file.clone();
+        let p = path.to_path_buf();
         let mut data = std::mem::take(&mut buf);
         let (data, n) = tokio::task::spawn_blocking(move || {
-            let r = read_at(&f, &mut data[..want], at);
+            let r = match &f {
+                Some(f) => read_at(f, &mut data[..want], at),
+                None => crate::private_send::read_at(&p, &mut data[..want], at),
+            };
             (data, r)
         })
         .await
         .map_err(|e| e.to_string())?;
         buf = data;
-        let n = n.map_err(|e| e.to_string())?;
+        let n = n.map_err(|e| if private && e.kind() == std::io::ErrorKind::PermissionDenied { "Private mode locked, so this send stopped. Open it and send again.".to_string() } else { e.to_string() })?;
         if n == 0 {
-            return Err(format!("{} got shorter while sending.", path.display()));
+            return Err(format!("{shown} got shorter while sending."));
         }
         tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n]).await.map_err(|e| e.to_string())?;
         at += n as u64;
@@ -3624,7 +3769,7 @@ fn hash_files(paths: &[PathBuf]) -> Result<Vec<String>, String> {
         .iter()
         .map(|p| {
             let mut h = blake3::Hasher::new();
-            h.update_reader(std::fs::File::open(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            h.update_reader(crate::private_send::open(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             Ok(h.finalize().to_hex().to_string())
         })
         .collect()
@@ -3637,9 +3782,17 @@ pub fn list_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, OfferFile)>, String
     let mut out = Vec::new();
     let mut tops = HashSet::new();
     for p in paths {
-        let base = p.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("A picked item has no name.")?;
+        // A private file (see private_send): offered under its real name (and its folder), its
+        // real size.
+        let private = crate::private_send::known(p);
+        let base = match &private {
+            Some((n, _)) => n.clone(),
+            None => p.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("A picked item has no name.")?,
+        };
         let name = free_name(&mut tops, &base, p.is_dir());
-        if p.is_dir() {
+        if let Some((_, size)) = private {
+            out.push((p.clone(), OfferFile { path: name, size }));
+        } else if p.is_dir() {
             walk(p, &name, &mut out)?;
         } else if p.is_file() {
             let size = std::fs::metadata(p).map_err(|e| e.to_string())?.len();
@@ -4014,15 +4167,35 @@ fn set_hidden(p: &Path, on: bool) {
 #[cfg(not(windows))]
 fn set_hidden(_: &Path, _: bool) {}
 
+/// Deletes the empty folders inside `dir`, then `dir` if it's empty. Never follows a link or
+/// junction (a reparse point): what it points to isn't this transfer's.
 fn remove_empty_dirs(dir: &Path) {
+    if is_reparse(dir) {
+        return;
+    }
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
-            if e.path().is_dir() {
-                remove_empty_dirs(&e.path());
+            let p = e.path();
+            if e.file_type().is_ok_and(|t| t.is_dir()) && !is_reparse(&p) {
+                remove_empty_dirs(&p);
             }
         }
     }
     let _ = std::fs::remove_dir(dir);
+}
+
+/// A symbolic link or junction (not a real folder).
+fn is_reparse(p: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        std::fs::symlink_metadata(p).is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+    }
 }
 
 #[cfg(test)]
@@ -4394,6 +4567,30 @@ mod tests {
 
     fn ended(n: &Node, id: &str) -> Option<HistoryItem> {
         n.history_item(id)
+    }
+
+    /// A private file sent with Direct: read decrypted as it goes, it arrives under its real name,
+    /// byte for byte the original; packing it into a ZIP is refused (it would be readable on disk).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_private_file_goes_decrypted_and_whole() {
+        let _turn = crate::private_send::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("pako-direct-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let a = node(&root.join("a"), "Alice").await;
+        let b = node(&root.join("b"), "Bob").await;
+        befriend(&a, &b).await;
+        b.edit_contact(&a.my_id(), None, Some(true), None).unwrap();
+        let data: Vec<u8> = (0..(PIECE as usize + 77_777)).map(|i| ((i * 13) % 251) as u8).collect();
+        let private = crate::private_send::test_private_file(&data, "Trip/Secret report.pdf");
+        assert!(a.send(&b.my_id(), vec![private.clone()], true, None).await.is_err(), "never zipped on disk");
+        a.send(&b.my_id(), vec![private], false, None).await.unwrap();
+        until(|| b.state().history.iter().any(|h| h.result == "done")).await;
+        // As any folder send: the send's title, then the folder ("Trip").
+        let got = root.join("b/Downloads/From Alice/Trip/Trip/Secret report.pdf");
+        assert_eq!(std::fs::read(&got).unwrap(), data, "the bytes sent are the original's");
+        a.stop.cancel();
+        b.stop.cancel();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Sends `path` from Alice to Bob slowly and cuts the connection half-way: both sides then
@@ -4902,6 +5099,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The sent sound: a send delivered, or (on the PC that asked) a relay delivered; not a
+    /// relay's legs, nor a send that didn't arrive.
+    #[test]
+    fn the_sent_sound_is_for_delivered_sends_only() {
+        assert!(sent_sound_plays("done", false));
+        assert!(sent_sound_plays("delivered", false));
+        for r in ["failed", "cancelled", "declined", "expired"] {
+            assert!(!sent_sound_plays(r, false), "{r}");
+        }
+        // This PC's first leg to its other PC, or the second leg sent on for that PC.
+        assert!(!sent_sound_plays("done", true));
+        // On the PC that passes it on, the relay delivered isn't its own send.
+        assert!(!sent_sound_plays("delivered", true));
+    }
+
     // ---------- mute and "Check this contact" ----------
 
     /// Muted: no notice of any kind from them (files coming in, received, waiting for your
@@ -4937,6 +5149,13 @@ mod tests {
         a.send(&bi, vec![root.join("src/x.txt")], false, None).await.unwrap();
         until(|| b.state().offers.len() == 2).await;
         assert_eq!(*log.lock().unwrap(), ["direct-offer"]);
+        // Sent without asking: "Files coming in", then "Files received", never an offer (so
+        // one arrived chime, at the end: see notices::sound_of_notice).
+        log.lock().unwrap().clear();
+        b.edit_contact(&ai, None, Some(true), None).unwrap();
+        a.send(&bi, vec![root.join("src/x.txt")], false, None).await.unwrap();
+        until(|| log.lock().unwrap().iter().any(|k| k == "direct-received")).await;
+        assert_eq!(*log.lock().unwrap(), ["direct-incoming", "direct-received"]);
         // Muted, then paired as one of My devices: not muted any more.
         b.set_muted(&ai, true).unwrap();
         b.add_device(&ai, Some("Laptop"), None).unwrap();
@@ -4948,6 +5167,40 @@ mod tests {
         b.inner.lock().unwrap().contacts[0].muted = true;
         b.tell(&ai, "direct-received", "Files received", "x", Go::none());
         assert_eq!(*log.lock().unwrap(), ["direct-received"]);
+        a.stop.cancel();
+        b.stop.cancel();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Your send reached them: "Files delivered" once, on your side only; a declined offer
+    /// tells nothing of the kind.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_delivered_send_tells_the_sender_once() {
+        let root = std::env::temp_dir().join(format!("pako-delivered-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let log: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let l = log.clone();
+        let a = told_node(&root.join("a"), "Alice", iroh::SecretKey::generate(), Arc::new(move |kind, _, body, _| l.lock().unwrap().push((kind.to_string(), body.to_string())))).await;
+        let b = node(&root.join("b"), "Bob").await;
+        befriend(&a, &b).await;
+        let (ai, bi) = (a.my_id(), b.my_id());
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/x.txt"), b"hello").unwrap();
+        // Bob asks first, then declines: nothing delivered.
+        b.edit_contact(&ai, None, Some(false), None).unwrap();
+        a.send(&bi, vec![root.join("src/x.txt")], false, None).await.unwrap();
+        until(|| b.state().offers.len() == 1).await;
+        let offer = b.state().offers[0].id.clone();
+        b.answer_offer(&offer, false, None).unwrap();
+        until(|| a.state().history.iter().any(|h| h.outgoing)).await;
+        assert!(!log.lock().unwrap().iter().any(|(k, _)| k == "direct-sent"), "{:?}", log.lock().unwrap());
+        // Without asking: delivered, once, with Bob's name.
+        b.edit_contact(&ai, None, Some(true), None).unwrap();
+        a.send(&bi, vec![root.join("src/x.txt")], false, None).await.unwrap();
+        until(|| log.lock().unwrap().iter().any(|(k, _)| k == "direct-sent")).await;
+        let sent: Vec<_> = log.lock().unwrap().iter().filter(|(k, _)| k == "direct-sent").cloned().collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1, "Bob has received x.txt.");
         a.stop.cancel();
         b.stop.cancel();
         let _ = std::fs::remove_dir_all(&root);

@@ -64,6 +64,35 @@ pub fn adopt_old(old: &Path, new: &Path) {
     }
 }
 
+/// Renames, failing with AlreadyExists when `to` exists (`std::fs::rename` replaces it on
+/// Windows): a file that appeared under the final name meanwhile is never written over.
+#[cfg(windows)]
+pub fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (a, b) = (wide(from), wide(to));
+    // SAFETY: two valid NUL-terminated paths; no flags = fail if `to` exists, and never copy.
+    let ok = unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), 0) };
+    if ok != 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    // ERROR_ALREADY_EXISTS / ERROR_FILE_EXISTS
+    if matches!(e.raw_os_error(), Some(183) | Some(80)) {
+        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    }
+    Err(e)
+}
+
+#[cfg(not(windows))]
+pub fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    if to.exists() {
+        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    }
+    std::fs::rename(from, to)
+}
+
 /// Windows file names ignore upper/lower case: compare paths this way.
 pub fn path_key(p: &Path) -> String {
     p.to_string_lossy().to_lowercase()
@@ -71,8 +100,17 @@ pub fn path_key(p: &Path) -> String {
 
 const RESERVED: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "COM¹", "COM²", "COM³",
+    "LPT¹", "LPT²", "LPT³", "CONIN$", "CONOUT$",
 ];
+
+/// Endings Pako gives its own unfinished files (a download's, an older Pako's, a Direct
+/// receive's). A file a server or a shared folder names this way could be taken for another
+/// download's unfinished file (and written over, or deleted with it): it gets a "_" added.
+const PART_ENDINGS: &[&str] = &[".pakopart", ".zdpart", ".pakorecv"];
+
+/// Windows counts a name's length in UTF-16 units (an emoji is two): the limit Pako keeps to.
+const MAX_UNITS: usize = 180;
 
 /// Characters that flip the direction text is shown in: a server could make "invoice", a
 /// right-to-left mark, then "fdp.exe" look like "invoiceexe.pdf". Left out of file names.
@@ -90,14 +128,22 @@ pub fn sanitize(name: &str) -> String {
     if s.is_empty() {
         s = "download".into();
     }
-    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let stem = s.split('.').next().unwrap_or("").trim_end().to_uppercase();
     if RESERVED.contains(&stem.as_str()) {
         s = format!("_{s}");
     }
+    let lower = s.to_lowercase();
+    if PART_ENDINGS.iter().any(|e| lower.ends_with(e)) {
+        s.push('_');
+    }
     // Keep names a sensible length (Windows paths are limited), preserving the extension.
-    if s.chars().count() > 180 {
+    if s.encode_utf16().count() > MAX_UNITS {
         let (base, ext) = split_ext(&s);
-        let base: String = base.chars().take(170).collect();
+        let room = MAX_UNITS.saturating_sub(10 + ext.encode_utf16().count());
+        let mut base = base.to_string();
+        while base.encode_utf16().count() > room {
+            base.pop();
+        }
         // Cut before a dot or a space: Windows drops those at the end of a name, and the file
         // would then not be where Pako looks for it.
         s = format!("{base}{ext}").trim_end_matches(['.', ' ']).to_string();
@@ -188,6 +234,21 @@ pub fn unique(dir: &Path, name: &str, taken: &HashSet<String>) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A name that looks like Pako's own unfinished file never is one; the other reserved
+    /// device names and long names counted the way Windows counts them.
+    #[test]
+    fn names_never_pose_as_unfinished_files() {
+        assert_eq!(super::sanitize("movie.mkv.pakopart"), "movie.mkv.pakopart_");
+        assert_eq!(super::sanitize("a.ZDPART"), "a.ZDPART_");
+        assert_eq!(super::sanitize("x.pakorecv"), "x.pakorecv_");
+        assert_eq!(super::sanitize("movie.mkv"), "movie.mkv");
+        assert_eq!(super::sanitize("COM¹.txt"), "_COM¹.txt");
+        assert_eq!(super::sanitize("conout$"), "_conout$");
+        let emoji = "😀".repeat(150) + ".zip";
+        let s = super::sanitize(&emoji);
+        assert!(s.encode_utf16().count() <= 180 && s.ends_with(".zip"), "{}", s.encode_utf16().count());
+    }
+
     use super::*;
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {

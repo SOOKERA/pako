@@ -12,7 +12,8 @@ use super::*;
 /// Refuses to touch a Drive upload while another Google account than the one it went into is
 /// connected (or none). Uploads from before Pako noted the account aren't checked.
 pub(super) fn other_account(owner: Option<&str>, connected: Option<&str>) -> Option<String> {
-    let owner = owner?;
+    // Unknown (an older login kept "Google account" when Google didn't say): not compared.
+    let owner = owner.filter(|o| !o.is_empty() && *o != "Google account")?;
     if connected.is_some_and(|c| c.eq_ignore_ascii_case(owner)) {
         return None;
     }
@@ -74,6 +75,16 @@ impl Store<'_> {
         // In parts: the ZIP is made as part files first, then they go up like several files
         // (one folder, one link, each part on its own).
         let payload = match payload {
+            // "Protect with a password": a 7-Zip archive (in parts when asked), then it goes up
+            // like parts (one folder, one link).
+            p if job.protected => {
+                if self.host == Host::Drive {
+                    self.s.drive_ready(job).await?;
+                }
+                let name = p.name().to_string();
+                let files = self.s.make_protected(job, job.mode == super::Mode::Compress).await?;
+                Payload::Files { name, entries: files }
+            }
             Payload::Zip { name, entries } if job.part_mb > 0 => {
                 if self.host == Host::Drive {
                     self.s.drive_ready(job).await?;

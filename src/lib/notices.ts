@@ -4,6 +4,7 @@
 // test there), their icons and colours, and small helpers shared by the bell, the pop-ups and
 // Settings › Notifications.
 import type { Settings } from "./api";
+import { doneAlert } from "./alert";
 
 export type NoticeKind =
   | "download-done"
@@ -17,6 +18,7 @@ export type NoticeKind =
   | "direct-offer"
   | "direct-incoming"
   | "direct-received"
+  | "direct-sent"
   | "needs-you"
   | "power"
   | "update-ready"
@@ -49,6 +51,7 @@ export const KINDS: KindInfo[] = [
   { id: "direct-offer", label: "Files waiting for your answer", group: "Direct", icon: "download", tone: "people", bell: true },
   { id: "direct-incoming", label: "Files coming in", group: "Direct", icon: "download", tone: "info", bell: false },
   { id: "direct-received", label: "Files received", group: "Direct", icon: "check", tone: "done", bell: false },
+  { id: "direct-sent", label: "Files delivered", group: "Direct", icon: "send", tone: "done", bell: false },
   { id: "needs-you", label: "Pako needs you", group: "Pako", icon: "bell", tone: "wait", bell: true },
   { id: "power", label: "Sleep and shut down", group: "Pako", icon: "power", tone: "wait", bell: false },
   { id: "update-ready", label: "New Pako ready", group: "Pako", icon: "download", tone: "done", bell: true },
@@ -90,6 +93,8 @@ export interface PopupCard {
   go: Go;
   /** Waits for an answer: doesn't leave by itself. */
   stays: boolean;
+  /** The Important card for several downloads at once: how many. */
+  many?: number;
 }
 
 /** A kind changed from its defaults in Settings (a missing switch keeps its default). */
@@ -98,12 +103,12 @@ export interface NoticePref {
   bell?: boolean;
 }
 
-/** A kind's two switches as they are now (the same rule as notices.rs `pref`). "Download
- *  finished › Pop-up" is the older notifyDone setting. */
+/** A kind's two switches as they are now (the same rule as notices.rs `pref`). Download
+ *  finished has no Pop-up switch: its "pop-up" is whether New downloads isn't Off. */
 export function prefOf(s: Settings, kind: NoticeKind): { popup: boolean; bell: boolean } {
   const k = kindInfo(kind);
   const changed = s.notices?.[k.id] ?? {};
-  return { popup: k.id === "download-done" ? s.notifyDone : (changed.popup ?? true), bell: changed.bell ?? k.bell };
+  return { popup: k.id === "download-done" ? doneAlert(s) !== "off" : (changed.popup ?? true), bell: changed.bell ?? k.bell };
 }
 
 /** "now", "5 min ago", "2 h ago", "Yesterday 14:05", "12 Nov 09:30". */

@@ -280,19 +280,36 @@ function measure(text: string, font: string): number {
   return w;
 }
 
-/** "Project render final v3.mp4" -> "Project render fin…v3.mp4": keeps the end (version, extension). */
+/** Forget measured widths (fonts finished loading: widths measured with the stand-in font are wrong). */
+export function clearWidths() {
+  widthCache.clear();
+}
+
+/** The text's characters as people see them (an accent or an emoji is never cut in half). */
+const segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+export function graphemes(text: string): string[] {
+  return segmenter ? Array.from(segmenter.segment(text), (s) => s.segment) : Array.from(text);
+}
+
+/** "Project render final v3.mp4" -> "Project render fin…v3.mp4": keeps the end (version, extension),
+ *  cut between whole characters. */
 export function middleEllipsis(text: string, maxWidth: number, font: string): string {
   if (maxWidth <= 0 || measure(text, font) <= maxWidth) return text;
-  const keepEnd = Math.min(12, Math.floor(text.length / 3));
-  const end = text.slice(text.length - keepEnd);
+  const g = graphemes(text);
+  // The end kept (version, extension): shorter when even "…" and it don't fit, so the end is
+  // never cut without its "…".
+  let keepEnd = Math.min(12, Math.floor(g.length / 3));
+  while (keepEnd > 1 && measure("…" + g.slice(g.length - keepEnd).join(""), font) > maxWidth) keepEnd--;
+  const end = g.slice(g.length - keepEnd).join("");
+  if (measure("…" + end, font) > maxWidth) return "…";
   let lo = 0;
-  let hi = text.length - keepEnd;
+  let hi = g.length - keepEnd;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    if (measure(text.slice(0, mid) + "…" + end, font) <= maxWidth) lo = mid;
+    if (measure(g.slice(0, mid).join("") + "…" + end, font) <= maxWidth) lo = mid;
     else hi = mid - 1;
   }
-  return text.slice(0, lo).trimEnd() + "…" + end;
+  return g.slice(0, lo).join("").trimEnd() + "…" + end;
 }
 
 /** "Today 14:32", "Yesterday 09:10", "12 Nov 18:05", or "3 Mar 2025" for older years. */

@@ -151,6 +151,25 @@ test("Pako closed when the browser finished: kept, and listed once Pako answers 
   assert.equal(ext.storage.follows[99], undefined);
 });
 
+test("Pako closed: a failed report waits its minute, never one Pako helper a second", async () => {
+  const p = pako();
+  let tries = 0;
+  const reply = p.reply;
+  p.reply = (m) => {
+    if (m.kind === "follow" && !p.up) tries++;
+    return reply(m);
+  };
+  const ext = load(p);
+  await ext.listeners.download(ITEM);
+  await settle(40);
+  p.up = false;
+  ext.items[99] = { state: "complete", bytesReceived: 50e6, filename: "C:\Downloads\big (1).zip" };
+  ext.listeners.changed({ id: 99, state: { current: "complete" } });
+  await settle(5500);
+  assert.equal(tries, 1, "one try, then quiet for a minute");
+  assert.ok(ext.storage.follows[99], "still kept for later");
+});
+
 test("Held paused (a POST form) and Pako can't get it: the browser carries on, and Pako follows that one", async () => {
   const p = pako();
   const ext = load(p);
@@ -266,4 +285,28 @@ test("A private window's download: followed in memory only, and its checks say t
   assert.equal(ext.restarted.length, 0);
   assert.deepEqual(Object.keys(ext.storage.follows || {}), [], "nothing on disk");
   assert.ok(ext.session.privateFollows[7]);
+});
+
+test("Firefox, a private window's download: the browser keeps its copy paused until Pako has it, never dropped first", async () => {
+  let answered = false;
+  const ext = loadEdition({
+    firefox: true,
+    privateAllowed: true,
+    reply: (m) => {
+      if (m.kind === "held") return answered ? { ok: true, holds: true } : { ok: false, held: m.held, holds: true };
+      return m.hold ? { ok: true, held: "row-1", holds: true } : { ok: true, holds: true };
+    },
+  });
+  ext.storage.pakoHolds = true;
+  seenPlainGet(ext);
+  await ext.listeners.download({ ...ITEM, incognito: true });
+  await settle(60);
+  assert.ok(ext.log.some((l) => /pause/.test(l)), "held paused in the browser");
+  assert.ok(!ext.log.some((l) => /cancel|erase/.test(l)), "not dropped while Pako still asks");
+  assert.equal(ext.restarted.length, 0);
+  const take = ext.sent.find((m) => m.hold);
+  assert.notEqual(take.paused, true, "Pako asks you first: the private copy can wait");
+  answered = true;
+  await settle(1200);
+  assert.ok(ext.log.some((l) => /erase/.test(l)), "dropped once Pako has it");
 });

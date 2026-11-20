@@ -72,9 +72,14 @@ pub fn transfers_running() -> bool {
 
 /// A download only this PC can make: a video caught on a page (its address works with this
 /// browser's page and login) or a recording. Never sent to another of your PCs.
+/// A private window's download too: it never goes to another PC.
 pub fn here_only(d: &Download) -> bool {
-    matches!(&d.source, Source::Video { caught, recording, .. } if *caught || recording.is_some())
+    d.private || matches!(&d.source, Source::Video { caught, recording, .. } if *caught || recording.is_some())
 }
+
+/// Settings are written one save at a time, in the order they were made (taken before the
+/// list's lock, never inside it).
+static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
 
 /// The download list, saved in the background (see `paths::Saver`).
 static LIST_SAVER: std::sync::LazyLock<crate::paths::Saver> =
@@ -165,10 +170,12 @@ struct Note {
     stopped: bool,
     /// The download, when the note is about one file (a folder or set has none).
     id: Option<String>,
-    /// Its own "Notify when done" asked for it: the pop-up shows whatever Settings say.
-    force: bool,
+    /// Off · Pop-up · Important (a folder or set: its loudest file).
+    alert: Alert,
     /// A private window's download: said on its own, never kept in the bell.
     private: bool,
+    /// In Private mode's vault: said without its name ("A private download finished").
+    vault: bool,
 }
 
 /// What to do when every download has finished.
@@ -218,7 +225,44 @@ fn all_done_now(had_work: &mut bool, done_any: &mut bool, busy: bool) -> bool {
 /// upload (Send) or Direct transfer running (`transfers`, from `transfers_running`, read before
 /// taking the engine's lock).
 fn busy(inner: &Inner, transfers: bool) -> bool {
-    !inner.jobs.is_empty() || inner.downloads.iter().any(|d| d.status == Status::Queued) || transfers
+    !inner.jobs.is_empty() || inner.downloads.iter().any(|d| d.status == Status::Queued || browser_downloading(d)) || transfers
+}
+
+/// A "Via browser" row the browser is still downloading (Pako follows it, no job of its own):
+/// it counts as running for "When all downloads finish" and for keeping the PC awake.
+fn browser_downloading(d: &Download) -> bool {
+    d.via_browser.is_some() && d.status == Status::Downloading
+}
+
+/// Whether a stopped download is said (pop-up or bell): always for an Important one, else as
+/// Settings' Download stopped switches say (Off is only about finishing: a stop is still said).
+fn stopped_wanted(alert: Alert, pref: notices::Pref) -> bool {
+    match alert {
+        Alert::Important => true,
+        Alert::Off | Alert::Pop => pref.popup || pref.bell,
+    }
+}
+
+/// A folder's files hold a split set, every part downloaded, that Pako extracts by itself:
+/// its notice waits for the extraction (`extract_when_complete`).
+fn set_will_extract(files: &[&Download]) -> bool {
+    let names: Vec<&str> = files.iter().map(|d| d.name.as_str()).collect();
+    crate::split::find_sets(&names)
+        .into_iter()
+        .any(|set| set.members.iter().all(|&m| files[m].status == Status::Completed) && set.members.iter().any(|&m| files[m].extract))
+}
+
+/// The pop-up rule for a note: finished = by its level (Off: bell only; Pop-up: the card,
+/// whatever Settings say; Important: the big card); stopped = Download failed's own switch,
+/// except an Important one's stop, which always pops up.
+fn note_pop(stopped: bool, alert: Alert) -> Pop {
+    match (stopped, alert) {
+        (true, Alert::Important) => Pop::Force,
+        (true, _) => Pop::Pref,
+        (false, Alert::Off) => Pop::Skip,
+        (false, Alert::Pop) => Pop::Force,
+        (false, Alert::Important) => Pop::Important,
+    }
 }
 
 /// A download stopped: is that news worth a notification? Not when Pako put it back in line by
@@ -341,7 +385,7 @@ struct Job {
     /// "Start over" was asked while this run was going: wipe the file when it stops.
     reset: std::sync::atomic::AtomicBool,
     /// The open unfinished file (flushed to disk before each save).
-    file: Mutex<Option<Arc<File>>>,
+    file: Mutex<Option<Arc<Sink>>>,
     /// Stopped on purpose to be started again (the download hours ended, or a download that
     /// comes first took its spot): back to waiting, nothing lost.
     requeue: std::sync::atomic::AtomicBool,
@@ -599,14 +643,54 @@ fn settings_path() -> PathBuf {
     data_dir().join("settings.json")
 }
 
+/// Changes the saved settings with no Pako running (Pako Setup's choices, install.rs). Settings
+/// that can't be read are left as they are.
+pub fn change_saved_settings(f: impl FnOnce(&mut Settings)) -> Result<()> {
+    let path = settings_path();
+    let mut s = crate::paths::read_json_checked::<Settings>(&path)
+        .map_err(|_| anyhow!(SETTINGS_UNREAD))?
+        .unwrap_or_default();
+    // Settled before writing, as Pako does: an older Pako's choices that are read but never
+    // written again (the window's "Notify me" off) are kept in their new form.
+    s.settle_notify();
+    f(&mut s);
+    write_atomic(&path, &serde_json::to_vec_pretty(&s)?)?;
+    Ok(())
+}
+
 impl Engine {
     pub fn new(emit: Emit) -> Arc<Self> {
         let http = crate::fetch::download_client();
         // A damaged file falls back to its .bak copy and is moved aside, never overwritten. A
         // file that can't be read right now (locked) is never saved over this session.
         let mut start_notes = Vec::new();
-        let (settings, settings_ok) = match crate::paths::read_json_checked::<Settings>(&settings_path()) {
-            Ok(s) => (s.unwrap_or_default(), true),
+        // A settings file that's there but can't be read, with no safety copy either: set aside
+        // (never saved over) and said, not silently replaced by the usual settings.
+        let had_settings = settings_path().exists();
+        let (mut settings, settings_ok) = match crate::paths::read_json_checked::<Settings>(&settings_path()) {
+            Ok(Some(s)) => (s, true),
+            Ok(None) if had_settings && !settings_path().exists() => {
+                start_notes.push((
+                    "Pako couldn't read your settings".to_string(),
+                    format!(
+                        "They were damaged, so Pako starts with the usual settings. The damaged file is kept in {}.",
+                        crate::paths::data_dir().display()
+                    ),
+                ));
+                // Not a first start: no setup questions.
+                (
+                    Settings {
+                        setup_done: true,
+                        tray_asked: true,
+                        video_asked: true,
+                        tour_offered: true,
+                        whats_new_seen: Some(env!("CARGO_PKG_VERSION").to_string()),
+                        ..Settings::default()
+                    },
+                    true,
+                )
+            }
+            Ok(None) => (Settings::default(), true),
             Err(_) => {
                 start_notes.push((
                     "Pako couldn't read your settings".to_string(),
@@ -629,6 +713,14 @@ impl Engine {
                 )
             }
         };
+        settings.settle_notify();
+        // Kept within what Settings allows (a file edited by hand, or by another version, could
+        // say 0 downloads at once: nothing would ever start, with no word why).
+        settings.connections = settings.connections.clamp(1, MAX_CONNECTIONS);
+        settings.max_active = settings.max_active.clamp(1, 20);
+        if !crate::send::part_mb_ok(settings.send_part_mb) {
+            settings.send_part_mb = crate::send::PART_DEFAULT_MB;
+        }
         // A private window's downloads left unfinished last time (Pako closed or stopped): their
         // unfinished files go, since nothing else knows them.
         clean_private_parts(&private_parts_path());
@@ -1465,7 +1557,7 @@ impl Engine {
     ) -> Result<Vec<StreamPart>, Stop> {
         let disk = |e: std::io::Error| Stop::Fail(Status::Failed, disk_message(&e));
         let mut subs: Vec<Arc<Job>> = Vec::new();
-        let mut files: Vec<Arc<File>> = Vec::new();
+        let mut files: Vec<Arc<Sink>> = Vec::new();
         for (k, st) in state.iter().enumerate() {
             let part = crate::video::stream_part(&d.dest_dir, &d.name, &d.id, &st.format_id, &st.ext);
             let file = OpenOptions::new().read(true).write(true).open(&part).map_err(disk)?;
@@ -1475,7 +1567,7 @@ impl Engine {
             *sub.flushed.lock().unwrap() = Some(st.segments.clone());
             *sub.phase.lock().unwrap() = Phase::Downloading;
             subs.push(sub);
-            files.push(Arc::new(file));
+            files.push(Arc::new(Sink::Plain(file)));
         }
         mirror_streams(job, &subs);
         let mut runs = futures_util::stream::FuturesUnordered::new();
@@ -1592,8 +1684,9 @@ impl Engine {
         let Some(ff) = tools.ffmpeg.clone() else {
             return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
         };
-        let mut cmd = tokio::process::Command::new(ff);
+        let mut cmd = tokio::process::Command::new(&ff);
         cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+        crate::components::in_own_folder_async(&mut cmd, &ff);
         cmd.kill_on_drop(true);
         let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't start ffmpeg: {e}")))?;
         let pid = child.id();
@@ -1644,16 +1737,23 @@ impl Engine {
         pieces: &[PathBuf],
     ) -> Result<(), Stop> {
         // Its real name (only recorded once the rename worked).
-        let final_name = {
+        let pick = || {
             let inner = self.inner.lock().unwrap();
             let taken = taken_paths(&inner.downloads, Some(&job.id));
             names::unique_final(&d.dest_dir, &format!("{stem}.{ext}"), &taken)
         };
-        let target = d.dest_dir.join(&final_name);
+        let mut final_name = pick();
+        let mut target = d.dest_dir.join(&final_name);
         let mut tries = 0;
         loop {
-            match std::fs::rename(made, &target) {
+            match names::rename_new(made, &target) {
                 Ok(()) => break,
+                // A file appeared under that name meanwhile: never written over.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 8 => {
+                    tries += 1;
+                    final_name = pick();
+                    target = d.dest_dir.join(&final_name);
+                }
                 // Antivirus or the indexer often holds a just-closed file for a moment.
                 Err(_) if tries < 8 => {
                     tries += 1;
@@ -1689,7 +1789,7 @@ impl Engine {
             }
             inner.dirty = true;
         }
-        mark_from_internet(&target, &d.link);
+        mark_from_internet(&target, if d.private { "" } else { &d.link });
         Ok(())
     }
 
@@ -1804,21 +1904,29 @@ impl Engine {
             }
             if status.is_some_and(|s| s.success()) {
                 let file = final_file.lock().unwrap().clone();
-                let mut inner = self.inner.lock().unwrap();
-                if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) {
-                    if let Some(f) = &file {
-                        if let Some(n) = f.file_name() {
-                            dd.name = n.to_string_lossy().to_string();
+                {
+                    let mut inner = self.inner.lock().unwrap();
+                    if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) {
+                        if let Some(f) = &file {
+                            if let Some(n) = f.file_name() {
+                                dd.name = n.to_string_lossy().to_string();
+                            }
+                            if let Ok(m) = std::fs::metadata(f) {
+                                dd.size = Some(m.len());
+                                dd.downloaded = m.len();
+                                job.downloaded.store(m.len(), Ordering::Relaxed);
+                            }
                         }
-                        if let Ok(m) = std::fs::metadata(f) {
-                            dd.size = Some(m.len());
-                            dd.downloaded = m.len();
-                            job.downloaded.store(m.len(), Ordering::Relaxed);
-                        }
+                        dd.resolved = true;
                     }
-                    dd.resolved = true;
+                    inner.dirty = true;
                 }
-                inner.dirty = true;
+                // Windows' "from the internet" mark, as every other download gets (SmartScreen
+                // and Office's Protected View look at it). Not for Private mode's files: they
+                // are sealed into the vault next.
+                if let Some(f) = file.as_ref().filter(|_| !d.vault) {
+                    mark_from_internet(f, if d.private { "" } else { &d.link });
+                }
                 return Ok(());
             }
             let text = errors.lock().unwrap().join("\n");
@@ -1860,9 +1968,12 @@ impl Engine {
         });
     }
 
-    /// Downloads running right now (for "quit anyway?").
+    /// Downloads running right now (for "quit anyway?"). Private mode's count only while it's
+    /// open (they carry on at the next start, once it's opened).
     pub fn running_count(&self) -> usize {
-        self.inner.lock().unwrap().jobs.len()
+        let open = crate::vault::get().is_unlocked();
+        let inner = self.inner.lock().unwrap();
+        inner.jobs.keys().filter(|id| open || !inner.downloads.iter().any(|d| &d.id == *id && d.vault)).count()
     }
 
     /// What finished rows drag out to Explorer or another app: the files, or for a folder its
@@ -1958,6 +2069,7 @@ impl Engine {
                 me.schedule();
                 me.tick();
                 me.sweep_private();
+                me.clear_private_list();
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         });
@@ -1968,7 +2080,284 @@ impl Engine {
     pub fn downloads(&self) -> Vec<Download> {
         let mut inner = self.inner.lock().unwrap();
         Self::sync_jobs(&mut inner);
-        inner.downloads.clone()
+        inner.downloads.iter().filter(|d| !d.vault).cloned().collect()
+    }
+
+    /// The private list (Private mode, only while it's open).
+    pub fn private_downloads(&self) -> Vec<Download> {
+        if !crate::vault::get().is_unlocked() {
+            return Vec::new();
+        }
+        let mut inner = self.inner.lock().unwrap();
+        Self::sync_jobs(&mut inner);
+        inner.downloads.iter().filter(|d| d.vault).cloned().collect()
+    }
+
+    /// Private mode was just opened: its list comes in (downloads that were running when Pako
+    /// closed go on as usual).
+    pub fn private_opened(self: &Arc<Self>) {
+        // The last changes reach the disk before the list is read back.
+        off_async(|| vault_flush(SAVE_WAIT));
+        let Ok(rows) = crate::vault::get().records() else { return };
+        let resume = self.settings().resume_on_start;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let mut seen = VAULT_ROWS.lock().unwrap();
+            for (id, bytes) in rows {
+                let Ok(mut d) = serde_json::from_slice::<Download>(&bytes) else { continue };
+                if d.id != id || inner.downloads.iter().any(|x| x.id == d.id) {
+                    continue;
+                }
+                d.vault = true;
+                d.private = true;
+                if d.status == Status::Completed {
+                    if let Some(size) = crate::vault::blocks::read_header_at(&d.final_path()).ok().and_then(|h| h.size) {
+                        d.size = Some(size);
+                        d.downloaded = size;
+                    }
+                }
+                if !inner.jobs.contains_key(&d.id) && d.status.is_active() {
+                    if d.via_browser.is_some() {
+                        d.status = Status::Paused;
+                        d.message = Some(VIA_WAITING.into());
+                    } else {
+                        d.status = if resume { Status::Queued } else { Status::Paused };
+                        d.message = None;
+                    }
+                }
+                if let Ok(json) = serde_json::to_vec(&d) {
+                    seen.insert(d.id.clone(), row_hash(&json));
+                }
+                // A send of it cut by the lock (Direct's resume, Upload's Try again) can go on.
+                if d.status == Status::Completed {
+                    crate::private_send::register(&d.final_path(), &private_send_name(&d), d.size.unwrap_or(d.downloaded));
+                }
+                inner.downloads.push(d);
+            }
+            inner.dirty = true;
+        }
+        self.list_changed();
+        self.schedule();
+    }
+
+    /// Private mode was locked: the private list leaves the window and memory. Downloads still
+    /// running or waiting their turn go on, hidden, into the vault.
+    pub fn private_locked(&self) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            Self::sync_jobs(&mut inner);
+            // What's on screen now is saved first (it can't be read again until it's opened).
+            Self::save(&mut inner);
+            let jobs: HashSet<String> = inner.jobs.keys().cloned().collect();
+            let mut seen = VAULT_ROWS.lock().unwrap();
+            inner.downloads.retain(|d| {
+                let goes_on = jobs.contains(&d.id) || d.status == Status::Queued || d.status.is_active();
+                if d.vault && !goes_on {
+                    seen.remove(&d.id);
+                    return false;
+                }
+                true
+            });
+        }
+        self.list_changed();
+    }
+
+    /// A private file was saved again (an edited copy): its new size.
+    pub fn private_changed_size(&self, id: &str, size: u64) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id && d.vault) {
+                d.size = Some(size);
+                d.downloaded = size;
+            }
+            inner.dirty = true;
+            Self::save(&mut inner);
+        }
+        self.list_changed();
+    }
+
+    /// "Move to Private": a finished download is encrypted into the vault, its readable file
+    /// deleted, and its row moves to the private list (put away at once if Private mode is
+    /// locked).
+    pub async fn move_to_private(self: &Arc<Self>, id: &str) -> Result<Option<String>, String> {
+        let v = crate::vault::get();
+        if !v.is_on() {
+            return Err("Turn on Private mode first (Settings › Private mode).".into());
+        }
+        let d = self.find(id).ok_or("This download is no longer in Pako.")?;
+        if d.vault {
+            return Ok(None);
+        }
+        if d.status != Status::Completed || d.group.is_some() {
+            return Err("Only a finished file can go to Private mode.".into());
+        }
+        let plain = d.final_path();
+        if !plain.is_file() {
+            return Err("The file isn't there any more.".into());
+        }
+        let target = v.file_path(&d.id);
+        let (size, warn) = tokio::task::spawn_blocking(move || seal_file(&plain, &target))
+            .await
+            .map_err(|_| "Couldn't put it in Private mode.".to_string())?
+            .map_err(|e| format!("Couldn't put it in Private mode: {e}"))?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == id) {
+                dd.vault = true;
+                dd.private = true;
+                dd.extract = false;
+                dd.dest_dir = v.incoming_dir().join(&dd.id);
+                dd.size = Some(size);
+                dd.downloaded = size;
+            }
+            inner.dirty = true;
+            Self::save(&mut inner);
+            if !v.is_unlocked() {
+                inner.downloads.retain(|x| x.id != id);
+                VAULT_ROWS.lock().unwrap().remove(id);
+            }
+        }
+        // What Pako itself still kept about it goes too: the list's safety copy (made before the
+        // move), its lines in the bell, and a Links row for the same link.
+        self.save_now();
+        crate::paths::bak_like_now(&list_path());
+        self.forget_links_for(&d.link);
+        crate::notices::forget_about(id);
+        self.list_changed();
+        Ok(warn)
+    }
+
+    /// "Decrypt…": a readable copy of a private file in `dir` (never over an existing file:
+    /// " (2)"…), marked as from the internet for Windows, then `then`:
+    /// - "leave": it stays in the private list, still encrypted;
+    /// - "off": the private row and its encrypted file go (Pako keeps no record of the copy);
+    /// - "downloads": the row becomes an ordinary finished download pointing at the copy (no
+    ///   Dashboard numbers after the fact), and the encrypted file goes.
+    /// If decrypting fails partway, the partial copy is deleted and the private file stays.
+    /// Returns where the copy is. `progress(done, total)` follows the bytes.
+    pub async fn private_decrypt(
+        self: &Arc<Self>,
+        id: &str,
+        dir: PathBuf,
+        then: &str,
+        with_folder: bool,
+        progress: impl Fn(u64, u64) + Send + 'static,
+    ) -> Result<PathBuf, String> {
+        if !matches!(then, "leave" | "off" | "downloads") {
+            return Err("Pick what happens to the private copy.".into());
+        }
+        let d = self.find(id).filter(|d| d.vault && d.status == Status::Completed).ok_or("This private file is gone.")?;
+        if !dir.is_absolute() {
+            return Err("Pick a folder.".into());
+        }
+        // A whole folder decrypted: each file goes back to its place inside that folder.
+        let dir = match d.vault_folder.as_deref().filter(|_| with_folder) {
+            Some(rel) => rel
+                .split(['\\', '/'])
+                .map(names::sanitize)
+                .filter(|p| !p.trim().is_empty() && p != "." && p != "..")
+                .fold(dir, |at, p| at.join(p)),
+            None => dir,
+        };
+        std::fs::create_dir_all(&dir).map_err(|_| "Can't use that folder. Pick another one.".to_string())?;
+        let name = {
+            let inner = self.inner.lock().unwrap();
+            names::unique_final(&dir, &names::sanitize(&d.name), &taken_paths(&inner.downloads, None))
+        };
+        let out = dir.join(&name);
+        let src = d.final_path();
+        let out2 = out.clone();
+        let written = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            use std::io::Write;
+            let r = crate::vault::get().reader(&src)?;
+            let total = r.len();
+            let mut f = std::io::BufWriter::new(OpenOptions::new().write(true).create_new(true).open(&out2)?);
+            let blocks = total.div_ceil(crate::vault::blocks::BLOCK);
+            let mut done = 0u64;
+            for i in 0..blocks {
+                // Private mode locked meanwhile: it stops here (the half-made file is deleted).
+                if !crate::vault::get().is_unlocked() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Private mode is locked"));
+                }
+                let b = r.block(i)?;
+                f.write_all(&b)?;
+                done += b.len() as u64;
+                if i % 64 == 0 || done == total {
+                    progress(done, total);
+                }
+            }
+            f.flush()?;
+            f.into_inner().map_err(|e| e.into_error())?.sync_all()
+        })
+        .await
+        .map_err(|_| "Decrypting stopped unexpectedly.".to_string())?;
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&out);
+            return Err(match e.kind() {
+                std::io::ErrorKind::PermissionDenied if !crate::vault::get().is_unlocked() => "Private mode locked while decrypting. Open it and try again.".into(),
+                std::io::ErrorKind::StorageFull => "That drive is full. Free some space, or pick another folder.".into(),
+                _ => format!("Couldn't decrypt it: {e}. The private copy is unchanged."),
+            });
+        }
+        crate::private_files::mark_zone(&out);
+        // Locked (or the row removed) between the last block and here: what comes next can't be
+        // done as asked (the row left memory with the lock), so the readable copy goes too and
+        // the private file stays as it was.
+        if then != "leave" && (!crate::vault::get().is_unlocked() || self.find(id).is_none_or(|x| !x.vault)) {
+            let _ = std::fs::remove_file(&out);
+            return Err("Private mode locked while decrypting. Open it and try again.".into());
+        }
+        match then {
+            "off" => {
+                self.remove(&[id.to_string()], false);
+                self.save_now();
+            }
+            "downloads" => {
+                let v = crate::vault::get();
+                {
+                    let mut inner = self.inner.lock().unwrap();
+                    if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == id) {
+                        dd.vault = false;
+                        dd.private = false;
+                        dd.vault_folder = None;
+                        dd.dest_dir = dir.clone();
+                        dd.name = name.clone();
+                        dd.message = None;
+                        dd.segments.clear();
+                    }
+                    // It leaves the private list without taking its (new, readable) file along.
+                    VAULT_ROWS.lock().unwrap().remove(id);
+                    inner.dirty = true;
+                }
+                // A seal still waiting for this row must not bring its record back after this.
+                off_async(|| vault_flush(SAVE_WAIT));
+                v.remove_record(id);
+                crate::vault::blocks::remove(&v.file_path(id));
+                crate::private_files::wipe_dir(&v.incoming_dir().join(id));
+                self.save_now();
+                self.list_changed();
+            }
+            _ => {}
+        }
+        Ok(out)
+    }
+
+    /// Private mode was turned off ("Reset Private mode"): its downloads stop and leave.
+    pub fn private_reset(&self) {
+        // Nothing still waiting to be sealed may land after Private mode is reset.
+        off_async(|| vault_flush(SAVE_WAIT));
+        let jobs: Vec<Arc<Job>> = {
+            let mut inner = self.inner.lock().unwrap();
+            let ids: Vec<String> = inner.downloads.iter().filter(|d| d.vault).map(|d| d.id.clone()).collect();
+            let jobs = ids.iter().filter_map(|id| inner.jobs.get(id).cloned()).collect();
+            inner.downloads.retain(|d| !d.vault);
+            VAULT_ROWS.lock().unwrap().clear();
+            jobs
+        };
+        for j in jobs {
+            j.cancel.cancel();
+        }
+        self.list_changed();
     }
 
     pub fn settings(&self) -> Settings {
@@ -1985,16 +2374,19 @@ impl Engine {
             .map_err(|_| anyhow!("Can't use that folder for downloads."))?;
         self.limiter.set_rate(s.speed_limit_kb.saturating_mul(1024));
         let saved = {
-            // Saved under the lock: two saves at once reach the disk in the order they were made.
+            // Saved in turn with `change_settings`: two saves at once reach the disk in the order
+            // they were made.
+            let _turn = SETTINGS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
             let mut inner = self.inner.lock().unwrap();
-            // Kept by the small windows themselves (the pin, where it was moved, "Notify me"):
-            // Settings never shows them, so an older copy of the settings can't undo them.
+            // Kept by the small windows themselves (the pin, where it was moved): Settings never
+            // shows them, so an older copy of the settings can't undo them.
             s.mini_pinned = inner.settings.mini_pinned;
             s.mini_pos = inner.settings.mini_pos;
-            s.ask_notify = inner.settings.ask_notify;
             // Kept by Help (What's new seen, tour offered): Settings never shows them either.
             s.whats_new_seen = inner.settings.whats_new_seen.clone();
             s.tour_offered = inner.settings.tour_offered;
+            // Kept by Private mode's own tip (shown once).
+            s.private_tip_seen = inner.settings.private_tip_seen;
             s.tours_done = inner.settings.tours_done.clone();
             // Kept by the theme switch (`theme::theme_set`), so an older copy can't undo it.
             s.theme = inner.settings.theme.clone();
@@ -2002,6 +2394,9 @@ impl Engine {
             s.mirror_hosts = inner.settings.mirror_hosts.clone();
             // Kept by the terms of use step (`accept_terms`): an older copy can't undo it.
             s.terms_accepted = inner.settings.terms_accepted.clone();
+            // The window's old "Notify me" off holds until New downloads changes here.
+            s.ask_off = inner.settings.ask_off && s.done_alert() == inner.settings.done_alert();
+            s.settle_notify();
             let bytes = serde_json::to_vec_pretty(&s)?;
             if inner.settings_ok {
                 write_atomic(&settings_path(), &bytes)?;
@@ -2020,14 +2415,21 @@ impl Engine {
 
     /// Changes a few settings without checking the download folder (first-start setup must
     /// close even with that drive unplugged).
+    /// The change is made and serialized under the list's lock, but written to disk after it is
+    /// let go (the window's theme switch, the bell, the tray pin never wait on a disk write
+    /// holding it). `SETTINGS_WRITE` keeps the writes in the order the changes were made.
     pub fn change_settings(&self, f: impl FnOnce(&mut Settings)) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-        f(&mut inner.settings);
-        crate::notices::use_settings(&inner.settings);
-        if !inner.settings_ok {
-            bail!(SETTINGS_UNREAD);
-        }
-        let bytes = serde_json::to_vec_pretty(&inner.settings)?;
+        let _turn = SETTINGS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+        let bytes = {
+            let mut inner = self.inner.lock().unwrap();
+            f(&mut inner.settings);
+            inner.settings.settle_notify();
+            crate::notices::use_settings(&inner.settings);
+            if !inner.settings_ok {
+                bail!(SETTINGS_UNREAD);
+            }
+            serde_json::to_vec_pretty(&inner.settings)?
+        };
         write_atomic(&settings_path(), &bytes)?;
         Ok(())
     }
@@ -2098,7 +2500,7 @@ impl Engine {
             position,
             total,
             running: inner.jobs.len(),
-            notify: inner.settings.ask_notify,
+            alert: if inner.settings.ask_off && d.alert.is_none() { Alert::Off } else { d.alert_of(inner.settings.done_alert()) },
             here_only: here_only(d),
         })
     }
@@ -2167,22 +2569,53 @@ impl Engine {
         }
         d.name = ask_name(&d.dest_dir, &d.name, &dir, &wanted, &taken);
         d.dest_dir = dir;
-        d.notify = a.notify;
-        d.quiet = !a.notify;
+        if let Some(alert) = a.alert {
+            d.set_alert(alert);
+        }
         d.ask = false;
         d.message = None;
         if a.action == "now" && running > 0 {
             d.priority = Priority::First;
         }
+        // "Download privately": straight into Private mode, encrypted from its first byte (a
+        // few seconds Pako already fetched to check it are dropped and fetched again).
+        let into_private = a.private && !d.private && crate::vault::get().is_on();
+        if into_private {
+            // What Pako fetched to check it (in the clear): overwritten, then deleted.
+            let part = d.part_path();
+            if part.exists() {
+                crate::private_files::wipe(&part);
+            }
+            d.remove_part();
+            d.segments.clear();
+            d.downloaded = 0;
+            recheck_server(d);
+            d.private = true;
+            to_vault(d);
+        }
         inner.dirty = true;
         drop(inner);
-        let _ = self.change_settings(|s| {
-            s.ask_notify = a.notify;
-            if a.dont_ask {
-                s.ask_browser = false;
-            }
-        });
+        if into_private {
+            // Its browser login and page stay in memory only, never in browser-headers.dat.
+            crate::extension::mark_headers_private(&a.id);
+        }
+        // A level other than Off picked in the window: its old "Notify me" off is over.
+        let picked = a.alert.is_some_and(|x| x != Alert::Off);
+        if a.dont_ask || picked {
+            let _ = self.change_settings(|s| {
+                if a.dont_ask {
+                    s.ask_browser = false;
+                }
+                if picked {
+                    s.ask_off = false;
+                }
+            });
+        }
         self.save_now();
+        if into_private {
+            // It was in the list on disk while the window asked: its safety copy mustn't keep it.
+            crate::paths::bak_like_now(&list_path());
+        }
         self.list_changed();
         self.schedule();
         Ok(())
@@ -2270,6 +2703,9 @@ impl Engine {
                 crate::extension::BrowserHeaders { referrer: r.referrer.clone(), cookies: r.cookies.clone(), private: r.private, ..Default::default() },
             );
             d.private = r.private;
+            to_vault(&mut d);
+            // Into Private mode: no folder or name to pick (it goes straight in).
+            let ask = ask && !d.vault;
             d.ask = ask;
             if ask {
                 d.message = Some(ASK_NOTE.into());
@@ -2286,13 +2722,16 @@ impl Engine {
             if held.is_empty() {
                 let body = if added.len() == 1 { added[0].clone() } else { format!("{} files", added.len()) };
                 let one = (added.len() == 1 && added_ids.len() == 1).then(|| added_ids[0].clone());
-                if r.private {
+                if r.private && crate::vault::get().is_on() {
+                    // Into Private mode: nothing about it on screen.
+                    (self.emit)("notify", notices::payload_private("browser", "Downloading in Pako", "A private download started.", &Go::page("downloads"), Pop::Pref));
+                } else if r.private {
                     (self.emit)("notify", notices::payload_private("browser", "Downloading in Pako", &body, &Go::maybe("downloads", one), Pop::Pref));
                 } else {
                     self.notify("browser", "Downloading in Pako", &body, Go::maybe("downloads", one));
                 }
                 if !r.takeover {
-                    crate::ask::started();
+                    crate::ask::started(r.private);
                 }
             }
             // (A takeover's window is opened by the takeover itself, marked as being checked.)
@@ -2394,7 +2833,10 @@ impl Engine {
     /// drive doesn't freeze everything), and the taken names are worked out once, not once per
     /// file (a 5,000-file Drive folder used to take ages).
     pub(super) fn push_many(&self, mut list: Vec<Download>) {
-        let dirs: HashSet<PathBuf> = list.iter().map(|d| d.dest_dir.clone()).collect();
+        for d in list.iter_mut() {
+            to_vault(d);
+        }
+        let dirs: HashSet<PathBuf> = list.iter().filter(|d| !d.vault).map(|d| d.dest_dir.clone()).collect();
         for dir in &dirs {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -2578,10 +3020,13 @@ impl Engine {
         crate::video::leftovers(dir, name, id, &others)
     }
 
+    /// "Clear finished" on the normal list. Private mode's rows always stay: taking one off the
+    /// list deletes its encrypted file (seal_vault_rows), which only the private list's own
+    /// Delete, Clear the private list, Decrypt and Reset may do.
     pub fn clear_completed(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.downloads.retain(|d| {
-            let keep = d.status != Status::Completed;
+            let keep = d.vault || d.status != Status::Completed;
             if !keep {
                 crate::extension::forget_headers(&d.id);
             }
@@ -2655,7 +3100,7 @@ impl Engine {
     /// The result is noted on the set's first part ("Extracted", or why not).
     fn extract_when_complete(self: &Arc<Self>, group: &str, dir: &PathBuf) {
         // Every split set in the folder (a Drive folder can hold several), once all is done.
-        let (jobs, notify, private) = {
+        let (jobs, alert, private) = {
             let inner = self.inner.lock().unwrap();
             let files: Vec<&Download> =
                 inner.downloads.iter().filter(|d| d.group.as_deref() == Some(group) && &d.dest_dir == dir).collect();
@@ -2673,7 +3118,8 @@ impl Engine {
                 // Never two 7-Zip runs on the same set at once.
                 .filter(|(_, path, _)| running.insert(names::path_key(path)))
                 .collect();
-            (jobs, files.iter().any(|d| d.notify), files.iter().any(|d| d.private))
+            let default = inner.settings.done_alert();
+            (jobs, files.iter().map(|d| d.alert_of(default)).max().unwrap_or(Alert::Off), files.iter().any(|d| d.private))
         };
         if jobs.is_empty() {
             return;
@@ -2685,33 +3131,14 @@ impl Engine {
             for (first_id, first_path, base) in &jobs {
                 let out = out_dir.clone();
                 let first = first_path.clone();
-                let result = match crate::components::seven_zip() {
-                    None => Err("Extracting needs 7-Zip: install it in Settings › Features & updates.".to_string()),
-                    Some(exe) => tauri::async_runtime::spawn_blocking(move || {
-                        let mut cmd = std::process::Command::new(exe);
-                        // -snz: extracted files keep the "downloaded from the internet" mark.
-                        // -aou: a file of the same name already in the folder (another file of
-                        // a Drive folder, an earlier extraction) is never written over: the
-                        // extracted one gets a new name ("readme_1.txt").
-                        cmd.arg("x").arg("-y").arg("-aou").arg("-snz").arg(format!("-o{}", out.display())).arg(&first);
-                        #[cfg(windows)]
-                        {
-                            use std::os::windows::process::CommandExt;
-                            cmd.creation_flags(0x0800_0000); // no console window
-                        }
-                        match cmd.output() {
-                            Ok(o) if o.status.success() => Ok(()),
-                            Ok(o) => {
-                                let err = String::from_utf8_lossy(&o.stderr);
-                                let line = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("7-Zip stopped with an error");
-                                Err(format!("Couldn't extract: {}", line.trim()))
-                            }
-                            Err(e) => Err(format!("Couldn't start 7-Zip: {e}")),
-                        }
-                    })
-                    .await
-                    .unwrap_or_else(|_| Err("Extracting crashed".into())),
-                };
+                let result = tauri::async_runtime::spawn_blocking(move || match extract_archive(&first, &out, None) {
+                    Ok(()) => Ok(()),
+                    // Locked with a password: noted on the set, asked in the window.
+                    Err(Extract::NeedsPassword | Extract::WrongPassword) => Err(NEEDS_PASSWORD.to_string()),
+                    Err(Extract::Failed(e)) => Err(e),
+                })
+                .await
+                .unwrap_or_else(|_| Err("Extracting crashed".into()));
                 EXTRACTING.lock().unwrap().remove(&names::path_key(first_path));
                 if let Err(e) = &result {
                     failures.push(format!("{base}: {e}"));
@@ -2729,21 +3156,106 @@ impl Engine {
                 me.save_now();
                 me.list_changed();
             }
-            if notify {
-                let names: Vec<&str> = jobs.iter().map(|(_, _, b)| b.as_str()).collect();
-                let (kind, title, body) = if failures.is_empty() {
-                    ("download-done", "Extracted".to_string(), names.join(", "))
+            // The set's one notice (its "finished" one waited for this), as loud as the set asked
+            // for: Off in the bell only, Pop-up the corner card and the chime, Important the big
+            // card. Couldn't extract: as a stop.
+            let names: Vec<&str> = jobs.iter().map(|(_, _, b)| b.as_str()).collect();
+            let ok = failures.is_empty();
+            let (kind, title, body) = if ok {
+                ("download-done", "Downloaded and extracted".to_string(), names.join(", "))
+            } else {
+                if failures.iter().all(|f| f.ends_with(NEEDS_PASSWORD)) {
+                    // Locked with a password: type it in Pako (its row offers it).
+                    ("download-failed", "Password needed".to_string(), format!("{}: type its password in Pako to extract it.", names.join(", ")))
                 } else {
                     ("download-failed", "Couldn't extract everything".to_string(), failures.join("; "))
-                };
-                // Asked for by the set's own "Notify when done".
-                let first = jobs.first().map(|(id, _, _)| id.clone());
-                // (A set with a private window's file in it: a pop-up only, never in the bell.)
-                let go = Go::maybe("downloads", first);
-                let p = if private { notices::payload_private(kind, &title, &body, &go, Pop::Force) } else { notices::payload(kind, &title, &body, &go, Pop::Force) };
-                (me.emit)("notify", p);
+                }
+            };
+            let first = jobs.first().map(|(id, _, _)| id.clone());
+            // (A set with a private window's file in it: a pop-up only, never in the bell.)
+            let go = Go::maybe("downloads", first);
+            let pop = note_pop(!ok, alert);
+            if ok && alert == Alert::Pop {
+                notices::chime_done(Alert::Pop);
             }
+            let p = if private { notices::payload_private(kind, &title, &body, &go, pop) } else { notices::payload(kind, &title, &body, &go, pop) };
+            (me.emit)("notify", p);
         });
+    }
+
+    /// Private files handed to Direct or Upload (see `private_send`): their encrypted paths,
+    /// known there under their real names ("Trip/Maps/Route.gpx" for a folder's file).
+    pub fn private_hand_over(&self, ids: &[String]) -> Result<Vec<String>, String> {
+        if !crate::vault::get().is_unlocked() {
+            return Err("Open Private mode first.".into());
+        }
+        let mut out = Vec::new();
+        for id in ids {
+            let d = self.find(id).filter(|d| d.vault && d.status == Status::Completed).ok_or("Only finished private files can be sent.")?;
+            let path = d.final_path();
+            crate::private_send::register(&path, &private_send_name(&d), d.size.unwrap_or(d.downloaded));
+            out.push(path.display().to_string());
+        }
+        Ok(out)
+    }
+
+    /// "Extract" from the window, with the archive's password when it has one: a split set's
+    /// first part (into its own folder, as when it extracts by itself), or a single .zip/.7z/.rar
+    /// (into a folder named after it, next to it). The password is only handed to 7-Zip.
+    pub async fn extract_now(self: &Arc<Self>, id: &str, password: Option<zeroize::Zeroizing<String>>) -> Result<PathBuf, String> {
+        let d = self.find(id).filter(|d| d.status == Status::Completed && !d.vault).ok_or("This download is no longer in the list.")?;
+        let path = d.final_path();
+        // The first part of a split set among its folder's files: extracted where the set is,
+        // as when it extracts by itself. Anything else: into a folder named after it.
+        let in_set = d.group.is_some() && {
+            let inner = self.inner.lock().unwrap();
+            let files: Vec<&Download> = inner.downloads.iter().filter(|x| x.group == d.group && x.dest_dir == d.dest_dir).collect();
+            let names: Vec<&str> = files.iter().map(|x| x.name.as_str()).collect();
+            crate::split::find_sets(&names).iter().any(|set| files[set.first].id == d.id)
+        };
+        if !in_set && !is_archive(&d.name) {
+            return Err("Pako extracts .zip, .7z and .rar files.".into());
+        }
+        // Another part of a split set: its first part extracts the whole set.
+        if !in_set && crate::split::part(&d.name).is_some_and(|p| p.family != crate::split::Family::Zip && p.index > 1) {
+            return Err("Extract the set from its first part.".into());
+        }
+        let out = if in_set {
+            d.dest_dir.clone()
+        } else {
+            let stem = std::path::Path::new(&d.name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Extracted".into());
+            free_dir(&d.dest_dir, &names::sanitize(&stem))
+        };
+        let key = names::path_key(&path);
+        if !EXTRACTING.lock().unwrap().insert(key.clone()) {
+            return Err("It's being extracted already.".into());
+        }
+        let (p2, o2) = (path.clone(), out.clone());
+        let done = tauri::async_runtime::spawn_blocking(move || extract_archive(&p2, &o2, password.as_ref().map(|p| p.as_str())))
+            .await
+            .unwrap_or_else(|_| Err(Extract::Failed("Extracting crashed".into())));
+        EXTRACTING.lock().unwrap().remove(&key);
+        let result = match done {
+            Ok(()) => Ok(out.clone()),
+            Err(Extract::NeedsPassword) => Err(PASSWORD_NEEDED.to_string()),
+            Err(Extract::WrongPassword) => Err(PASSWORD_WRONG.to_string()),
+            Err(Extract::Failed(e)) => Err(e),
+        };
+        if in_set {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(x) = inner.downloads.iter_mut().find(|x| x.id == id) {
+                x.message = Some(match &result {
+                    Ok(_) => "Extracted".into(),
+                    Err(e) if e == PASSWORD_NEEDED || e == PASSWORD_WRONG => NEEDS_PASSWORD.into(),
+                    Err(e) => e.clone(),
+                });
+            }
+            inner.dirty = true;
+            drop(inner);
+            self.save_now();
+            self.list_changed();
+        }
+        result
     }
 
     /// Split sets in the Found list (links not inside a Drive folder), for the window.
@@ -2800,11 +3312,11 @@ impl Engine {
             .map(|d| (d.dest_dir.clone(), d.group.clone().unwrap_or_default(), d.extract))
     }
 
-    /// "Notify when done" for these downloads.
-    pub fn set_notify(&self, ids: &[String], on: bool) {
+    /// Off · Pop-up · Important for these downloads.
+    pub fn set_alert(&self, ids: &[String], alert: Alert) {
         let mut inner = self.inner.lock().unwrap();
         for d in inner.downloads.iter_mut().filter(|d| ids.contains(&d.id)) {
-            d.notify = on;
+            d.set_alert(alert);
         }
         inner.dirty = true;
         drop(inner);
@@ -3176,10 +3688,12 @@ impl Engine {
     /// notification when its last file is done; single files finishing close together are
     /// gathered into one (sent from `tick` after a short quiet moment). `force`: the download's
     /// own "Notify when done" asked for it.
-    fn note_finished(&self, id: &str, force: bool) {
+    fn note_finished(&self, id: &str, alert: Option<Alert>) {
         let note = {
             let inner = self.inner.lock().unwrap();
             let Some(d) = inner.downloads.iter().find(|d| d.id == id) else { return };
+            let default = inner.settings.done_alert();
+            let alert = alert.unwrap_or_else(|| d.alert_of(default));
             match &d.group {
                 Some(g) => {
                     let root = group_root(d);
@@ -3193,6 +3707,19 @@ impl Engine {
                     }
                     let done = files.iter().filter(|x| x.status == Status::Completed).count();
                     let stuck = files.len() - done;
+                    // The set decides, as loud as its loudest file: its finish said as its
+                    // level and the bell switch say, its stop as Download stopped's switches say.
+                    let loudest = files.iter().map(|x| x.alert_of(default)).max().unwrap_or(alert);
+                    let wanted = if done == 0 {
+                        stopped_wanted(loudest, notices::pref(&inner.settings, "download-failed"))
+                    } else {
+                        loudest != Alert::Off || notices::pref(&inner.settings, "download-done").bell
+                    };
+                    // A split set about to be extracted says it once, when extracting ends
+                    // ("Downloaded and extracted"): one card and one chime for it.
+                    if !wanted || (stuck == 0 && set_will_extract(&files)) {
+                        return;
+                    }
                     let body = match (done, stuck) {
                         (1, 0) => "1 file done".to_string(),
                         (n, 0) => format!("{n} files done"),
@@ -3204,10 +3731,11 @@ impl Engine {
                         name: g.clone(),
                         stopped: done == 0,
                         id: None,
-                        force: force || files.iter().any(|x| x.notify),
+                        alert: loudest,
                         // A folder or set with a private window's file in it (sent to Links
                         // from a private window): its name never goes to the bell.
                         private: files.iter().any(|x| x.private),
+                        vault: files.iter().any(|x| x.vault),
                     }
                 }
                 None => Note {
@@ -3216,13 +3744,17 @@ impl Engine {
                     name: d.name.clone(),
                     stopped: false,
                     id: Some(d.id.clone()),
-                    force,
+                    alert,
                     private: d.private,
+                    vault: d.vault,
                 },
             }
         };
-        // Asked "Notify when done": a chime now (the pop-up comes with the gathered ones).
-        notices::chime_if_asked(note.force && !note.stopped);
+        // Pop-up: the chime now (the pop-up comes with the gathered ones). Important chimes when
+        // its card shows (it may wait for something full screen to end).
+        if !note.stopped && note.alert == Alert::Pop {
+            notices::chime_done(Alert::Pop);
+        }
         let mut notes = self.notes.lock().unwrap();
         notes.0.push(note);
         notes.1 = Some(Instant::now());
@@ -3230,14 +3762,14 @@ impl Engine {
 
     /// A download stopped (limit, needs an account, error) and a notification is wanted. A
     /// folder or set says it once, when its last file is settled; single files are gathered.
-    fn note_stopped(&self, id: &str, msg: &str, force: bool) {
+    fn note_stopped(&self, id: &str, msg: &str, alert: Alert) {
         let grouped = self.inner.lock().unwrap().downloads.iter().any(|d| d.id == id && d.group.is_some());
         if grouped {
-            self.note_finished(id, force);
+            self.note_finished(id, Some(alert));
             return;
         }
-        let found = self.inner.lock().unwrap().downloads.iter().find(|d| d.id == id).map(|d| (d.name.clone(), d.private));
-        let Some((name, private)) = found else { return };
+        let found = self.inner.lock().unwrap().downloads.iter().find(|d| d.id == id).map(|d| (d.name.clone(), d.private, d.vault));
+        let Some((name, private, vault)) = found else { return };
         let mut notes = self.notes.lock().unwrap();
         notes.0.push(Note {
             title: format!("Download stopped: {name}"),
@@ -3245,8 +3777,9 @@ impl Engine {
             name,
             stopped: true,
             id: Some(id.to_string()),
-            force,
+            alert,
             private,
+            vault,
         });
         notes.1 = Some(Instant::now());
     }
@@ -3268,19 +3801,44 @@ impl Engine {
             notes.1 = None;
             std::mem::take(&mut notes.0)
         };
+        // Private mode's: said without names or anything else about them, in one line each
+        // for finished and stopped (that one is kept in the bell), as loud as the loudest.
+        let (vault, ready): (Vec<Note>, Vec<Note>) = ready.into_iter().partition(|n| n.vault);
+        for stopped in [false, true] {
+            let these: Vec<&Note> = vault.iter().filter(|n| n.stopped == stopped).collect();
+            let Some(alert) = these.iter().map(|n| n.alert).max() else { continue };
+            let kind = if stopped { "download-failed" } else { "download-done" };
+            let title = match (these.len(), stopped) {
+                (1, false) => "A private download finished".to_string(),
+                (n, false) => format!("{n} private downloads finished"),
+                (1, true) => "A private download stopped".to_string(),
+                (n, true) => format!("{n} private downloads stopped"),
+            };
+            (self.emit)("notify", notices::payload(kind, &title, "Open Private mode to see it.", &Go::page("downloads"), note_pop(stopped, alert)));
+        }
         // A private window's downloads: each said on its own, never kept in the bell.
         let (private, ready): (Vec<Note>, Vec<Note>) = ready.into_iter().partition(|n| n.private);
         for n in private {
             let kind = if n.stopped { "download-failed" } else { "download-done" };
-            let pop = if n.force { Pop::Force } else { Pop::Pref };
-            (self.emit)("notify", notices::payload_private(kind, &n.title, &n.body, &Go::maybe("downloads", n.id), pop));
+            (self.emit)("notify", notices::payload_private(kind, &n.title, &n.body, &Go::maybe("downloads", n.id), note_pop(n.stopped, n.alert)));
         }
+        // The others: Important ones each on their own big card; the rest gathered, what
+        // finished with Pop-up in one line, with Off in one bell line only, what stopped in one.
         let (stopped, finished): (Vec<Note>, Vec<Note>) = ready.into_iter().partition(|n| n.stopped);
-        for (kind, group) in [("download-done", finished), ("download-failed", stopped)] {
+        let (important, finished): (Vec<Note>, Vec<Note>) = finished.into_iter().partition(|n| n.alert == Alert::Important);
+        if let Some(p) = self.important_card(important) {
+            (self.emit)("notify", p);
+        }
+        let (loud, off): (Vec<Note>, Vec<Note>) = finished.into_iter().partition(|n| n.alert == Alert::Pop);
+        let stopped_pop = note_pop(true, stopped.iter().map(|n| n.alert).max().unwrap_or_default());
+        for (kind, group, pop) in [
+            ("download-done", loud, Pop::Force),
+            ("download-done", off, Pop::Skip),
+            ("download-failed", stopped, stopped_pop),
+        ] {
             if group.is_empty() {
                 continue;
             }
-            let pop = if group.iter().any(|n| n.force) { Pop::Force } else { Pop::Pref };
             let (title, body, id) = if group.len() == 1 {
                 let n = group.into_iter().next().unwrap();
                 (n.title, n.body, n.id)
@@ -3296,6 +3854,26 @@ impl Engine {
             };
             (self.emit)("notify", notices::payload(kind, &title, &body, &Go::maybe("downloads", id), pop));
         }
+    }
+
+    /// The Important ones finished together: one big card. Several: "3 downloads finished" with
+    /// their names, and Show in folder when they're all in one folder (one of them is shown).
+    fn important_card(&self, notes: Vec<Note>) -> Option<serde_json::Value> {
+        let first = notes.first()?;
+        if notes.len() == 1 {
+            return Some(notices::payload("download-done", &first.title, &first.body, &Go::maybe("downloads", first.id.clone()), Pop::Important));
+        }
+        let dirs: HashSet<PathBuf> = {
+            let inner = self.inner.lock().unwrap();
+            notes.iter().map(|n| n.id.as_ref().and_then(|id| inner.downloads.iter().find(|d| &d.id == id)).map(|d| d.dest_dir.clone()).unwrap_or_default()).collect()
+        };
+        let one_folder = dirs.len() == 1 && notes.iter().all(|n| n.id.is_some());
+        let names: Vec<&str> = notes.iter().take(3).map(|n| n.name.as_str()).collect();
+        let more = if notes.len() > 3 { format!(" and {} more", notes.len() - 3) } else { String::new() };
+        let go = Go::maybe("downloads", if one_folder { first.id.clone() } else { None });
+        let mut p = notices::payload("download-done", &format!("{} downloads finished", notes.len()), &format!("{}{more}", names.join(", ")), &go, Pop::Important);
+        p["many"] = serde_json::json!(notes.len());
+        Some(p)
     }
 
     /// A notification right away (e.g. "Pako needs you" for a link check): a pop-up and/or a
@@ -3341,8 +3919,9 @@ impl Engine {
         // Uploads and Direct transfers, read before the lock (Direct's check takes its own).
         let uploads = transfers_running();
         let mut inner = self.inner.lock().unwrap();
-        let has_jobs = !inner.jobs.is_empty();
-        // Awake while downloads, uploads or Direct transfers run, while downloads wait for the
+        let has_jobs = !inner.jobs.is_empty() || inner.downloads.iter().any(browser_downloading);
+        // Awake while downloads (also ones the browser downloads for Pako), uploads or Direct
+        // transfers run, while downloads wait for the
         // download hours (a PC asleep at the start time would never start them), and during
         // the countdown before sleeping / shutting down.
         let waits_for_hours = inner.settings.schedule_on
@@ -3352,12 +3931,11 @@ impl Engine {
         crate::system::keep_awake(inner.settings.keep_awake && (has_jobs || uploads || waits_for_hours || countdown));
         Self::sync_jobs(&mut inner);
         // "Via browser" rows the browser is downloading: their speed comes from its reports.
-        let following: Vec<String> =
-            inner.downloads.iter().filter(|d| d.via_browser.is_some() && d.status == Status::Downloading).map(|d| d.id.clone()).collect();
-        let has_jobs = has_jobs || !following.is_empty();
+        let following: Vec<String> = inner.downloads.iter().filter(|d| browser_downloading(d)).map(|d| d.id.clone()).collect();
         if has_jobs {
             let now = Instant::now();
             let mut progress = Vec::new();
+            let show_private = crate::vault::get().is_unlocked();
             let ids: Vec<String> = inner.jobs.keys().cloned().chain(following).collect();
             for id in ids {
                 let Some(d) = inner.downloads.iter().find(|d| d.id == id).cloned() else { continue };
@@ -3385,6 +3963,11 @@ impl Engine {
                     sp.at = now;
                 }
                 let speed = if d.status == Status::Downloading { sp.value as u64 } else { 0 };
+                // Private mode's rows: only while it's open (their names, sizes and speed
+                // never reach a window otherwise).
+                if d.vault && !show_private {
+                    continue;
+                }
                 progress.push(Progress {
                     id: d.id.clone(),
                     status: d.status.clone(),
@@ -3407,7 +3990,7 @@ impl Engine {
             // Note the parts FIRST, then flush: everything in that note was written before the
             // flush, so it's on disk once the flush returns. Bytes written during the flush
             // are saved next time. (A power cut can't leave "done" parts full of zeros.)
-            let notes: Vec<(Arc<Job>, Vec<Segment>, Option<Arc<File>>)> = inner
+            let notes: Vec<(Arc<Job>, Vec<Segment>, Option<Arc<Sink>>)> = inner
                 .jobs
                 .values()
                 .map(|j| {
@@ -3445,6 +4028,7 @@ impl Engine {
         // A private window's downloads are never written to disk (only where their unfinished
         // files are, sealed, so they're cleaned up at the next start: see `note_private_parts`).
         note_private_parts(&private_parts_path(), &inner.downloads);
+        seal_vault_rows(inner);
         let mut list: Vec<Download> = inner.downloads.iter().filter(|d| !d.private).cloned().collect();
         for d in list.iter_mut() {
             if let Some(job) = inner.jobs.get(&d.id) {
@@ -3470,6 +4054,7 @@ impl Engine {
         if let Some(n) = saved {
             off_async(|| LIST_SAVER.wait(n, SAVE_WAIT));
         }
+        off_async(|| vault_flush(SAVE_WAIT));
     }
 
     /// Called when the app closes: stop connections and save exactly where each download is.
@@ -3486,6 +4071,7 @@ impl Engine {
         if let Some(n) = saved {
             LIST_SAVER.wait(n, SAVE_WAIT);
         }
+        vault_flush(SAVE_WAIT);
         found::wait_saved(SAVE_WAIT);
         // The async stops above never get to run once Pako exits: end yt-dlp (and the ffmpeg
         // it started) now, or a second one would write to the same pieces at the next start.
@@ -3502,8 +4088,8 @@ impl Engine {
         }
         // A notification for it: its own "Notify when done" (forces the pop-up), or the
         // kind's switches in Settings › Notifications. Some(force) = wanted.
-        let mut stopped_note: Option<(String, bool)> = None;
-        let mut finished_note: Option<bool> = None;
+        let mut stopped_note: Option<(String, Alert)> = None;
+        let mut finished_note: Option<Alert> = None;
         let mut extract_group: Option<(String, PathBuf)> = None;
         let mut private_done = false;
         {
@@ -3540,6 +4126,7 @@ impl Engine {
             let mut done_ok = false;
             let done_pref = notices::pref(&inner.settings, "download-done");
             let stopped_pref = notices::pref(&inner.settings, "download-failed");
+            let default_alert = inner.settings.done_alert();
             let pos = inner.downloads.iter().position(|d| d.id == job.id);
             match pos {
                 None => {
@@ -3566,8 +4153,9 @@ impl Engine {
                                 self.stats.lock().unwrap().finished(true);
                                 numbers_event(d, speed.as_ref(), true);
                             }
-                            if (d.notify || done_pref.popup || done_pref.bell) && !d.quiet {
-                                finished_note = Some(d.notify);
+                            let alert = d.alert_of(default_alert);
+                            if d.group.is_some() || alert != Alert::Off || done_pref.bell {
+                                finished_note = Some(alert);
                             }
                             if d.extract {
                                 if let Some(g) = &d.group {
@@ -3622,9 +4210,9 @@ impl Engine {
                             }
                             // Say it stopped, and why (asked for by this one, or by Settings),
                             // unless it is old news (tried again by itself, stopped the same way).
-                            let wanted = d.notify || ((stopped_pref.popup || stopped_pref.bell) && !d.quiet);
-                            if wanted && stop_is_news(retried_from.as_ref(), &status) {
-                                stopped_note = Some((msg.clone(), d.notify));
+                            let alert = d.alert_of(default_alert);
+                            if (d.group.is_some() || stopped_wanted(alert, stopped_pref)) && stop_is_news(retried_from.as_ref(), &status) {
+                                stopped_note = Some((msg.clone(), alert));
                             }
                             if stop_is_news(retried_from.as_ref(), &status) && !d.private { crate::errorlog::note(crate::errorlog::Area::download(matches!(d.source, Source::Video { .. })), &msg); }
                             d.status = status;
@@ -3665,11 +4253,11 @@ impl Engine {
         }
         self.list_changed();
         self.schedule();
-        if let Some(force) = finished_note {
-            self.note_finished(&job.id, force);
+        if let Some(alert) = finished_note {
+            self.note_finished(&job.id, Some(alert));
         }
-        if let Some((msg, force)) = stopped_note {
-            self.note_stopped(&job.id, &msg, force);
+        if let Some((msg, alert)) = stopped_note {
+            self.note_stopped(&job.id, &msg, alert);
         }
         if let Some((group, dir)) = extract_group {
             self.extract_when_complete(&group, &dir);
@@ -3691,7 +4279,12 @@ impl Engine {
     async fn run(self: &Arc<Self>, job: &Arc<Job>) -> Result<(), Stop> {
         let Some(mut d) = self.find(&job.id) else { return Err(Stop::Cancelled) };
         if matches!(d.source, Source::Video { .. }) {
-            return self.run_video(job, d).await;
+            let vault = d.vault;
+            self.run_video(job, d).await?;
+            if vault {
+                self.seal_finished(job).await?;
+            }
+            return Ok(());
         }
         // Left unfinished by an older Pako ("name.zdpart"): continued under the new name.
         d.adopt_old_part();
@@ -3767,7 +4360,8 @@ impl Engine {
                     dd.spliced = false;
                 }
                 if checked.is_err() && !dd.private {
-                    crate::errorlog::note(crate::errorlog::Area::download(false), &note);
+                    // Without the file's name (the problems log never keeps names).
+                    crate::errorlog::note(crate::errorlog::Area::download(false), &found::spot_note("A file", &to, &from, &checked));
                 }
 
                 *job.host_note.lock().unwrap() = Some(note.clone());
@@ -3804,18 +4398,41 @@ impl Engine {
         }
 
         // 3. Open the unfinished file and lay out the parts.
-        let _ = std::fs::create_dir_all(&d.dest_dir);
         let part = d.part_path();
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&part)
-            .map_err(|e| Stop::Fail(Status::Failed, format!("Can't create the file: {e}")))?;
         let resumable = d.resumable && d.size.is_some();
         let mut segments = d.segments.clone();
-        let part_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let (file, part_len) = if d.vault {
+            // Private mode: the file is encrypted as it's written (see `vault`).
+            let v = crate::vault::get();
+            let reopened = if segments.is_empty() || !part.exists() { None } else { Some(v.reopen_file(&part)) };
+            match reopened {
+                Some(Ok(w)) => {
+                    w.set_size(if resumable { d.size } else { None });
+                    (Sink::Vault(w), d.size.unwrap_or(0))
+                }
+                // Its key isn't here (Private mode was locked since): never wiped for that.
+                Some(Err(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    return Err(Stop::Fail(Status::Failed, "Open Private mode, then Resume this download.".into()));
+                }
+                // New, or its pieces can't be read: a fresh private file.
+                _ => {
+                    segments.clear();
+                    let w = v.create_file(&part, None).map_err(|e| Stop::Fail(Status::Failed, format!("Can't create the file: {e}")))?;
+                    (Sink::Vault(w), 0)
+                }
+            }
+        } else {
+            let _ = std::fs::create_dir_all(&d.dest_dir);
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&part)
+                .map_err(|e| Stop::Fail(Status::Failed, format!("Can't create the file: {e}")))?;
+            let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            (Sink::Plain(file), len)
+        };
         let bad_layout = segments.is_empty()
             || (resumable && Some(part_len) != d.size)
             || (!resumable && segments.iter().any(|s| s.done > 0));
@@ -3842,9 +4459,16 @@ impl Engine {
             segments = initial_segments(d.size, resumable, if auto { AUTO_START } else { connections });
             // Sparse: parts start far into the file, and Windows would otherwise write zeros
             // over everything before each part first (minutes on a hard disk for a big file).
-            make_sparse(&file);
-            file.set_len(if resumable { d.size.unwrap_or(0) } else { 0 })
-                .map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+            match &file {
+                Sink::Plain(f) => {
+                    make_sparse(f);
+                    f.set_len(if resumable { d.size.unwrap_or(0) } else { 0 }).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+                }
+                Sink::Vault(w) => {
+                    make_sparse(w.file());
+                    w.lay_out(if resumable { d.size } else { None }).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+                }
+            }
             job.downloaded.store(0, Ordering::Relaxed);
         } else {
             job.downloaded.store(segments.iter().map(|s| s.done).sum(), Ordering::Relaxed);
@@ -3865,8 +4489,14 @@ impl Engine {
         // Unknown size: the final size is what we received. Cut any leftover bytes
         // (e.g. a restarted download that came out shorter).
         let total: u64 = job.slots.lock().unwrap().iter().map(|s| s.seg.done).sum();
-        file.set_len(total).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
-        file.sync_all().map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+        match &*file {
+            Sink::Plain(f) => {
+                f.set_len(total).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+                f.sync_all().map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+            }
+            // The last pieces, the end marked, the size noted.
+            Sink::Vault(w) => w.finish(total).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?,
+        }
         // Close the handle before renaming (Windows can't rename an open file).
         drop(file);
 
@@ -3876,7 +4506,8 @@ impl Engine {
                 *job.phase.lock().unwrap() = Phase::Verifying;
                 let path = part.clone();
                 let cancel = job.cancel.clone();
-                let actual = tokio::task::spawn_blocking(move || md5_file(&path, &cancel))
+                let vault = d.vault;
+                let actual = tokio::task::spawn_blocking(move || if vault { md5_vault(&path, &cancel) } else { md5_file(&path, &cancel) })
                     .await
                     .map_err(|_| Stop::Fail(Status::Failed, "Checksum check crashed".into()))?;
                 match actual {
@@ -3908,18 +4539,40 @@ impl Engine {
             }
         }
 
+        // In the vault: it stays where it is, under its own name in the private list.
+        if d.vault {
+            {
+                let mut inner = self.inner.lock().unwrap();
+                if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) {
+                    dd.size = Some(total);
+                    dd.downloaded = total;
+                }
+            }
+            crate::vault::get().forget_file(&part);
+            PENDING_DELETE.lock().unwrap().remove(&job.id);
+            return Ok(());
+        }
+
         // 5. Give it its real name. The new name is only recorded once the rename worked, so a
         // failed rename never leaves the list pointing at a part file that isn't there.
-        let final_name = {
+        let pick = || {
             let inner = self.inner.lock().unwrap();
             let taken = taken_paths(&inner.downloads, Some(&job.id));
             names::unique_final(&d.dest_dir, &d.name, &taken)
         };
-        let target = d.dest_dir.join(&final_name);
+        let mut final_name = pick();
+        let mut target = d.dest_dir.join(&final_name);
         let mut tries = 0;
         loop {
-            match std::fs::rename(&part, &target) {
+            match names::rename_new(&part, &target) {
                 Ok(()) => break,
+                // A file appeared under that name meanwhile: never written over, the next
+                // free name instead.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 8 => {
+                    tries += 1;
+                    final_name = pick();
+                    target = d.dest_dir.join(&final_name);
+                }
                 // Antivirus or the indexer often holds a just-closed file for a moment.
                 Err(_) if tries < 8 => {
                     tries += 1;
@@ -3941,7 +4594,7 @@ impl Engine {
                 dd.downloaded = total;
             }
         }
-        mark_from_internet(&target, &d.link);
+        mark_from_internet(&target, if d.private { "" } else { &d.link });
         PENDING_DELETE.lock().unwrap().remove(&job.id);
         Ok(())
     }
@@ -3954,7 +4607,7 @@ impl Engine {
         self: &Arc<Self>,
         job: &Arc<Job>,
         fetcher: Arc<Fetcher>,
-        file: Arc<File>,
+        file: Arc<Sink>,
         size: Option<u64>,
         resumable: bool,
         chunk: Option<u64>,
@@ -4127,6 +4780,11 @@ impl Engine {
                     break (info, page);
                 }
                 Err(FetchError::Retry(msg)) => {
+                    // A server name that can't be found while the internet works: the link is
+                    // wrong (or the site gone). Trying again forever changes nothing.
+                    if msg == crate::fetch::NAME_NOT_FOUND && self.net.online().await {
+                        return Err(Stop::Fail(Status::Failed, msg));
+                    }
                     match job.wait_before_retry(&self.net, attempt, &msg, 0).await {
                         None => return Err(Stop::Cancelled),
                         Some(true) => attempt = 0,
@@ -4364,7 +5022,7 @@ impl Job {
 struct Worker {
     job: Arc<Job>,
     fetcher: Arc<Fetcher>,
-    file: Arc<File>,
+    file: Arc<Sink>,
     limiter: Arc<Limiter>,
     net: Arc<Net>,
     abort: CancellationToken,
@@ -4551,7 +5209,7 @@ impl Worker {
                 slots[i].seg.done = 0;
                 self.job.downloaded.store(0, Ordering::Relaxed);
                 cur = 0;
-                let _ = self.file.set_len(0);
+                let _ = self.file.restart();
             }
 
             let mut stream = resp.bytes_stream();
@@ -4644,7 +5302,7 @@ impl Worker {
         let writable = if *cur >= end { 0 } else { (end - *cur).min(buf.len() as u64) as usize };
         if writable > 0 {
             // A slow disk (USB drive, busy hard disk) holds up this connection only.
-            off_async(|| write_all_at(&self.file, &buf[..writable], *cur)).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
+            off_async(|| self.file.write_all_at(&buf[..writable], *cur)).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
             // These bytes came from the host just before: a slow write (a big file on a USB
             // drive fills the gap before it with zeros first) isn't the host's silence.
             self.job.host_answered();
@@ -4694,6 +5352,38 @@ fn mirror_streams(job: &Job, subs: &[Arc<Job>]) {
     *job.retry_msg.lock().unwrap() = retry;
 }
 
+/// Where a download's bytes go: an ordinary unfinished file, or a private file in Private
+/// mode's vault (encrypted as it's written, see `vault::blocks`).
+pub(crate) enum Sink {
+    Plain(File),
+    Vault(crate::vault::blocks::Writer),
+}
+
+impl Sink {
+    fn write_all_at(&self, data: &[u8], offset: u64) -> std::io::Result<()> {
+        match self {
+            Sink::Plain(f) => write_all_at(f, data, offset),
+            Sink::Vault(w) => w.write_at(data, offset),
+        }
+    }
+
+    /// Everything written so far is on disk once this returns.
+    fn sync_data(&self) -> std::io::Result<()> {
+        match self {
+            Sink::Plain(f) => f.sync_data(),
+            Sink::Vault(w) => w.sync(),
+        }
+    }
+
+    /// Starts again from zero (a server that can't resume).
+    fn restart(&self) -> std::io::Result<()> {
+        match self {
+            Sink::Plain(f) => f.set_len(0),
+            Sink::Vault(w) => w.lay_out(None),
+        }
+    }
+}
+
 fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !data.is_empty() {
@@ -4726,6 +5416,68 @@ fn initial_segments(size: Option<u64>, resumable: bool, connections: u32) -> Vec
     }
 }
 
+/// Encrypts a finished readable file into the vault at `target` (works while locked). The
+/// readable file is left as it is. Returns the size.
+pub(crate) fn encrypt_into(v: &crate::vault::Vault, plain: &std::path::Path, target: &std::path::Path) -> std::io::Result<u64> {
+    use std::io::Read;
+    let len = std::fs::metadata(plain)?.len();
+    let w = v.create_file(target, Some(len))?;
+    let mut f = File::open(plain)?;
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut at = 0u64;
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        w.write_at(&buf[..n], at)?;
+        at += n as u64;
+    }
+    drop(f);
+    let done = w.finish(at);
+    drop(w);
+    v.forget_file(target);
+    buf.fill(0);
+    done?;
+    Ok(at)
+}
+
+/// Encrypts a finished readable file into the vault, then deletes the readable one (deleting
+/// can't promise the bytes are gone from an SSD: said in the guide). Returns its size, and what
+/// to tell you when the readable file couldn't be deleted.
+fn seal_file(plain: &std::path::Path, target: &std::path::Path) -> std::io::Result<(u64, Option<String>)> {
+    let at = encrypt_into(crate::vault::get(), plain, target)?;
+    for _ in 0..20 {
+        if crate::private_files::wipe(plain) {
+            return Ok((at, None));
+        }
+        // Antivirus or the indexer may hold a just-finished file for a moment.
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Ok((at, Some(format!("It's in Private mode, but Pako couldn't delete the readable copy at {}. Delete it yourself.", plain.display()))))
+}
+
+/// The MD5 of a private file Pako just finished writing (decrypted as it's read).
+fn md5_vault(path: &PathBuf, cancel: &CancellationToken) -> Option<std::io::Result<String>> {
+    let r = match crate::vault::get().reader_while_writing(path) {
+        Ok(r) => r,
+        Err(e) => return Some(Err(e)),
+    };
+    let mut hasher = Md5::new();
+    let blocks = r.len().div_ceil(crate::vault::blocks::BLOCK);
+    for i in 0..blocks {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        match r.block(i) {
+            Ok(b) => hasher.update(&b[..]),
+            Err(e) => return Some(Err(e)),
+        }
+    }
+    let digest = hasher.finalize();
+    Some(Ok(digest.iter().map(|b| format!("{b:02x}")).collect()))
+}
+
 fn md5_file(path: &PathBuf, cancel: &CancellationToken) -> Option<std::io::Result<String>> {
     use std::io::Read;
     let mut f = match File::open(path) {
@@ -4751,6 +5503,7 @@ fn md5_file(path: &PathBuf, cancel: &CancellationToken) -> Option<std::io::Resul
 /// Tags a finished file as "downloaded from the internet" (the Zone.Identifier stream every
 /// browser writes), so Windows SmartScreen and Office's Protected View still check it before
 /// it runs or opens. Silently skipped where the disk can't hold it (FAT32, exFAT).
+/// `link` "" for a private window's download: the mark, without the address it came from.
 fn mark_from_internet(path: &std::path::Path, link: &str) {
     let host = if link.starts_with("http://") || link.starts_with("https://") { link } else { "" };
     let text = format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={host}\r\n");
@@ -4833,10 +5586,12 @@ fn other_names(list: &[Download], dir: &std::path::Path, name: &str) -> Vec<Stri
     list.iter().filter(|d| d.dest_dir == dir && d.name != name).map(|d| d.name.clone()).collect()
 }
 
+/// Names other downloads hold: their finished files and their unfinished ones (so a new name
+/// never lands on another download's part file).
 fn taken_paths(list: &[Download], except: Option<&str>) -> HashSet<String> {
     list.iter()
         .filter(|d| Some(d.id.as_str()) != except)
-        .map(|d| names::path_key(&d.final_path()))
+        .flat_map(|d| [names::path_key(&d.final_path()), names::path_key(&d.part_path())])
         .collect()
 }
 
@@ -4910,8 +5665,18 @@ static FOLLOW_COMMANDS: std::sync::LazyLock<Mutex<HashMap<String, &'static str>>
 /// comes meanwhile never starts a second move.
 static MOVING: std::sync::LazyLock<Mutex<HashSet<String>>> = std::sync::LazyLock::new(Default::default);
 
+/// "Clear the private list" (Settings › Private mode): "never", "3h", "12h", "3d", or a
+/// number of hours ("36h", 1 to 8760).
+pub fn private_clear_after(choice: &str) -> Option<Duration> {
+    let hours: u64 = match choice {
+        "3d" => 72,
+        c => c.strip_suffix('h')?.parse().ok().filter(|h| (1..=8760).contains(h))?,
+    };
+    Some(Duration::from_secs(hours * 3600))
+}
+
 /// How long a finished private download stays in the list ("Done · private") before it leaves
-/// by itself, by Settings › Downloads › Advanced (`Settings::private_keep`): 10 minutes (also for
+/// by itself, by Settings › Downloads › From private windows (`Settings::private_keep`): 10 minutes (also for
 /// anything unknown), an hour, or None: until Pako closes (the list on disk never has it). It
 /// leaves at once when you open it from Pako or click its ✕.
 pub fn private_keep_for(choice: &str) -> Option<Duration> {
@@ -5022,10 +5787,11 @@ impl Engine {
         let complete = f.state == "complete";
         // Stopped by the browser (not by you): said like any stopped download, so a download
         // neither Pako nor the browser could get never goes unnoticed.
-        let mut stopped: Option<(String, bool)> = None;
+        let mut stopped: Option<(String, Alert)> = None;
         {
             let mut inner = self.inner.lock().unwrap();
             let stopped_pref = notices::pref(&inner.settings, "download-failed");
+            let default_alert = inner.settings.done_alert();
             let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id) else { return Reply::ok() };
             if d.status == Status::Completed {
                 // In place: the browser's list may forget it. Not moved (said in the row): the
@@ -5062,17 +5828,17 @@ impl Engine {
                         self.stats.lock().unwrap().finished(false);
                         numbers_event(d, None, false);
                     }
-                    let wanted = d.notify || ((stopped_pref.popup || stopped_pref.bell) && !d.quiet);
-                    if news && wanted && f.error != "USER_CANCELED" {
-                        stopped = Some((d.message.clone().unwrap_or_default(), d.notify));
+                    let alert = d.alert_of(default_alert);
+                    if news && (d.group.is_some() || stopped_wanted(alert, stopped_pref)) && f.error != "USER_CANCELED" {
+                        stopped = Some((d.message.clone().unwrap_or_default(), alert));
                     }
                 }
                 _ => {}
             }
             inner.dirty = true;
         }
-        if let Some((msg, force)) = stopped {
-            self.note_stopped(&id, &msg, force);
+        if let Some((msg, alert)) = stopped {
+            self.note_stopped(&id, &msg, alert);
         }
         if complete && MOVING.lock().unwrap().insert(id.clone()) {
             // Moved on its own (a big file between drives takes a while): the extension's next
@@ -5089,9 +5855,72 @@ impl Engine {
         Reply { ok: true, followed: Some(id), command, ..Default::default() }
     }
 
+    /// A private video finished (Private mode): its file, in the vault's own folder, is
+    /// encrypted into the vault and the readable one deleted.
+    async fn seal_finished(self: &Arc<Self>, job: &Arc<Job>) -> Result<(), Stop> {
+        let Some(d) = self.find(&job.id) else { return Err(Stop::Cancelled) };
+        let plain = d.dest_dir.join(&d.name);
+        let target = d.part_path();
+        *job.phase.lock().unwrap() = Phase::Verifying;
+        let sealed = tokio::task::spawn_blocking(move || seal_file(&plain, &target))
+            .await
+            .map_err(|_| Stop::Fail(Status::Failed, "Putting it in Private mode crashed".into()))?;
+        let (total, warn) = sealed.map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't put it in Private mode: {e}")))?;
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) {
+            dd.size = Some(total);
+            dd.downloaded = total;
+            dd.message = warn;
+        }
+        inner.dirty = true;
+        Ok(())
+    }
+
+    /// The browser finished a private download (Private mode): encrypted into the vault from
+    /// where the browser put it, then that readable file is deleted.
+    fn follow_done_vault(self: &Arc<Self>, id: &str, path: &str) {
+        let me = self.clone();
+        let id = id.to_string();
+        let from = crate::via::usable_file(path);
+        std::thread::spawn(move || {
+            let target = crate::vault::get().file_path(&id);
+            let sealed = match from {
+                Some(f) => seal_file(&f, &target).map_err(|e| format!("Couldn't put it in Private mode: {e}")),
+                None => Err("The browser finished it, but Pako couldn't find the file to put it in Private mode.".into()),
+            };
+            {
+                let mut inner = me.inner.lock().unwrap();
+                let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id) else { return };
+                match sealed {
+                    Ok((total, warn)) => {
+                        d.size = Some(total);
+                        d.downloaded = total;
+                        d.status = Status::Completed;
+                        d.message = warn;
+                    }
+                    Err(msg) => {
+                        d.status = Status::Failed;
+                        d.message = Some(msg);
+                    }
+                }
+                d.finished_at = Some(now_secs());
+                inner.done_any = true;
+                inner.dirty = true;
+                Self::save(&mut inner);
+            }
+            me.note_finished(&id, None);
+            Self::private_finished(&id);
+            me.list_changed();
+        });
+    }
+
     /// The browser finished: the file goes to the row's folder (see `via::place`), then the
     /// usual (notification, the Dashboard's numbers).
     fn follow_done(self: &Arc<Self>, id: &str, path: &str) {
+        if self.inner.lock().unwrap().downloads.iter().any(|d| d.id == id && d.vault) {
+            self.follow_done_vault(id, path);
+            return;
+        }
         let (dest, wanted, taken) = {
             let inner = self.inner.lock().unwrap();
             let Some(d) = inner.downloads.iter().find(|d| d.id == id) else { return };
@@ -5112,6 +5941,7 @@ impl Engine {
         {
             let mut inner = self.inner.lock().unwrap();
             let done_pref = notices::pref(&inner.settings, "download-done");
+            let default_alert = inner.settings.done_alert();
             let speed = inner.speeds.get(id).cloned();
             let Some(d) = inner.downloads.iter_mut().find(|d| d.id == id) else { return };
             let file = match &placed {
@@ -5136,15 +5966,16 @@ impl Engine {
                 self.stats.lock().unwrap().finished(true);
                 numbers_event(d, speed.as_ref(), true);
             }
-            if (d.notify || done_pref.popup || done_pref.bell) && !d.quiet {
-                finished_note = Some(d.notify);
+            let alert = d.alert_of(default_alert);
+            if d.group.is_some() || alert != Alert::Off || done_pref.bell {
+                finished_note = Some(alert);
             }
             inner.done_any = true;
             inner.dirty = true;
             Self::save(&mut inner);
         }
-        if let Some(force) = finished_note {
-            self.note_finished(id, force);
+        if let Some(alert) = finished_note {
+            self.note_finished(id, Some(alert));
         }
         if private {
             Self::private_finished(id);
@@ -5169,7 +6000,7 @@ impl Engine {
             inner
                 .downloads
                 .iter()
-                .filter(|d| d.private && d.status == Status::Completed)
+                .filter(|d| d.private && !d.vault && d.status == Status::Completed)
                 .filter(|d| d.finished_at.is_some_and(|t| now.saturating_sub(t) >= keep.as_secs()))
                 .map(|d| d.id.clone())
                 .collect()
@@ -5179,17 +6010,173 @@ impl Engine {
         }
     }
 
+    /// "Clear the private list" (Private mode): once a minute, private files finished longer ago
+    /// than the setting are deleted with their rows, open or locked.
+    fn clear_private_list(&self) {
+        static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+        {
+            let mut last = LAST.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        let Some(age) = private_clear_after(&self.settings().private_clear_after) else { return };
+        let v = crate::vault::get();
+        if !v.is_on() {
+            return;
+        }
+        let gone = v.clear_finished_before(std::time::SystemTime::now() - age);
+        if gone.is_empty() {
+            return;
+        }
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let mut seen = VAULT_ROWS.lock().unwrap();
+            for id in &gone {
+                seen.remove(id);
+            }
+            inner.downloads.retain(|d| !(d.vault && gone.contains(&d.id)));
+        }
+        self.list_changed();
+    }
+
     /// Takes a finished private download off the list now (opened, or its time is up).
     pub fn forget_private(&self, id: &str) {
         let mut inner = self.inner.lock().unwrap();
         let before = inner.downloads.len();
-        inner.downloads.retain(|d| !(d.id == id && d.private && d.status == Status::Completed));
+        inner.downloads.retain(|d| !(d.id == id && d.private && !d.vault && d.status == Status::Completed));
         if inner.downloads.len() != before {
             inner.speeds.remove(id);
             inner.dirty = true;
             drop(inner);
             self.list_changed();
         }
+    }
+}
+
+/// The private list's rows as last sealed (a short hash of each), so only changed ones are
+/// written again. A row that leaves the list (removed, cleared) takes its file with it; rows
+/// put away when Private mode locks are taken out of here first, so they stay.
+static VAULT_ROWS: std::sync::LazyLock<Mutex<HashMap<String, [u8; 8]>>> = std::sync::LazyLock::new(Default::default);
+
+fn row_hash(json: &[u8]) -> [u8; 8] {
+    blake3::hash(json).as_bytes()[..8].try_into().unwrap()
+}
+
+/// Seals the private list's changed rows (works while locked: see `vault`). Only works out what
+/// changed here (under the list's lock); the sealing and wiping (disk writes, each one flushed)
+/// happen on their own thread, in order (`VAULT_WRITES`), so the window never waits on them.
+fn seal_vault_rows(inner: &Inner) {
+    let mut seen = VAULT_ROWS.lock().unwrap();
+    let mut here: HashSet<&str> = HashSet::new();
+    let mut ops = Vec::new();
+    for d in inner.downloads.iter().filter(|d| d.vault) {
+        here.insert(&d.id);
+        let mut row = d.clone();
+        if let Some(segs) = inner.jobs.get(&d.id).and_then(|j| j.flushed.lock().unwrap().clone()) {
+            row.downloaded = segs.iter().map(|s| s.done).sum();
+            row.segments = segs;
+        }
+        let Ok(json) = serde_json::to_vec(&row) else { continue };
+        let h = row_hash(&json);
+        if seen.get(&d.id) != Some(&h) {
+            // Noted now; a seal that fails takes its note back (the next save tries again).
+            seen.insert(d.id.clone(), h);
+            ops.push(VaultOp::Put(d.id.clone(), json));
+        }
+    }
+    let gone: Vec<String> = seen.keys().filter(|k| !here.contains(k.as_str())).cloned().collect();
+    for id in gone {
+        seen.remove(&id);
+        ops.push(VaultOp::Gone(id));
+    }
+    drop(seen);
+    vault_writes(ops);
+}
+
+/// A change to the private list on disk, made off the list's lock (`seal_vault_rows`).
+enum VaultOp {
+    /// A row sealed again (its id, the row as JSON).
+    Put(String, Vec<u8>),
+    /// A row gone: its record, its encrypted file and its waiting folder.
+    Gone(String),
+}
+
+/// The private list's disk work, in the order it was asked: (waiting, one being done).
+static VAULT_WRITES: std::sync::LazyLock<(Mutex<(std::collections::VecDeque<VaultOp>, bool)>, std::sync::Condvar)> =
+    std::sync::LazyLock::new(Default::default);
+
+fn vault_op(op: VaultOp) {
+    let v = crate::vault::get();
+    match op {
+        VaultOp::Put(id, json) => {
+            if v.put_record(&id, &json).is_err() {
+                VAULT_ROWS.lock().unwrap().remove(&id);
+            }
+        }
+        VaultOp::Gone(id) => {
+            v.remove_record(&id);
+            crate::vault::blocks::remove(&v.file_path(&id));
+            crate::private_files::wipe_dir(&v.incoming_dir().join(&id));
+        }
+    }
+}
+
+fn vault_writes(ops: Vec<VaultOp>) {
+    if ops.is_empty() {
+        return;
+    }
+    static THREAD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let started = *THREAD.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("pako-private-list".into())
+            .spawn(|| {
+                let (q, cv) = &*VAULT_WRITES;
+                loop {
+                    let op = {
+                        let mut st = q.lock().unwrap_or_else(|e| e.into_inner());
+                        loop {
+                            if let Some(op) = st.0.pop_front() {
+                                st.1 = true;
+                                break op;
+                            }
+                            st.1 = false;
+                            cv.notify_all();
+                            st = cv.wait(st).unwrap_or_else(|e| e.into_inner());
+                        }
+                    };
+                    vault_op(op);
+                    let mut st = q.lock().unwrap_or_else(|e| e.into_inner());
+                    st.1 = false;
+                    drop(st);
+                    cv.notify_all();
+                }
+            })
+            .is_ok()
+    });
+    if !started {
+        // No thread: done here, as before.
+        ops.into_iter().for_each(vault_op);
+        return;
+    }
+    let (q, cv) = &*VAULT_WRITES;
+    q.lock().unwrap_or_else(|e| e.into_inner()).0.extend(ops);
+    cv.notify_all();
+}
+
+/// Waits (at most `limit`) until the private list's disk work asked so far is done: before its
+/// records are read again, before one is removed directly, before Pako closes.
+fn vault_flush(limit: Duration) {
+    let (q, cv) = &*VAULT_WRITES;
+    let until = Instant::now() + limit;
+    let mut st = q.lock().unwrap_or_else(|e| e.into_inner());
+    while !st.0.is_empty() || st.1 {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        st = cv.wait_timeout(st, left).unwrap_or_else(|e| e.into_inner()).0;
     }
 }
 
@@ -5206,7 +6193,7 @@ static PRIVATE_PARTS: std::sync::LazyLock<Mutex<Vec<PathBuf>>> = std::sync::Lazy
 /// middle deletes them at its next start. No private download unfinished: no file at all.
 fn note_private_parts(file: &PathBuf, downloads: &[Download]) {
     let parts: Vec<PathBuf> =
-        downloads.iter().filter(|d| d.private && d.via_browser.is_none() && d.status != Status::Completed).map(|d| d.part_path()).collect();
+        downloads.iter().filter(|d| d.private && !d.vault && d.via_browser.is_none() && d.status != Status::Completed).map(|d| d.part_path()).collect();
     let mut last = PRIVATE_PARTS.lock().unwrap();
     if *last == parts {
         return;
@@ -5242,12 +6229,158 @@ fn drive_route(url: &str, private: bool) -> bool {
 
 /// Why a file the browser downloaded for Pako stayed as it is: already in your folder (only
 /// its name couldn't be changed), or still in the browser's folder (it couldn't be moved).
+/// A private file's name for a send: its folder's path first ("Trip/Maps/Route.gpx").
+fn private_send_name(d: &Download) -> String {
+    match d.vault_folder.as_deref() {
+        Some(f) => format!("{}/{}", f.replace('\\', "/"), d.name),
+        None => d.name.clone(),
+    }
+}
+
+/// A split set that needs its password: what its first part says (the window offers to type
+/// it there).
+pub const NEEDS_PASSWORD: &str = "Needs its password to extract";
+/// `extract_now`'s answers the window turns into the password question.
+pub const PASSWORD_NEEDED: &str = "password-needed";
+pub const PASSWORD_WRONG: &str = "password-wrong";
+
+/// How extracting went.
+#[derive(Debug, PartialEq)]
+pub enum Extract {
+    NeedsPassword,
+    WrongPassword,
+    Failed(String),
+}
+
+/// An archive Pako can extract: .zip, .7z or .rar (or a split archive's first part, ".001").
+pub fn is_archive(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    [".zip", ".7z", ".rar", ".001"].iter().any(|e| n.ends_with(e))
+}
+
+/// `name` in `dir`, or "name (2)"… when that folder already exists.
+fn free_dir(dir: &std::path::Path, name: &str) -> PathBuf {
+    let mut at = dir.join(name);
+    let mut n = 2;
+    while at.exists() && n < 1000 {
+        at = dir.join(format!("{name} ({n})"));
+        n += 1;
+    }
+    at
+}
+
+/// Runs 7-Zip on `args`, giving it `password` when it asks (on its input, never on its command
+/// line, so other programs can't read it); with none, a question for one ends it at once.
+fn seven_zip(exe: &std::path::Path, args: &[std::ffi::OsString], password: Option<&str>) -> Result<std::process::Output, String> {
+    use std::io::Write;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    crate::components::in_own_folder(&mut cmd, exe);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // no console window
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("Couldn't start 7-Zip: {e}"))?;
+    if let Some(mut input) = child.stdin.take() {
+        if let Some(p) = password {
+            let typed = zeroize::Zeroizing::new(format!("{p}\n"));
+            let _ = input.write_all(typed.as_bytes());
+        }
+        drop(input);
+    }
+    child.wait_with_output().map_err(|e| format!("Couldn't run 7-Zip: {e}"))
+}
+
+/// Whether 7-Zip's answer means a password is missing or wrong.
+fn password_trouble(o: &std::process::Output) -> bool {
+    // Its error output only: a listing on its normal output may hold a file named "wrong password".
+    let err = String::from_utf8_lossy(&o.stderr).to_ascii_lowercase();
+    err.contains("wrong password") || err.contains("break signaled") || err.contains("encrypted archive")
+}
+
+/// Extracts `archive` into `out` with 7-Zip. An archive with a password: none given, nothing is
+/// written (`NeedsPassword`); a wrong one is found by a test run first, so no broken files are
+/// left behind (`WrongPassword`). -snz: extracted files keep the "downloaded from the internet"
+/// mark. -aou: a file of the same name already in the folder is never written over (the
+/// extracted one gets a new name, "readme_1.txt").
+pub fn extract_archive(archive: &std::path::Path, out: &std::path::Path, password: Option<&str>) -> Result<(), Extract> {
+    let exe = crate::components::seven_zip().ok_or_else(|| Extract::Failed("Extracting needs 7-Zip: install it in Settings › Features & updates.".into()))?;
+    extract_with(&exe, archive, out, password)
+}
+
+fn extract_with(exe: &std::path::Path, archive: &std::path::Path, out: &std::path::Path, password: Option<&str>) -> Result<(), Extract> {
+    let os = |s: &str| std::ffi::OsString::from(s);
+    // Locked? A listing says (and asks for a password when even the names are hidden).
+    let list = seven_zip(exe, &[os("l"), os("-slt"), os("-sccUTF-8"), archive.as_os_str().to_owned()], None).map_err(Extract::Failed)?;
+    let listed = String::from_utf8_lossy(&list.stdout);
+    let locked = password_trouble(&list) || listed.lines().any(|l| l.trim() == "Encrypted = +");
+    let password = password.filter(|p| !p.is_empty());
+    if locked {
+        let Some(p) = password else { return Err(Extract::NeedsPassword) };
+        let test = seven_zip(exe, &[os("t"), os("-sccUTF-8"), archive.as_os_str().to_owned()], Some(p)).map_err(Extract::Failed)?;
+        if !test.status.success() {
+            return Err(if password_trouble(&test) { Extract::WrongPassword } else { Extract::Failed(seven_line(&test)) });
+        }
+    } else if !list.status.success() {
+        return Err(Extract::Failed(seven_line(&list)));
+    }
+    let _ = std::fs::create_dir_all(out);
+    let mut args = vec![os("x"), os("-y"), os("-aou"), os("-snz"), os("-sccUTF-8")];
+    args.push(std::ffi::OsString::from(format!("-o{}", out.display())));
+    args.push(archive.as_os_str().to_owned());
+    let o = seven_zip(exe, &args, if locked { password } else { None }).map_err(Extract::Failed)?;
+    if o.status.success() {
+        Ok(())
+    } else if password_trouble(&o) {
+        Err(if locked { Extract::WrongPassword } else { Extract::NeedsPassword })
+    } else {
+        Err(Extract::Failed(seven_line(&o)))
+    }
+}
+
+/// 7-Zip's first error line, plainly.
+fn seven_line(o: &std::process::Output) -> String {
+    let err = String::from_utf8_lossy(&o.stderr);
+    let line = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("7-Zip stopped with an error");
+    format!("Couldn't extract: {line}")
+}
+
 fn via_not_placed(from: &std::path::Path, dest: &std::path::Path, e: &str) -> String {
     let name = from.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     match from.parent() {
         Some(dir) if crate::via::same_folder(dir, dest) => format!("Pako couldn't give it its name ({e}): it's in your folder as {name}."),
         dir => format!("Pako couldn't move it to your folder ({e}), so it's still in {}.", dir.map(|p| p.display().to_string()).unwrap_or_default()),
     }
+}
+
+/// A private download goes into Private mode's vault when Private mode is on. Pako's own
+/// downloads are encrypted as they're written; the ones another program writes (a video's
+/// pieces, a file the browser downloads) wait in the vault's own folder, open only to this
+/// Windows user, and are encrypted the moment they're done (see `seal_finished`).
+fn to_vault(d: &mut Download) {
+    let v = crate::vault::get();
+    if d.private && !d.vault && v.is_on() {
+        d.vault = true;
+        d.extract = false;
+        d.vault_folder = vault_folder_of(d);
+        let _ = v.make_incoming();
+        d.dest_dir = v.incoming_dir().join(&d.id);
+        let _ = std::fs::create_dir_all(&d.dest_dir);
+    }
+}
+
+/// A folder download's file: its place inside that folder, the folder's own name first
+/// ("Holiday\day 2"), as the list groups it (the folder named `group` in its path).
+fn vault_folder_of(d: &Download) -> Option<String> {
+    let group = d.group.as_deref().filter(|g| !g.is_empty())?;
+    let dir = d.dest_dir.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+    let parts: Vec<&str> = dir.split(['\\', '/']).collect();
+    let at = parts.iter().rposition(|p| p.eq_ignore_ascii_case(group));
+    Some(match at {
+        Some(i) => parts[i..].join("\\"),
+        None => group.to_string(),
+    })
 }
 
 pub(crate) fn new_download(link: &str, source: Source, name: String, dest_dir: PathBuf, group: Option<String>) -> Download {
@@ -5272,6 +6405,7 @@ pub(crate) fn new_download(link: &str, source: Source, name: String, dest_dir: P
         force: false,
         priority: Priority::Normal,
         notify: false,
+        alert: None,
         extract: false,
         validator: None,
         ask: false,
@@ -5284,6 +6418,8 @@ pub(crate) fn new_download(link: &str, source: Source, name: String, dest_dir: P
         via_browser: None,
         named: false,
         private: false,
+        vault: false,
+        vault_folder: None,
     }
 }
 
@@ -5360,9 +6496,50 @@ pub fn extract_links(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_done_now, ask_name, browser_name, busy, clock_jumped, extract_links, first_needs_override, move_video_pieces, new_download, recheck_server,
-        stop_is_news, transfers_running, web_page_instead, Inner, WhenDone, UPLOADS_RUNNING,
+        all_done_now, ask_name, browser_name, busy, clock_jumped, extract_links, first_needs_override, move_video_pieces, new_download, note_pop, recheck_server,
+        stop_is_news, stopped_wanted, transfers_running, web_page_instead, Inner, WhenDone, UPLOADS_RUNNING,
     };
+    use crate::model::{Alert, Download};
+    use crate::notices::{Pop, Pref};
+
+    /// A folder whose split set is all downloaded and set to extract: its notice waits for the
+    /// extraction (one card, one chime for the set).
+    #[test]
+    fn a_set_to_extract_says_it_once_extracted() {
+        let part = |name: &str, done: bool, extract: bool| {
+            let link = format!("https://x/{name}");
+            let mut d = new_download(&link, Source::Http { url: link.clone() }, name.into(), PathBuf::from("C:/x"), Some("g".into()));
+            d.status = if done { Status::Completed } else { Status::Downloading };
+            d.extract = extract;
+            d
+        };
+        let set = [part("a.part1.rar", true, true), part("a.part2.rar", true, true), part("readme.txt", true, false)];
+        assert!(super::set_will_extract(&set.iter().collect::<Vec<&Download>>()));
+        let unfinished = [part("a.part1.rar", true, true), part("a.part2.rar", false, true)];
+        assert!(!super::set_will_extract(&unfinished.iter().collect::<Vec<&Download>>()));
+        let not_extracting = [part("a.part1.rar", true, false), part("a.part2.rar", true, false)];
+        assert!(!super::set_will_extract(&not_extracting.iter().collect::<Vec<&Download>>()));
+    }
+
+    /// Off · Pop-up · Important, finished: bell only / the corner card whatever Settings say /
+    /// the big card. Stopped: Download failed's switches, except Important (always a pop-up)
+    /// and Off (nothing).
+    #[test]
+    fn each_level_says_it_its_way() {
+        assert_eq!(note_pop(false, Alert::Off), Pop::Skip);
+        assert_eq!(note_pop(false, Alert::Pop), Pop::Force);
+        assert_eq!(note_pop(false, Alert::Important), Pop::Important);
+        assert_eq!(note_pop(true, Alert::Pop), Pop::Pref);
+        assert_eq!(note_pop(true, Alert::Off), Pop::Pref);
+        assert_eq!(note_pop(true, Alert::Important), Pop::Force);
+        let none = Pref { popup: false, bell: false };
+        let bell = Pref { popup: false, bell: true };
+        assert!(stopped_wanted(Alert::Important, none));
+        assert!(stopped_wanted(Alert::Off, Pref { popup: true, bell: false }), "Off: a stop is still said");
+        assert!(!stopped_wanted(Alert::Off, none));
+        assert!(!stopped_wanted(Alert::Pop, none));
+        assert!(stopped_wanted(Alert::Pop, bell));
+    }
     use crate::model::{Settings, Source, Status};
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
@@ -5476,6 +6653,9 @@ mod tests {
         assert!(super::here_only(&d(video(false, Some(PathBuf::from(r"C:\t\rec-1"))))));
         assert!(!super::here_only(&d(video(false, None))));
         assert!(!super::here_only(&d(Source::Http { url: "https://a.example/f.zip".into() })));
+        let mut private = d(Source::Http { url: "https://a.example/f.zip".into() });
+        private.private = true;
+        assert!(super::here_only(&private), "a private window's download stays on this PC");
     }
 
     #[test]
@@ -5501,6 +6681,73 @@ mod tests {
         assert!(clock_jumped((i, w), (i + s(3600), w + s(3600))));
         // The clock put back.
         assert!(clock_jumped((i, w), (i + s(1), w - s(60))));
+    }
+
+    /// A private folder download's file keeps its place inside the folder, the folder first.
+    #[test]
+    fn private_files_keep_their_folder() {
+        let mut d = new_download("https://x/y", Source::Http { url: "https://x/y".into() }, "b.jpg".into(), PathBuf::from(r"C:\Users\me\Downloads\Holiday\day 2"), Some("Holiday".into()));
+        assert_eq!(super::vault_folder_of(&d).as_deref(), Some(r"Holiday\day 2"));
+        d.dest_dir = PathBuf::from(r"C:\Users\me\Downloads\Set");
+        d.group = Some("Set".into());
+        assert_eq!(super::vault_folder_of(&d).as_deref(), Some("Set"));
+        d.group = None;
+        assert_eq!(super::vault_folder_of(&d), None);
+    }
+
+    /// With 7-Zip on this PC (Pako's own copy): an archive with a password extracts only with
+    /// the right one; without one or with a wrong one nothing is written; a plain archive
+    /// extracts as before.
+    #[test]
+    fn archives_with_a_password() {
+        let Some(seven) = std::env::var_os("LOCALAPPDATA")
+            .map(|d| PathBuf::from(d).join("Pako").join("components").join("7zip").join("7z.exe"))
+            .filter(|p| p.is_file())
+        else {
+            return;
+        };
+        let d = std::env::temp_dir().join(format!("pako-pw-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::write(d.join("src").join("note.txt"), b"hello there").unwrap();
+        let make = |name: &str, extra: &[&str]| {
+            let mut c = std::process::Command::new(&seven);
+            c.arg("a").args(extra).arg(d.join(name)).arg(d.join("src").join("note.txt")).stdout(std::process::Stdio::null());
+            assert!(c.status().unwrap().success());
+            d.join(name)
+        };
+        let names_hidden = make("hidden.7z", &["-t7z", "-mhe=on", "-ppass word 9"]);
+        let data_only = make("data.zip", &["-tzip", "-ppass word 9"]);
+        let plain = make("plain.7z", &["-t7z"]);
+        for (n, a) in [("hidden", &names_hidden), ("data", &data_only)] {
+            let out = d.join(format!("out-{n}"));
+            assert_eq!(super::extract_with(&seven, a, &out, None), Err(super::Extract::NeedsPassword), "{n}");
+            assert_eq!(super::extract_with(&seven, a, &out, Some("nope")), Err(super::Extract::WrongPassword), "{n}");
+            assert!(!out.join("note.txt").exists(), "{n}: nothing written without the right password");
+            assert_eq!(super::extract_with(&seven, a, &out, Some("pass word 9")), Ok(()), "{n}");
+            assert_eq!(std::fs::read(out.join("note.txt")).unwrap(), b"hello there", "{n}");
+        }
+        // A password that isn't plain English letters (typed on its input as UTF-8).
+        let accented = make("accent.7z", &["-t7z", "-mhe=on", "-sccUTF-8", "-pMot de passé ü"]);
+        let out = d.join("out-accent");
+        assert_eq!(super::extract_with(&seven, &accented, &out, Some("nope")), Err(super::Extract::WrongPassword));
+        assert_eq!(super::extract_with(&seven, &accented, &out, Some("Mot de passé ü")), Ok(()));
+        assert_eq!(std::fs::read(out.join("note.txt")).unwrap(), b"hello there");
+        let out = d.join("out-plain");
+        assert_eq!(super::extract_with(&seven, &plain, &out, None), Ok(()));
+        assert!(out.join("note.txt").exists());
+        assert!(super::is_archive("x.7z") && super::is_archive("Y.ZIP") && super::is_archive("a.7z.001") && !super::is_archive("a.txt"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn private_list_clear_choices() {
+        assert_eq!(super::private_clear_after("never"), None);
+        assert_eq!(super::private_clear_after("3h"), Some(Duration::from_secs(3 * 3600)));
+        assert_eq!(super::private_clear_after("12h"), Some(Duration::from_secs(12 * 3600)));
+        assert_eq!(super::private_clear_after("3d"), Some(Duration::from_secs(72 * 3600)));
+        assert_eq!(super::private_clear_after("36h"), Some(Duration::from_secs(36 * 3600)));
+        assert_eq!(super::private_clear_after("0h"), None);
+        assert_eq!(super::private_clear_after("junk"), None);
     }
 
     #[test]
@@ -5535,6 +6782,16 @@ mod tests {
         assert!(with_upload);
         // A Direct transfer (or any registered one) counts too.
         assert!(busy(&inner, true));
+        // A download the browser is downloading for Pako (Via browser) keeps it waiting too: the
+        // PC must not sleep or shut down under it.
+        let mut inner = inner;
+        let mut d = new_download("https://example.com/a.zip", Source::Http { url: "https://example.com/a.zip".into() }, "a.zip".into(), std::env::temp_dir(), None);
+        d.via_browser = Some(crate::model::ViaBrowser::default());
+        d.status = Status::Downloading;
+        inner.downloads.push(d);
+        assert!(busy(&inner, false));
+        inner.downloads[0].status = Status::Completed;
+        assert!(!busy(&inner, false));
     }
 
     #[test]

@@ -16,7 +16,9 @@ Share big files with a link. Pako uploads them to Gofile or to your own Google D
 
 Add more with **Add files** and **Add folder**, take one out with its **×**, or empty the box with **Clear**. An item that can't be read says why under its name: remove it to upload the rest.
 
-When the upload finishes, Pako copies the link for you: paste it to anyone.
+Files in [Private mode](private-mode.md#send-private-files) are uploaded from there: **Upload…** in the private list opens a window with the same choices as **New upload**, and you stay in Private mode while they go up (leaving it stops the upload). Pako reads them decrypted as they go up. Every way works: as they are, one ZIP, **ZIP in parts** (each part is made only when its turn comes and deleted the moment it's up, so one part at a time is briefly on this PC, in a folder only your Windows account can open), or protected with a password.
+
+When the upload finishes, Pako copies the link for you: paste it to anyone. It also plays a short sound (turn it off in **Settings › Notifications**: **Play a sound when files are sent**).
 
 ## Where it goes: Upload to
 
@@ -63,6 +65,15 @@ Each part uploads on its own: if the connection drops, only the part in progress
 - With Pako, from a Google Drive link: paste the link in **Links**. Pako downloads all the parts into one folder and, with **Extract split archives** on (or **Extract when all parts are done** in the set's details), puts the ZIP back together and unpacks it.
 - From a Gofile link: download every part from Gofile's page, then open the first one with 7-Zip.
 
+## Protect with a password
+
+Turn on **Protect with a password** in the basket and type a password twice (at least 8 characters). What you picked is then locked on your PC before it leaves: it goes up as one 7-Zip archive (`Photos.7z`), encrypted with that password (AES-256), file names included. **ZIP in parts** makes it in parts (`Photos.7z.001`, `.002`…); **Compressed ZIP** compresses it. It always goes into a folder with one link.
+
+- It needs 7-Zip: install **Extract split archives** (it brings 7-Zip) in **Settings › Features & updates › What Pako can do** (the basket says so).
+- Pako makes the archive in its own data folder first (**Locking it with your password**), so it needs about as much free space there as what you picked. It's deleted once everything is up.
+- Pako never keeps the password, not even for **Try again**: if the upload has to start over, Pako asks you to type it twice again, then **Upload again**. Tell people the password yourself, not in the same message as the link.
+- **For the people downloading**: they open it with 7-Zip (free), or with Pako (right-click it in **Downloads**, then **Extract…**), and type the password. Without it, they can't see what's inside, not even the names.
+
 ## While it uploads
 
 Uploads in progress show under **Uploading**, with how far they are, the speed and the time left. **Cancel** stops one: what already went up is deleted too. After a **Try again**, **Cancel** keeps what was already up, and it stays on the list as **Not all uploaded**.
@@ -78,6 +89,8 @@ Everything you uploaded is listed under **Uploaded**, newest first:
 - **Name**, how many files, the size and the date, and **ZIP in 7 parts** (for example) for a ZIP in parts.
 - **Uploaded to**: **Gofile** or **Google Drive**, and when it deletes itself (**Deletes in 3 days**, **Deletes tomorrow**, **Kept**…). Next to **Gofile**: how often people downloaded it (**Not downloaded yet**, **Downloaded once**, **Downloaded 4 times**). Only Gofile shares this; Google Drive doesn't, so Drive uploads show none. Gofile counts downloads, not who downloaded. For a ZIP in parts it counts whole downloads (someone who takes all the parts counts once). In a narrow window the count is in the upload's details.
 - **Link**: click it to open the download page. **Copy link** copies it.
+
+**Uploaded to** and **Link** can be made wider or narrower, or hidden by right-clicking the column titles (see [Downloading](downloading.md#follow-your-downloads)). In a narrow window the link steps aside first.
 
 The counts are checked when you open **Upload**, at most every few minutes. The round arrow next to **Uploaded** checks again.
 
@@ -103,12 +116,13 @@ Right-click it, or click the arrow at the end of its row, for:
 Select an upload and press **Ctrl+I** (or double-click it) to see its details on the right:
 
 - **Size**, **Files** and **Downloads**.
-- **Link**: the link as a QR code (point a phone's camera at it to open the link), and **Copy link**. The code is made on your PC.
-- **Delete after**: when it deletes itself and who does it, with **Keep 7 more days**, **Keep** or **Delete in 7 days**, and **Delete now**.
+- **Link**: the link as a QR code (point a phone's camera at it to open the link). The code is made on your PC.
+- **Delete after**: when it deletes itself and who does it, with **Keep 7 more days**, **Keep** or **Delete in 7 days**.
 - **Files inside**: the files in it, with their sizes.
 - **How it went**: when it was uploaded, how long it **Took**, the **Average speed** and **Top speed**, how it was **Uploaded as** (**As they are**, **One ZIP**, **Compressed ZIP**, **ZIP in 7 parts**, or **As it is** for a single file), and where (**Uploaded to**).
 - **Downloads by others** (Gofile): a small chart of the downloads over time, and roughly when the last one was.
 - **Note**: who it's for, what's inside. Only on this PC.
+- At the bottom: **Copy link**, **Open page** (the download page in your browser) and **Delete now…**.
 
 ## Your Google Drive
 

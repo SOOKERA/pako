@@ -612,3 +612,34 @@ test("A Chromium browser that also names its API `browser` (Vivaldi 8.3, Chromiu
   await settle(40);
   assert.equal(ext.log[0], "full pause");
 });
+
+test("A page pushing files through hidden frames: only the first goes to Pako; the tab isn't caught for a while, and the \"!\" says so", async () => {
+  const pako = newPako();
+  const ext = await vivaldi({}, pako);
+  const frameFile = (n) => ({ url: `https://files.example.com/push/${n}.zip`, type: "sub_frame", responseHeaders: ATTACHMENT.map((h) => (h.name === "Content-Disposition" ? { ...h, value: `attachment; filename="f${n}.zip"` } : h)) });
+  assert.equal(await browse(ext, frameFile(1)), "caught");
+  await settle(40);
+  assert.equal(pako.said.filter((s) => s === "download+hold").length, 1);
+  // The next frames in the same tab, at once: none handed to Pako.
+  assert.equal(await browse(ext, frameFile(2)), "caught");
+  await settle(60);
+  assert.equal(pako.said.filter((s) => s === "download+hold").length, 1, "only the first frame's file");
+  assert.match(ext.storage.lastError ?? "", /several downloads at once/);
+  // The tab is left out of the catch for a while, so the browser asks as usual.
+  assert.ok(ext.rules.get(1).condition.excludedTabIds.includes(TAB), "this tab isn't caught now");
+  assert.ok(ext.rules.get(1).condition.excludedTabIds.includes(PRIV), "nor the private window's");
+});
+
+test("The same file again after Pako didn't take it: handed again, and the sent page never says it went to Pako", async () => {
+  const pako = newPako({ result: { ok: false, error: "Pako couldn't get it" } });
+  const ext = await vivaldi({}, pako);
+  assert.equal(await browse(ext, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+  await sentPage(ext);
+  await settle(60);
+  assert.equal(pako.said.filter((s) => s === "download+hold").length, 1);
+  assert.equal(await browse(ext, { url: FILE, responseHeaders: ATTACHMENT }), "caught");
+  const said = await sentPage(ext);
+  assert.notEqual(said.said, "This download went to Pako. Use Back to return to your page.");
+  await settle(60);
+  assert.equal(pako.said.filter((s) => s === "download+hold").length, 2, "handed again");
+});

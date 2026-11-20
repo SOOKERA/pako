@@ -1,5 +1,52 @@
 # What's new
 
+## 1.3.0
+
+### Pako Setup
+
+- A new Pako Setup window, light or dark like Windows, showing what Pako does beside every choice; updating and uninstalling match it.
+
+### Private mode
+
+- **Private mode** keeps downloads from private windows, and links sent with **Download privately**, encrypted on your PC behind a PIN or password. Open it from **Private** in Downloads or **Ctrl+Shift+P**.
+- Play, open, **Decrypt…** or send its files without a readable copy. **Normal list** and **Lock** sit in its header; leaving any other way locks it.
+
+### Downloads
+
+- Each download says it's done your way: **Off**, **Pop-up** or **Important** (a big pop-up in the middle of the screen), on its row's bell. **Pop-up** with a chime is the new default, unless you had that pop-up off.
+- **Extract…** a finished archive, with its password if it has one; a split archive tells you once, when extracted.
+- The tray window shows a video's quality.
+
+### Lists and panels
+
+- Columns can be resized and hidden in every list, and every other row has a soft shade.
+- Drag a details panel's left edge to resize it. Pako remembers both for each page.
+
+### Upload
+
+- **Protect with a password** locks an upload before it leaves your PC, file names included.
+
+### Direct and My devices
+
+- Pop-ups whenever Pako isn't already showing the news, and a new **Files delivered**.
+- Sounds when files arrive and when they're sent or uploaded.
+- The tray window has a **Direct** half, with progress and **Cancel**.
+
+### Settings
+
+- Settings come in small titled groups, and Private mode has its own tab.
+
+### Fixed
+
+- FancyZones no longer snaps the **Download with Pako** window or the link page; they open mid-screen.
+- **Review** on a "Pair a device" pop-up opens My devices, and the tray window no longer opens by itself for private downloads.
+- Settings asks before dropping unsaved changes; the search box searches the page you're on; long names keep their "…" just after Pako starts.
+- **… can control my Pako** says that PC also sees your Direct contacts and can send them files; big folders received with Direct no longer slow the PC.
+- A link to a missing site, or one with a broken certificate, says so and stops instead of retrying forever.
+- **When all downloads finish** and **Keep the PC awake while downloading** wait for downloads your browser does for Pako.
+- The default download folder follows a moved Downloads folder; a download never replaces a file that appeared under its name meanwhile.
+- Extension: a link clicked again after cancelling it in Pako downloads; in Vivaldi, a page can't push many downloads at once into Pako; with Pako closed, Pako's helper isn't started every second.
+
 ## 1.2.10
 
 ### Fixed

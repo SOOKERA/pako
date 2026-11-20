@@ -31,8 +31,8 @@
   let close = $state(s.trayAsked ? s.closeToTray : true);
   let startWithWindows = $state(s.startWithWindows);
   let startInTray = $state(s.startInTray);
-  /** On by default the first time; "Run setup again" shows what it is now. */
-  let browsers = $state(!s.setupDone || s.browserConnect);
+  /** On by default the first time; "Run setup again", or Pako Setup's choice, shows what it is now. */
+  let browsers = $state((!s.setupDone && !s.installerChoices) || s.browserConnect);
 
   // Sending with your own Google Drive: offered only when this PC has its registration.
   let sendDrive = $state<DriveSendStatus | null>(null);

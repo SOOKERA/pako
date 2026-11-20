@@ -201,7 +201,10 @@
               {@const k = kindInfo(n.kind)}
               {@const ans = answerOf(n)}
               <div class="row" transition:rowSlide={{ duration: 220 }} animate:flipIf={flipOpts}>
-                <div class="line" class:unread={!n.read} role="button" tabindex="0" onclick={() => open(n)} onkeydown={(e) => lineKey(e, n)}>
+                <!-- A line with its own answers (Accept / Decline) is a group holding buttons, not a button
+                     around buttons; Enter on the line still opens it. -->
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                <div class="line" class:unread={!n.read} role={ans ? "group" : "button"} aria-label={ans ? `${n.title}: ${n.body}` : undefined} tabindex="0" onclick={() => open(n)} onkeydown={(e) => e.target === e.currentTarget && lineKey(e, n)}>
                   {#if !n.read}<span class="dot" transition:pop={{ duration: 180, from: 0.92, y: 0 }} aria-label="Unread"></span>{/if}
                   <span class="chip" style:color={tones[k.tone]}><Icon name={k.icon} size={14} stroke={2} /></span>
                   <div class="txt">

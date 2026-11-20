@@ -414,7 +414,8 @@ const RUNS_CODE: &[&str] = &[
     "theme", "themepack", "desktopthemepack", "rdp", "cab", "ins", "isp", "job", "mde", "mdb", "accde",
     "msh", "msh1", "msh2", "mshxml", "msh1xml", "msh2xml", "ps2", "ps2xml", "psc1", "psc2", "ws", "appinstaller",
     "msu", "mst", "hlp", "jnlp", "xbap", "ade", "adp", "pyz", "pyzw", "pyc", "dotm", "xltm", "xlsb", "xla", "potm",
-    "ppsm", "sldm", "wsb", "search-ms",
+    "ppsm", "sldm", "wsb", "search-ms", "one", "onepkg", "iqy", "dqy", "rqy", "slk", "cer", "crt", "p7b", "htm",
+    "html", "svg", "xhtml",
 ];
 
 /// This file would run code if opened (by its last extension).

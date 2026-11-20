@@ -137,6 +137,9 @@
       </div>
       {#if o.askedBecause}
         <p class="dim small">{o.askedBecause}</p>
+      {:else if !(app.direct?.contacts ?? []).some((c) => c.id === o.contact)}
+        <!-- One of your own PCs (devices aren't in Direct's people): asked until it's paired both ways. -->
+        <p class="dim small">Files from {o.contactName} come without asking once it's paired both ways: confirm it in My devices on both PCs.</p>
       {:else}
         <p class="dim small">To skip this question for {o.contactName}, turn on "Can send to me without asking" in Direct.</p>
       {/if}

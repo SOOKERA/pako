@@ -491,6 +491,14 @@ impl Sender {
                     _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
                 }
             }
+            // A private part: made before its upload starts.
+            if let Source::File(e) = &*src {
+                match private_part_before(e).await {
+                    Ok(()) => {}
+                    Err(Some(m)) => return Err(m),
+                    Err(None) => continue,
+                }
+            }
             match self.drive_upload_once(job, &src, name, total, parent).await {
                 Ok(f) => return Ok(f),
                 Err(f) if f.is_cancelled() || matches!(f.code, Some(400 | 401 | 403)) => return Err(f.msg),
@@ -574,15 +582,20 @@ impl Sender {
                 async move {
                     let src = Arc::new(Source::File(e.clone()));
                     match self.drive_upload_retrying(job, src, &e.name, Some(e.size), &folder_id).await {
-                        Ok(_) => self.file_up(job, &e.name),
+                        Ok(_) => {
+                            super::private_part_up(&e.path);
+                            self.file_up(job, &e.name)
+                        }
                         Err(m) if m == "cancelled" => {}
                         Err(_) => failed.lock().unwrap().push(e),
                     }
                 }
             })
-            .buffer_unordered(3)
+            // Private parts one at a time (only one is ever on the disk).
+            .buffer_unordered(if super::private_job(job) { 1 } else { 3 })
             .collect::<Vec<()>>()
             .await;
+        super::release_private_job(job);
         if job.cancel.is_cancelled() {
             return Err("cancelled".into());
         }

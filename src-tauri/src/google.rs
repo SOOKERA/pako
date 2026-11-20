@@ -304,8 +304,10 @@ impl Google {
         self.account.missing
     }
 
+    /// The signed-in account's email; None when not signed in, or when Google didn't say which
+    /// (an older login kept "Google account" there: unknown too).
     pub async fn email(&self) -> Option<String> {
-        self.state.lock().await.login.as_ref().map(|l| l.email.clone())
+        self.state.lock().await.login.as_ref().map(|l| l.email.clone()).filter(|e| !e.is_empty() && e != "Google account")
     }
 
     pub async fn signed_in(&self) -> bool {
@@ -358,7 +360,7 @@ impl Google {
                         st.access = None;
                         forget_login_files(self.account);
                     }
-                    bail!("Your Google login expired. Connect Google Drive again in Settings.");
+                    bail!("Your Google login expired. Connect Google Drive again in Upload › Google Drive.");
                 }
             }
             bail!(
@@ -463,7 +465,9 @@ impl Google {
             .refresh_token
             .ok_or_else(|| anyhow!("Google didn't return a lasting login. Try again."))?;
 
-        let email = self.fetch_email(&t.access_token).await.unwrap_or_else(|_| "Google account".into());
+        // Unknown (Google didn't say): kept empty, never a placeholder two accounts would share
+        // (uploads are matched to their account by it before anything is deleted).
+        let email = self.fetch_email(&t.access_token).await.unwrap_or_default();
         let login = SavedLogin { refresh_token: refresh, email: email.clone() };
         let enc = crate::secure::protect(&serde_json::to_vec(&login)?)?;
         write_atomic(&login_path(self.account), &enc)?;

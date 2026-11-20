@@ -283,7 +283,7 @@
               {:else}
                 <div class="askhead"><b>{a.name}</b>, one of your Direct contacts, says this PC is one of its devices.</div>
               {/if}
-              <p class="dim">Check that <b>{a.name}</b> shows the same safety code: <span class="mono code">{a.code}</span>. If it doesn't, {a.request ? "decline" : "don't confirm"}. Only for your own PCs: it can then send files here without asking, see and add to this PC's downloads, and get finished ones.</p>
+              <p class="dim">Check that <b>{a.name}</b> shows the same safety code: <span class="mono code">{a.code}</span>. If it doesn't, {a.request ? "decline" : "don't confirm"}. Only for your own PCs: it can then send files here without asking, see and add to this PC's downloads, get finished ones, see your Direct contacts and your history with them, and send files to them through this PC.</p>
               <div class="frow">
                 <span class="mlabel">Its files are saved in</span>
                 <span class="path mono" title={askFolders[a.id]}>{askFolders[a.id] || "…"}</span>

@@ -75,8 +75,12 @@ pub fn enqueue_from_browser(id: &str, browser_size: u64) {
 }
 
 /// A download from the browser started (no window, or it was answered): the small window
-/// opens by itself when that setting is on.
-pub fn started() {
+/// opens by itself when that setting is on, never for one from a private window (nothing
+/// about it shows by itself).
+pub fn started(private: bool) {
+    if private {
+        return;
+    }
     // (Never in the unit tests: no window there, and its code needs what only Pako.exe has.)
     #[cfg(not(test))]
     if let Some(app) = APP.get() {
@@ -122,12 +126,16 @@ pub fn answer(a: AskAnswer) -> Result<(), String> {
     // ahead of the check).
     if action == "cancel" {
         crate::extension::HELD.finish(&id, Ok(()));
+        // Clicking that link again is a new download, never this cancelled one's answer.
+        crate::extension::TAKEOVERS.forget(&id);
     }
+    // From a private window, or sent with "Download privately": the small window stays shut.
+    let private = a.private || engine.find(&id).is_some_and(|d| d.private || d.vault);
     engine.answer_ask(a).map_err(|e| e.to_string())?;
     BROWSER_SIZE.lock().unwrap().remove(&id);
     ORDER.lock().unwrap().retain(|x| *x != id);
     if action != "cancel" {
-        started();
+        started(private);
     }
     if prune(&engine).is_empty() {
         hide();
@@ -160,35 +168,41 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
         .visible(false)
         .build()
         .ok()
+        // A window manager (PowerToys FancyZones) never snaps it into a zone; it stays on the
+        // taskbar.
+        .inspect(crate::tray::keep_dialog_out_of_zones)
 }
 
 /// The unit tests have no window (see `started`).
 #[cfg(test)]
 fn show() {}
 
-/// Opens the window in front, in the middle of the screen the mouse is on.
+/// Opens the window in front, in the middle of the screen the mouse is on. Already showing (more
+/// downloads joining its line, maybe a page pushing several): it only says so, never taking the
+/// focus again for each one (a page can't keep pulling you out of what you're typing).
 #[cfg(not(test))]
 fn show() {
     let Some(app) = APP.get() else { return };
     let Some(w) = window(app) else { return };
-    if !w.is_visible().unwrap_or(false) {
-        let monitor = app
-            .cursor_position()
-            .ok()
-            .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
-            .or_else(|| app.primary_monitor().ok().flatten());
-        if let Some(m) = monitor {
-            let scale = m.scale_factor();
-            let (ww, wh) = (WIDTH * scale, HEIGHT * scale);
-            let (mx, my) = (m.position().x as f64, m.position().y as f64);
-            let (sw, sh) = (m.size().width as f64, m.size().height as f64);
-            let x = mx + ((sw - ww) / 2.0).max(0.0);
-            let y = my + ((sh - wh) / 2.5).max(0.0);
-            let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-        }
+    let showing = w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false);
+    let placed = if w.is_visible().unwrap_or(false) {
+        None
+    } else {
+        crate::tray::middle_of_pointer_screen(app, WIDTH, HEIGHT)
+    };
+    if let Some(p) = placed {
+        let _ = w.set_position(p);
     }
     let _ = app.emit_to(LABEL, "ask-changed", ());
+    if showing {
+        return;
+    }
     let _ = w.show();
     let _ = w.unminimize();
     let _ = w.set_focus();
+    // Snapped elsewhere as it showed (a window manager): back in the middle.
+    if let Some(p) = placed {
+        let me = w.clone();
+        crate::tray::hold_place(&w, p, move || me.is_visible().unwrap_or(false));
+    }
 }

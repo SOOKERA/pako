@@ -348,14 +348,40 @@ fn is_writable(dir: &PathBuf) -> bool {
     ok
 }
 
+/// Windows' Downloads folder: where Explorer's Downloads really is (also after it was moved with
+/// Properties › Location, or redirected), else %USERPROFILE%\Downloads. Never inside Pako's own
+/// data folder (hidden, and deleted with "Also delete Pako's settings and lists").
 pub fn default_download_dir() -> PathBuf {
+    if let Some(d) = known_downloads().filter(|d| d.is_dir()) {
+        return d;
+    }
     if let Some(profile) = std::env::var_os("USERPROFILE") {
         let d = PathBuf::from(profile).join("Downloads");
-        if d.exists() {
-            return d;
-        }
+        let _ = std::fs::create_dir_all(&d);
+        return d;
     }
+    // No user profile at all (a service account): the only place left.
     data_dir().join("Downloads")
+}
+
+/// The Downloads folder Explorer uses, read from the user's shell folders (where
+/// SHGetKnownFolderPath(FOLDERID_Downloads) reads it; %USERPROFILE% and the like expanded).
+fn known_downloads() -> Option<PathBuf> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders");
+    let name = wide("{374DE290-123F-4565-9164-39C4925E467B}");
+    let mut buf = vec![0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    // SAFETY: NUL-terminated key and value names; `len` is the buffer's size in bytes. A
+    // REG_EXPAND_SZ value comes back expanded, as REG_SZ.
+    let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+    if r != 0 {
+        return None;
+    }
+    let n = (len as usize / 2).min(buf.len());
+    let text = String::from_utf16_lossy(&buf[..n]).trim_end_matches('\0').trim().to_string();
+    (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
 /// Write a file safely: write a temp file, flush it to the disk, keep the previous version
@@ -385,6 +411,17 @@ pub fn write_atomic(path: &PathBuf, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// Makes `path`'s safety copy (.bak, the version before the last write) the same as the file
+/// now: after something left the list on purpose (sent into Private mode), the version before
+/// mustn't keep it.
+pub fn bak_like_now(path: &PathBuf) {
+    let lock = path_lock(path);
+    let _turn = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if path.exists() {
+        let _ = std::fs::copy(path, path.with_extension("bak"));
+    }
 }
 
 /// One lock per file for `write_atomic`.
@@ -461,6 +498,12 @@ impl Saver {
         }
     }
 
+    /// Every save asked so far is written.
+    pub fn all_written(&self) -> bool {
+        let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.done >= st.last
+    }
+
     /// Waits (at most `limit`) for every save asked so far.
     pub fn wait_all(&self, limit: std::time::Duration) {
         let last = self.state.lock().unwrap_or_else(|e| e.into_inner()).last;
@@ -485,7 +528,23 @@ impl Saver {
                     st = self.changed.wait(st).unwrap_or_else(|e| e.into_inner());
                 }
             };
-            let _ = write_atomic(&self.path, &bytes);
+            // Something holding the file (antivirus, a backup tool) gets a few tries; still
+            // failing, it goes in the problems log (by file kind, never a download's name) so a
+            // list that stopped saving doesn't go unnoticed.
+            let mut written = false;
+            for i in 0..5 {
+                if write_atomic(&self.path, &bytes).is_ok() {
+                    written = true;
+                    break;
+                }
+                if i < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                }
+            }
+            if !written {
+                let what = self.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                crate::errorlog::note(crate::errorlog::Area::Other, &format!("Couldn't save {what}: the changes since the last save may be lost."));
+            }
             self.finished(n);
         }
     }

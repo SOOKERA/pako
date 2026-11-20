@@ -6,11 +6,11 @@ Press **F1** anywhere in Pako, or click **Help** at the bottom left. Help has th
 
 ## Finding a setting
 
-**Settings** has one tab per part of Pako: **Features & updates**, **Browser extension**, **Accounts**, **Window**, **Notifications**, **Downloads** and **Upload**. Click a tab, or use **↑** **↓** and **Enter**; **Ctrl+Tab** goes to the next tab from anywhere in Settings.
+**Settings** has one tab per part of Pako: **Features & updates**, **Browser extension**, **Accounts**, **Window**, **Notifications**, **Downloads**, **Private mode** and **Upload**. Inside each tab, the settings sit in small titled groups (in **Downloads**: **Speed**, **Saving files**, **Videos**, **While downloading**…). Click a tab, or use **↑** **↓** and **Enter**; **Ctrl+Tab** goes to the next tab from anywhere in Settings.
 
-- **Search settings**, at the top, finds a setting by its name or its explanation in every tab. Pick one: Pako opens its tab, scrolls to it and lights it up, with the keyboard on its switch or box so you can change it right away. **Esc** clears the search.
-- **Advanced**, at the bottom of a tab, holds what most people never change (like **Connections per file**). Click it to open it; Pako remembers whether it's open, for each tab.
-- **Save** keeps your changes in every tab at once, and **Cancel** leaves everything as it was. A dot next to a tab's name marks changes not saved yet.
+- **Search settings**, at the top, finds a setting by its name or its explanation in every tab, and a group by its title. Pick one: Pako opens its tab, scrolls to it and lights it up, with the keyboard on its switch or box so you can change it right away. **Esc** clears the search.
+- **Advanced**, at the bottom of a tab, holds what most people never change (like **Connections per file**), under the same group titles as the rest of the tab. Click it to open it; Pako remembers whether it's open, for each tab.
+- **Save** keeps your changes in every tab at once, and **Cancel** leaves everything as it was. A dot next to a tab's name marks changes not saved yet. A click beside Settings doesn't close it; with changes not saved, **×** or **Esc** asks **Save changes?** with **Save**, **Discard** or **Keep editing**.
 
 ## Report a problem
 
@@ -27,7 +27,7 @@ When something goes wrong, tell Sookera in one click with **Send report**, or wi
 
 ### The list of problems
 
-Pako keeps a short private list of the last 300 problems it ran into: downloads and videos that stopped, link checks, uploads, Direct transfers, update checks and the browser extension. Each line says when, where, the message Pako showed you, and Pako's version. It's the file `problems.log` in Pako's data folder (see [Where your settings and lists are kept](install.md#where-your-settings-and-lists-are-kept)).
+Pako keeps a short private list of the last 300 problems it ran into: downloads and videos that stopped, link checks, uploads, Direct transfers, update checks and the browser extension. It can also hold a short note from the window when a tutorial was slow to show (which part of the window kept it waiting, in pixels and milliseconds; never a file name). Each line says when, where, the message Pako showed you, and Pako's version. It's the file `problems.log` in Pako's data folder (see [Where your settings and lists are kept](install.md#where-your-settings-and-lists-are-kept)).
 
 Before a line is written, Pako takes out what could say who you are or what you download:
 

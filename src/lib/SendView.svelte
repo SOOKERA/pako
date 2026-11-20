@@ -17,11 +17,37 @@
   import Modal from "./Modal.svelte";
   import SendDriveBar from "./SendDriveBar.svelte";
   import SendBasket from "./SendBasket.svelte";
-  import { fade } from "svelte/transition";
-  import { flipIf, flipOpts, rowSlide } from "./motion";
+  import { flipIf, flipOpts, rowSlide, fadeIn } from "./motion";
   import { expiryLook, sevenMore } from "./uploads";
+  import ColumnGrip from "./ColumnGrip.svelte";
+  import ColumnsButton from "./ColumnsButton.svelte";
+  import { listColumns } from "./columns.svelte";
+  import { LISTS, gridTemplate, shownColumns, withPost } from "./columns";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
+
+  // ---------- the Uploaded list's columns: widths, shown or hidden (columns.ts) ----------
+  const LIST = LISTS.send;
+  let pageW = $state(0);
+  /** The column titles' width: the list's room. */
+  let headW = $state(0);
+  /** A narrow page shows only the icons of the row's buttons (see .sact .lbl). */
+  const listNow = $derived(pageW > 0 && pageW <= 700 ? withPost(LIST, 76) : LIST);
+  const colState = $derived(listColumns.state("send"));
+  const frozen = $derived(listColumns.frozen?.list === "send" ? listColumns.frozen : null);
+  const shown = $derived(frozen ? { keys: frozen.keys, tight: false } : shownColumns(listNow, colState, headW));
+  const colsStyle = $derived(`--cols: ${gridTemplate(listNow, colState, shown.keys, shown.tight)}`);
+  const hideCls = $derived(
+    LIST.cols
+      .filter((c) => !shown.keys.includes(c.key))
+      .map((c) => `h-${c.key}`)
+      .join(" "),
+  );
+  const colsNoRoom = $derived(LIST.cols.filter((c) => !colState.hidden.includes(c.key) && !shown.keys.includes(c.key)).map((c) => c.key));
+  function columnsMenu(e: MouseEvent) {
+    e.preventDefault();
+    onmenu(e.clientX, e.clientY, listColumns.menu("send", undefined, () => colsNoRoom));
+  }
 
   /** "Deletes in 2 days" stays right while the window is open. */
   let now = $state(Date.now());
@@ -59,14 +85,19 @@
   /** Downloaded at least once: safe to delete. */
   /** Uploaded items, without the ones still uploading (those show under "Uploading" only). */
   const sentList = $derived(app.sent.filter((s) => !app.sends.some((j) => j.id === s.id)));
+  /** What Uploaded shows: the title bar's search narrows it by name. */
+  const sentShown = $derived.by(() => {
+    const q = app.search.trim().toLowerCase();
+    return q ? sentList.filter((s) => s.name.toLowerCase().includes(q)) : sentList;
+  });
   /** Gofile's keep rule only matters when something in the list is on Gofile. */
   const anyGofile = $derived(sentList.some((s) => (s.host ?? "gofile") === "gofile"));
   const downloaded = $derived(sentList.filter((s) => (s.host ?? "gofile") === "gofile" && (s.downloads ?? 0) > 0 && deletable(s)));
 
   /** Starts one send of these paths (the basket's). The basket empties once it has started. */
-  async function startSend(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null) {
+  async function startSend(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null, password: string | null = null) {
     try {
-      await api.sendStart(paths, m, name, days, null, partMb);
+      await api.sendStart(paths, m, name, days, null, partMb, password);
       // Only what was sent leaves the basket: files added while it started stay for the next one.
       const sent = new Set(paths);
       app.basket = app.basket.filter((b) => !sent.has(b.path));
@@ -76,18 +107,18 @@
     }
   }
   /** The basket's Send: everything in it (but what can't be read), one send, one link. */
-  async function sendBasket(m: SendMode | null, name: string | null, days: number, partMb: number | null) {
+  async function sendBasket(m: SendMode | null, name: string | null, days: number, partMb: number | null, password: string | null = null) {
     const paths = app.basket.filter((b) => !b.error).map((b) => b.path);
     if (!paths.length) return;
-    if (app.sendHost === "drive" && !(await fitsDrive(paths, m, name, days, partMb))) return;
-    await startSend(paths, m, name, days, partMb);
+    if (app.sendHost === "drive" && !(await fitsDrive(paths, m, name, days, partMb, password))) return;
+    await startSend(paths, m, name, days, partMb, password);
   }
 
   /** The send doesn't fit in your Google Drive: what it needs and what's free. */
-  let noRoom = $state<{ need: number; free: number; paths: string[]; mode: SendMode | null; name: string | null; days: number; partMb: number | null } | null>(null);
+  let noRoom = $state<{ need: number; free: number; paths: string[]; mode: SendMode | null; name: string | null; days: number; partMb: number | null; password: string | null } | null>(null);
   let driveBar = $state<{ openRoom: () => void } | null>(null);
   /** Before a Google Drive send: connected, and it fits (said either way). */
-  async function fitsDrive(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null): Promise<boolean> {
+  async function fitsDrive(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null, password: string | null = null): Promise<boolean> {
     try {
       const st = await api.sendDriveStatus();
       if (!st.configured) {
@@ -102,7 +133,7 @@
       const need = await api.sendMeasure(paths, m);
       const free = Math.max(0, st.limit - st.used);
       if (need > free) {
-        noRoom = { need, free, paths, mode: m, name, days, partMb };
+        noRoom = { need, free, paths, mode: m, name, days, partMb, password };
         return false;
       }
       app.toast(`This upload needs ${bytes(need)}, ${bytes(free)} free in your Google Drive`);
@@ -113,10 +144,10 @@
     }
   }
   /** "Upload to Gofile instead": switches (remembered) and uploads these files. */
-  async function sendWithGofile(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null) {
+  async function sendWithGofile(paths: string[], m: SendMode | null, name: string | null, days: number, partMb: number | null, password: string | null = null) {
     noRoom = null;
     await app.setSendHost("gofile");
-    await startSend(paths, m, name, days, partMb);
+    await startSend(paths, m, name, days, partMb, password);
   }
   /** Where a sent item is, in words. */
   const where = (s: SentItem) => (s.host === "drive" ? "your Google Drive" : "Gofile");
@@ -131,6 +162,23 @@
   }
   /** Sends being tried again right now: a second click does nothing. */
   let retrying = $state<string[]>([]);
+  /** A protected upload to start over: its password is asked again (Pako never keeps it). */
+  let retryPw = $state<SendJob | null>(null);
+  let retryPass = $state("");
+  let retryPass2 = $state("");
+  const retryOk = $derived(retryPass.length >= 8 && retryPass === retryPass2);
+  async function retryProtected() {
+    const j = retryPw;
+    const pw = retryPass;
+    if (!j || !retryOk) return;
+    retryPw = null;
+    retryPass = "";
+    retryPass2 = "";
+    await app.run(async () => {
+      await api.sendDismiss(j.id);
+      await app.send(j.paths, j.mode ?? (j.asFiles ? "files" : null), j.name, j.deleteDays ?? null, j.host ?? null, j.partMb || null, pw);
+    });
+  }
   async function tryAgain(j: SendJob) {
     if (retrying.includes(j.id)) return;
     retrying = [...retrying, j.id];
@@ -138,6 +186,11 @@
       await app.run(async () => {
         // Several files that partly failed: only the missing ones, into the same folder.
         if (j.canResume && (await api.sendResume(j.id))) return;
+        // Protected with a password: Pako never kept it, so it's asked again to start over.
+        if (j.protected) {
+          retryPw = j;
+          return;
+        }
         await api.sendDismiss(j.id);
         // The same way and with the same name as the first time (a one-off ZIP stays a ZIP).
         await app.send(j.paths, j.mode ?? (j.asFiles ? "files" : null), j.name, j.deleteDays ?? null, j.host ?? null, j.partMb || null);
@@ -305,7 +358,7 @@
   });
 </script>
 
-<div class="send" role="presentation" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
+<div class="send" bind:clientWidth={pageW} role="presentation" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping}
     <div class="dropzone" aria-hidden="true">
       <div class="dropcard"><Icon name="upload" size={22} />Drop files or folders to add them to your upload</div>
@@ -370,7 +423,11 @@
                   {@const m = madePct(j)}
                   <div class="bar"><div class="fill making" style="width: {m}%"></div></div>
                   <div class="sub mono">
-                    <span>Making the parts · {Math.floor(m)}% · {bytes(j.made ?? 0)} of {bytes(j.total ?? j.size)}</span>
+                    {#if j.protected}
+                      <span>Locking it with your password (7-Zip)…</span>
+                    {:else}
+                      <span>Making the parts · {Math.floor(m)}% · {bytes(j.made ?? 0)} of {bytes(j.total ?? j.size)}</span>
+                    {/if}
                   </div>
                 {:else if j.status === "uploading"}
                   <div class="bar"><div class="fill" style="width: {p}%"></div></div>
@@ -420,15 +477,16 @@
           {/if}
         </div>
         {#if anyGofile}<p class="keep">{app.sendKeepNote}{#if app.sentCountsNote}<span class="note"> {app.sentCountsNote}</span>{/if}</p>{/if}
-        <div class="sent" data-tour="send-uploaded">
-          <div class="shead" role="row">
+        <div class="sent {hideCls}" class:easing={listColumns.easing && sentList.length <= 60} style={colsStyle} data-tour="send-uploaded">
+          <div class="shead" role="row" tabindex="-1" oncontextmenu={columnsMenu} bind:clientWidth={headW}>
             <span></span>
             <span>Name</span>
-            <span>Uploaded to</span>
-            <span class="h-link">Link</span>
-            <span></span>
+            {#each LIST.cols as c (c.key)}
+              <span class="hc c-{c.key}" class:hlink={c.key === "link"}><ColumnGrip list="send" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />{c.label}</span>
+            {/each}
+            <span class="colcell"><ColumnsButton list="send" {onmenu} noRoom={() => colsNoRoom} /></span>
           </div>
-          {#each sentList as s, i (s.id)}
+          {#each sentShown as s, i (s.id)}
             {@const look = sentLook(s)}
             {@const exp = expiryLook(s, now)}
             <div
@@ -439,6 +497,7 @@
               role="row"
               tabindex="-1"
               aria-selected={app.sentPicked === s.id}
+              aria-label="{s.name}{look ? `, ${look.label}` : ''}"
               onclick={() => (app.sentPicked = s.id)}
               ondblclick={(e) => !(e.target as HTMLElement).closest("button") && !app.panelOpen && app.togglePanel()}
               onkeydown={(e) => e.key === "Enter" && !app.panelOpen && app.togglePanel()}
@@ -451,7 +510,7 @@
                 <MiddleText text={s.name} class="nm" />
                 <span class="meta">{#if s.soon && s.deleteAt == null}<span class="soon" title="10 days without a download and Gofile may remove it">May be removed by Gofile soon</span>{" · "}{/if}{#if s.incomplete}<span class="partial" title={s.parts ? `Only some parts are in ${where(s)}. People need all of them to open it.` : `Only these files are in ${where(s)}. The link works for them.`}>{busy(s) ? "Uploading" : "Not all uploaded"}</span>{" · "}{/if}{what(s.files, s.size)} · {shortDate(s.date)}{inParts(s.parts)}</span>
               </div>
-              <div class="hostcol">
+              <div class="hostcol c-host">
                 <div class="host" class:drive={s.host === "drive"} title={s.host === "drive" ? "In your Google Drive" : "On Gofile"}>
                   <Icon name={s.host === "drive" ? "drive" : "globe"} size={13} />{s.host === "drive" ? "Google Drive" : "Gofile"}
                   <!-- Gofile counts downloads (Drive doesn't): next to the host, not a column of its own,
@@ -459,10 +518,10 @@
                   {#if look}<span class="dl" style:color={look.text} title={s.gone ? "Deleted or expired on Gofile: the link doesn't work any more" : `${look.label}. Gofile counts downloads, not who downloaded`}><span class="dot" style:background={look.dot}></span><span class="dltext">{look.label}</span></span>{/if}
                 </div>
                 {#if exp}
-                  {#key exp.label}<span class="exp {exp.tone}" title={exp.title} in:fade={{ duration: 180 }}>{exp.label}</span>{/key}
+                  {#key exp.label}<span class="exp {exp.tone}" title={exp.title} in:fadeIn={{ duration: 180 }}>{exp.label}</span>{/key}
                 {/if}
               </div>
-              <button class="slink mono" title="Open the download page" onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
+              <button class="slink mono c-link" title="Open the download page" onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
               <div class="sact">
                 {#if s.gone}
                   <button class="btn small" title="Remove from list" onclick={() => removeFromList(s)}><Icon name="x" size={12} /><span class="lbl">Remove from list</span></button>
@@ -491,13 +550,37 @@
   </Modal>
 {/if}
 
+{#if retryPw}
+  {@const j = retryPw}
+  <Modal title="Type the password again" width={440} onclose={() => ((retryPw = null), (retryPass = ""))}>
+    <p class="msg">{j.name} was protected with a password. Pako never keeps it, so type it again to upload it once more.</p>
+    <div class="pwtwice">
+      <input class="input" type="password" autocomplete="new-password" aria-label="Password" placeholder="Password" bind:value={retryPass} />
+      <input
+        class="input"
+        type="password"
+        autocomplete="new-password"
+        aria-label="Type the password again"
+        placeholder="Type it again"
+        bind:value={retryPass2}
+        onkeydown={(e) => e.key === "Enter" && retryProtected()}
+      />
+    </div>
+    {#if retryPass2 && retryPass !== retryPass2}<p class="msg bad">They don't match yet.</p>{/if}
+    {#snippet actions()}
+      <button class="btn ghost" onclick={() => ((retryPw = null), (retryPass = ""), (retryPass2 = ""))}>Cancel</button>
+      <button class="btn primary" disabled={!retryOk} onclick={retryProtected}>Upload again</button>
+    {/snippet}
+  </Modal>
+{/if}
+
 {#if noRoom}
   {@const r = noRoom}
   <Modal title="This doesn't fit in your Google Drive" width={460} onclose={() => (noRoom = null)}>
     <p class="msg">This upload needs {bytes(r.need)}, and your Google Drive has {bytes(r.free)} free. Make room by deleting older uploads, or upload it to Gofile.</p>
     {#snippet actions()}
       <button class="btn ghost" onclick={() => (noRoom = null)}>Cancel</button>
-      <button class="btn" onclick={() => sendWithGofile(r.paths, r.mode, r.name, r.days, r.partMb)}>Upload to Gofile instead</button>
+      <button class="btn" onclick={() => sendWithGofile(r.paths, r.mode, r.name, r.days, r.partMb, r.password)}>Upload to Gofile instead</button>
       <button class="btn primary" onclick={() => { noRoom = null; driveBar?.openRoom(); }}><Icon name="trash" size={13} />Make room…</button>
     {/snippet}
   </Modal>
@@ -782,17 +865,20 @@
   .shead,
   .srow {
     display: grid;
-    grid-template-columns: 26px minmax(150px, 1fr) 216px minmax(120px, 230px) 172px;
+    grid-template-columns: var(--cols);
     align-items: center;
-    gap: 12px;
+    /* The room between columns is inside their tracks (columns.ts, gap): none here. */
+    column-gap: 0;
     height: 52px;
     padding: 0 10px 0 12px;
     border-bottom: 1px solid var(--line-soft);
-    transition: background var(--fast) ease;
+    transition:
+      background var(--fast) ease,
+      --zb var(--mid) ease;
   }
   .shead {
     align-items: center;
-    gap: 12px;
+    column-gap: 0;
     height: 30px;
     padding: 0 10px 0 12px;
     border-bottom: 1px solid var(--line);
@@ -801,7 +887,7 @@
     font-weight: 500;
     color: var(--text-3);
   }
-  .h-link {
+  .hlink {
     padding-left: 8px;
   }
   .host {
@@ -826,11 +912,17 @@
   .srow:last-child {
     border-bottom: none;
   }
+  /* Every other upload a touch lighter, so rows are easy to follow across (its place in the
+     list; the picked one shows its own colour alone). Every row carries the layer, so a row
+     whose place changes eases. */
+  .srow:not(.sel) {
+    background-image: linear-gradient(var(--zb), var(--zb));
+  }
   .srow.alt {
-    background-image: linear-gradient(var(--zebra), var(--zebra));
+    --zb: var(--zebra);
   }
   .srow:hover {
-    background-color: var(--hover);
+    background-color: var(--row-hover);
   }
   .srow {
     cursor: default;
@@ -933,46 +1025,60 @@
     justify-content: flex-end;
     gap: 6px;
   }
-  /* The link column gives way first (Copy link and the details panel have it too). */
-  @container (max-width: 800px) {
-    .shead,
-    .srow {
-      grid-template-columns: 26px minmax(0, 1fr) 216px 172px;
-    }
-    .slink,
-    .h-link {
-      display: none;
-    }
+  /* The columns as you set them (columns.ts): the link gives way first (Copy link and the
+     details panel have it too), then where it is; a column you hid never shows. */
+  .sent.h-host .c-host,
+  .sent.h-link .c-link {
+    /* Not shown: its place in the grid is at no width (see gridTemplate), nothing in it shows. */
+    visibility: hidden;
+    /* No sliver: its own padding or margin would still take room at no width. */
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  /* Shown or hidden from the columns menu: the columns ease to their new widths. */
+  .sent.easing .shead {
+    transition: grid-template-columns var(--mid) var(--ease);
+  }
+  .sent.easing .srow {
+    transition:
+      grid-template-columns var(--mid) var(--ease),
+      background var(--fast) ease,
+      --zb var(--mid) ease;
+  }
+  /* Meanwhile a column opening up keeps its content inside it (the titles keep their edges). */
+  .sent.easing .srow > * {
+    overflow: hidden;
+  }
+  /* Each column after Name keeps the room before it on its left (see columns.ts, gap). */
+  .c-host,
+  .c-link,
+  .sact,
+  .colcell {
+    margin-left: 12px;
+    min-width: 0;
+  }
+  .shead .hc {
+    position: relative;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+  }
+  .colcell {
+    display: flex;
+    justify-content: flex-end;
   }
   /* With the details panel open: the row buttons keep their icons only. */
   @container (max-width: 700px) {
-    .shead,
-    .srow {
-      grid-template-columns: 26px minmax(0, 1fr) 206px 76px;
-    }
     .sact .lbl {
       display: none;
     }
   }
-  /* The download count hides (it's in the details panel): the host column narrows again. */
+  /* The download count hides (it's in the details panel). */
   @container (max-width: 540px) {
-    .shead,
-    .srow {
-      grid-template-columns: 26px minmax(0, 1fr) 124px 76px;
-    }
     .dl {
-      display: none;
-    }
-  }
-  /* The smallest window with the details panel open: the name keeps the room, where it is and
-     when it's deleted are in the panel next to it. */
-  @container (max-width: 440px) {
-    .shead,
-    .srow {
-      grid-template-columns: 26px minmax(0, 1fr) 76px;
-    }
-    .hostcol,
-    .shead > span:nth-child(3) {
       display: none;
     }
   }
@@ -1080,5 +1186,15 @@
     margin: 0;
     color: var(--text-2);
     line-height: 1.5;
+  }
+  .pwtwice {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .msg.bad {
+    margin-top: 8px;
+    color: var(--st-fail-text);
   }
 </style>

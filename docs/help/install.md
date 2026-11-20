@@ -11,6 +11,22 @@ Pako comes two ways. Both are the same program and update themselves the same wa
 
 **Settings › Features & updates**, the first tab of Settings, shows which one you have: **Installed** or **Portable**, next to the version.
 
+### Pako Setup's window
+
+Pako Setup is one window, in Windows' light or dark look:
+
+- **On the left**, five short slides show what Pako does. They move on by themselves every few seconds and wait while your mouse is on them. Click **‹** or **›**, or a dot, to flip them yourself (then they stay where you put them).
+- **On the right**, everything you can choose, all at once:
+  - **Install in**: the folder, `%LOCALAPPDATA%\Programs\Pako` at first. **Change** picks another one (Pako gets a folder of its own in the one you pick).
+  - **Desktop shortcut** (on at first).
+  - **Start Pako with Windows** (off at first).
+  - **Connect Pako to your browsers** (on at first), so the browser extension can talk to Pako.
+- Click **Install**. The window shows **Installing Pako…** with a bar, then **Pako is installed**: **Open Pako** starts it (so does **Enter**); **Close**, **Esc** and the window's **✕** don't.
+- If something goes wrong while installing (Pako couldn't be closed, for example), the line under the bar says what, in red, and **Close** ends Setup.
+- Everything works from the keyboard too: **Tab** goes from one choice to the next (a ring shows where you are), **Space** turns a switch on or off and clicks a button, **Enter** installs. Screen readers such as Narrator read each choice and whether a switch is on.
+
+**Start Pako with Windows** and **Connect Pako to your browsers** become Pako's own settings: when Pako first starts, its setup shows them as you left them, and you can change them any time in **Settings** (**Window** and **Browser extension**). If Setup couldn't hand them to Pako, **Pako is installed** says so; turn them on there yourself. **Desktop shortcut** is only Setup's: delete the shortcut or run Setup again to change it.
+
 ### Where your settings and lists are kept
 
 - **Pako Setup**: in your Windows user folder, `%LOCALAPPDATA%\Pako`. Reinstalling or updating never touches them.
@@ -18,16 +34,23 @@ Pako comes two ways. Both are the same program and update themselves the same wa
 
 Your downloaded files are never in these folders: they go to your download folder.
 
-Pako Setup won't install Pako into `%LOCALAPPDATA%\Pako` or into a portable Pako's folder (**Next** stays greyed), so your settings and lists can't get mixed up. To move from a portable Pako to an installed one, see [From Portable to Setup](#from-portable-to-setup).
+Pako Setup won't install Pako into `%LOCALAPPDATA%\Pako` or into a portable Pako's folder, so your settings and lists can't get mixed up: **Install** stays greyed, and the window says why under the choices ("Pako keeps its settings and lists in this folder. Pick another one." or "A portable Pako is in this folder. Pick another one, so its lists stay with it."). To move from a portable Pako to an installed one, see [From Portable to Setup](#from-portable-to-setup).
 
-It also needs a folder you can change without admin rights, because Pako updates itself without them. If Windows doesn't let you change the folder you picked (`Program Files`, for example), **Next** says "Pako Setup installs Pako for you only, without admin rights, so it needs a folder you can change" and suggests `%LOCALAPPDATA%\Programs\Pako`: pick another folder. Don't run Pako Setup as administrator to get past it: if you do, it warns before installing in `Program Files` or `Windows` that Pako won't be able to update itself there. A silent install (`/S /D=folder`) into such a folder stops before installing anything, with exit code 2.
+It also needs a folder you can change without admin rights, because Pako updates itself without them. If Windows doesn't let you change the folder you picked, the window says why and **Install** waits until you pick another one:
+
+- "Windows only lets admins change this folder, so Pako couldn't update itself there. Pick a folder of yours." (`Program Files`, for example)
+- "Windows doesn't let you change this folder. Pick a folder of yours."
+- "This drive or network folder can't be reached. Pick another folder." (a drive that isn't plugged in, for example)
+- "This folder's path is too long for Windows. Pick a shorter one."
+
+Running Pako Setup as administrator doesn't get past it: folders like `Program Files` and `Windows` are refused the same way. A silent install (`/S /D=folder`) into a folder you can't change stops before installing anything, with exit code 2.
 
 ## Terms of use
 
 Pako has terms of use, the same as on [sookera.com/terms](https://sookera.com/terms). In short: Pako is free and comes as it is, with no warranty; you're responsible for what you download, share, send and record with it; use it only for what you have the right to, and follow the rules of the sites you use.
 
-- **Pako Setup** shows them on its **Terms of use** page. Click **I Agree** to go on; **Cancel** stops the install.
-- **When Pako first starts** (Setup or Portable), it shows them again before anything else, with **Agree and continue** and **Quit Pako**. Nothing runs before you agree: no downloads, no Direct or My devices, nothing from the browser extension (it says "Pako needs you to accept its terms first"), no update checks, and the tray icon only opens or quits Pako. Closing the window or pressing **Esc** doesn't skip them. As soon as you agree, everything starts, without a restart, and the first-start setup follows.
+- **Pako Setup** says it under its **Install** button: "By installing, you accept the terms of use." Click **terms of use** to read them on sookera.com before you install. Clicking **Install** (or **Update**) counts as agreeing, so Pako doesn't ask again when it starts. An install run without its window (a silent install) doesn't count: Pako then asks at its first start.
+- **Pako Portable** (and a silent install) shows them when Pako first starts, before anything else, with **Agree and continue** and **Quit Pako**. Nothing runs before you agree: no downloads, no Direct or My devices, nothing from the browser extension (it says "Pako needs you to accept its terms first"), no update checks, and the tray icon only opens or quits Pako. Closing the window or pressing **Esc** doesn't skip them. As soon as you agree, everything starts, without a restart, and the first-start setup follows.
 - **If you used Pako before it had terms** (Pako 1.0.x), it shows them once after updating, as **Pako's terms of use**. Your downloads and lists stay as they are: paused and waiting downloads simply wait until you agree, and nothing is lost. A Pako that updates and restarts in the tray doesn't pop up: the terms show the next time you open Pako, or when the browser extension sends it a download (the browser keeps that download meanwhile). Until then, the tray icon's tooltip says "Pako: open it to continue".
 
 Pako asks once: it notes the date of the terms you agreed to in its settings and doesn't ask again, also after later updates. The newest version is always on [sookera.com/terms](https://sookera.com/terms); **Terms** next to **Privacy** in Help and in **Settings › Features & updates** opens it, and **Help › About Pako › Terms of use** shows the text that came with your Pako.
@@ -64,22 +87,23 @@ A portable Pako in a folder Windows doesn't let you change (Program Files, for e
 
 ### A newer Pako Setup over an installed Pako
 
-You can also run a newer **Pako Setup** over the installed Pako. Keep **Replace the installed version (recommended)** and click **Next**: if Pako is open, Setup offers to close it first. Your settings and lists, the shortcuts, the taskbar pin, starting with Windows and the browser connection all stay, and Setup doesn't ask about deleting anything.
+You can also run a newer **Pako Setup** over the installed Pako. Its window is then called **Update Pako**: it says which version you have and which one you get, keeps Pako in its folder (no **Change**), and its switches show what you have now. Click **Update**. If Pako's folder can't be used any more (it was installed in `Program Files` by an older Setup, for example), the window says so and shows **Change**: pick a folder of yours and Pako moves there, with your settings and lists (a shortcut pinned to the taskbar may need pinning again; if Windows doesn't let Setup empty the old folder, its files stay there for an administrator to delete). The same Pako Setup over the same version says **Install again**; an older one over a newer Pako says **Install this version** and puts that version back. If Pako is open, the window says "Pako is open: Setup closes it first" and closes it when you click **Update**, without asking again. Your settings and lists, the shortcuts, the taskbar pin, starting with Windows and the browser connection all stay as the switches show them, and Setup doesn't ask about deleting anything.
 
 ## Uninstalling
 
 ### Pako Setup
 
-1. Open Windows **Settings › Apps** (**Installed apps**), find Pako and click **Uninstall**. If Pako is open, the uninstaller offers to close it first.
-2. Tick **Also delete Pako's settings and lists** only if you want them gone too. It's unticked at first, so reinstalling later picks up where you left off.
+1. Open Windows **Settings › Apps** (**Installed apps**), find Pako and click **Uninstall**. The **Uninstall Pako** window opens, in Pako's look. (If you installed Pako with a Pako Setup older than 1.3.0, the uninstaller is still that version's: a plainer window with an **Also delete Pako's settings and lists** check box and an **Uninstall** button. Pako's own updates don't replace it; running a newer Pako Setup once does.)
+2. Turn on **Also delete Pako's settings and lists** only if you want them gone too. It's off at first, so reinstalling later picks up where you left off. It never deletes [Private mode](private-mode.md)'s files: they have their own switch, **Also delete Private mode's files** (off at first too). Your encrypted private downloads can't be downloaded again, so they're kept unless you turn that one on; deleting them can't be undone. (An uninstaller from before 1.3.0 keeps them too.)
+3. Click **Uninstall** (or **Cancel**). If Pako is open, the uninstaller offers to close it first. Then the window says **Pako is uninstalled**: click **Close**.
 
 Uninstalling removes Pako itself, its shortcuts, and what it set up in Windows: the connection to your browsers, Pako's links from web pages, and starting with Windows (a portable Pako's own browser connection and start with Windows stay). Your downloaded files stay, and so do your uploads on Gofile or Google Drive. The browser extension stays in your browser until you remove it there.
 
-If a portable Pako is open while you uninstall with the box ticked, the settings and lists are kept (it may use them too) and the uninstaller says so. To delete them anyway, close that Pako, then delete the `Pako` and `com.sookera.pako` folders in `%LOCALAPPDATA%`.
+If a portable Pako is open while you uninstall with that switch on, the settings and lists are kept (it may use them too) and the uninstaller says so. To delete them anyway, close that Pako, then delete the `Pako` and `com.sookera.pako` folders in `%LOCALAPPDATA%`.
 
-With the box ticked, Pako's folder in Windows' temporary folder (`%TEMP%\Pako`) goes too: recordings not made into a video yet.
+With the switch on, Pako's folder in Windows' temporary folder (`%TEMP%\Pako`) goes too: recordings not made into a video yet.
 
-Without the box ticked, both folders stay: `Pako` (settings and lists) and `com.sookera.pako` (the window's own data, such as its size and place; a Pako older than 1.0.0 also kept what link pages stored there).
+With it off, both folders stay: `Pako` (settings and lists) and `com.sookera.pako` (the window's own data, such as its size and place; a Pako older than 1.0.0 also kept what link pages stored there).
 
 ### Pako Portable
 

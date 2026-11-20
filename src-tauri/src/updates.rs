@@ -163,14 +163,85 @@ fn marker() -> Option<PathBuf> {
     sibling("update.json")
 }
 
+// The update's own notes (which version is on trial, which was put back, and the copy of the
+// version before an update) live in Pako's data folder, sealed for this Windows user (DPAPI):
+// never next to Pako.exe, where a browser (or Pako itself) can save files. A note or an old copy
+// found there was not written by Pako: it is never trusted, and an old copy is never run from
+// it (see `old_copy_trusted`).
+
 /// A new version on trial: `{ version, started }`.
 fn trial_file() -> Option<PathBuf> {
-    sibling("trial.json")
+    Some(crate::paths::data_dir().join("update-trial.bin"))
 }
 
 /// The version that was put back because it didn't start properly.
 fn rolled_back_file() -> Option<PathBuf> {
-    sibling("rolled-back.txt")
+    Some(crate::paths::data_dir().join("update-rolled-back.bin"))
+}
+
+/// What the copy kept as `Pako.old.exe` must be: its SHA-256 and version, written right before
+/// an update puts the new version in place.
+fn old_record_file() -> Option<PathBuf> {
+    Some(crate::paths::data_dir().join("update-old.bin"))
+}
+
+/// Writes a note sealed for this Windows user.
+fn write_sealed(path: &Path, text: &str) {
+    if let Ok(blob) = crate::secure::protect(text.as_bytes()) {
+        let _ = std::fs::write(path, blob);
+    }
+}
+
+/// Reads a sealed note (anything else, or one sealed for another user, reads as nothing).
+fn read_sealed(path: &Path) -> Option<String> {
+    let blob = std::fs::read(path).ok()?;
+    String::from_utf8(crate::secure::unprotect(&blob).ok()?).ok()
+}
+
+/// The old copy's record: `{ sha256, version }`.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
+struct OldCopy {
+    sha256: String,
+    version: String,
+}
+
+fn read_old_record() -> Option<OldCopy> {
+    serde_json::from_str(&read_sealed(&old_record_file()?)?).ok()
+}
+
+fn write_old_record(r: &OldCopy) {
+    if let Some(f) = old_record_file() {
+        write_sealed(&f, &serde_json::to_string(r).unwrap_or_default());
+    }
+}
+
+fn forget_old_record() {
+    if let Some(f) = old_record_file() {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// The old copy next to Pako.exe is the one Pako kept at its last update: its SHA-256 matches
+/// the sealed record. Only then may it ever be put back and started.
+fn old_copy_trusted(old: &Path) -> bool {
+    old_trusted_by(read_old_record().as_ref(), || sha256_file(old).ok())
+}
+
+fn old_trusted_by(record: Option<&OldCopy>, hash: impl FnOnce() -> Option<String>) -> bool {
+    match record {
+        Some(r) if !r.sha256.is_empty() => hash().is_some_and(|h| h.eq_ignore_ascii_case(&r.sha256)),
+        _ => false,
+    }
+}
+
+/// Notes an older Pako (1.2.x) kept next to Pako.exe: never read (they could have been put there
+/// by anything that saves files in that folder), only deleted.
+fn forget_notes_next_to_exe() {
+    for name in ["trial.json", "rolled-back.txt"] {
+        if let Some(f) = sibling(name) {
+            let _ = std::fs::remove_file(f);
+        }
+    }
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -193,7 +264,13 @@ pub fn ready_now() -> Option<String> {
 }
 
 fn rolled_back_version() -> Option<String> {
-    put_back_note(&std::fs::read_to_string(rolled_back_file()?).ok()?, current())
+    put_back_note(&read_sealed(&rolled_back_file()?)?, current())
+}
+
+fn write_rolled_back(version: &str) {
+    if let Some(f) = rolled_back_file() {
+        write_sealed(&f, version);
+    }
 }
 
 /// The version a "put back" note is about, while it still says something true: a version newer
@@ -517,12 +594,12 @@ struct Trial {
 }
 
 fn read_trial() -> Option<Trial> {
-    serde_json::from_str(&std::fs::read_to_string(trial_file()?).ok()?).ok()
+    serde_json::from_str(&read_sealed(&trial_file()?)?).ok()
 }
 
 fn write_trial(t: &Trial) {
     if let Some(f) = trial_file() {
-        let _ = std::fs::write(f, serde_json::to_string(t).unwrap_or_default());
+        write_sealed(&f, &serde_json::to_string(t).unwrap_or_default());
     }
 }
 
@@ -760,14 +837,16 @@ enum TrialStep {
     RollBack,
 }
 
-fn trial_step(t: Option<&Trial>, current: &str, old_exists: bool) -> TrialStep {
-    if !old_exists {
+/// `old_trusted`: an old copy is there and it is the one Pako recorded at its last update (see
+/// `old_copy_trusted`). An old copy Pako didn't record (put there by something else, or by a
+/// Pako 1.2.x that kept no record) is never put back: there is nothing to try.
+fn trial_step(t: Option<&Trial>, current: &str, old_trusted: bool) -> TrialStep {
+    if !old_trusted {
         return TrialStep::None;
     }
     match t {
         Some(t) if t.version == current && t.started => TrialStep::RollBack,
-        // The first start of this version. An old copy without a note about this version was
-        // put there by an older Pako that wrote none: on trial too, never deleted unchecked.
+        // The first start of this version.
         _ => TrialStep::Start,
     }
 }
@@ -805,6 +884,7 @@ fn trial_passed() {
     if let Some(f) = trial_file() {
         let _ = std::fs::remove_file(f);
     }
+    forget_old_record();
     // Tried again for a while if Windows still holds it (otherwise the next start would see an
     // old copy without a note and put this version on trial again).
     remove_old_copies();
@@ -843,7 +923,14 @@ pub fn apply_at_start() -> bool {
     if let Some(i) = args.iter().position(|a| a == "--wait-pid") {
         if let Some(pid) = args.get(i + 1).and_then(|p| p.to_str()).and_then(|p| p.parse::<u32>().ok()) {
             wait_for_exit(pid, Duration::from_secs(20));
-            waited = true;
+            // A Pako slow to quit still holds its lock: swapping under it would leave this start
+            // handing over to a Pako that is closing, and nothing running after. Waited for a
+            // while longer; still there, this start changes nothing (it hands over as usual).
+            let until = Instant::now() + Duration::from_secs(40);
+            while another_instance_running() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            waited = !another_instance_running();
         }
     }
     // Another Pako is running and uses this exe: change nothing under it (this start only hands
@@ -852,9 +939,11 @@ pub fn apply_at_start() -> bool {
         return false;
     }
     let (Some(exe), Some(new), Some(old), Some(mark)) = (exe(), new_exe(), old_exe(), marker()) else { return false };
+    forget_notes_next_to_exe();
 
     let trial = read_trial();
-    match trial_step(trial.as_ref(), current(), old.is_file()) {
+    let old_trusted = old.is_file() && old_copy_trusted(&old);
+    match trial_step(trial.as_ref(), current(), old_trusted) {
         TrialStep::Start => {
             write_trial(&Trial { version: current().into(), started: true });
             // On trial: the old copy stays until `trial_passed`.
@@ -865,9 +954,8 @@ pub fn apply_at_start() -> bool {
                 let _ = std::fs::remove_file(&bad);
                 if std::fs::rename(&exe, &bad).is_ok() {
                     if move_or_copy(&old, &exe) {
-                        if let Some(f) = rolled_back_file() {
-                            let _ = std::fs::write(f, current());
-                        }
+                        write_rolled_back(current());
+                        forget_old_record();
                         if let Some(f) = trial_file() {
                             let _ = std::fs::remove_file(f);
                         }
@@ -891,7 +979,9 @@ pub fn apply_at_start() -> bool {
                     let _ = std::fs::remove_file(f);
                 }
             }
+            // An old copy Pako didn't record goes, unrun.
             remove_old_copies();
+            forget_old_record();
         }
     }
 
@@ -910,7 +1000,10 @@ pub fn apply_at_start() -> bool {
         return false;
     };
     let version = m.version.trim_start_matches('v').to_string();
-    // Written first: the new version reads it as soon as it starts.
+    // Written first: the new version reads them as soon as it starts. The record says which copy
+    // may be put back (this one, about to become the old copy).
+    let Ok(this_sha) = sha256_file(&exe) else { return false };
+    write_old_record(&OldCopy { sha256: this_sha, version: current().into() });
     write_trial(&Trial { version: version.clone(), started: false });
     match swap_and_start(&exe, &new, &old, |exe| std::process::Command::new(exe).args(strip_wait_pid(args)).spawn().is_ok()) {
         Swap::InPlace => {
@@ -926,15 +1019,15 @@ pub fn apply_at_start() -> bool {
             }
             let _ = std::fs::remove_file(&new);
             let _ = std::fs::remove_file(&mark);
-            if let Some(f) = rolled_back_file() {
-                let _ = std::fs::write(f, &version);
-            }
+            write_rolled_back(&version);
+            forget_old_record();
             false
         }
         Swap::Unchanged => {
             if let Some(f) = trial_file() {
                 let _ = std::fs::remove_file(f);
             }
+            forget_old_record();
             false
         }
     }
@@ -1197,12 +1290,28 @@ mod tests {
         // No old copy to go back to: nothing to do.
         assert_eq!(trial_step(Some(&t("0.2.0", true)), "0.2.0", false), TrialStep::None);
         assert_eq!(trial_step(None, "0.2.0", false), TrialStep::None);
-        // An old copy without a note (put in place by an older Pako, such as 0.1.1), or with a
-        // note about another version: this start is the trial's first, the old copy stays.
+        // A recorded old copy without a note about this version: this start is the trial's
+        // first, the old copy stays.
         assert_eq!(trial_step(None, "0.2.0", true), TrialStep::Start);
         assert_eq!(trial_step(Some(&t("0.2.0", true)), "0.1.1", true), TrialStep::Start);
         // Stopped before its trial passed (the note says started): the old copy goes back.
         assert_eq!(trial_step(Some(&t("0.1.1", true)), "0.1.1", true), TrialStep::RollBack);
+    }
+
+    /// Only the copy Pako recorded at its last update may be put back and run: a `Pako.old.exe`
+    /// planted next to Pako.exe (by a browser download, an extracted archive) never is.
+    #[test]
+    fn only_the_recorded_old_copy_is_trusted() {
+        let r = OldCopy { sha256: "AB12".into(), version: "1.3.0".into() };
+        assert!(old_trusted_by(Some(&r), || Some("ab12".into())));
+        // Another file under that name, no record, an empty record, an unreadable file: no.
+        assert!(!old_trusted_by(Some(&r), || Some("cd34".into())));
+        assert!(!old_trusted_by(None, || Some("ab12".into())));
+        assert!(!old_trusted_by(Some(&OldCopy::default()), || Some(String::new())));
+        assert!(!old_trusted_by(Some(&r), || None));
+        // Untrusted means nothing to roll back to, whatever the trial note says.
+        let t = Trial { version: "1.3.1".into(), started: true };
+        assert_eq!(trial_step(Some(&t), "1.3.1", false), TrialStep::None);
     }
 
     #[test]

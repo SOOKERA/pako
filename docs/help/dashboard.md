@@ -4,7 +4,7 @@ Your Pako in numbers: what you downloaded, uploaded, sent and received, how fast
 
 ## What it counts
 
-Every download, upload and Direct transfer is counted when it ends. Downloads that stopped with an error are counted as stopped. Downloads, uploads and Direct transfers from before the Dashboard existed were read from Pako's lists once, so they're in **All time** too, sometimes without their speed.
+Every download, upload and Direct transfer is counted when it ends. Downloads that stopped with an error are counted as stopped. Downloads from your browser's private windows (and [Private mode](private-mode.md)) are never counted. Downloads, uploads and Direct transfers from before the Dashboard existed were read from Pako's lists once, so they're in **All time** too, sometimes without their speed.
 
 Everything stays on your PC. Nothing is sent anywhere. For the records, **Top sites** and the CSV file, Pako keeps a line for each transfer of the last 12 months or so: the file's name, size and site, and for Direct the contact. Removing a download, an upload or a transfer from its list doesn't remove it here: **Reset statistics…** (below) does.
 

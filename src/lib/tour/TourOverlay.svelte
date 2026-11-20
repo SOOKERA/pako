@@ -7,7 +7,7 @@
   // can't be shown is dropped unseen.
   import { tick, untrack } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { inApp, listen } from "../api";
+  import { api, inApp, listen } from "../api";
   import { app, type View } from "../state.svelte";
   import { fadeIn, pop, reduced } from "../motion";
   import { tour, findTarget, targetsOf, type Step } from "./tour.svelte";
@@ -62,6 +62,43 @@
   let settleUntil = 0;
   /** Not before this time (a scroll that was just started hasn't moved anything yet). */
   let holdUntil = 0;
+  /** This step had to open something first (its page, Settings, the details panel): it may need
+   *  the full settle time; otherwise it shows almost at once. */
+  let moved = false;
+  /** Longest wait for a step that opened nothing and scrolled nothing. */
+  const SETTLE_QUICK = 300;
+  /** What kept moving while a step waited (for the problems log, measurements only). */
+  let movedLog: string[] = [];
+  let prevSnap: Map<string, DOMRect> | null = null;
+  /** A short name for an element in the note: its data-tour or tag.class (never its text). */
+  function nameOf(e: HTMLElement): string {
+    const t = e.dataset.tour;
+    if (t) return t;
+    const c = (typeof e.className === "string" ? e.className : "").split(/\s+/).find((x) => x && !x.startsWith("svelte-"));
+    return e.tagName.toLowerCase() + (c ? "." + c : "");
+  }
+  function snap(): Map<string, DOMRect> {
+    const m = new Map<string, DOMRect>();
+    for (const { e, clips } of els) {
+      m.set(nameOf(e), e.getBoundingClientRect());
+      for (const c of clips) m.set(nameOf(c), c.getBoundingClientRect());
+    }
+    return m;
+  }
+  /** Notes which of the step's elements moved since the last frame, and by how much. */
+  function noteMoves() {
+    const now = snap();
+    if (prevSnap && movedLog.length < 8) {
+      const f = (n: number) => (Math.round(n * 10) / 10).toString();
+      for (const [k, r] of now) {
+        const p = prevSnap.get(k);
+        if (!p) continue;
+        const d = [r.x - p.x, r.y - p.y, r.width - p.width, r.height - p.height];
+        if (d.some((v) => Math.abs(v) >= 0.05)) movedLog.push(`${k} ${d.map(f).join("/")}`);
+      }
+    }
+    prevSnap = now;
+  }
   let lastSeen: Rect | null = null;
   /** Frames in a row the spotlight hasn't moved. */
   let still = 0;
@@ -115,10 +152,29 @@
   }
 
   const same = (a: Rect | null, b: Rect | null) =>
-    !!a && !!b && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.w - b.w) < 0.5 && Math.abs(a.h - b.h) < 0.5;
+    !!a && !!b && Math.abs(a.x - b.x) < 1.5 && Math.abs(a.y - b.y) < 1.5 && Math.abs(a.w - b.w) < 1.5 && Math.abs(a.h - b.h) < 1.5;
 
   /** The step goes on screen: text, count and spotlight at once. */
+  /** First frame of this tour's loop, when its first step's element was found, frames counted
+   *  and the longest gap between two frames: a slow start's note says where the time went. */
+  let firstFrameAt = 0;
+  let foundFirstAt = 0;
+  let frames = 0;
+  let lastFrameAt = 0;
+  let longestFrame = 0;
   function reveal(s: Step, i: number, at: Rect | null) {
+    if (i === 0 && tour.clickedAt) {
+      const now = performance.now();
+      const total = now - tour.clickedAt;
+      if (total > 400) {
+        const r = (n: number) => Math.round(n);
+        api.uiNote(
+          `Tutorial ${tour.id} took ${r(total)} ms to show: start ${r(tour.activeAt - tour.clickedAt)} ms, first frame ${r(firstFrameAt - tour.activeAt)} ms, ` +
+            `found ${foundFirstAt ? r(foundFirstAt - firstFrameAt) : -1} ms, shown ${foundFirstAt ? r(now - foundFirstAt) : -1} ms; ${frames} frames, longest ${r(longestFrame)} ms`,
+        );
+      }
+      tour.clickedAt = 0;
+    }
     spot = at;
     shown = { step: s, n: i + 1, total: tour.steps.length };
     seeking = false;
@@ -128,20 +184,30 @@
   /** The step's page, the Settings window and the details panel as the step needs them. Also puts
    *  them back when something outside the tour changed them (a notification or the tray opening
    *  another page). */
-  function place(s: Step) {
+  function place(s: Step): boolean {
+    let changed = false;
     if (s.view === "settings") {
       if (!settingsOpen) {
         settingsByTour = true;
         onsettings(true);
+        changed = true;
       }
     } else {
       if (settingsByTour) {
         settingsByTour = false;
         onsettings(false);
+        changed = true;
       }
-      if (s.view && app.view !== s.view) app.view = s.view as View;
+      if (s.view && app.view !== s.view) {
+        app.view = s.view as View;
+        changed = true;
+      }
     }
-    if (s.panel && !app.panelOpen) app.panelOpen = true;
+    if (s.panel && !app.panelOpen) {
+      app.panelOpen = true;
+      changed = true;
+    }
+    return changed;
   }
 
   // ---------- each step: the right page, then wait for its element ----------
@@ -152,7 +218,9 @@
   });
   function go(s: Step, i: number) {
     if (panelBefore === null) panelBefore = app.panelOpen;
-    place(s);
+    moved = place(s);
+    movedLog = [];
+    prevSnap = null;
     els = [];
     lastSeen = null;
     still = 0;
@@ -163,15 +231,34 @@
     seekFor = i;
     seekStart = performance.now();
     if (!targetsOf(s).length) reveal(s, i, null);
+    // An optional step whose element isn't on the page, when nothing had to open for it: it
+    // leaves at once (no pause on Next).
+    else if (s.optional && !moved && !targetsOf(s).some((n) => findTarget(n))) tour.skip();
     else seeking = true;
   }
 
   // One loop while the tour runs: finds the step's elements, shows the step once they hold still,
   // then follows them (panels slide, lists scroll).
+  /** Frames the shown spot has held still: once calm, it's measured only now and then (no
+   *  layout reads on every frame for the whole tour). */
+  let calm = 0;
+  let skip = 0;
   $effect(() => {
     if (!tour.active) return;
+    firstFrameAt = 0;
+    foundFirstAt = 0;
+    frames = 0;
+    lastFrameAt = 0;
+    longestFrame = 0;
     const loop = () => {
       frame = requestAnimationFrame(loop);
+      if (tour.clickedAt) {
+        const t = performance.now();
+        if (!firstFrameAt) firstFrameAt = t;
+        if (lastFrameAt) longestFrame = Math.max(longestFrame, t - lastFrameAt);
+        lastFrameAt = t;
+        frames++;
+      }
       const s = tour.step;
       if (!s || seekFor !== tour.index) return;
       const names = targetsOf(s);
@@ -186,13 +273,17 @@
           // Pages fade in, so give them a moment; an optional step that never shows is dropped
           // unseen, any other one gets its bubble in the middle. A step already on screen keeps
           // its bubble and looks again (its page is coming back).
-          if (waiting && now - seekStart > (s.optional ? 700 : 1500)) {
+          // A step that opened nothing (its page already shows) gives up sooner: its element just
+          // isn't there (an empty list), so waiting longer only delays the tutorial.
+          const giveUp = moved ? (s.optional ? 700 : 1500) : 300;
+          if (waiting && now - seekStart > giveUp) {
             if (s.optional) tour.skip();
             else reveal(s, tour.index, null);
           }
           return;
         }
         els = found.map((e) => ({ e, clips: clippers(e) }));
+        if (tour.clickedAt && !foundFirstAt) foundFirstAt = performance.now();
         if (!waiting) return;
         // Out of sight in a scrolling list: scroll there first, then show the step.
         const box = els[0].clips[0]?.getBoundingClientRect();
@@ -210,9 +301,14 @@
           }
         }
       }
+      if (waiting) calm = 0;
+      else if (calm > 30 && ++skip % 8) return;
       const next = measure();
       if (!waiting) {
-        if (next && !same(next, spot)) spot = next;
+        if (next && !same(next, spot)) {
+          spot = next;
+          calm = 0;
+        } else calm++;
         return;
       }
       // Never stuck: whatever happens, a step shows within a few seconds (Next always moves on).
@@ -232,12 +328,25 @@
         return;
       }
       if (!foundAt) foundAt = now;
+      if (!same(next, lastSeen)) noteMoves();
+      else prevSnap = null;
       still = same(next, lastSeen) ? still + 1 : 0;
       lastSeen = next;
       // One rule for everything that moves (a panel sliding open, a card popping in, a list
       // scrolling): show it once its spotlight holds still, or after a short while at most.
       const settled = still >= STILL_FRAMES && now >= holdUntil;
-      if (settled || now >= Math.max(foundAt + SETTLE_MAX, settleUntil)) reveal(s, tour.index, next);
+      // Nothing was opened or scrolled for this step: it shows almost at once, even if something
+      // on the page keeps shifting by a pixel (seen on Private mode's list in WebView2).
+      const cap = moved || settleUntil ? SETTLE_MAX : SETTLE_QUICK;
+      if (settled || now >= Math.max(foundAt + cap, settleUntil)) {
+        // It never held still: write down what kept moving, so the cause can be found (one line
+        // in the problems log; element names and pixel changes only).
+        if (!settled && movedLog.length) {
+          const target = targetsOf(s).join("+");
+          api.uiNote(`Tutorial step ${target} waited ${Math.round(now - foundAt)} ms; moving (dx/dy/dw/dh px): ${movedLog.join("; ")}`);
+        }
+        reveal(s, tour.index, next);
+      }
     };
     frame = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frame);
@@ -316,6 +425,11 @@
       e.preventDefault();
       e.stopPropagation();
       items[(at + (e.shiftKey ? -1 : 1) + items.length) % items.length].focus();
+      return;
+    }
+    // Ctrl+Shift+P (Private mode) works during a tutorial too: the tutorial ends, the key goes on.
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
+      tour.stop();
       return;
     }
     e.stopPropagation();
@@ -460,8 +574,12 @@
     top: 0;
     border-radius: var(--radius-lg);
     pointer-events: none;
-    /* The dim is an outline (it follows the corners): a huge box-shadow isn't painted by WebView2. */
-    outline: 200vmax solid var(--tour-dim);
+    /* The dim is an outline (it follows the corners): a huge box-shadow isn't painted by WebView2.
+       100vmax always reaches every edge of the window (the spot never leaves it, also while it
+       glides), and keeps the painted layer about three times smaller than 200vmax did: a layer
+       many times the window's size, repainted while the spot resizes, can stall WebView2 when a
+       tour starts. */
+    outline: 100vmax solid var(--tour-dim);
     box-shadow:
       0 0 0 1.5px rgba(255, 255, 255, 0.28),
       0 0 0 6px rgba(249, 98, 99, 0.12);

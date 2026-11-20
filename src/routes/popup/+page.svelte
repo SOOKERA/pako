@@ -190,6 +190,13 @@
     if (!inApp) {
       // Design preview (/popup in a browser): a few sample cards ("?showcase": the website's set).
       if (showcase) return add(showcaseCards);
+      // "?direct": Direct's and My devices' cards.
+      if (new URLSearchParams(location.search).has("direct"))
+        return add([
+          { id: "d1", kind: "direct-offer", title: "Files for you", body: "Mia wants to send you Holiday photos (1.2 GB).", go: { page: "direct", offer: "o-mia" }, stays: true },
+          { id: "d2", kind: "direct-incoming", title: "Files coming in", body: "Laptop is sending you Project backup (2.4 GB).", go: { page: "devices", id: "laptop" }, stays: false },
+          { id: "d3", kind: "direct-sent", title: "Files delivered", body: "Rado has received Render final v3.mp4.", go: { page: "direct", id: "rado" }, stays: false },
+        ]);
       if (new URLSearchParams(location.search).get("update") === "ready")
         return add([{ id: "pu", kind: "update-ready", title: "Pako 1.1.1 is ready", body: "Restart Pako to start using it. Your downloads and lists stay.", go: { page: "update" }, stays: false }]);
       add([
@@ -240,7 +247,7 @@
           role="button"
           tabindex="-1"
           onclick={() => openCard(c)}
-          onkeydown={(e) => e.key === "Enter" && openCard(c)}
+          onkeydown={(e) => e.key === "Enter" && e.target === e.currentTarget && openCard(c)}
         >
           <span class="chip" style:color={tones[k.tone]}><Icon name={k.icon} size={15} stroke={2} /></span>
           <div class="txt">
@@ -260,7 +267,7 @@
               </div>
             {:else if c.kind === "direct-request"}
               <div class="acts">
-                <button class="btn small" onclick={(e) => (e.stopPropagation(), open({ ...c, go: { page: "direct" } }))}>Review</button>
+                <button class="btn small" onclick={(e) => (e.stopPropagation(), open(c.go.page === "devices" ? c : { ...c, go: { page: "direct" } }))}>Review</button>
               </div>
             {:else if c.kind === "update-ready"}
               <div class="acts">

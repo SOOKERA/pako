@@ -1,20 +1,32 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
-  import { flip } from "svelte/animate";
   import { app } from "./state.svelte";
-  import { fadeIn, toastIn, flipOpts } from "./motion";
+  import { fadeIn, toastIn, flipIf, flipOpts } from "./motion";
   import Icon from "./Icon.svelte";
 
   /** `plain`: only messages without a button (the small tray window: "Link copied", what went
    *  wrong; "Show" and "Restart now" belong to Pako's own window). */
   let { plain = false }: { plain?: boolean } = $props();
   const list = $derived(plain ? app.toasts.filter((t) => !t.action) : app.toasts);
+  function hold(on: boolean) {
+    app.toastHold = on;
+    if (!on) app.toastFree = performance.now();
+  }
 </script>
 
-<div class="toasts" aria-live="polite">
+<div
+  class="toasts"
+  aria-live="polite"
+  role="region"
+  aria-label="Messages"
+  onpointerenter={() => hold(true)}
+  onpointerleave={() => hold(false)}
+  onfocusin={() => hold(true)}
+  onfocusout={() => hold(false)}
+>
   {#each list as t (t.id)}
-    <div class="toast" class:error={t.kind === "error"} in:toastIn out:fadeIn={{ duration: 140 }} animate:flip={flipOpts}>
+    <div class="toast" class:error={t.kind === "error"} role={t.kind === "error" ? "alert" : undefined} in:toastIn out:fadeIn={{ duration: 140 }} animate:flipIf={flipOpts}>
       <Icon name={t.kind === "error" ? "alert" : "check"} size={14} stroke={2} />
       <span>{t.text}</span>
       {#if t.action}

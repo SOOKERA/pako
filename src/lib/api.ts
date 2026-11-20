@@ -1,20 +1,32 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
+import type { Alert, DoneChime } from "./alert";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockContactNumbers, mockNotices, mockNumbers, mockParts, mockProgress, mockQr, mockReport, mockSend, mockSnapshot, mockStats } from "./mock";
 import { showcase, showcaseDirect, showcaseDrive, mockFromChoices, mockRemoteBook, mockRemoteTalk } from "./showcase";
 import type { Go, Notice, NoticePref, PopupCard } from "./notices";
+import { privateMock } from "./privateMock";
 
 /** False when the page is opened in a normal browser for a design preview. */
 export const inApp = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (inApp) return tauriInvoke<T>(cmd, args);
+  if (cmd.startsWith("private_")) {
+    const r = privateMock(cmd, args);
+    if (r) return r as Promise<T>;
+  }
   if (cmd === "snapshot") return Promise.resolve(structuredClone(mockSnapshot) as T);
   if (cmd === "add_links" || cmd === "found_add")
     return Promise.resolve({ added: 0, errors: ["Preview mode: links aren't checked or downloaded"] } as T);
   if (cmd === "found_download") return Promise.resolve(0 as T);
+  // Design preview: an archive "locked" with the password 1234.
+  if (cmd === "extract_now") {
+    if (!args?.password) return Promise.reject("password-needed");
+    if (args.password !== "1234") return new Promise((_, no) => setTimeout(() => no("password-wrong"), 400));
+    return new Promise((ok) => setTimeout(() => ok("C:\\Users\\me\\Downloads\\Extracted" as T), 400));
+  }
   if (cmd === "found_set_device" || cmd === "found_device_note") {
     const ids = (args?.ids as string[]) ?? [];
     for (const f of mockSnapshot.found ?? []) {
@@ -100,6 +112,9 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (cmd === "preview_check") return new Promise((ok, no) => setTimeout(() => (showcase ? ok(undefined as T) : no("Preview mode: nothing is fetched from the site.")), 900));
   if (cmd === "send_state") return Promise.resolve(structuredClone(mockSend) as T);
   if (cmd === "direct_state") return Promise.resolve(mockDirect() as T);
+  // Design preview: a private file's send "starts" (nothing is sent) so Private mode's progress
+  // and its "Leave and lock" question can be tried; other sends are refused.
+  if (cmd === "direct_send" && ((args?.paths as string[]) ?? []).some((p) => p.startsWith("C:\\preview\\private\\"))) return Promise.resolve("preview-send" as T);
   if (cmd === "direct_send" || cmd === "direct_relay_send") return Promise.reject("Preview mode: nothing is sent");
   if (cmd === "direct_from_choices") return Promise.resolve(mockFromChoices() as T);
   if (cmd === "direct_remote_contacts") return Promise.resolve(mockRemoteBook(String(args?.device ?? "")) as T);
@@ -143,9 +158,11 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     const fail: Record<string, SendFail> = { offline: { kind: "offline" }, server: { kind: "server" }, busy: { kind: "busy", retryAfter: 1500 }, refused: { kind: "refused", message: "The report is too long. Shorten what happened, or turn off Include recent problems." } };
     return new Promise((ok, no) => setTimeout(() => (k && fail[k] ? no(fail[k]) : ok("42" as T)), 700));
   }
-  // Design preview: ?drive=off (not set up), ?drive=out (not connected); else connected.
+  // Design preview: ?drive=off (not set up), ?drive=out (not connected), ?drive=full (almost no
+  // room left: "Make room…" shows); else connected.
   if (cmd === "send_drive_status") {
     const d = new URLSearchParams(location.search).get("drive");
+    if (d === "full") return Promise.resolve({ configured: true, missingNote: null, signedIn: true, email: "me@gmail.com", limit: 15e9, used: 14.99e9, error: null } as T);
     if (d === "off") return Promise.resolve({ configured: false, missingNote: "Uploading to Google Drive isn't set up on this PC yet.", signedIn: false, email: null, limit: null, used: null, error: null } as T);
     if (d === "out") return Promise.resolve({ configured: true, missingNote: null, signedIn: false, email: null, limit: null, used: null, error: null } as T);
     if (showcase) return Promise.resolve(showcaseDrive as T);
@@ -174,7 +191,7 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     if (q.get("showcase") === "browser")
       return Promise.resolve({
         id: "preview", stem: "Conference talk slides", ext: "pdf", site: "events.example.org", size: 86_400_000, dir: "C:\\Users\\Sam\\Downloads",
-        video: false, quality: 1080, sizes: [], position: 1, total: 1, running: 2, notify: true, hereOnly: false,
+        video: false, quality: 1080, sizes: [], position: 1, total: 1, running: 2, alert: "pop", hereOnly: false,
       } as T);
     return Promise.resolve({
       id: "preview",
@@ -189,7 +206,7 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
       position: 1,
       total: Number(q.get("n") ?? 1),
       running: q.has("running") ? 2 : 0,
-      notify: true,
+      alert: "pop",
     } as T);
   }
   return Promise.resolve(undefined as T);
@@ -268,8 +285,11 @@ export interface Download {
   group: string | null;
   resolved: boolean;
   priority: Priority;
-  /** Notify when this one finishes. */
-  notify: boolean;
+  /** Off · Pop-up · Important for this one (none = Settings' default; see `alertOf`). */
+  alert?: Alert | null;
+  /** Older lists: "Notify when done" (Pop-up) / the window's "Notify me" off (Off). */
+  notify?: boolean;
+  quiet?: boolean;
   /** Part of a split archive: extract the set when every part is done. */
   extract: boolean;
   /** From the browser, waiting for the Download with Pako window's answer. */
@@ -284,6 +304,11 @@ export interface Download {
   named?: boolean;
   /** From a private browser window: no trace beyond the file, off the list soon after it's done. */
   private?: boolean;
+  /** In Private mode: only in the private list, its file encrypted in Pako's vault. */
+  vault?: boolean;
+  /** In Private mode, a file of a folder download: its place in that folder, the folder's own
+   *  name first ("Holiday\day 2"). */
+  vaultFolder?: string | null;
 }
 
 /** A download the browser makes for Pako ("Via browser"). */
@@ -317,16 +342,24 @@ export interface Settings {
   maxActive: number;
   speedLimitKb: number;
   verifyChecksum: boolean;
-  /** A pop-up when any download finishes: "Download finished › Pop-up" in Settings › Notifications. */
+  /** The older Download finished pop-up switch: only picks `doneAlert`'s first value. */
   notifyDone: boolean;
+  /** Settings › Notifications › New downloads (none yet: see `doneAlert`). */
+  doneAlert?: Alert | null;
+  /** "Chime when a download finishes" (none yet: see `doneChime`). */
+  doneChime?: DoneChime | null;
   /** Settings › Notifications: each kind's Pop-up and Bell, where changed from the defaults. */
   notices: Record<string, NoticePref>;
   /** Do not disturb: no pop-ups (the bell keeps collecting). */
   quiet: boolean;
   /** No pop-ups while Windows says not now (full screen, presenting, Windows' Do not disturb). */
   followWindowsQuiet: boolean;
-  /** A short chime when a download with its own "Notify when done" finishes (not at quiet times). */
+  /** "Play a sound when files arrive": files arrive in Direct or My devices, or someone offers you
+   *  files (not at quiet times). Finished downloads have `doneChime`. */
   playDoneSound: boolean;
+  /** "Play a sound when files are sent": an upload finishes, or a Direct or My devices send is
+   *  delivered (not at quiet times). */
+  playSentSound: boolean;
   /** Split archives: extract when all parts are done (the default for new sets). */
   extractDefault: boolean;
   /** Minimize hides Pako in the taskbar tray. */
@@ -349,6 +382,8 @@ export interface Settings {
   startInTray: boolean;
   /** The browser extension can reach Pako (registered with the browsers). */
   browserConnect: boolean;
+  /** Pako Setup's window chose Start with Windows and the browser connection. */
+  installerChoices: boolean;
   /** Send (older setting, only carried over): "off", "auto" or "max". */
   sendCompression: "off" | "auto" | "max";
   /** Send, several files: as they are (default), one ZIP, a compressed ZIP, or one ZIP in parts. null = not chosen yet. */
@@ -361,6 +396,14 @@ export interface Settings {
   resumeUploadsOnStart: boolean;
   /** When a finished private download ("Done · private") leaves the list by itself (missing = "10m"). */
   privateKeep?: PrivateKeep;
+  /** Private mode locks itself after this long with no keyboard or mouse use on the PC. */
+  privateLockAfter?: PrivateLockAfter;
+  /** Private mode's list clears itself (rows and files) this long after a download finished: "never", "3h", "12h", "3d" or "<n>h". */
+  privateClearAfter?: string;
+  /** "Show real names when opening private files". */
+  privateRealNames?: boolean;
+  /** The one-time Private mode tip was shown. */
+  privateTipSeen?: boolean;
   /** Where Send uploads to: Gofile (default, no account) or your Google Drive. */
   sendHost: SendHost;
   /** "Delete after" in the New upload basket (days; 0 = keep). The last choice is remembered. */
@@ -381,8 +424,6 @@ export interface Settings {
   videoQuality: number;
   /** Downloads from the browser open the "Download with Pako" window first. */
   askBrowser: boolean;
-  /** That window's "Notify me when it's done" (remembered). */
-  askNotify: boolean;
   /** The small window opens by itself when a browser download starts. */
   miniOnBrowser: boolean;
   /** The small window stays open and on top. */
@@ -409,8 +450,26 @@ export interface Settings {
  *  this PC is on as Private (or Domain), or always, or never. */
 export type DirectVisible = "home" | "always" | "never";
 
-/** Settings › Downloads › Advanced: 10 minutes after it finished, an hour after, or when Pako closes. */
+/** Settings › Downloads › From private windows: 10 minutes after it finished, an hour after, or when Pako closes. */
 export type PrivateKeep = "10m" | "1h" | "close";
+export type PrivateLockAfter = "1m" | "5m" | "15m" | "30m" | "never";
+
+/** How Private mode stands. */
+export interface PrivateStatus {
+  on: boolean;
+  unlocked: boolean;
+  lock: "pin" | "password" | "";
+  hasRecovery: boolean;
+  /** Seconds to wait before the next try. */
+  wait: number;
+}
+
+/** Why opening Private mode didn't work. */
+export interface PrivateRefused {
+  wrong: boolean;
+  wait: number;
+  message: string;
+}
 
 /** Settings › Window › Theme: "system" follows Windows' app mode. */
 export type ThemeChoice = "dark" | "light" | "system";
@@ -724,6 +783,8 @@ export type SendHost = "gofile" | "drive";
 /** A picked file or folder in the Send basket, measured: folders count all their files. */
 export interface PathSize {
   path: string;
+  /** The name to show (a private file's real name). */
+  name?: string;
   dir: boolean;
   size: number;
   files: number;
@@ -764,6 +825,8 @@ export interface SendJob {
   parts?: number;
   making?: boolean;
   made?: number;
+  /** "Protect with a password": starting it over asks for the password again. */
+  protected?: boolean;
 }
 
 /** Something sent before, with its link. */
@@ -1164,8 +1227,10 @@ function mockDirect(): DirectState {
 export const api = {
   snapshot: () => invoke<Snapshot>("snapshot"),
   foundAdd: (text: string) => invoke<AddResult>("found_add", { text }),
-  foundDownload: (ids: string[], first: boolean, dest: string | null, notify = false) =>
-    invoke<number>("found_download", { ids, first, dest, notify }),
+  /** `alert`: Off · Pop-up · Important for all of them (null = each row's own). */
+  /** `privately`: "Download privately", straight into Private mode. */
+  foundDownload: (ids: string[], first: boolean, dest: string | null, alert: Alert | null = null, privately = false) =>
+    invoke<number>("found_download", { ids, first, dest, alert, private: privately }),
   foundRemove: (ids: string[]) => invoke<void>("found_remove", { ids }),
   /** Brings a waiting link check to the front. */
   gateFocus: (id: string) => invoke<void>("gate_focus", { id }),
@@ -1203,7 +1268,9 @@ export const api = {
     deleteDays: number | null = null,
     host: SendHost | null = null,
     partMb: number | null = null,
-  ) => invoke<string>("send_start", { paths, mode, name, deleteDays, host, partMb }),
+    /** "Protect with a password": a 7-Zip archive locked with it (never kept by Pako). */
+    password: string | null = null,
+  ) => invoke<string>("send_start", { paths, mode, name, deleteDays, host, partMb, password }),
   /** Sizes of the files and folders in the Send basket. */
   sendSizes: (paths: string[]) => invoke<PathSize[]>("send_sizes", { paths }),
   sendResume: (id: string) => invoke<boolean>("send_resume", { id }),
@@ -1223,13 +1290,13 @@ export const api = {
   setWhenDone: (action: WhenDone) => invoke<void>("set_when_done", { action }),
   cancelWhenDone: () => invoke<void>("cancel_when_done"),
   foundExisting: (ids: string[], dest: string | null) => invoke<string[]>("found_existing", { ids, dest }),
-  foundSet: (ids: string[], o: { dest?: string | null; priority?: Priority; notify?: boolean; extract?: boolean }) =>
+  foundSet: (ids: string[], o: { dest?: string | null; priority?: Priority; alert?: Alert; extract?: boolean }) =>
     invoke<void>("found_set", {
       ids,
       setDest: "dest" in o,
       dest: o.dest ?? null,
       priority: o.priority ?? null,
-      notify: o.notify ?? null,
+      alert: o.alert ?? null,
       extract: o.extract ?? null,
     }),
   setExtract: (ids: string[], on: boolean) => invoke<void>("set_extract", { ids, on }),
@@ -1268,9 +1335,14 @@ export const api = {
   popupFit: (height: number) => invoke<void>("popup_fit", { height }),
   popupQuiet: () => invoke<boolean>("popup_quiet"),
   popupOpen: (go: Go, id: string | null) => invoke<void>("popup_open", { go, id }),
+  importantTake: () => invoke<PopupCard[]>("important_take"),
+  /** The Important card's height; true = it waits (something is full screen). */
+  importantFit: (height: number) => invoke<boolean>("important_fit", { height }),
+  importantShown: (id: string) => invoke<void>("important_shown", { id }),
+  windowPage: (page: string) => invoke<void>("window_page", { page }),
   pauseAll: () => invoke<void>("pause_all"),
   resumeAll: () => invoke<void>("resume_all"),
-  setNotify: (ids: string[], on: boolean) => invoke<void>("set_notify", { ids, on }),
+  setAlert: (ids: string[], alert: Alert) => invoke<void>("set_alert", { ids, alert }),
   setFolder: (ids: string[], dir: string) => invoke<void>("set_folder", { ids, dir }),
   addLinks: (text: string, dest: string | null) => invoke<AddResult>("add_links", { text, dest }),
   pause: (ids: string[]) => invoke<void>("pause", { ids }),
@@ -1299,6 +1371,38 @@ export const api = {
   openItem: (id: string, reveal: boolean) => invoke<void>("open_item", { id, reveal }),
   /** The ✕ on a "Done · private" row: off the list now (the file stays). */
   forgetPrivate: (id: string) => invoke<void>("forget_private", { id }),
+  privateStatus: () => invoke<PrivateStatus>("private_status"),
+  privateSetup: (secret: string, kind: "pin" | "password") => invoke<void>("private_setup", { secret, kind }),
+  privateUnlock: (secret: string) => invoke<void>("private_unlock", { secret }),
+  privateUnlockCode: (code: string) => invoke<void>("private_unlock_code", { code }),
+  privateLock: () => invoke<void>("private_lock"),
+  privateChange: (current: string | null, next: string, kind: "pin" | "password") => invoke<void>("private_change", { current, new: next, kind }),
+  /** A new recovery code; locked (Settings), `current` is the PIN or password (it stays locked). */
+  privateNewCode: (current: string | null = null) => invoke<string>("private_new_code", { current }),
+  /** "New recovery code…" given up: the code shown is forgotten. */
+  privateDropCode: () => invoke<void>("private_drop_code"),
+  privateConfirmCode: (last: string) => invoke<void>("private_confirm_code", { last }),
+  privateSaveCode: (path: string) => invoke<void>("private_save_code", { path }),
+  privateTipSeen: () => invoke<void>("private_tip_seen"),
+  privateCopyCode: () => invoke<void>("private_copy_code"),
+  privateReset: () => invoke<void>("private_reset"),
+  privateDownloads: () => invoke<Download[]>("private_downloads"),
+  privateRemove: (ids: string[]) => invoke<void>("private_remove", { ids }),
+  privateOpen: (id: string) => invoke<void>("private_open", { id }),
+  privatePlay: (id: string, quality?: number) => invoke<{ url: string; converted: boolean; quality: number }>("private_play", { id, quality }),
+  privatePlaying: (playing: boolean) => invoke<void>("private_playing", { playing }),
+  privateKeepChanges: (copy: string, save: boolean) => invoke<void>("private_keep_changes", { copy, save }),
+  /** "Decrypt…": a readable copy in `dir`, then the private one goes ("off"), becomes a normal
+   *  download ("downloads") or stays ("leave"). Resolves to where the copy is. */
+  privateDecrypt: (id: string, dir: string, then: "off" | "downloads" | "leave", withFolder = false) => invoke<string>("private_decrypt", { id, dir, then, withFolder }),
+  /** "Extract" a finished archive or split set; rejects with "password-needed" / "password-wrong"
+   *  when its password is missing or wrong (then call again with it). */
+  extractNow: (id: string, password: string | null = null) => invoke<string>("extract_now", { id, password }),
+  /** "Send with Direct" / "Upload" on private files: what to give Direct or Upload (read decrypted
+   *  as they go, under their real names; only while Private mode is open). */
+  privateHandOver: (ids: string[]) => invoke<string[]>("private_hand_over", { ids }),
+  /** Resolves to what to tell you when the readable file couldn't be deleted (else null). */
+  privateMoveIn: (id: string) => invoke<string | null>("private_move_in", { id }),
   openLink: (id: string) => invoke<void>("open_link", { id }),
   openFolder: (path: string) => invoke<void>("open_folder", { path }),
   extensionFiles: () => invoke<string>("extension_files"),
@@ -1348,6 +1452,8 @@ export const api = {
   // Help › Report a problem
   /** Pako's version, Setup or portable, Windows' version and the problems noted (oldest first). */
   reportInfo: () => invoke<ReportInfo>("report_info"),
+  /** One line from the window for the problems log (measurements only, never names). */
+  uiNote: (message: string) => (inApp ? invoke<void>("ui_note", { message }).catch(() => {}) : Promise.resolve()),
   /** Saves the report as a text file. */
   reportSave: (path: string, text: string) => invoke<void>("report_save", { path, text }),
   /** Opens the email app on a new message (a mailto: link to support@sookera.com). */
@@ -1421,7 +1527,8 @@ export interface AskView {
   total: number;
   /** Downloads running now: then "Download now" and "Add to queue". */
   running: number;
-  notify: boolean;
+  /** Off · Pop-up · Important, starting at Settings' New downloads. */
+  alert: Alert;
   /** A video caught on a page or a recording: only this PC can make it (no "Download on"). */
   hereOnly: boolean;
 }
@@ -1432,6 +1539,8 @@ export interface AskAnswer {
   stem?: string;
   dir?: string;
   quality?: number | null;
-  notify?: boolean;
+  alert?: Alert;
   dontAsk?: boolean;
+  /** "Download privately": straight into Private mode. */
+  private?: boolean;
 }

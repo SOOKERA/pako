@@ -6,6 +6,14 @@
 @import "@fontsource-variable/inter/index.css";
 @import "@fontsource-variable/jetbrains-mono/index.css";
 
+/* A list row's stripe colour (every other row, see --zebra): registered so it can ease when a
+   row's place in the list changes (a row added above, a filter, a sort) instead of snapping. */
+@property --zb {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: transparent;
+}
+
 :root {
   /* Surfaces */
   --bg: #0f1114;
@@ -13,8 +21,12 @@
   --panel: #14171b;
   --raise: #1a1d22;
   --hover: #1b1f26;
-  /* alternate rows in lists: faint, just enough to follow a row across */
-  --zebra: rgba(255, 255, 255, 0.014);
+  /* alternate rows in lists: just enough to follow a row across a wide window at a glance,
+     never a striped, busy look; always well under a hovered or selected row */
+  --zebra: rgba(255, 255, 255, 0.024);
+  --zebra-priv: rgba(180, 160, 255, 0.035);
+  /* a list row under the mouse: clearly stronger than a striped row */
+  --row-hover: #1b1f26;
   --select: #1e232b;
   /* folder blocks: a clearly lighter header over darker files */
   --group-head: #252b35;
@@ -152,6 +164,12 @@
   --mono: "JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace;
 
   /* Motion: Apple-like springy ease-out */
+  /* Private mode: one violet, the same in both looks (only its brightness tuned), never
+     used for anything else. */
+  --priv: #7c5cf0;
+  --priv-text: #b4a2ff;
+  --priv-tint: rgba(124, 92, 240, 0.07);
+  --priv-line: rgba(124, 92, 240, 0.38);
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --fast: 120ms;
@@ -167,12 +185,18 @@
    or a status colour is used as words it takes a darker shade, so every text reaches 4.5:1 and
    every control edge 3:1, on every surface. */
 :root[data-theme="light"] {
+  --priv: #6a48e6;
+  --priv-text: #5532d4;
+  --priv-tint: rgba(106, 72, 230, 0.055);
+  --priv-line: rgba(106, 72, 230, 0.34);
   --bg: #ffffff;
   --bar: #f6f7f9;
   --panel: #f6f7f9;
   --raise: #eef1f5;
   --hover: #f4f6f9;
-  --zebra: rgba(20, 26, 46, 0.018);
+  --zebra: rgba(20, 26, 46, 0.03);
+  --zebra-priv: rgba(85, 50, 212, 0.03);
+  --row-hover: #eef1f5;
   --select: #e9eef6;
   --group-head: #eef1f5;
   --group-head-hover: #e6eaf0;
@@ -196,7 +220,7 @@
   --field: #ffffff;
   --switch-off: #e3e7ee;
   --rail: #b3bbc7;
-  --child-hover: #f4f6f9;
+  --child-hover: #eef1f5;
   --child-select: #e9eef6;
   --active-hover: #d6dde7;
   --parts-map: #e4e8ee;
@@ -362,6 +386,10 @@ textarea {
   border: 3px solid transparent;
 }
 ::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* Where two scrollbars meet: no white square, in either look. */
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 
@@ -608,6 +636,50 @@ select.input {
   color: var(--text-3);
 }
 
+/* ---------- details panels (Downloads, Links, Upload, Private) ----------
+   One way for all of them: the panel is as wide as you drag it (--pw, PanelResizer), and its
+   buttons sit in a bar at the bottom, in equal columns, labelled, the main one first. Three
+   columns; two when the panel is narrow; a lone last button takes the whole row. Nothing ever
+   runs past the panel's edge: a label that can't fit is cut with "…" (its title says it all). */
+.details-panel {
+  container: details / inline-size;
+}
+.panel-actions {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+}
+.panel-actions > * {
+  min-width: 0;
+}
+.panel-actions > .btn {
+  padding: 0 10px;
+  overflow: hidden;
+}
+.panel-actions .btn > svg {
+  flex: none;
+}
+/* A label that can't fit is cut with "…" (its full name is in the button's title). */
+.panel-actions .btn > .l {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-actions .wide {
+  grid-column: 1 / -1;
+}
+@container details (max-width: 335px) {
+  .panel-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .panel-actions > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
 kbd {
   font-family: var(--mono);
   font-size: 10.5px;

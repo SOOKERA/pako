@@ -61,12 +61,17 @@ pub fn theme_get(engine: State<'_, Arc<Engine>>) -> String {
 /// Saves the choice and tells every window. Settings' Save comes here too: the settings
 /// themselves never change it (an older copy can't put the previous one back).
 #[tauri::command]
-pub fn theme_set(app: AppHandle, engine: State<'_, Arc<Engine>>, theme: String) -> Result<(), String> {
+pub async fn theme_set(app: AppHandle, theme: String) -> Result<(), String> {
     let theme = choice(&theme);
-    let saved = engine.change_settings(|s| s.theme = theme.into());
-    // Shown even if saving failed (it then lasts until Pako closes).
+    // Told first (the windows cross-fade right away), saved off the window's thread.
     let _ = app.emit("theme-changed", theme);
-    saved.map_err(|e| e.to_string())
+    let engine = app.state::<Arc<Engine>>().inner().clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || engine.change_settings(|s| s.theme = theme.into())).await;
+    // Shown even if saving failed (it then lasts until Pako closes).
+    match saved {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// What a window shows now (light or dark, "Match Windows" decided by the page): the windows'

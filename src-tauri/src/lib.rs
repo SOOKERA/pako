@@ -38,6 +38,11 @@ mod consent;
 mod via;
 pub mod release;
 pub mod install;
+mod vault;
+mod private;
+mod private_files;
+mod private_send;
+mod private_lock_rules;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -81,11 +86,18 @@ struct Snapshot {
 type Snd<'a> = State<'a, Arc<send::Sender>>;
 type Dir<'a> = State<'a, direct::Direct>;
 
+/// A read that builds a big answer (Direct's state, the Dashboard's numbers…) runs off the
+/// window's thread: a Tauri command that isn't async runs on that thread, so the page being
+/// opened would stutter until it ends.
+async fn off<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    tauri::async_runtime::spawn_blocking(f).await.expect("background work")
+}
+
 // ---------- Direct (Pako to Pako) ----------
 
 #[tauri::command]
-fn direct_state(d: Dir<'_>) -> direct::View {
-    direct::view(&d)
+async fn direct_state(app: tauri::AppHandle) -> direct::View {
+    off(move || direct::view(&app.state::<direct::Direct>())).await
 }
 
 /// The Direct page is open: start Direct if it isn't running yet (and from then on with Pako).
@@ -106,64 +118,74 @@ fn direct_set_name(d: Dir<'_>, name: String) -> Result<(), String> {
 const NAME_FIRST: &str = "Add your name first: it's what your contacts see.";
 
 #[tauri::command]
-fn direct_add_contact(d: Dir<'_>, id: String, name: String) -> Result<(), String> {
+async fn direct_add_contact(d: Dir<'_>, id: String, name: String) -> Result<(), String> {
+    // (Off the window's thread: it saves the contacts.)
     let node = d.node()?;
     if !node.has_name() {
         return Err(NAME_FIRST.into());
     }
-    node.add_contact(&id, &name)
+    tauri::async_runtime::spawn_blocking(move || node.add_contact(&id, &name)).await.map_err(|e| e.to_string())?
 }
 
 /// Rename, "can send to me without asking", or their save folder (`folder` "" = the default).
 #[tauri::command]
-fn direct_edit_contact(d: Dir<'_>, id: String, name: Option<String>, auto_accept: Option<bool>, folder: Option<String>) -> Result<(), String> {
-    d.node()?.edit_contact(&id, name, auto_accept, folder.map(Some))
+async fn direct_edit_contact(d: Dir<'_>, id: String, name: Option<String>, auto_accept: Option<bool>, folder: Option<String>) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.edit_contact(&id, name, auto_accept, folder.map(Some))).await.map_err(|e| e.to_string())?
 }
 
 /// Favourite on or off (only on this PC).
 #[tauri::command]
-fn direct_set_favourite(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
-    d.node()?.set_favourite(&id, on)
+async fn direct_set_favourite(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.set_favourite(&id, on)).await.map_err(|e| e.to_string())?
 }
 
 /// Mute or unmute a contact: no pop-up, chime or bell line from them (not for My devices).
 #[tauri::command]
-fn direct_set_muted(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
-    d.node()?.set_muted(&id, on)
+async fn direct_set_muted(d: Dir<'_>, id: String, on: bool) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.set_muted(&id, on)).await.map_err(|e| e.to_string())?
 }
 
 /// "Check this contact": "often" (with `span` "hour", "today" or "week"), "auto" or "ask".
 #[tauri::command]
-fn direct_set_check(d: Dir<'_>, id: String, check: String, span: Option<String>) -> Result<(), String> {
+async fn direct_set_check(d: Dir<'_>, id: String, check: String, span: Option<String>) -> Result<(), String> {
     let (check, span) = direct::parse_check(&check, span.as_deref())?;
-    d.node()?.set_check(&id, check, span)
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.set_check(&id, check, span)).await.map_err(|e| e.to_string())?
 }
 
 /// A contact's tags (only on this PC; new names are added to your tags).
 #[tauri::command]
-fn direct_set_tags(d: Dir<'_>, id: String, tags: Vec<String>) -> Result<(), String> {
-    d.node()?.set_tags(&id, tags)
+async fn direct_set_tags(d: Dir<'_>, id: String, tags: Vec<String>) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.set_tags(&id, tags)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn direct_add_tag(d: Dir<'_>, name: String) -> Result<String, String> {
-    d.node()?.add_tag(&name)
+async fn direct_add_tag(d: Dir<'_>, name: String) -> Result<String, String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.add_tag(&name)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn direct_rename_tag(d: Dir<'_>, old: String, new: String) -> Result<(), String> {
-    d.node()?.rename_tag(&old, &new)
+async fn direct_rename_tag(d: Dir<'_>, old: String, new: String) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.rename_tag(&old, &new)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn direct_delete_tag(d: Dir<'_>, name: String) -> Result<(), String> {
-    d.node()?.delete_tag(&name);
+async fn direct_delete_tag(d: Dir<'_>, name: String) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.delete_tag(&name)).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-fn direct_remove_contact(d: Dir<'_>, id: String) -> Result<(), String> {
-    d.node()?.remove_contact(&id);
+async fn direct_remove_contact(d: Dir<'_>, id: String) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.remove_contact(&id)).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -212,6 +234,14 @@ async fn direct_send(d: Dir<'_>, contact: String, paths: Vec<String>, compress: 
     node.send(&contact, paths.into_iter().map(std::path::PathBuf::from).collect(), compress, name).await
 }
 
+/// "Send with Direct" / "Upload" on private files: handed over under their real names, read
+/// decrypted as they go (no readable copy), only while Private mode is open. Returns what to
+/// give Direct or Upload.
+#[tauri::command]
+fn private_hand_over(engine: Eng<'_>, ids: Vec<String>) -> Result<Vec<String>, String> {
+    engine.private_hand_over(&ids)
+}
+
 #[tauri::command]
 fn direct_cancel(d: Dir<'_>, id: String) -> Result<(), String> {
     d.node()?.cancel(&id);
@@ -219,8 +249,9 @@ fn direct_cancel(d: Dir<'_>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn direct_clear_history(d: Dir<'_>, contact: Option<String>) -> Result<(), String> {
-    d.node()?.clear_history(contact.as_deref());
+async fn direct_clear_history(d: Dir<'_>, contact: Option<String>) -> Result<(), String> {
+    let node = d.node()?;
+    tauri::async_runtime::spawn_blocking(move || node.clear_history(contact.as_deref())).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -228,8 +259,14 @@ fn direct_clear_history(d: Dir<'_>, contact: Option<String>) -> Result<(), Strin
 /// from here: it's shown in its folder instead (true = that happened).
 #[tauri::command]
 /// `part`: one file or folder of it (its place in the list), else all of it.
-fn direct_open(app: tauri::AppHandle, d: Dir<'_>, id: String, reveal: bool, part: Option<usize>) -> Result<bool, String> {
-    let item = d.node()?.history_item(&id).ok_or("Not in the history any more.")?;
+async fn direct_open(app: tauri::AppHandle, id: String, reveal: bool, part: Option<usize>) -> Result<bool, String> {
+    // Off the window's thread: it looks at the disk and asks Windows to open the file.
+    off(move || direct_open_now(&app, &id, reveal, part)).await
+}
+
+fn direct_open_now(app: &tauri::AppHandle, id: &str, reveal: bool, part: Option<usize>) -> Result<bool, String> {
+    let d = app.state::<direct::Direct>();
+    let item = d.node()?.history_item(id).ok_or("Not in the history any more.")?;
     let path = item.place_of(part).ok_or("Nothing was saved for this one.")?;
     if !path.exists() {
         return Err("It's not there any more (moved or deleted).".into());
@@ -252,18 +289,42 @@ fn direct_open(app: tauri::AppHandle, d: Dir<'_>, id: String, reveal: bool, part
     Ok(runs && !reveal)
 }
 
+/// A line from the window for the problems log (only what the window measured, never a name):
+/// today the tutorial's note when a step waited for something that kept moving.
 #[tauri::command]
-fn send_state(sender: Snd<'_>) -> send::SendState {
-    sender.state()
+async fn ui_note(message: String) {
+    let message: String = message.chars().take(400).collect();
+    let _ = tauri::async_runtime::spawn_blocking(move || errorlog::note(errorlog::Area::Other, &format!("Window: {message}"))).await;
+}
+
+/// What a problem report would carry: reads the problems log, off the window's thread.
+#[tauri::command]
+async fn report_info() -> errorlog::ReportInfo {
+    off(errorlog::report_info).await
+}
+
+#[tauri::command]
+async fn send_state(app: tauri::AppHandle) -> send::SendState {
+    off(move || app.state::<Arc<send::Sender>>().state()).await
 }
 
 /// Starts sending these files / folders. Looking through a big folder can take a moment: off
 /// the window's thread.
 #[tauri::command]
 /// `part_mb`: "ZIP in parts"' part size for this send (None = the setting).
-async fn send_start(sender: Snd<'_>, paths: Vec<String>, mode: Option<String>, name: Option<String>, delete_days: Option<u32>, host: Option<String>, part_mb: Option<u32>) -> Result<String, String> {
+#[allow(clippy::too_many_arguments)]
+async fn send_start(
+    sender: Snd<'_>,
+    paths: Vec<String>,
+    mode: Option<String>,
+    name: Option<String>,
+    delete_days: Option<u32>,
+    host: Option<String>,
+    part_mb: Option<u32>,
+    password: Option<String>,
+) -> Result<String, String> {
     let s = sender.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || s.start(paths, mode, name, delete_days, host, part_mb)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || s.start(paths, mode, name, delete_days, host, part_mb, password)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 
 /// Sizes of the files and folders in the Send basket (folders: all their files), off the window's
@@ -304,14 +365,16 @@ async fn sent_set_expiry(sender: Snd<'_>, id: String, at: Option<u64>) -> Result
 
 /// Your note on an upload.
 #[tauri::command]
-fn sent_set_note(sender: Snd<'_>, id: String, note: String) {
-    sender.set_note(&id, &note);
+async fn sent_set_note(app: tauri::AppHandle, id: String, note: String) {
+    // Saves the uploads list: off the window's thread.
+    let s = app.state::<Arc<send::Sender>>().inner().clone();
+    off(move || s.set_note(&id, &note)).await
 }
 
 /// An upload's link as a QR code (SVG), made on this PC.
 #[tauri::command]
-fn sent_qr(sender: Snd<'_>, id: String) -> Result<String, String> {
-    sender.qr(&id).map_err(|e| e.to_string())
+async fn sent_qr(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    off(move || app.state::<Arc<send::Sender>>().qr(&id).map_err(|e| e.to_string())).await
 }
 
 /// Asks Gofile, in the background, how often each sent item was downloaded. False = not now
@@ -373,8 +436,8 @@ async fn send_measure(sender: Snd<'_>, paths: Vec<String>, mode: Option<String>)
 
 /// Opens a sent file's download page in the browser.
 #[tauri::command]
-fn sent_open(app: tauri::AppHandle, sender: Snd<'_>, id: String) -> Result<(), String> {
-    let link = sender.link_of(&id).ok_or("Not on the list any more")?;
+async fn sent_open(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let link = app.state::<Arc<send::Sender>>().link_of(&id).ok_or("Not on the list any more")?;
     if !link.starts_with("https://") {
         return Err("Not a web link".into());
     }
@@ -425,13 +488,21 @@ async fn found_add(engine: Eng<'_>, text: String) -> Result<AddResult, String> {
     Ok(engine.inner().found_add(&text).await)
 }
 
+/// "Extract" on a finished archive or split set, with its password when it has one (handed to
+/// 7-Zip on its input only; never kept). Errors "password-needed" / "password-wrong" ask for it.
+#[tauri::command]
+async fn extract_now(engine: Eng<'_>, id: String, password: Option<String>) -> Result<String, String> {
+    let password = password.map(zeroize::Zeroizing::new);
+    engine.inner().clone().extract_now(&id, password).await.map(|p| p.display().to_string())
+}
+
 /// The picked Found links become downloads (`first` = Download first).
 #[tauri::command]
-async fn found_download(engine: Eng<'_>, ids: Vec<String>, first: bool, dest: Option<String>, notify: bool) -> Result<usize, String> {
+async fn found_download(engine: Eng<'_>, ids: Vec<String>, first: bool, dest: Option<String>, alert: Option<model::Alert>, private: Option<bool>) -> Result<usize, String> {
     let dest = dest.filter(|d| !d.trim().is_empty()).map(PathBuf::from);
     // Off the window's thread: thousands of files or a slow drive must not freeze it.
     let e = engine.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || e.found_download(&ids, first, dest, notify))
+    tauri::async_runtime::spawn_blocking(move || e.found_download(&ids, first, dest, alert, private.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())
 }
@@ -445,11 +516,11 @@ fn found_set(
     set_dest: bool,
     dest: Option<String>,
     priority: Option<Priority>,
-    notify: Option<bool>,
+    alert: Option<model::Alert>,
     extract: Option<bool>,
 ) {
     let dest = set_dest.then(|| dest.filter(|d| !d.trim().is_empty()).map(PathBuf::from));
-    engine.found_set(&ids, dest, priority, notify, extract);
+    engine.found_set(&ids, dest, priority, alert, extract);
 }
 
 /// Video quality for Links rows (details panel): `quality` None = the default from Settings,
@@ -476,14 +547,18 @@ fn set_extract(engine: Eng<'_>, ids: Vec<String>, on: bool) {
     engine.inner().set_extract(&ids, on);
 }
 
+/// Off · Pop-up · Important for these downloads.
 #[tauri::command]
-fn set_notify(engine: Eng<'_>, ids: Vec<String>, on: bool) {
-    engine.set_notify(&ids, on);
+/// (Off the window's thread: it saves the list.)
+async fn set_alert(app: tauri::AppHandle, ids: Vec<String>, alert: model::Alert) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.set_alert(&ids, alert)).await
 }
 
 #[tauri::command]
-fn set_folder(engine: Eng<'_>, ids: Vec<String>, dir: String) -> Result<(), String> {
-    engine.set_folder(&ids, PathBuf::from(dir)).map_err(|e| e.to_string())
+async fn set_folder(app: tauri::AppHandle, ids: Vec<String>, dir: String) -> Result<(), String> {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.set_folder(&ids, PathBuf::from(dir)).map_err(|e| e.to_string())).await
 }
 
 /// "Show" on a Found row waiting for a check: brings that small window to the front.
@@ -493,8 +568,10 @@ fn found_restore(engine: Eng<'_>, items: Vec<FoundItem>, at: usize) {
 }
 
 #[tauri::command]
-fn restore_downloads(engine: Eng<'_>, list: Vec<Download>) {
-    engine.restore_downloads(list);
+/// (Off the window's thread: it saves the list.)
+async fn restore_downloads(app: tauri::AppHandle, list: Vec<Download>) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.restore_downloads(list)).await
 }
 
 /// Drag and drop in the list: these downloads go just before `target` (none = at the end).
@@ -689,7 +766,27 @@ fn preview_url(
         let url = preview.register_item(Some(&id), source, name, quality, false);
         return Ok(PreviewInfo { url, converted: false, quality });
     }
-    Err("Install ffmpeg (Settings › Updates) to preview this kind of video.".into())
+    Err("To preview this kind of video, turn on Preview more video types (Settings › Features & updates).".into())
+}
+
+/// A player address for a video in Private mode (decrypted on the fly, only while it's open).
+#[tauri::command]
+fn private_play(engine: Eng<'_>, preview: State<'_, Arc<preview::Preview>>, id: String, quality: Option<u32>) -> Result<PreviewInfo, String> {
+    let d = engine.find(&id).filter(|d| d.vault && d.status == model::Status::Completed).ok_or("This private file is gone.")?;
+    if !vault::get().is_unlocked() {
+        return Err("Private mode is locked.".into());
+    }
+    if !preview::is_video(&d.name) {
+        return Err("Only videos play in Pako.".into());
+    }
+    let quality = quality.unwrap_or(engine.settings().preview_quality).clamp(240, 720);
+    if preview::plays_directly(&d.name) {
+        return Ok(PreviewInfo { url: preview.register_vault(d.final_path(), d.name, quality, false), converted: false, quality });
+    }
+    if components::ffmpeg().is_some() {
+        return Ok(PreviewInfo { url: preview.register_vault(d.final_path(), d.name, quality, true), converted: true, quality });
+    }
+    Err("Pako plays MP4 and WebM as they are. For this kind, turn on Preview more video types in Settings › Features & updates, or decrypt it and play it in another app.".into())
 }
 
 /// A video-site preview: asks the site for a small stream first, so the window can say why it can't play.
@@ -700,34 +797,37 @@ async fn preview_check(preview: State<'_, Arc<preview::Preview>>, url: String) -
 
 /// Dashboard history.
 #[tauri::command]
-fn stats(engine: Eng<'_>) -> stats::StatsView {
-    engine.stats()
+async fn stats(app: tauri::AppHandle) -> stats::StatsView {
+    off(move || app.state::<Arc<Engine>>().stats()).await
 }
 
 /// The Dashboard's numbers for "today", "week", "month" or "all".
 #[tauri::command]
-fn numbers_view(period: String) -> numbers::NumbersView {
-    numbers::view(&period)
+async fn numbers_view(period: String) -> numbers::NumbersView {
+    off(move || numbers::view(&period)).await
 }
 
 /// Everything with one Direct contact (Direct's details panel).
 #[tauri::command]
-fn numbers_contact(id: String) -> numbers::ContactNumbers {
-    numbers::contact(&id)
+async fn numbers_contact(id: String) -> numbers::ContactNumbers {
+    off(move || numbers::contact(&id)).await
 }
 
 /// Saves every kept event as a CSV file; returns how many rows.
 #[tauri::command]
-fn numbers_export(path: String) -> Result<usize, String> {
-    numbers::export_csv(std::path::Path::new(&path))
+async fn numbers_export(path: String) -> Result<usize, String> {
+    off(move || numbers::export_csv(std::path::Path::new(&path))).await
 }
 
 /// Forgets all statistics (the Dashboard's numbers and the speed history).
 #[tauri::command]
-fn numbers_reset(engine: Eng<'_>) -> Result<(), String> {
-    numbers::reset()?;
-    engine.reset_stats();
-    Ok(())
+async fn numbers_reset(app: tauri::AppHandle) -> Result<(), String> {
+    off(move || {
+        numbers::reset()?;
+        app.state::<Arc<Engine>>().reset_stats();
+        Ok(())
+    })
+    .await
 }
 
 /// Hide in the taskbar tray (Pako keeps downloading).
@@ -743,23 +843,31 @@ fn show_main(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn pause_all(engine: Eng<'_>) {
-    engine.pause_all();
+/// (Off the window's thread: it saves the list.)
+async fn pause_all(app: tauri::AppHandle) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.pause_all()).await
 }
 
 #[tauri::command]
-fn resume_all(engine: Eng<'_>) {
-    engine.inner().resume_all();
+/// (Off the window's thread: it saves the list.)
+async fn resume_all(app: tauri::AppHandle) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.resume_all()).await
 }
 
 #[tauri::command]
-fn pause(engine: Eng<'_>, ids: Vec<String>) {
-    engine.pause(&ids);
+/// (Off the window's thread: it saves the list.)
+async fn pause(app: tauri::AppHandle, ids: Vec<String>) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.pause(&ids)).await
 }
 
 #[tauri::command]
-fn resume(engine: Eng<'_>, ids: Vec<String>) {
-    engine.resume(&ids);
+/// (Off the window's thread: it saves the list.)
+async fn resume(app: tauri::AppHandle, ids: Vec<String>) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.resume(&ids)).await
 }
 
 #[tauri::command]
@@ -768,9 +876,11 @@ async fn remove(engine: Eng<'_>, ids: Vec<String>, delete_files: bool) -> Result
     let e = engine.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         e.remove(&ids, delete_files);
-        // The browser's cookies for these go now (not at the next clean-up).
+        // The browser's cookies for these go now (not at the next clean-up), and a takeover of
+        // the same file again is a new one (never an old answer replayed).
         for id in &ids {
             extension::forget_headers(id);
+            extension::TAKEOVERS.forget(id);
         }
     })
     .await
@@ -778,44 +888,58 @@ async fn remove(engine: Eng<'_>, ids: Vec<String>, delete_files: bool) -> Result
 }
 
 #[tauri::command]
-fn clear_completed(engine: Eng<'_>) {
-    engine.clear_completed();
+/// (Off the window's thread: it saves the list.)
+async fn clear_completed(app: tauri::AppHandle) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.clear_completed()).await
 }
 
 #[tauri::command]
-fn download_first(engine: Eng<'_>, ids: Vec<String>) {
-    engine.download_first(&ids);
+/// (Off the window's thread: it saves the list.)
+async fn download_first(app: tauri::AppHandle, ids: Vec<String>) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.download_first(&ids)).await
 }
 
 #[tauri::command]
-fn set_priority(engine: Eng<'_>, ids: Vec<String>, priority: Priority) {
-    engine.set_priority(&ids, priority);
+/// (Off the window's thread: it saves the list.)
+async fn set_priority(app: tauri::AppHandle, ids: Vec<String>, priority: Priority) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.set_priority(&ids, priority)).await
 }
 
 #[tauri::command]
-fn start_over(engine: Eng<'_>, ids: Vec<String>) {
-    engine.start_over(&ids);
+/// (Off the window's thread: it saves the list.)
+async fn start_over(app: tauri::AppHandle, ids: Vec<String>) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.start_over(&ids)).await
 }
 
 #[tauri::command]
-fn rename(engine: Eng<'_>, id: String, name: String) -> Result<String, String> {
-    engine.rename(&id, &name).map_err(|e| e.to_string())
+async fn rename(app: tauri::AppHandle, id: String, name: String) -> Result<String, String> {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.rename(&id, &name).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn move_in_queue(engine: Eng<'_>, ids: Vec<String>, top: bool) {
-    engine.move_in_queue(&ids, top);
+/// (Off the window's thread: it saves the list.)
+async fn move_in_queue(app: tauri::AppHandle, ids: Vec<String>, top: bool) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.move_in_queue(&ids, top)).await
 }
 
 #[tauri::command]
-fn parts(engine: Eng<'_>, id: String) -> Vec<engine::PartView> {
-    engine.parts(&id)
+async fn parts(app: tauri::AppHandle, id: String) -> Vec<engine::PartView> {
+    // Asked every second while a download's details show: never waits on the window's thread
+    // for the list's lock (held while the list is saved).
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.parts(&id)).await
 }
 
 /// Opens the download's original link in the browser.
 #[tauri::command]
-fn open_link(app: tauri::AppHandle, engine: Eng<'_>, id: String) -> Result<(), String> {
-    let d = engine.find(&id).ok_or("Download not found")?;
+async fn open_link(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let d = app.state::<Arc<Engine>>().find(&id).ok_or("Download not found")?;
     if !(d.link.starts_with("http://") || d.link.starts_with("https://")) {
         return Err("Not a web link".into());
     }
@@ -948,8 +1072,8 @@ fn save_setup(engine: Eng<'_>, choices: SetupChoices) -> Result<(), String> {
 /// Writes the extension's files (a folder for Chromium browsers, the signed file for Firefox)
 /// next to Pako's data and returns that folder.
 #[tauri::command]
-fn extension_files() -> Result<String, String> {
-    extension::write_files().map(|p| p.to_string_lossy().to_string())
+async fn extension_files() -> Result<String, String> {
+    off(|| extension::write_files().map(|p| p.to_string_lossy().to_string())).await
 }
 
 /// The browsers installed on this PC that Pako's extension works in.
@@ -960,8 +1084,9 @@ async fn browsers_found() -> Vec<system::Browser> {
 
 /// The browsers Pako's extension talked to Pako from (Settings shows them as "Connected").
 #[tauri::command]
-fn browsers_connected() -> Vec<seen::Seen> {
-    seen::read(&seen::file())
+async fn browsers_connected() -> Vec<seen::Seen> {
+    // Read each time the window gets the focus: off the window's thread.
+    off(|| seen::read(&seen::file())).await
 }
 
 /// What "Add to <browser>" did, for the steps shown under the button.
@@ -1070,7 +1195,9 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
         // opens on its terms, even when it was started hidden for this request or sits in the
         // tray, so the answer isn't only a "!" on the browser's button. Not for a read ahead or
         // its cancel (a menu opening or closing): the pick that follows opens it.
-        if !matches!(r.kind.as_str(), "ping" | "videoPrepare" | "videoPrepareCancel") {
+        // Nor for a download the browser reports on its own ("follow", the end of a "held"
+        // takeover): the user didn't just ask Pako for anything.
+        if !matches!(r.kind.as_str(), "ping" | "videoPrepare" | "videoPrepareCancel" | "follow" | "held") {
             tray::show_main(&app);
         }
         return Reply::error(consent::NOT_YET);
@@ -1231,7 +1358,7 @@ async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Req
                 engine.hold_for_ask(&id);
                 ask::enqueue(&id);
             } else {
-                ask::started();
+                ask::started(asked.private);
             }
             Reply::ok()
         }
@@ -1259,7 +1386,7 @@ fn hold_takeover(engine: Arc<Engine>, id: String, asked: extension::Request) -> 
     } else if engine.find(&id).is_some_and(|d| d.ask) {
         ask::enqueue_from_browser(&id, asked.total_bytes);
     } else {
-        ask::started();
+        ask::started(asked.private);
     }
     let reply = extension::Reply::held(&id);
     tauri::async_runtime::spawn(async move {
@@ -1273,7 +1400,11 @@ fn hold_takeover(engine: Arc<Engine>, id: String, asked: extension::Request) -> 
         }
 
         // Removed from Pako meanwhile: you don't want it (the browser drops it too).
-        let checked = if engine.find(&id).is_none() { Ok(()) } else { checked };
+        let removed = engine.find(&id).is_none();
+        if removed {
+            extension::TAKEOVERS.forget(&id);
+        }
+        let checked = if removed { Ok(()) } else { checked };
         if asked.paused && checked.is_ok() {
             // Pako has the same file: the Download with Pako window now (it waits paused).
             let done = engine.find(&id).is_none_or(|d| d.status == model::Status::Completed);
@@ -1281,7 +1412,7 @@ fn hold_takeover(engine: Arc<Engine>, id: String, asked: extension::Request) -> 
                 engine.hold_for_ask(&id);
                 ask::enqueue(&id);
             } else {
-                ask::started();
+                ask::started(asked.private);
             }
         }
         let checked = checked.map_err(|e| format!("Pako couldn't get this download itself ({}), so your browser downloads it and Pako follows it.", e.trim_end_matches('.')));
@@ -1385,14 +1516,26 @@ fn sweep_headers_soon(app: &tauri::AppHandle) {
 /// The ✕ on a "Done · private" row: off the list now (the file stays). Only a finished private
 /// download; anything else is left as it is.
 #[tauri::command]
-fn forget_private(engine: Eng<'_>, id: String) {
-    engine.forget_private(&id);
+async fn forget_private(app: tauri::AppHandle, id: String) {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.forget_private(&id)).await
 }
 
 /// Opens the finished file, or shows it in its folder.
 #[tauri::command]
-fn open_item(app: tauri::AppHandle, engine: Eng<'_>, id: String, reveal: bool) -> Result<(), String> {
-    let d = engine.find(&id).ok_or("Download not found")?;
+async fn open_item(app: tauri::AppHandle, id: String, reveal: bool) -> Result<(), String> {
+    // Off the window's thread: it looks at the disk, may save the list, and asks Windows to
+    // open the file.
+    off(move || open_item_now(&app, &id, reveal)).await
+}
+
+fn open_item_now(app: &tauri::AppHandle, id: &str, reveal: bool) -> Result<(), String> {
+    let engine = app.state::<Arc<Engine>>();
+    let d = engine.find(id).ok_or("Download not found")?;
+    // Private mode's files only open from the private list (a temporary copy, see private_files).
+    if d.vault {
+        return Err("Open it from Private mode.".into());
+    }
     let done = d.status == model::Status::Completed;
     if !done {
         // Left unfinished by an older Pako: shown under its new name.
@@ -1401,7 +1544,7 @@ fn open_item(app: tauri::AppHandle, engine: Eng<'_>, id: String, reveal: bool) -
     let path = if done { d.final_path() } else { d.part_path() };
     // A private window's download leaves the list once you've opened it (the file stays).
     if done && d.private {
-        engine.forget_private(&id);
+        engine.forget_private(id);
     }
     if reveal || !done {
         if path.exists() {
@@ -1417,17 +1560,21 @@ fn open_item(app: tauri::AppHandle, engine: Eng<'_>, id: String, reveal: bool) -
 /// What finished rows drag out to Explorer or another app: the files (or, for a finished
 /// folder, the folder itself), only those still on disk.
 #[tauri::command]
-fn drag_paths(engine: Eng<'_>, ids: Vec<String>, folder: bool) -> Vec<String> {
-    engine.drag_paths(&ids, folder)
+async fn drag_paths(app: tauri::AppHandle, ids: Vec<String>, folder: bool) -> Vec<String> {
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.drag_paths(&ids, folder)).await
 }
 
 #[tauri::command]
-fn open_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    // Only ever opens a folder, never runs a file.
-    if !std::path::Path::new(&path).is_dir() {
-        return Err("That folder doesn't exist.".into());
-    }
-    app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+async fn open_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    off(move || {
+        // Only ever opens a folder, never runs a file.
+        if !std::path::Path::new(&path).is_dir() {
+            return Err("That folder doesn't exist.".into());
+        }
+        app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// The Download with Pako window: the download it asks about now (None = nothing waits).
@@ -1444,7 +1591,12 @@ fn ask_answer(answer: model::AskAnswer) -> Result<(), String> {
 /// Help: "What's new" was shown for this version, "Take a quick tour?" was offered, and/or a
 /// page's tutorial was gone through.
 #[tauri::command]
-fn help_seen(engine: Eng<'_>, whats_new: Option<String>, tour_offered: Option<bool>, tour_done: Option<String>) -> Result<(), String> {
+async fn help_seen(app: tauri::AppHandle, whats_new: Option<String>, tour_offered: Option<bool>, tour_done: Option<String>) -> Result<(), String> {
+    // Writes settings.json: off the window's thread (a tutorial ending, What's new closing).
+    off(move || help_seen_now(&app.state::<Arc<Engine>>(), whats_new, tour_offered, tour_done)).await
+}
+
+fn help_seen_now(engine: &Engine, whats_new: Option<String>, tour_offered: Option<bool>, tour_done: Option<String>) -> Result<(), String> {
     engine
         .change_settings(|s| {
             if let Some(v) = whats_new {
@@ -1464,8 +1616,10 @@ fn help_seen(engine: Eng<'_>, whats_new: Option<String>, tour_offered: Option<bo
 
 /// The small window's pin: stays open and on top (or closes when you click elsewhere again).
 #[tauri::command]
-fn mini_pin(app: tauri::AppHandle, engine: Eng<'_>, on: bool) -> Result<(), String> {
-    engine.change_settings(|s| s.mini_pinned = on).map_err(|e| e.to_string())?;
+async fn mini_pin(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    // Saving the setting writes to disk: off the window's thread.
+    let e = app.state::<Arc<Engine>>().inner().clone();
+    off(move || e.change_settings(|s| s.mini_pinned = on).map_err(|e| e.to_string())).await?;
     tray::mini_pinned(&app, on);
     Ok(())
 }
@@ -1599,6 +1753,9 @@ pub fn run() {
             numbers::open(&paths::data_dir());
             // Cookie files left by a Pako that didn't close normally (before any video starts).
             crate::video::sweep_cookie_files();
+            // Private mode's temporary copies left by a Pako that didn't close normally.
+            private_files::sweep();
+            private::sweep_incoming();
             let engine = Engine::new(emit);
             engine.start();
             // Video preview: a tiny server on 127.0.0.1 only.
@@ -1811,6 +1968,8 @@ pub fn run() {
             add_links,
             found_add,
             found_download,
+            extract_now,
+            private_hand_over,
             found_remove,
             gate_focus,
             found_restore,
@@ -1852,7 +2011,7 @@ pub fn run() {
             cancel_when_done,
             found_existing,
             found_set,
-            set_notify,
+            set_alert,
             set_folder,
             theme::theme_get,
             theme::theme_set,
@@ -1903,10 +2062,36 @@ pub fn run() {
             notices::popup_fit,
             notices::popup_quiet,
             notices::popup_open,
-            errorlog::report_info,
+            notices::important_take,
+            notices::important_fit,
+            notices::important_shown,
+            notices::window_page,
+            report_info,
+            ui_note,
             errorlog::report_save,
             errorlog::report_mail,
-            errorlog::report_send
+            errorlog::report_send,
+            private::private_status,
+            private::private_setup,
+            private::private_unlock,
+            private::private_unlock_code,
+            private::private_lock,
+            private::private_change,
+            private::private_new_code,
+            private::private_drop_code,
+            private::private_confirm_code,
+            private::private_save_code,
+            private::private_tip_seen,
+            private::private_copy_code,
+            private::private_reset,
+            private::private_downloads,
+            private::private_remove,
+            private_play,
+            private_files::private_open,
+            private_files::private_keep_changes,
+            private_files::private_decrypt,
+            private_files::private_move_in,
+            private_lock_rules::private_playing
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Pako");
@@ -1916,6 +2101,12 @@ pub fn run() {
             QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
             // Quit normally after its window loaded: a new version on trial worked.
             updates::quit_normally();
+            // Private mode: edited copies saved into it, every copy wiped, the key out of memory.
+            if handle.try_state::<Arc<Engine>>().is_some() {
+                private_files::at_close(handle);
+            }
+            vault::get().lock();
+            notices::important_at_quit(handle);
             if let Some(engine) = handle.try_state::<Arc<Engine>>() {
                 engine.shutdown();
             }
@@ -2308,7 +2499,7 @@ mod tests {
             }
             assert!(engine.found_private_links().contains(&private[0].template.link));
             // Downloaded from Links: a private download.
-            let made = engine.found_download(&[private[0].id.clone()], false, None, false);
+            let made = engine.found_download(&[private[0].id.clone()], false, None, None, false);
             assert_eq!(made, 1);
             let d = engine.downloads().into_iter().find(|d| d.link.contains("private-link-a")).unwrap();
             assert!(d.private);
@@ -2358,7 +2549,7 @@ mod tests {
                 assert!(!no_bell(&got[1]), "a normal row's link page: in the bell as before");
             }
             heard.lock().unwrap().clear();
-            assert_eq!(engine.found_download(&rows, false, None, true), 2);
+            assert_eq!(engine.found_download(&rows, false, None, Some(model::Alert::Pop), false), 2);
             let set: Vec<model::Download> = engine.downloads().into_iter().filter(|d| d.link.contains("private-set")).collect();
             assert_eq!(set.len(), 2);
             assert!(set.iter().all(|d| d.private && d.group.as_deref() == Some("private-set")), "{set:?}");
@@ -2403,6 +2594,159 @@ mod tests {
             let text = format!("{got:?}");
             assert!(text.contains("download-failed") && text.contains("Download it once more from the page"), "{text}");
         }
+
+        // 10. Private mode on: a private window's download goes into the vault, encrypted as it's
+        //     written. It's never in the list the window shows, and nothing readable about it is
+        //     on disk. Locked, its row leaves memory; opened, it comes back and reads back whole.
+        rt.block_on(async {
+            let v = crate::vault::get();
+            v.setup("2468", "pin").unwrap();
+            let req = extension::validate(extension::Request {
+                kind: "download".into(),
+                urls: vec![url("/vault-secret-file.bin")],
+                private: true,
+                ..Default::default()
+            })
+            .unwrap();
+            let id = engine.add_from_browser(req).await.ids[0].clone();
+            let d = engine.find(&id).unwrap();
+            assert!(d.vault && d.private && !d.ask, "{d:?}");
+            assert!(wait_done(&id));
+            assert!(!engine.downloads().iter().any(|d| d.id == id), "never in the normal list");
+            assert_eq!(engine.private_downloads().len(), 1);
+            engine.save_now();
+            let raw = std::fs::read(v.file_path(&id)).unwrap();
+            let sample = file_bytes()[1000..1032].to_vec();
+            assert!(!raw.windows(32).any(|w| w == sample.as_slice()), "encrypted on disk");
+            let r = v.reader(&v.file_path(&id)).unwrap();
+            let mut back = Vec::new();
+            r.copy_to(&mut back, &|| false).unwrap();
+            assert_eq!(back, file_bytes());
+            // Locked: gone from memory; opened again: back from the sealed list.
+            v.lock();
+            engine.private_locked();
+            assert!(engine.find(&id).is_none());
+            v.unlock("2468").unwrap();
+            engine.private_opened();
+            assert_eq!(engine.find(&id).unwrap().status, model::Status::Completed);
+            // "Clear finished" on the normal list never takes a private one (that would delete
+            // its encrypted file).
+            engine.clear_completed();
+            engine.save_now();
+            assert!(engine.find(&id).is_some(), "Clear finished kept the private row");
+            assert!(v.file_path(&id).exists(), "its encrypted file is still there");
+            // Nothing in the data folder names it.
+            let mut stack = vec![data.clone()];
+            while let Some(dir) = stack.pop() {
+                for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if let Ok(bytes) = std::fs::read(&p) {
+                        assert!(!String::from_utf8_lossy(&bytes).contains("vault-secret"), "{} names it", p.display());
+                    }
+                }
+            }
+            // Decrypt… the three ways.
+            let out_dir = data.join("Decrypted");
+            // "Leave it as is": a readable copy, the private one stays.
+            let first = engine.private_decrypt(&id, out_dir.clone(), "leave", false, |_, _| {}).await.unwrap();
+            assert_eq!(std::fs::read(&first).unwrap(), file_bytes());
+            assert!(engine.find(&id).unwrap().vault && v.file_path(&id).exists());
+            // Never over an existing file.
+            let second = engine.private_decrypt(&id, out_dir.clone(), "leave", false, |_, _| {}).await.unwrap();
+            assert_ne!(first, second);
+            let _ = std::fs::remove_file(&second);
+            // "Move it to Downloads": an ordinary finished download at the copy, nothing left
+            // in Private mode.
+            let moved = engine.private_decrypt(&id, out_dir.clone(), "downloads", false, |_, _| {}).await.unwrap();
+            let d = engine.find(&id).unwrap();
+            assert!(!d.vault && !d.private && d.status == model::Status::Completed && d.final_path() == moved, "{d:?}");
+            assert!(engine.downloads().iter().any(|x| x.id == id));
+            assert!(!v.file_path(&id).exists());
+            engine.save_now();
+            assert!(engine.private_downloads().iter().all(|x| x.id != id));
+            // Back into Private mode, then "Take it off the private list": the copy stays, no
+            // record anywhere.
+            engine.move_to_private(&id).await.unwrap();
+            assert!(!moved.exists() && v.file_path(&id).exists());
+            let off = engine.private_decrypt(&id, out_dir.clone(), "off", false, |_, _| {}).await.unwrap();
+            assert_eq!(std::fs::read(&off).unwrap(), file_bytes());
+            assert!(engine.find(&id).is_none());
+            engine.save_now();
+            assert!(!v.file_path(&id).exists());
+            let left: Vec<String> = std::fs::read_dir(v.list_dir()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            assert!(!left.iter().any(|n| n.contains(&id)), "{left:?} {id}");
+
+            // "Download privately" from Links: a normal window's link goes straight into Private
+            // mode, and nothing in the data folder names it afterwards (safety copies included).
+            // A split set's part keeps its folder ("links-private-secret") for Decrypt….
+            let req = extension::validate(extension::Request {
+                kind: "links".into(),
+                urls: vec![url("/links-private-secret.part1.rar"), url("/links-private-secret.part2.rar")],
+                ..Default::default()
+            })
+            .unwrap();
+            engine.add_from_browser(req).await;
+            let rows: Vec<String> = engine.found().into_iter().filter(|f| f.template.link.contains("links-private-secret")).map(|f| f.id).collect();
+            assert_eq!(rows.len(), 2, "in Links");
+            engine.save_now();
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(engine.found_download(&rows, false, None, None, true), 2);
+            assert!(engine.found().iter().all(|f| !f.template.link.contains("links-private-secret")), "left Links");
+            let pd = engine.private_downloads().into_iter().find(|d| d.link.contains("links-private-secret.part1")).expect("in Private mode");
+            assert!(pd.vault && pd.private, "{pd:?}");
+            assert_eq!(pd.vault_folder.as_deref(), Some("links-private-secret"));
+            assert!(!engine.downloads().iter().any(|d| d.link.contains("links-private-secret")), "never in the normal list");
+            assert!(wait_done(&pd.id));
+            for other in engine.private_downloads().iter().filter(|d| d.link.contains("links-private-secret.part2")) {
+                assert!(wait_done(&other.id));
+            }
+            engine.save_now();
+            std::thread::sleep(Duration::from_millis(800));
+            for f in ["found.json", "found.bak", "downloads.json", "downloads.bak"] {
+                if let Ok(bytes) = std::fs::read(data.join(f)) {
+                    assert!(!String::from_utf8_lossy(&bytes).contains("links-private-secret"), "{f} names it");
+                }
+            }
+            // Decrypt… a folder's file with its folder: back in its place inside it.
+            let back = engine.private_decrypt(&pd.id, out_dir.clone(), "off", true, |_, _| {}).await.unwrap();
+            assert_eq!(back, out_dir.join("links-private-secret").join("links-private-secret.part1.rar"));
+            assert_eq!(std::fs::read(&back).unwrap(), file_bytes());
+
+            // "Download privately" in the Download with Pako window: the waiting row (in the list
+            // on disk while the window asked) goes into Private mode, and the list's file and its
+            // safety copy no longer name it.
+            let link = url("/ask-private-secret.bin");
+            let mut waiting = crate::engine::new_download(&link, model::Source::Http { url: link.clone() }, "ask-private-secret.bin".into(), data.join("Asked"), None);
+            waiting.ask = true;
+            let asked = waiting.id.clone();
+            engine.push_many(vec![waiting]);
+            engine.save_now();
+            assert!(String::from_utf8_lossy(&std::fs::read(data.join("downloads.json")).unwrap()).contains("ask-private-secret"), "on disk while asked");
+            engine
+                .answer_ask(model::AskAnswer {
+                    id: asked.clone(),
+                    action: "now".into(),
+                    stem: "ask-private-secret".into(),
+                    dir: data.join("Asked").display().to_string(),
+                    quality: None,
+                    alert: None,
+                    dont_ask: false,
+                    private: true,
+                })
+                .unwrap();
+            let a = engine.find(&asked).unwrap();
+            assert!(a.vault && a.private && !a.ask, "{a:?}");
+            assert!(wait_done(&asked));
+            engine.save_now();
+            for f in ["downloads.json", "downloads.bak"] {
+                if let Ok(bytes) = std::fs::read(data.join(f)) {
+                    assert!(!String::from_utf8_lossy(&bytes).contains("ask-private-secret"), "{f} names it");
+                }
+            }
+            v.reset().unwrap();
+        });
         engine.shutdown();
     }
 }

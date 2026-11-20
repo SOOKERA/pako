@@ -5,7 +5,7 @@
   // folder, quality (videos) and "Notify me". Several at once come one after another.
   import { onMount, tick } from "svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-  import { api, inApp, listen, type AskView } from "$lib/api";
+  import { api, inApp, listen, type AskView, type PrivateStatus } from "$lib/api";
   import { bytes } from "$lib/format";
   import FileIcon from "$lib/FileIcon.svelte";
   import Logo from "$lib/Logo.svelte";
@@ -14,6 +14,8 @@
   import { fadeIn, pop } from "$lib/motion";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import Icon from "$lib/Icon.svelte";
+  import SegPick from "$lib/SegPick.svelte";
+  import { ALERTS, type Alert } from "$lib/alert";
   import type { MenuItem } from "$lib/menu";
   import { devicesApi, downloadOnMenu, targets, type DownloadTarget } from "$lib/devices.svelte";
 
@@ -21,10 +23,13 @@
   /** "Download on" another PC: offered while one is online, never for a video caught on a page
    *  or a recording (only this PC can make those). */
   const sendable = $derived(targets.list.length > 0 && !view?.hereOnly);
+  /** Private mode is on: "Download privately" (straight into it, encrypted) is offered too. */
+  let privOn = $state(false);
   let stem = $state("");
   let dir = $state("");
   let quality = $state(1080);
-  let notify = $state(true);
+  /** Off · Pop-up · Important for this download (starts at Settings' New downloads). */
+  let alert = $state<Alert>("pop");
   let dontAsk = $state(false);
   let busy = $state(false);
   let error = $state("");
@@ -60,18 +65,25 @@
     stem = v.stem;
     dir = v.dir;
     quality = v.quality;
-    notify = v.notify;
+    alert = v.alert;
     await tick();
     nameEl?.focus();
     nameEl?.select();
   }
 
-  // "Download on ▾" (only while one of your devices can take links): the arrow next to the
-  // main button. The main button always downloads on this PC.
+  // The arrow next to the main button (while one of your devices can take links, or Private
+  // mode is on): "Download on" another PC, and "Download privately". The main button always
+  // downloads on this PC, the usual way.
   let onMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const more = $derived(sendable || privOn);
   function openOn(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    onMenu = { x: r.right, y: r.top - 6, items: downloadOnMenu(targets.list, () => answer("now"), sendTo, true) };
+    const items: MenuItem[] = sendable ? downloadOnMenu(targets.list, () => answer("now"), sendTo, true) : [{ label: "Download on this PC", icon: "download", action: () => answer("now") }];
+    if (privOn) {
+      // Right under "Download on this PC": into Private mode, encrypted from its first byte.
+      items.splice(1, 0, { label: "Download privately", icon: "lock", hint: "Private mode", action: () => answer("now", true) });
+    }
+    onMenu = { x: r.right, y: r.top - 6, items };
   }
   /** That device downloads it instead, and it leaves this PC (the window moves on). */
   async function sendTo(t: DownloadTarget) {
@@ -90,19 +102,25 @@
   onMount(() => {
     targets.start();
     load();
+    api
+      .privateStatus()
+      .then((st) => (privOn = st.on))
+      .catch(() => {});
     if (!inApp) return;
     const un = listen("ask-changed", () => load());
+    const unPriv = listen<PrivateStatus>("private-changed", (e) => (privOn = e.payload.on));
     return () => {
       un.then((f) => f());
+      unPriv.then((f) => f());
     };
   });
 
-  async function answer(action: "now" | "queue" | "cancel") {
+  async function answer(action: "now" | "queue" | "cancel", privately = false) {
     if (!view || busy) return;
     busy = true;
     error = "";
     try {
-      await api.askAnswer({ id: view.id, action, stem, dir, quality: view.video ? quality : null, notify, dontAsk });
+      await api.askAnswer({ id: view.id, action, stem, dir, quality: view.video ? quality : null, alert, dontAsk, private: privately });
       if (!inApp) busy = false;
     } catch (e) {
       error = String(e);
@@ -176,10 +194,10 @@
       </div>
 
       <div class="opts">
-        <label class="notify">
-          <button class="switch" class:on={notify} role="switch" aria-checked={notify} aria-label="Notify me when it's done" onclick={() => (notify = !notify)}></button>
-          <span>Notify me when it's done</span>
-        </label>
+        <div class="notify" title="Notify when done">
+          <Icon name={alert === "off" ? "bell-off" : "bell"} size={14} />
+          <SegPick small label="Notify when done" options={ALERTS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={alert} onpick={(a) => (alert = a)} />
+        </div>
         <label class="dont" title="You can turn it back on in Settings › Browser extension">
           <button class="check" class:on={dontAsk} role="checkbox" aria-checked={dontAsk} aria-label="Don't ask again" onclick={() => (dontAsk = !dontAsk)}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
@@ -195,12 +213,19 @@
       <button class="btn ghost" disabled={busy} onclick={() => answer("cancel")}>Cancel</button>
       {#if busyElse}
         <button class="btn" disabled={busy} onclick={() => answer("queue")}>Add to queue</button>
-        <button class="btn primary" class:joined={sendable} disabled={busy} onclick={() => answer("now")}>Download now</button>
+        <button class="btn primary" class:joined={more} disabled={busy} onclick={() => answer("now")}>Download now</button>
       {:else}
-        <button class="btn primary" class:joined={sendable} disabled={busy} onclick={() => answer("now")}>Download</button>
+        <button class="btn primary" class:joined={more} disabled={busy} onclick={() => answer("now")}>Download</button>
       {/if}
-      {#if sendable}
-        <button class="btn primary more" disabled={busy} aria-label="Download on" aria-haspopup="menu" title="Download on this PC or on one of your devices" onclick={openOn}>
+      {#if more}
+        <button
+          class="btn primary more"
+          disabled={busy}
+          aria-label={sendable && privOn ? "Download on another PC, or privately" : sendable ? "Download on another PC" : "Download privately"}
+          aria-haspopup="menu"
+          title={sendable && privOn ? "Download on this PC, privately, or on one of your devices" : sendable ? "Download on this PC or on one of your devices" : "Download, or Download privately"}
+          onclick={openOn}
+        >
           <Icon name="chevron" size={12} stroke={2.6} />
         </button>
       {/if}
@@ -349,10 +374,8 @@
   .notify {
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 13px;
-    color: var(--text-2);
-    cursor: pointer;
+    gap: 8px;
+    color: var(--text-3);
   }
   .foot {
     flex: none;

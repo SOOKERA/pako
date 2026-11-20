@@ -149,6 +149,36 @@ pub enum Mode {
     Parts,
 }
 
+/// "Protect with a password": the shortest password Pako takes.
+pub const PASSWORD_MIN: usize = 8;
+const NEEDS_7ZIP: &str = "Protecting an upload with a password needs 7-Zip: Settings › Features & updates › What Pako can do.";
+
+/// The archive's name from the upload's name ("Photos.zip" → "Photos", "3 files" stays).
+fn archive_stem(name: &str) -> String {
+    let base = name.strip_suffix(".zip").unwrap_or(name);
+    let clean: String = base.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+    let clean = clean.trim().trim_end_matches('.').to_string();
+    if clean.is_empty() { "Upload".into() } else { clean }
+}
+
+/// 7-Zip's arguments for a protected archive: AES-256 with the file names hidden (`-mhe=on`),
+/// stored (or compressed for "Compressed ZIP"), in parts of `part_mb` MB when asked. `-p`
+/// without a value: the password is read from 7-Zip's input.
+fn seven_zip_args(out: &Path, list: &Path, compress: bool, part_mb: u32) -> Vec<std::ffi::OsString> {
+    let mut a: Vec<std::ffi::OsString> = ["a", "-t7z", "-mhe=on", if compress { "-mx=5" } else { "-mx=0" }, "-p", "-scsUTF-8", "-sccUTF-8", "-bso0", "-bsp0", "-y"]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    if part_mb > 0 {
+        a.push(format!("-v{part_mb}m").into());
+    }
+    a.push(out.as_os_str().to_owned());
+    let mut l = std::ffi::OsString::from("@");
+    l.push(list.as_os_str());
+    a.push(l);
+    a
+}
+
 /// "ZIP in parts": the usual part size (MB), and what a typed-in size may be.
 pub const PART_DEFAULT_MB: u32 = 500;
 pub const PART_MIN_MB: u32 = 50;
@@ -237,7 +267,8 @@ fn unique_tops(paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()
         .map(|p| {
-            let base = file_name(p);
+            // A private folder's file keeps its place in it ("Trip/Maps/Route.gpx").
+            let base = crate::private_send::known(p).map(|(n, _)| n).unwrap_or_else(|| file_name(p));
             let mut name = base.clone();
             let mut n = 2;
             while !seen.insert(name.to_lowercase()) {
@@ -250,7 +281,17 @@ fn unique_tops(paths: &[PathBuf]) -> Vec<String> {
 }
 
 fn file_name(p: &Path) -> String {
+    // A private file (see private_send): its real name, its folder's name first.
+    if let Some((name, _)) = crate::private_send::known(p) {
+        return name.rsplit('/').next().unwrap_or(&name).to_string();
+    }
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into())
+}
+
+/// Size and change time of a picked file: a private file's real size (read decrypted as it
+/// goes up), else the file's own.
+fn size_of(p: &Path) -> io::Result<(u64, std::time::SystemTime)> {
+    crate::private_send::info(p).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "This file isn't there any more."))
 }
 
 /// Turns the picked files and folders into what gets uploaded.
@@ -288,6 +329,8 @@ impl Payload {
 #[serde(rename_all = "camelCase")]
 pub struct PathSize {
     pub path: String,
+    /// The name to show (a private file's real name; else its file name).
+    pub name: String,
     pub dir: bool,
     pub size: u64,
     pub files: usize,
@@ -300,7 +343,7 @@ pub fn path_sizes(paths: &[String]) -> Vec<PathSize> {
         .iter()
         .map(|p| {
             let path = PathBuf::from(p);
-            let mut out = PathSize { path: p.clone(), dir: path.is_dir(), size: 0, files: 0, error: None };
+            let mut out = PathSize { path: p.clone(), name: file_name(&path), dir: path.is_dir(), size: 0, files: 0, error: None };
             if out.dir {
                 let mut entries = Vec::new();
                 match walk(&path, "", &mut entries) {
@@ -312,9 +355,9 @@ pub fn path_sizes(paths: &[String]) -> Vec<PathSize> {
                     Err(e) => out.error = Some(format!("Couldn't read this folder ({e}).")),
                 }
             } else {
-                match std::fs::metadata(&path) {
-                    Ok(m) => {
-                        out.size = m.len();
+                match size_of(&path) {
+                    Ok((len, _)) => {
+                        out.size = len;
                         out.files = 1;
                     }
                     Err(_) => out.error = Some("This file isn't there any more.".into()),
@@ -332,14 +375,8 @@ pub fn gather(paths: &[PathBuf], mode: Mode) -> Result<Payload> {
     // One file goes as it is, unless "Compressed ZIP" or "ZIP in parts" was picked for it (a
     // plain ZIP of one file would only add a step for the receiver).
     if paths.len() == 1 && paths[0].is_file() && !matches!(mode, Mode::Compress | Mode::Parts) {
-        let m = std::fs::metadata(&paths[0])?;
-        return Ok(Payload::File(Entry {
-            path: paths[0].clone(),
-            name: file_name(&paths[0]),
-            size: m.len(),
-            mtime: m.modified().unwrap_or(UNIX_EPOCH),
-            dir: false,
-        }));
+        let (size, mtime) = size_of(&paths[0])?;
+        return Ok(Payload::File(Entry { path: paths[0].clone(), name: file_name(&paths[0]), size, mtime, dir: false }));
     }
     let tops: Vec<String> = if mode == Mode::AsTheyAre { paths.iter().map(|p| file_name(p)).collect() } else { unique_tops(paths) };
     let mut entries = Vec::new();
@@ -347,8 +384,8 @@ pub fn gather(paths: &[PathBuf], mode: Mode) -> Result<Payload> {
         if p.is_dir() {
             walk(p, &top, &mut entries)?;
         } else if p.is_file() {
-            let m = std::fs::metadata(p)?;
-            entries.push(Entry { path: p.clone(), name: top, size: m.len(), mtime: m.modified().unwrap_or(UNIX_EPOCH), dir: false });
+            let (size, mtime) = size_of(p)?;
+            entries.push(Entry { path: p.clone(), name: top, size, mtime, dir: false });
         }
         if entries.len() > MAX_FILES {
             bail!("That's more than {MAX_FILES} files: Gofile can't hold that many.");
@@ -679,7 +716,7 @@ pub fn write_zip<W: Write>(entries: &[Entry], pack: Pack, out: &mut W, stop: &At
         if e.dir {
             // Just the name, ending in "/".
         } else if let Some(level) = level {
-            let mut src = BufReader::with_capacity(1024 * 1024, File::open(&e.path)?);
+            let mut src = BufReader::with_capacity(1024 * 1024, crate::private_send::open(&e.path)?);
             let mut enc = flate2::write::DeflateEncoder::new(&mut w, flate2::Compression::new(level));
             loop {
                 if stop.load(Ordering::Relaxed) {
@@ -695,7 +732,7 @@ pub fn write_zip<W: Write>(entries: &[Entry], pack: Pack, out: &mut W, stop: &At
             }
             enc.finish()?;
         } else {
-            let mut src = BufReader::with_capacity(1024 * 1024, File::open(&e.path)?);
+            let mut src = BufReader::with_capacity(1024 * 1024, crate::private_send::open(&e.path)?);
             loop {
                 if stop.load(Ordering::Relaxed) {
                     return Err(io::Error::other("cancelled"));
@@ -936,6 +973,365 @@ fn write_parts(entries: &[Entry], dir: &Path, zip: &str, part_size: u64, stop: &
     w.finish()
 }
 
+// ---------- private files in parts ----------
+//
+// Private files sent as "ZIP in parts": the ZIP (the same one "ZIP in parts" always makes) is
+// made from the files read decrypted, one part at a time, in a folder of Pako's own private
+// folder that only this Windows user can open. A part is made when its turn to go up comes and
+// wiped the moment it's up: at most one part is ever on the disk. After a cut, a Pause or a
+// restart, the next part is made again from the private files (the same bytes, so the parts
+// already up still fit together). Private mode locking stops it and wipes the part in progress.
+
+/// A private send in parts: where its parts are made, and how.
+struct PrivateParts {
+    dir: PathBuf,
+    /// The ZIP's name (the parts are "<zip>.001"…).
+    zip: String,
+    part: u64,
+    /// What was picked (made into the ZIP's files when the first part is needed: after a restart,
+    /// once Private mode is open again).
+    paths: Vec<String>,
+    entries: Mutex<Option<Vec<Entry>>>,
+    maker: Mutex<Option<PartGen>>,
+    /// The last part made whole and on the disk (until it's wiped once up).
+    whole: Mutex<Option<usize>>,
+    /// The private files as they were when the upload started (`private_fingerprint`): a part
+    /// made again later must come from the same files, or it wouldn't fit the parts already up.
+    fingerprint: String,
+}
+
+/// The thread making the parts, one at a time.
+struct PartGen {
+    /// The last part it made and said (it waits for "go on" before the next).
+    made: usize,
+    /// Told to make the part after `made` (or making its first): its answer is still to come.
+    pending: bool,
+    /// This thread's number (a new thread after a cut gets a new one).
+    num: u64,
+    go: std::sync::mpsc::SyncSender<bool>,
+    ready: Arc<Mutex<std::sync::mpsc::Receiver<io::Result<usize>>>>,
+    stop: Arc<AtomicBool>,
+}
+
+static PART_GENS: AtomicU64 = AtomicU64::new(0);
+
+impl PartGen {
+    fn end(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.go.try_send(false);
+    }
+}
+
+static PRIVATE_PARTS: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, Arc<PrivateParts>>>> = std::sync::LazyLock::new(Default::default);
+
+/// Where a private send's parts are made (inside Pako's owner-only private folder).
+fn private_parts_dir(job_id: &str) -> PathBuf {
+    crate::private_files::open_dir().join(format!("send-{job_id}"))
+}
+
+/// Makes the parts folder (only this Windows user can open its parent) and notes the send.
+fn private_parts_register(dir: &Path, zip: &str, part: u64, paths: Vec<String>, entries: Option<Vec<Entry>>, fingerprint: String) -> io::Result<()> {
+    crate::video::make_private_dir(&crate::private_files::open_dir())?;
+    std::fs::create_dir_all(dir)?;
+    let pp = Arc::new(PrivateParts { dir: dir.to_path_buf(), zip: zip.to_string(), part: part.max(1), paths, entries: Mutex::new(entries), maker: Mutex::new(None), whole: Mutex::new(None), fingerprint });
+    if let Some(old) = PRIVATE_PARTS.lock().unwrap().insert(dir.to_path_buf(), pp) {
+        if let Some(g) = old.maker.lock().unwrap().take() {
+            g.end();
+        }
+    }
+    Ok(())
+}
+
+/// What tells the picked private files as they are now: each encrypted file's name (its random
+/// id, never the real name), size and last change. Saving a file back into Private mode changes
+/// it. Not readable: only compared.
+fn private_fingerprint(paths: &[String]) -> String {
+    let mut h = blake3::Hasher::new();
+    for p in paths {
+        let path = Path::new(p);
+        // A private file by its random id; any other picked file by its path (mixed in parts:
+        // one of them changing would make parts that don't fit either).
+        if crate::private_send::is_private(path) {
+            h.update(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().as_bytes());
+        } else {
+            h.update(p.as_bytes());
+        }
+        if let Ok(m) = std::fs::metadata(path) {
+            h.update(&m.len().to_le_bytes());
+            h.update(&crate::private_send::mtime_ms(m.modified().unwrap_or(UNIX_EPOCH)).to_le_bytes());
+        }
+    }
+    h.finalize().to_hex().to_string()
+}
+
+/// Said when a private file changed since its upload in parts started.
+const PRIVATE_CHANGED: &str = "A private file changed since this upload started, so its parts wouldn't fit together. Start the upload again.";
+
+fn private_parts_of(path: &Path) -> Option<Arc<PrivateParts>> {
+    PRIVATE_PARTS.lock().unwrap().get(path.parent()?).cloned()
+}
+
+/// Writes the ZIP's bytes into its parts, from the part `first` on (what comes before is
+/// skipped), one part at a time: after each, it says so and waits to be told to go on.
+struct GateWriter {
+    dir: PathBuf,
+    zip: String,
+    part: u64,
+    pos: u64,
+    skip_to: u64,
+    cur: Option<(usize, io::BufWriter<File>)>,
+    go: std::sync::mpsc::Receiver<bool>,
+    ready: std::sync::mpsc::SyncSender<io::Result<usize>>,
+}
+
+impl GateWriter {
+    /// The part being made is whole: on the disk, said, then wait for "go on".
+    fn part_done(&mut self, wait: bool) -> io::Result<()> {
+        if let Some((idx, w)) = self.cur.take() {
+            let f = w.into_inner().map_err(|e| e.into_error())?;
+            f.sync_all()?;
+            drop(f);
+            let _ = self.ready.send(Ok(idx));
+            if wait && !matches!(self.go.recv(), Ok(true)) {
+                return Err(io::Error::other("upload stopped"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Write for GateWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let mut i = 0;
+        while i < data.len() {
+            let left = (data.len() - i) as u64;
+            if self.pos < self.skip_to {
+                let n = left.min(self.skip_to - self.pos);
+                self.pos += n;
+                i += n as usize;
+                continue;
+            }
+            let idx = (self.pos / self.part) as usize;
+            if self.cur.as_ref().is_some_and(|(c, _)| *c != idx) {
+                self.part_done(true)?;
+            }
+            if self.cur.is_none() {
+                let f = File::create(self.dir.join(part_name(&self.zip, idx + 1)))?;
+                self.cur = Some((idx, io::BufWriter::with_capacity(1024 * 1024, f)));
+            }
+            let room = (idx as u64 + 1) * self.part - self.pos;
+            let n = left.min(room) as usize;
+            self.cur.as_mut().expect("opened above").1.write_all(&data[i..i + n])?;
+            self.pos += n as u64;
+            i += n;
+        }
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self.cur.as_mut() {
+            Some((_, w)) => w.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Before a private part is read to go up: makes it if it isn't there (the next one of its
+/// thread, or a new thread from that part on after a cut). Nothing for any other file. Ok only
+/// once the part is whole on the disk (never a part still being written). Never holds the parts'
+/// lock while it waits, so Cancel and a lock aren't held up.
+fn private_part_ready(path: &Path) -> io::Result<()> {
+    let Some(pp) = private_parts_of(path) else { return Ok(()) };
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let idx = (0..MAX_PARTS as usize).find(|&i| part_name(&pp.zip, i + 1) == name).ok_or_else(|| io::Error::other("Not one of this upload's parts."))?;
+    if *pp.whole.lock().unwrap() == Some(idx) && path.exists() {
+        return Ok(());
+    }
+    // Locked: nothing is made (and nothing is read) until Private mode is open again.
+    if !crate::private_send::is_open() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP));
+    }
+    // Every part from the files the upload started with (one saved back since wouldn't fit).
+    if private_fingerprint(&pp.paths) != pp.fingerprint {
+        if let Some(g) = pp.maker.lock().unwrap().take() {
+            g.end();
+        }
+        wipe_parts_in(&pp.dir);
+        return Err(io::Error::other(PRIVATE_CHANGED));
+    }
+    let (num, ready) = {
+        let mut maker = pp.maker.lock().unwrap();
+        let following = maker.as_ref().is_some_and(|g| g.made.wrapping_add(1) == idx);
+        match maker.as_mut() {
+            // Already asked for this very part (an earlier try gave up waiting): wait for it.
+            Some(g) if following && g.pending => {}
+            // The thread made the part before this one: on to this one.
+            Some(g) if following => {
+                let _ = g.go.send(true);
+                g.pending = true;
+            }
+            _ => {
+                // A cut, a Pause, a restart, or the first part: a new thread from this part on
+                // (only the part asked for is ever on the disk).
+                if let Some(g) = maker.take() {
+                    g.end();
+                }
+                *pp.whole.lock().unwrap() = None;
+                wipe_parts_in(&pp.dir);
+                let entries = {
+                    let mut e = pp.entries.lock().unwrap();
+                    if e.is_none() {
+                        let paths: Vec<PathBuf> = pp.paths.iter().map(PathBuf::from).collect();
+                        match gather(&paths, Mode::Parts) {
+                            Ok(Payload::Zip { entries, .. }) => *e = Some(entries),
+                            _ => return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP)),
+                        }
+                    }
+                    e.clone().expect("set above")
+                };
+                std::fs::create_dir_all(&pp.dir)?;
+                let (go_tx, go_rx) = std::sync::mpsc::sync_channel::<bool>(1);
+                let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<io::Result<usize>>(1);
+                let stop = Arc::new(AtomicBool::new(false));
+                let mut w = GateWriter { dir: pp.dir.clone(), zip: pp.zip.clone(), part: pp.part, pos: 0, skip_to: idx as u64 * pp.part, cur: None, go: go_rx, ready: ready_tx.clone() };
+                let s2 = stop.clone();
+                std::thread::Builder::new()
+                    .name("pako-private-parts".into())
+                    .spawn(move || {
+                        let made = write_zip(&entries, Pack::Off, &mut w, &s2, Z64_AT).and_then(|_| w.part_done(false));
+                        if let Err(e) = made {
+                            let _ = ready_tx.send(Err(e));
+                        }
+                    })
+                    .map_err(io::Error::other)?;
+                let num = PART_GENS.fetch_add(1, Ordering::SeqCst);
+                *maker = Some(PartGen { made: idx.wrapping_sub(1), pending: true, num, go: go_tx, ready: Arc::new(Mutex::new(ready_rx)), stop });
+            }
+        }
+        let g = maker.as_ref().expect("set above");
+        (g.num, g.ready.clone())
+    };
+    // Waits for the part, a little at a time, without the parts' lock (Cancel or a lock ends
+    // the thread meanwhile: then this stops too).
+    loop {
+        let answer = ready.lock().unwrap().recv_timeout(Duration::from_millis(200));
+        let mut maker = pp.maker.lock().unwrap();
+        let still = maker.as_ref().is_some_and(|g| g.num == num);
+        match answer {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if still => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP)),
+            Ok(Ok(k)) if k == idx && still => {
+                let g = maker.as_mut().expect("still");
+                g.made = k;
+                g.pending = false;
+                *pp.whole.lock().unwrap() = Some(idx);
+                return Ok(());
+            }
+            Ok(Ok(_)) => return Err(io::Error::other("The parts came out of order. Try again.")),
+            Ok(Err(e)) => {
+                if still {
+                    maker.take();
+                }
+                return Err(e);
+            }
+            Err(_) => {
+                if still {
+                    maker.take();
+                }
+                return Err(io::Error::other("Making the part stopped. Try again."));
+            }
+        }
+    }
+}
+
+/// A private part is made before its upload starts (never while the host waits for its bytes).
+/// Err(Some): final (Private mode locked, or a file changed: trying again won't help); Err(None):
+/// try again. Nothing for any other file.
+pub(crate) async fn private_part_before(e: &Entry) -> Result<(), Option<String>> {
+    if private_parts_of(&e.path).is_none() {
+        return Ok(());
+    }
+    let p = e.path.clone();
+    match tokio::task::spawn_blocking(move || private_part_ready(&p)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) if err.kind() == io::ErrorKind::PermissionDenied || err.to_string() == PRIVATE_CHANGED => Err(Some(err.to_string())),
+        Ok(Err(_)) => Err(None),
+        Err(err) => Err(Some(err.to_string())),
+    }
+}
+
+/// Wipes every part file in a private parts folder (the folder stays).
+fn wipe_parts_in(dir: &Path) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.path().is_file() {
+                crate::private_files::wipe(&e.path());
+            }
+        }
+    }
+}
+
+/// A private part is up: wiped at once.
+fn private_part_up(path: &Path) {
+    if let Some(pp) = private_parts_of(path) {
+        *pp.whole.lock().unwrap() = None;
+        if path.exists() {
+            crate::private_files::wipe(path);
+        }
+    }
+}
+
+/// A private send in parts stopped (failed, cancelled, done): its thread ends, its part goes.
+fn private_parts_release(dir: &Path) {
+    let pp = PRIVATE_PARTS.lock().unwrap().get(dir).cloned();
+    if let Some(pp) = pp {
+        if let Some(g) = pp.maker.lock().unwrap().take() {
+            g.end();
+        }
+        *pp.whole.lock().unwrap() = None;
+        wipe_parts_in(&pp.dir);
+    }
+}
+
+/// Private mode locked: every private send in parts stops, its part in progress wiped (an
+/// upload reading it stops there).
+pub fn private_parts_locked() {
+    let all: Vec<Arc<PrivateParts>> = PRIVATE_PARTS.lock().unwrap().values().cloned().collect();
+    for pp in all {
+        if let Some(g) = pp.maker.lock().unwrap().take() {
+            g.end();
+        }
+        *pp.whole.lock().unwrap() = None;
+        wipe_parts_in(&pp.dir);
+        // Made again from the files when it goes on (they're read again then).
+        *pp.entries.lock().unwrap() = None;
+    }
+}
+
+/// Password-protected uploads that include private files (7-Zip reads readable copies of them).
+static PROTECTED_PRIVATE: Mutex<Vec<std::sync::Weak<Job>>> = Mutex::new(Vec::new());
+
+/// Said when Private mode locked while private files were being uploaded.
+const PRIVATE_LOCKED_STOP: &str = "Private mode locked, so this upload stopped. Open Private mode, then Try again.";
+
+/// Private mode locked: every password-protected upload of private files stops. One still making
+/// its archive stops 7-Zip (its readable copies are wiped); one already uploading the archive
+/// stops too, keeping what's up for "Try again" (never deleted as a Cancel would).
+pub fn private_protected_locked() {
+    let jobs: Vec<Arc<Job>> = {
+        let mut all = PROTECTED_PRIVATE.lock().unwrap();
+        all.retain(|w| w.strong_count() > 0);
+        all.iter().filter_map(|w| w.upgrade()).collect()
+    };
+    for job in jobs {
+        if job.uploading() {
+            job.locked_stop.store(true, Ordering::SeqCst);
+            // What earlier tries put up stays.
+            job.resumed.store(true, Ordering::SeqCst);
+            job.cancel.cancel();
+        }
+    }
+}
+
 /// What's left of an upload in parts, kept with its Uploaded entry until every part is up, so
 /// "Try again" (after a restart or a power cut too) sends only the parts not up yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -950,6 +1346,18 @@ pub struct PartsLeft {
     /// What was picked, and the part size (MB): "Try again" without the parts starts over with these.
     pub paths: Vec<String>,
     pub part_mb: u32,
+    /// "Protect with a password": the parts are a 7-Zip archive's. Starting over needs the
+    /// password again (Pako never keeps it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
+    /// Private files: each part is made when its turn comes and wiped once up (see "private
+    /// files in parts"), so none waits on the disk.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+    /// Private: the files as they were when it started (sizes and change times, hashed; never
+    /// a name), so a part made again after a restart is only made from the same files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 impl PartsLeft {
@@ -966,6 +1374,10 @@ impl PartsLeft {
                     return None;
                 }
                 let path = self.dir.join(&p.name);
+                // Private: made again when its turn comes (never kept on the disk).
+                if self.private {
+                    return Some(Entry { path, name: p.name.clone(), size: p.size, mtime: UNIX_EPOCH, dir: false });
+                }
                 let m = std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() == p.size)?;
                 Some(Entry { path, name: p.name.clone(), size: p.size, mtime: m.modified().unwrap_or(UNIX_EPOCH), dir: false })
             })
@@ -981,7 +1393,15 @@ const PARTS_STOPPED: &str = "Pako was closed before every part was up. Try again
 /// when it has no parts waiting, or they aren't on the disk any more as they were made.
 fn parts_job(item: &SentItem) -> Option<Job> {
     let pl = item.parts_left.as_ref()?;
+    // A private send's parts folder is only ever inside Pako's private folder (a damaged or
+    // edited list never points its wipe anywhere else).
+    if pl.private && pl.dir.parent() != Some(crate::private_files::open_dir().as_path()) {
+        return None;
+    }
     let left = pl.left()?;
+    if pl.private && private_parts_register(&pl.dir, &item.name, pl.part_mb as u64 * MB, pl.paths.clone(), None, pl.fingerprint.clone().unwrap_or_default()).is_err() {
+        return None;
+    }
     let (folder, key) = (item.folder_id.clone()?, item.key.as_deref().and_then(unprotect_key));
     // Gofile needs the upload's own key to add to its folder.
     if left.is_empty() || (!item.on_drive() && key.is_none()) {
@@ -993,7 +1413,15 @@ fn parts_job(item: &SentItem) -> Option<Job> {
     let mut job = Job::new(item.name.clone(), item.files, total, Some(total), pl.paths.clone(), Mode::Parts, false, host);
     job.id = item.id.clone();
     job.part_mb = pl.part_mb;
+    // "Delete after" as picked when it started (whole days from when it was sent), so a "Try
+    // again" that starts over keeps it.
+    job.delete_days = item
+        .delete_at
+        .map(|at| (at.saturating_sub(item.date) as f64 / 86_400_000.0).round() as u32)
+        .filter(|d| DELETE_CHOICES.contains(d))
+        .unwrap_or(0);
     job.contents = item.contents.clone();
+    job.protected = pl.protected;
     job.produced.store(up, Ordering::Relaxed);
     job.files_done.store(pl.done.len(), Ordering::Relaxed);
     *job.phase.lock().unwrap() = Phase::Failed(PARTS_STOPPED.into());
@@ -1019,6 +1447,8 @@ fn to_continue(on: bool, restored: &[String], jobs: &[Arc<Job>]) -> Vec<String> 
         .filter(|j| restored.contains(&j.id))
         .filter(|j| matches!(&*j.phase.lock().unwrap(), Phase::Failed(m) if m == PARTS_STOPPED))
         .filter(|j| j.view().can_resume)
+        // Private files in parts: only once Private mode is open (they can't be read before).
+        .filter(|j| !private_job(j) || crate::private_send::is_open())
         .map(|j| j.id.clone())
         .collect()
 }
@@ -1443,6 +1873,11 @@ struct Job {
     account: Mutex<Option<String>>,
     /// Carried on with "Try again": Cancel then keeps what the earlier runs put up.
     resumed: AtomicBool,
+    /// Stopped by Private mode locking (its private files can't be read any more).
+    locked_stop: AtomicBool,
+    /// "Protect with a password": the archive's real size once 7-Zip made it (0 before), so the
+    /// bar fills to the bytes that really go up.
+    archive_total: AtomicU64,
     /// "ZIP in parts": the part size (MB; 0 = not in parts).
     part_mb: u32,
     /// The parts, once made (where, which are up).
@@ -1452,6 +1887,10 @@ struct Job {
     made: Arc<AtomicU64>,
     /// Carried on by itself after a restart: a failure doesn't pop up (it's tried again quietly).
     quiet: AtomicBool,
+    /// "Protect with a password": what the archive is locked with, in memory only, wiped when
+    /// the send is dropped.
+    password: Mutex<Option<zeroize::Zeroizing<String>>>,
+    protected: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -1487,6 +1926,8 @@ pub struct JobView {
     pub parts: usize,
     pub making: bool,
     pub made: u64,
+    /// "Protect with a password": "Try again" from the start asks for the password again.
+    pub protected: bool,
 }
 
 #[derive(Serialize)]
@@ -1682,14 +2123,26 @@ impl Fail {
 
 /// One file straight from disk; it must keep the size it had when it was picked.
 fn copy_file<W: Write>(e: &Entry, out: &mut W, stop: &AtomicBool) -> io::Result<()> {
-    let mut src = BufReader::with_capacity(1024 * 1024, File::open(&e.path)?);
+    // A private part: made now, when its turn comes. Private mode locking while it's read wipes
+    // it (zeros, then gone, while this still reads it): every read is checked against the lock
+    // count, and bytes read across a lock are never sent.
+    let private = private_parts_of(&e.path).is_some();
+    let since = crate::private_send::lock_count();
+    private_part_ready(&e.path)?;
+    let mut src = BufReader::with_capacity(1024 * 1024, crate::private_send::open(&e.path)?);
     let mut buf = vec![0u8; 256 * 1024];
     let mut n = 0u64;
     loop {
         if stop.load(Ordering::Relaxed) {
             return Err(io::Error::other("cancelled"));
         }
+        if private && crate::private_send::lock_count() != since {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP));
+        }
         let k = src.read(&mut buf)?;
+        if private && crate::private_send::lock_count() != since {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP));
+        }
         if k == 0 {
             break;
         }
@@ -1767,6 +2220,19 @@ impl Inner {
     }
 }
 
+/// A send of private files in parts.
+fn private_job(job: &Job) -> bool {
+    job.parts.lock().unwrap().as_ref().is_some_and(|p| p.private)
+}
+
+/// Its parts' thread ends and its part in progress goes (stopped, failed or done).
+fn release_private_job(job: &Job) {
+    let dir = job.parts.lock().unwrap().as_ref().filter(|p| p.private).map(|p| p.dir.clone());
+    if let Some(dir) = dir {
+        private_parts_release(&dir);
+    }
+}
+
 /// Counts one more file of a send as up; in parts, notes which. True when it's a part.
 fn mark_up(job: &Job, name: &str) -> bool {
     job.files_done.fetch_add(1, Ordering::Relaxed);
@@ -1827,11 +2293,15 @@ impl Job {
             contents: Vec::new(),
             account: Mutex::new(None),
             resumed: AtomicBool::new(false),
+            locked_stop: AtomicBool::new(false),
+            archive_total: AtomicU64::new(0),
             part_mb: 0,
             parts: Mutex::new(None),
             making: AtomicBool::new(false),
             made: Arc::new(AtomicU64::new(0)),
             quiet: AtomicBool::new(false),
+            password: Mutex::new(None),
+            protected: false,
         }
     }
 
@@ -1861,7 +2331,10 @@ impl Job {
             name: self.name.clone(),
             files: self.files,
             size: self.input,
-            total: self.total,
+            total: match self.archive_total.load(Ordering::Relaxed) {
+                0 => self.total,
+                n => Some(n),
+            },
             sent: self.produced.load(Ordering::Relaxed),
             speed,
             status,
@@ -1878,6 +2351,7 @@ impl Job {
             parts,
             making: self.making.load(Ordering::Relaxed),
             made: self.made.load(Ordering::Relaxed),
+            protected: self.protected,
         }
     }
 
@@ -1908,6 +2382,14 @@ impl Sender {
         let keep: Vec<PathBuf> = sent.iter().filter_map(|s| s.parts_left.as_ref().map(|p| p.dir.clone())).collect();
         for dir in stale_part_dirs(&parts_root(), &keep) {
             delete_parts(dir);
+        }
+        // A 7-Zip list left by a Pako that stopped while making an archive.
+        if let Ok(rd) = std::fs::read_dir(parts_root()) {
+            for e in rd.flatten() {
+                if e.path().extension().is_some_and(|x| x == "list") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
         }
         let restored = !jobs.is_empty();
         let restored_ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
@@ -2053,7 +2535,26 @@ impl Sender {
     /// the name you gave it (the folder or ZIP name; None or empty = Pako's usual name).
     /// `host` = "gofile" / "drive" for this send only ("Try again" keeps where it went; None = the setting).
     /// `part_mb` = "ZIP in parts"' part size for this send (None = the setting).
-    pub fn start(self: &Arc<Self>, paths: Vec<String>, choice: Option<String>, name: Option<String>, delete_days: Option<u32>, host: Option<String>, part_mb: Option<u32>) -> Result<String> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(
+        self: &Arc<Self>,
+        paths: Vec<String>,
+        choice: Option<String>,
+        name: Option<String>,
+        delete_days: Option<u32>,
+        host: Option<String>,
+        part_mb: Option<u32>,
+        password: Option<String>,
+    ) -> Result<String> {
+        let password = password.map(zeroize::Zeroizing::new).filter(|p| !p.is_empty());
+        if let Some(p) = &password {
+            if p.chars().count() < PASSWORD_MIN {
+                anyhow::bail!("The password needs at least {PASSWORD_MIN} characters.");
+            }
+            if crate::components::seven_zip().is_none() {
+                anyhow::bail!("{NEEDS_7ZIP}");
+            }
+        }
         let picked: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         let mode = self.mode(choice.as_deref());
         let part_mb = if mode == Mode::Parts { self.part_mb(part_mb)? } else { 0 };
@@ -2073,6 +2574,8 @@ impl Sender {
         job.delete_days = delete_days.filter(|d| DELETE_CHOICES.contains(d)).unwrap_or_else(|| self.delete_days());
         job.contents = contents_of(&payload);
         job.part_mb = part_mb;
+        job.protected = password.is_some();
+        *job.password.lock().unwrap() = password;
         let job = Arc::new(job);
         let id = job.id.clone();
         self.inner.lock().unwrap().jobs.push(job.clone());
@@ -2194,9 +2697,192 @@ impl Sender {
         Ok(data)
     }
 
+    /// "Protect with a password": makes a 7-Zip archive (AES-256, file names hidden too) of what
+    /// was picked, in its own folder (in parts when asked), then it goes up like parts. The
+    /// password goes to 7-Zip through its input, never on its command line (other programs can
+    /// read those).
+    async fn make_protected(&self, job: &Arc<Job>, compress: bool) -> Result<Vec<Entry>, String> {
+        let seven = crate::components::seven_zip().ok_or(NEEDS_7ZIP)?;
+        let password = job.password.lock().unwrap().take().ok_or("Type the password again: Pako doesn't keep it.")?;
+        let dir = parts_root().join(&job.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Pako couldn't make a folder for the archive ({e})."))?;
+        if let Some(free) = crate::system::free_space(&dir) {
+            let need = job.input + 64 * MB;
+            if free < need {
+                let _ = std::fs::remove_dir_all(&dir);
+                let drive = dir.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
+                return Err(format!(
+                    "Protecting it with a password needs {} free on {drive}, and it has {}. Free some space first.",
+                    drivesend::human(need),
+                    drivesend::human(free)
+                ));
+            }
+        }
+        // 7-Zip numbers its parts with three digits (.001 to .999): never more (counted on the
+        // files as they are: the archive is never bigger by much).
+        if job.part_mb > 0 {
+            let count = job.input.div_ceil((job.part_mb as u64 * MB).max(1));
+            if count > MAX_PARTS {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(format!("That would make about {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size."));
+            }
+        }
+        let stem = archive_stem(&job.name);
+        let out = dir.join(format!("{stem}.7z"));
+        // 7-Zip reads files on disk: private ones get readable copies in Pako's owner-only
+        // private folder, wiped as soon as the archive is made (or not), and at the next start.
+        let picked: Vec<PathBuf> = job.paths.iter().map(PathBuf::from).collect();
+        let private_bytes: u64 = picked.iter().filter_map(|p| crate::private_send::known(p).map(|(_, s)| s)).sum();
+        if private_bytes > 0 {
+            let at = crate::private_files::open_dir();
+            let probe = at.ancestors().find(|a| a.exists()).map(Path::to_path_buf).unwrap_or(at);
+            if let Some(free) = crate::system::free_space(&probe) {
+                let need = private_bytes + 64 * MB;
+                if free < need {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(format!(
+                        "Protecting private files needs {} free on the drive of Windows' temporary folder for a moment, and it has {}. Free some space first.",
+                        drivesend::human(need),
+                        drivesend::human(free)
+                    ));
+                }
+            }
+        }
+        if private_bytes > 0 {
+            PROTECTED_PRIVATE.lock().unwrap().push(Arc::downgrade(job));
+            // Locked already (between the hand-over and now): nothing is read.
+            if !crate::private_send::is_open() {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(PRIVATE_LOCKED_STOP.into());
+            }
+        }
+        let (paths, copies) = match tokio::task::spawn_blocking({
+            let id = job.id.clone();
+            move || crate::private_send::copies_for_7zip(&id, &picked)
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(if e.kind() == io::ErrorKind::PermissionDenied { "Private mode locked: open it and upload again.".into() } else { format!("Pako couldn't read a private file ({e}).") });
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        // Two picked items with the same name would clash inside the archive (7-Zip refuses):
+        // said plainly instead.
+        {
+            let mut seen = std::collections::HashSet::new();
+            if let Some(dup) = paths.iter().map(|p| file_name(p)).find(|n| !seen.insert(n.to_lowercase())) {
+                if let Some(c) = &copies {
+                    crate::private_send::wipe_copies(c);
+                }
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(format!("Two of the picked items are called \"{dup}\": rename one, or upload them without a password."));
+            }
+        }
+        // The picked paths, one per line, in a list file beside the folder (not uploaded); with
+        // private files, in their owner-only folder (wiped with it).
+        let list = match &copies {
+            Some(c) => c.join("pako-7zip.list"),
+            None => parts_root().join(format!("{}.list", job.id)),
+        };
+        let listed: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        std::fs::write(&list, listed.join("\r\n")).map_err(|e| {
+            if let Some(c) = &copies {
+                crate::private_send::wipe_copies(c);
+            }
+            format!("Pako couldn't start 7-Zip ({e}).")
+        })?;
+        job.making.store(true, Ordering::Relaxed);
+        self.changed();
+        let args = seven_zip_args(&out, &list, compress, job.part_mb);
+        let mut cmd = tokio::process::Command::new(&seven);
+        // From its own folder, never Pako's working folder (DLLs placed there aren't loaded).
+        crate::components::in_own_folder_async(&mut cmd, AsRef::<std::path::Path>::as_ref(&seven));
+        cmd.args(&args).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);
+        let made = async {
+            let mut child = cmd.spawn().map_err(|e| format!("Pako couldn't start 7-Zip ({e})."))?;
+            if let Some(mut stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                // 7-Zip asks for it twice when it makes an archive.
+                let typed = zeroize::Zeroizing::new(format!("{}\n{}\n", &*password, &*password));
+                let _ = stdin.write_all(typed.as_bytes()).await;
+                drop(stdin);
+            }
+            // What 7-Zip says when it fails (read as it comes, so it never blocks on a full pipe).
+            let said = child.stderr.take().map(|mut err| {
+                tauri::async_runtime::spawn(async move {
+                    use tokio::io::AsyncReadExt;
+                    let mut text = String::new();
+                    let _ = err.read_to_string(&mut text).await;
+                    text
+                })
+            });
+            tokio::select! {
+                _ = job.cancel.cancelled() => {
+                    let _ = child.kill().await;
+                    Err("cancelled".to_string())
+                }
+                r = child.wait() => match r {
+                    Ok(st) if st.success() => Ok(()),
+                    Ok(_) => {
+                        let text = match said {
+                            Some(h) => h.await.unwrap_or_default(),
+                            None => String::new(),
+                        };
+                        Err(format!("7-Zip couldn't make the archive: {}", text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("it stopped")))
+                    }
+                    Err(e) => Err(format!("7-Zip couldn't make the archive ({e}).")),
+                },
+            }
+        }
+        .await;
+        let _ = std::fs::remove_file(&list);
+        if let Some(c) = &copies {
+            crate::private_send::wipe_copies(c);
+        }
+        job.making.store(false, Ordering::Relaxed);
+        if let Err(e) = made {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e);
+        }
+        // What 7-Zip made: "Name.7z", or "Name.7z.001", ".002"… in parts.
+        let mut made: Vec<(PathBuf, u64)> = std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .filter_map(|e| Some((e.path(), e.metadata().ok().filter(|m| m.is_file())?.len())))
+            .collect();
+        // In part order by number (".1000" never before ".999"), then the name.
+        made.sort_by_key(|(p, _)| (p.extension().and_then(|x| x.to_str()).and_then(|x| x.parse::<u32>().ok()).unwrap_or(0), p.clone()));
+        if made.is_empty() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("7-Zip didn't make the archive.".into());
+        }
+        let mut list = Vec::with_capacity(made.len());
+        let mut files = Vec::with_capacity(made.len());
+        for (path, size) in made {
+            let name = file_name(&path);
+            list.push(SentFile { name: name.clone(), size });
+            files.push(Entry { path, name, size, mtime: SystemTime::now(), dir: false });
+        }
+        job.archive_total.store(list.iter().map(|p| p.size).sum(), Ordering::Relaxed);
+        let paths = job.paths.clone();
+        *job.parts.lock().unwrap() = Some(PartsLeft { dir, parts: list, done: Vec::new(), paths, part_mb: job.part_mb, protected: true, private: false, fingerprint: None });
+        self.changed();
+        Ok(files)
+    }
+
     /// "ZIP in parts": makes the ZIP as part files in its own folder (checking there's room on
     /// this PC first), and keeps them on the send. Returns them as files to upload.
     async fn make_parts(&self, job: &Arc<Job>, entries: &[Entry]) -> Result<Vec<Entry>, String> {
+        // Private files: each part is made when its turn comes, and wiped once up.
+        if entries.iter().any(|e| crate::private_send::is_private(&e.path)) {
+            return self.make_private_parts(job, entries);
+        }
         let size = zip_size(entries, Pack::Off, Z64_AT).ok_or("Pako couldn't work out the ZIP's size.")?;
         let part = job.part_mb as u64 * MB;
         let count = size.div_ceil(part.max(1));
@@ -2257,7 +2943,41 @@ impl Sender {
             files.push(Entry { path, name, size, mtime: SystemTime::now(), dir: false });
         }
         let paths = job.paths.clone();
-        *job.parts.lock().unwrap() = Some(PartsLeft { dir, parts: list, done: Vec::new(), paths, part_mb: job.part_mb });
+        *job.parts.lock().unwrap() = Some(PartsLeft { dir, parts: list, done: Vec::new(), paths, part_mb: job.part_mb, protected: false, private: false, fingerprint: None });
+        self.changed();
+        Ok(files)
+    }
+
+    /// Private files in parts: the parts' names and sizes are known from the ZIP's size; each is
+    /// made only when it goes up (see "private files in parts").
+    fn make_private_parts(&self, job: &Arc<Job>, entries: &[Entry]) -> Result<Vec<Entry>, String> {
+        let size = zip_size(entries, Pack::Off, Z64_AT).ok_or("Pako couldn't work out the ZIP's size.")?;
+        let part = job.part_mb as u64 * MB;
+        let count = size.div_ceil(part.max(1));
+        if count > MAX_PARTS {
+            return Err(format!("That would make {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size."));
+        }
+        let dir = private_parts_dir(&job.id);
+        // One part at a time on the drive of Windows' temporary folder.
+        let probe = dir.ancestors().find(|a| a.exists()).map(Path::to_path_buf).unwrap_or_else(|| dir.clone());
+        if let Some(free) = crate::system::free_space(&probe) {
+            let need = part.min(size) + 64 * MB;
+            if free < need {
+                return Err(format!("Each part needs {} free on the drive of Windows' temporary folder for a moment, and it has {}. Free some space, or pick a smaller part size.", drivesend::human(need), drivesend::human(free)));
+            }
+        }
+        let fingerprint = private_fingerprint(&job.paths);
+        private_parts_register(&dir, &job.name, part, job.paths.clone(), Some(entries.to_vec()), fingerprint.clone()).map_err(|e| format!("Pako couldn't make a folder for the parts ({e})."))?;
+        let mut list = Vec::new();
+        let mut files = Vec::new();
+        for i in 0..count as usize {
+            let name = part_name(&job.name, i + 1);
+            let psize = part.min(size - i as u64 * part);
+            list.push(SentFile { name: name.clone(), size: psize });
+            files.push(Entry { path: dir.join(&name), name, size: psize, mtime: UNIX_EPOCH, dir: false });
+        }
+        let paths = job.paths.clone();
+        *job.parts.lock().unwrap() = Some(PartsLeft { dir, parts: list, done: Vec::new(), paths, part_mb: job.part_mb, protected: false, private: true, fingerprint: Some(fingerprint) });
         self.changed();
         Ok(files)
     }
@@ -2274,6 +2994,11 @@ impl Sender {
                     _ = job.cancel.cancelled() => return Err("cancelled".into()),
                     _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
                 }
+            }
+            match private_part_before(e).await {
+                Ok(()) => {}
+                Err(Some(m)) => return Err(m),
+                Err(None) => continue,
             }
             match self.upload(job, &src, &e.name, Some(e.size), folder).await {
                 Ok(d) => return Ok(d),
@@ -2295,9 +3020,30 @@ impl Sender {
             }
             let first = entries.remove(0);
             // Nothing is up if this fails: "Try again" starts the whole send over.
-            let data = self.upload_retrying(job, &first, None).await?;
-            let id = data.parent_folder.clone().ok_or_else(|| "Gofile didn't say which folder it made.".to_string())?;
-            let link = link_from(&data)?;
+            let data = match self.upload_retrying(job, &first, None).await {
+                Ok(d) => d,
+                Err(e) => {
+                    release_private_job(job);
+                    return Err(e);
+                }
+            };
+            private_part_up(&first.path);
+            // Gofile took the file but didn't say where: it's deleted again (or it would stay
+            // online where Pako can't reach it), and the send stops.
+            let (id, link) = match (data.parent_folder.clone(), link_from(&data)) {
+                (Some(id), Ok(link)) => (id, link),
+                (id, link) => {
+                    release_private_job(job);
+                    let token = data.guest_token.clone().or_else(|| job.key.lock().unwrap().clone());
+                    if let (Some(target), Some(token)) = (id.or(data.file_id.clone()), token) {
+                        let _ = storage::gofile_delete(&self.http, storage::GOFILE_API, &token, &target).await;
+                    }
+                    return Err(match link {
+                        Err(e) => e,
+                        Ok(_) => "Gofile didn't say which folder it made.".to_string(),
+                    });
+                }
+            };
             *job.folder.lock().unwrap() = Some((id.clone(), link.clone()));
             mark_up(job, &first.name);
             // Files are on Gofile from now on: the send goes on the Sent list at once (marked
@@ -2315,15 +3061,20 @@ impl Sender {
                 let failed = &failed;
                 async move {
                     match self.upload_retrying(job, &e, Some(&folder_id)).await {
-                        Ok(_) => self.file_up(job, &e.name),
+                        Ok(_) => {
+                            private_part_up(&e.path);
+                            self.file_up(job, &e.name)
+                        }
                         Err(m) if m == "cancelled" => {}
                         Err(_) => failed.lock().unwrap().push(e),
                     }
                 }
             })
-            .buffer_unordered(3)
+            // Private parts one at a time (only one is ever on the disk).
+            .buffer_unordered(if private_job(job) { 1 } else { 3 })
             .collect::<Vec<()>>()
             .await;
+        release_private_job(job);
         if job.cancel.is_cancelled() {
             return Err("cancelled".into());
         }
@@ -2506,6 +3257,12 @@ impl Sender {
     }
 
     fn finished(self: &Arc<Self>, job: &Arc<Job>, result: Result<Done, String>, compressed: bool) {
+        // Stopped because Private mode locked (not by you): a failure "Try again" carries on,
+        // never a Cancel that deletes what's already up.
+        let result = match result {
+            Err(m) if m == "cancelled" && job.locked_stop.load(Ordering::SeqCst) => Err(PRIVATE_LOCKED_STOP.to_string()),
+            r => r,
+        };
         match result {
             Ok((link, folder_id, file_id)) => {
                 self.inner.lock().unwrap().jobs.retain(|j| j.id != job.id);
@@ -2528,6 +3285,8 @@ impl Sender {
                 std::thread::spawn(move || crate::numbers::record(e));
                 crate::system::set_clipboard_text(&link);
                 let _ = self.app.emit("send-done", serde_json::json!({ "name": job.name, "link": link }));
+                // The whole upload is up (all its parts): the sent sound, once.
+                crate::notices::sound(crate::notices::Sound::Sent);
                 // Pako's window in view shows it already (a message at the bottom): no pop-up.
                 if let Some(e) = self.app.try_state::<Arc<Engine>>() {
                     let pop = if self.window_in_view() { Pop::Skip } else { Pop::Pref };
@@ -3143,7 +3902,7 @@ mod tests {
         // And a part's name from sent.json is a plain name in its folder.
         let d = tmp_dir("plainname");
         std::fs::write(d.join("A.zip.001"), [1u8; 3]).unwrap();
-        let pl = |name: &str| PartsLeft { dir: d.clone(), parts: vec![SentFile { name: name.into(), size: 3 }], done: vec![], paths: vec![], part_mb: 500 };
+        let pl = |name: &str| PartsLeft { dir: d.clone(), parts: vec![SentFile { name: name.into(), size: 3 }], done: vec![], paths: vec![], part_mb: 500, protected: false, private: false, fingerprint: None };
         assert_eq!(pl("A.zip.001").left().map(|l| l.len()), Some(1));
         assert!(pl("../plainname/A.zip.001").left().is_none());
         assert!(pl("C:/Windows/notepad.exe").left().is_none());
@@ -3336,7 +4095,7 @@ mod tests {
             std::fs::write(dir.join(&name), vec![1u8; *n as usize]).unwrap();
             parts.push(SentFile { name, size: *n });
         }
-        let pl = PartsLeft { dir: dir.clone(), parts, done: vec!["Photos.zip.001".into()], paths: vec!["C:/Photos".into()], part_mb: 500 };
+        let pl = PartsLeft { dir: dir.clone(), parts, done: vec!["Photos.zip.001".into()], paths: vec!["C:/Photos".into()], part_mb: 500, protected: false, private: false, fingerprint: None };
         let item = SentItem {
             id: "up1".into(),
             name: "Photos.zip".into(),
@@ -3397,6 +4156,9 @@ mod tests {
             done: vec!["A.zip.001".into()],
             paths: vec![],
             part_mb: 500,
+            protected: false,
+            private: false,
+            fingerprint: None,
         };
         let item = SentItem { id: "a".into(), name: "A.zip".into(), link: "l".into(), folder_id: Some("f".into()), incomplete: true, host: Some("drive".into()), parts: 2, parts_left: Some(pl), ..Default::default() };
         let mut sent = vec![item];
@@ -3999,4 +4761,176 @@ mod tests {
         ];
         assert_eq!(drive_accounts(&list), vec!["me@gmail.com", "work@sookera.com"]);
     }
+
+    #[test]
+    fn protected_archive_names_and_arguments() {
+        assert_eq!(archive_stem("Photos.zip"), "Photos");
+        assert_eq!(archive_stem("3 files"), "3 files");
+        assert_eq!(archive_stem("a:b?.zip"), "a_b_");
+        assert_eq!(archive_stem("..."), "Upload");
+        let args: Vec<String> = seven_zip_args(Path::new("C:/t/Photos.7z"), Path::new("C:/t/x.list"), false, 0).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.contains(&"-mhe=on".to_string()) && args.contains(&"-p".to_string()) && args.contains(&"-mx=0".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("-p") && a.len() > 2), "never the password itself: {args:?}");
+        assert!(!args.iter().any(|a| a.starts_with("-v")));
+        let parts: Vec<String> = seven_zip_args(Path::new("o.7z"), Path::new("l"), true, 500).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(parts.contains(&"-v500m".to_string()) && parts.contains(&"-mx=5".to_string()));
+        assert_eq!(parts.last().unwrap(), "@l");
+    }
+
+    /// With 7-Zip on this PC (Pako's own copy): the archive opens only with the password, and
+    /// its file names are hidden without it.
+    #[test]
+    fn protected_archive_needs_the_password() {
+        let Some(seven) = std::env::var_os("LOCALAPPDATA")
+            .map(|d| PathBuf::from(d).join("Pako").join("components").join("7zip").join("7z.exe"))
+            .filter(|p| p.is_file())
+        else {
+            return;
+        };
+        let d = std::env::temp_dir().join(format!("pako-7z-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("very secret name.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let list = d.join("x.list");
+        std::fs::write(&list, file.to_string_lossy().as_bytes()).unwrap();
+        let out = d.join("out.7z");
+        use std::io::Write;
+        let mut child = std::process::Command::new(&seven)
+            .args(seven_zip_args(&out, &list, false, 0))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"pass word 9
+pass word 9
+").unwrap();
+        assert!(child.wait().unwrap().success());
+        let raw = std::fs::read(&out).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("secret"));
+        let wrong = std::process::Command::new(&seven).args(["l", "-pwrong"]).arg(&out).output().unwrap();
+        assert!(!String::from_utf8_lossy(&wrong.stdout).contains("very secret name"));
+        let right = std::process::Command::new(&seven).args(["l", "-ppass word 9"]).arg(&out).output().unwrap();
+        assert!(String::from_utf8_lossy(&right.stdout).contains("very secret name"));
+        // A password that isn't plain English letters: given on 7-Zip's input as UTF-8, it opens
+        // with the same password typed in 7-Zip.
+        let out2 = d.join("accent.7z");
+        let mut child = std::process::Command::new(&seven)
+            .args(seven_zip_args(&out2, &list, false, 0))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all("Mot de passé ü
+Mot de passé ü
+".as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+        let right = std::process::Command::new(&seven).args(["l", "-sccUTF-8", "-pMot de passé ü"]).arg(&out2).output().unwrap();
+        assert!(String::from_utf8_lossy(&right.stdout).contains("very secret name"), "accented password");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    /// Private files in parts: each part is made when asked, byte for byte the part "ZIP in
+    /// parts" always makes; never more than one on the disk; a part asked again after a cut is
+    /// the same; locking, failing or stopping leaves nothing readable.
+    #[test]
+    fn private_parts_one_at_a_time_and_the_same_after_a_cut() {
+        let _turn = crate::private_send::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let data: Vec<u8> = (0..700_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let a = crate::private_send::test_private_file(&data, "Trip/a.bin");
+        let b = crate::private_send::test_private_file(&data[..300_000], "Trip/Maps/b.bin");
+        let Payload::Zip { entries, .. } = gather(&[a.clone(), b.clone()], Mode::Parts).unwrap() else { panic!("zip expected") };
+        assert!(entries.iter().any(|e| e.name == "Trip/Maps/b.bin"), "the folder's layout is kept: {:?}", entries.iter().map(|e| &e.name).collect::<Vec<_>>());
+        let root = std::env::temp_dir().join(format!("pako-pparts-{}", uuid::Uuid::new_v4().simple()));
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let part = 256 * 1024;
+        let made = write_parts(&entries, &plain, "T.zip", part, &AtomicBool::new(false), Arc::default(), Z64_AT).unwrap();
+        assert!(made.len() >= 3);
+        let dir = root.join("send-test");
+        let picked = vec![a.display().to_string(), b.display().to_string()];
+        private_parts_register(&dir, "T.zip", part, picked.clone(), Some(entries.clone()), private_fingerprint(&picked)).unwrap();
+        let on_disk = || std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().is_file()).count();
+        for (i, (p, _)) in made.iter().enumerate() {
+            let mine = dir.join(part_name("T.zip", i + 1));
+            private_part_ready(&mine).unwrap();
+            assert_eq!(std::fs::read(&mine).unwrap(), std::fs::read(p).unwrap(), "part {}", i + 1);
+            assert_eq!(on_disk(), 1, "one part at a time");
+            private_part_up(&mine);
+            assert!(!mine.exists(), "wiped once up");
+        }
+        // A cut: the second part is asked again (out of turn): made again, the same.
+        let second = dir.join(part_name("T.zip", 2));
+        private_part_ready(&second).unwrap();
+        assert_eq!(std::fs::read(&second).unwrap(), std::fs::read(&made[1].0).unwrap());
+        // Stopped (a failure, Cancel): nothing left.
+        private_parts_release(&dir);
+        assert_eq!(on_disk(), 0);
+        // A file saved back into Private mode since (its encrypted file changed): no part is made
+        // again from it, the upload says to start again.
+        let before = std::fs::metadata(&b).unwrap().modified().unwrap();
+        std::fs::File::options().write(true).open(&b).unwrap().set_modified(before + Duration::from_secs(3600)).unwrap();
+        let err = private_part_ready(&second).unwrap_err();
+        assert!(err.to_string().contains("changed"), "{err}");
+        assert_eq!(on_disk(), 0, "nothing made from a changed file");
+        std::fs::File::options().write(true).open(&b).unwrap().set_modified(before).unwrap();
+        // Private mode locks while a part waits to go up: wiped, and the next one can't be made.
+        private_part_ready(&second).unwrap();
+        private_parts_locked();
+        assert_eq!(on_disk(), 0, "wiped when it locks");
+        crate::private_send::forget_all();
+        assert!(private_part_ready(&dir.join(part_name("T.zip", 3))).is_err(), "nothing made while locked");
+        assert_eq!(on_disk(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Private mode locks while a private part is being read to go up (it wipes the part: zeros,
+    /// then gone): the read stops there with "Private mode locked", and not one zero is sent.
+    #[test]
+    fn a_lock_while_a_private_part_goes_up_never_sends_zeros() {
+        let _turn = crate::private_send::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let data: Vec<u8> = (0..4_500_000u32).map(|i| (i * 13 % 251) as u8).collect();
+        let a = crate::private_send::test_private_file(&data, "Big.bin");
+        let Payload::Zip { entries, .. } = gather(std::slice::from_ref(&a), Mode::Parts).unwrap() else { panic!("zip expected") };
+        let root = std::env::temp_dir().join(format!("pako-pzero-{}", uuid::Uuid::new_v4().simple()));
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let part = 3 * MB;
+        let made = write_parts(&entries, &plain, "Z.zip", part, &AtomicBool::new(false), Arc::default(), Z64_AT).unwrap();
+        let dir = root.join("send-zero");
+        let picked = vec![a.display().to_string()];
+        private_parts_register(&dir, "Z.zip", part, picked.clone(), Some(entries.clone()), private_fingerprint(&picked)).unwrap();
+        let first = dir.join(part_name("Z.zip", 1));
+        let e = Entry { path: first.clone(), name: part_name("Z.zip", 1), size: made[0].1, mtime: UNIX_EPOCH, dir: false };
+
+        /// Takes what's sent; after the first piece, Private mode locks (as Win+L would).
+        struct Sink {
+            got: Vec<u8>,
+            locked: bool,
+        }
+        impl Write for Sink {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                self.got.extend_from_slice(b);
+                if !self.locked {
+                    self.locked = true;
+                    crate::private_send::forget_all();
+                    private_parts_locked();
+                }
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut sink = Sink { got: Vec::new(), locked: false };
+        let err = copy_file(&e, &mut sink, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        let want = std::fs::read(&made[0].0).unwrap();
+        assert!(!sink.got.is_empty() && sink.got.len() < want.len(), "stopped partway: {} of {}", sink.got.len(), want.len());
+        assert_eq!(sink.got[..], want[..sink.got.len()], "only the part's real bytes, never zeros");
+        assert!(!first.exists(), "the part is wiped");
+        private_parts_release(&dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
 }

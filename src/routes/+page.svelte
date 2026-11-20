@@ -1,11 +1,12 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { app } from "$lib/state.svelte";
   import { api, inApp, isActive, listen, type Download, type PakoLinkResult, type Priority } from "$lib/api";
   import { bytes, findLinks, scheduleOpen } from "$lib/format";
   import type { MenuItem } from "$lib/menu";
+  import { alertMenu, alertOf, doneAlert, sharedAlert } from "$lib/alert";
   import Icon from "$lib/Icon.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
@@ -17,6 +18,8 @@
   import AddDialog from "$lib/AddDialog.svelte";
   import SettingsDialog, { type SettingsTab } from "$lib/SettingsDialog.svelte";
   import RenameDialog from "$lib/RenameDialog.svelte";
+  import ExtractPassword from "$lib/ExtractPassword.svelte";
+  import { NEEDS_PASSWORD, canExtract, extracting, extractNow } from "$lib/extract.svelte";
   import Modal from "$lib/Modal.svelte";
   import Toasts from "$lib/Toasts.svelte";
   import FoundView from "$lib/FoundView.svelte";
@@ -36,10 +39,115 @@
   import TourOverlay from "$lib/tour/TourOverlay.svelte";
   import TutorialButton from "$lib/tour/TutorialButton.svelte";
   import { tour } from "$lib/tour/tour.svelte";
+  import { priv } from "$lib/private.svelte";
+  import PrivateView from "$lib/private/PrivateView.svelte";
+  import PrivatePad from "$lib/private/PrivatePad.svelte";
+  import PrivateSwitch from "$lib/private/PrivateSwitch.svelte";
+  import { leaves, leaveQuestion, type Where } from "$lib/privateLeave";
+  import { viewIn, viewOut } from "$lib/motion";
+  import PanelResizer from "$lib/PanelResizer.svelte";
+  import { panelWidths } from "$lib/panelWidth.svelte";
+  import { shownWidth } from "$lib/panelSize";
+  import PrivateSetup from "$lib/private/PrivateSetup.svelte";
+  import SaveAsk from "$lib/private/SaveAsk.svelte";
 
   let titleBar: ReturnType<typeof TitleBar> | undefined = $state();
+  // Private mode: its list, pad and questions.
+  priv.start();
+  /** Opened with the recovery code: a new PIN or password is asked next. */
+  let recovered = $state(false);
+  /** The private list is what the Downloads page shows now. */
+  const showingPrivate = $derived(app.view === "downloads" && priv.showing && priv.status.unlocked);
+  // The details panel's width: the one dragged to on this page, unless the list would get too
+  // narrow (then the panel gives way first). Room for list + panel: the window minus the sidebar.
+  const SIDEBAR_W = 220;
+  let mainW = $state(0);
+  const panelPage = $derived(app.view === "found" ? "found" : app.view === "send" ? "send" : "downloads");
+  const panelRoom = $derived(mainW > 0 ? mainW - SIDEBAR_W : 0);
+  // Downloads and Links keep a wider list before the panel gives way (their names need it).
+  const panelW = $derived(shownWidth(panelWidths.of(panelPage), panelRoom, panelPage === "downloads" || panelPage === "found" ? 480 : undefined));
+  // Its width eases only while it opens or closes (a window being resized moves it at once).
+  const panelShown = $derived(app.panelOpen && app.view !== "dashboard" && app.view !== "direct" && app.view !== "devices" && !showingPrivate);
+  let panelEasing = $state(false);
+  let easeTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    void panelShown;
+    untrack(() => {
+      panelEasing = true;
+      clearTimeout(easeTimer);
+      easeTimer = setTimeout(() => (panelEasing = false), 420);
+    });
+  });
+  /** How long the normal and private lists take to give way to each other: only when the swap
+   *  is between those two (on the Downloads page), never when another page comes or goes. */
+  let swapMs = $state(0);
+  let wasPrivate = false;
+  let wasView = "";
+  $effect.pre(() => {
+    const now = showingPrivate;
+    const view = app.view;
+    swapMs = now !== wasPrivate && view === "downloads" && wasView === "downloads" ? 240 : 0;
+    wasPrivate = now;
+    wasView = view;
+  });
   let addText = $state<string | null>(null);
   let settingsOpen = $state<false | "general" | SettingsTab>(false);
+  // Turned on in Settings: Settings closes and the private list shows.
+  $effect(() => {
+    if (!priv.showList) return;
+    untrack(() => {
+      settingsOpen = false;
+      help.open = false;
+      app.view = "downloads";
+      priv.showing = true;
+      lastWhere = where();
+    });
+  });
+  // Never open with nothing on screen saying so: open, not on the Downloads page (or Settings /
+  // Help over it), no Private mode window showing and nothing being asked → locked.
+  $effect(() => {
+    const away = app.view !== "downloads" || !!settingsOpen || help.open;
+    const setup = priv.setupOpen || !!priv.manage || recovered;
+    if (priv.status.unlocked && away && !setup && !priv.locking && !priv.leaveAsk) untrack(() => priv.lockNow());
+  });
+  // Private mode open: leaving its two lists (another page, a sidebar filter, Settings, Help,
+  // however you get there: the sidebar, a pop-up, the bell, a shortcut) locks it. While
+  // something runs on private files you're asked first, and stay where you were until you
+  // answer. Only the list header's "Normal list" / "Private downloads" keep it open.
+  const where = (): Where => ({ view: app.view, library: app.library, source: app.sourceFilter, settings: !!settingsOpen, help: help.open });
+  let lastWhere: Where = untrack(where);
+  $effect.pre(() => {
+    const now = where();
+    const open = priv.status.unlocked;
+    untrack(() => {
+      const from = lastWhere;
+      lastWhere = now;
+      if (!open || priv.locking || !leaves(from, now)) return;
+      if (!priv.stopsWords()) {
+        priv.lockNow();
+        return;
+      }
+      // Back where you were, then asked; "Leave and lock" goes on.
+      const settingsTo = settingsOpen;
+      app.view = from.view as typeof app.view;
+      app.library = from.library as typeof app.library;
+      app.sourceFilter = from.source;
+      if (!from.settings) settingsOpen = false;
+      if (!from.help) help.open = false;
+      lastWhere = from;
+      priv.leaveAsk = {
+        words: priv.stopsWords(),
+        go: () => {
+          app.view = now.view as typeof app.view;
+          app.library = now.library as typeof app.library;
+          app.sourceFilter = now.source;
+          if (now.settings) settingsOpen = settingsTo;
+          if (now.help) help.open = true;
+          priv.leave();
+        },
+      };
+    });
+  });
   /** The extension's "Open Pako" button (a pako:// link): how connecting went. */
   let linkResult = $state<PakoLinkResult | null>(null);
 
@@ -68,6 +176,13 @@
     if (!app.whenDoneCountdown) return;
     const t = setInterval(() => (clock = Date.now()), 250);
     return () => clearInterval(t);
+  });
+
+  // Pako's pop-ups go by the page shown: Direct's and My devices' news doesn't pop up over the
+  // page that shows it already, but does over any other.
+  $effect(() => {
+    const page = app.view;
+    if (inApp) api.windowPage(page).catch(() => {});
   });
 
   /** "Quit while downloading / uploading?": how many of each are running. */
@@ -132,6 +247,11 @@
     return true;
   }
   function onDragOver(e: DragEvent) {
+    // A dialog is open (Settings, Help, a question): nothing lands behind it.
+    if (covered()) {
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+      return;
+    }
     if (!isOutsideDrop(e) || refusedHere(e)) return;
     e.preventDefault();
     dropping = true;
@@ -140,6 +260,10 @@
     if (!e.relatedTarget) dropping = false;
   }
   async function onDrop(e: DragEvent) {
+    if (covered()) {
+      dropping = false;
+      return;
+    }
     if (!isOutsideDrop(e)) return;
     dropping = false;
     if (refusedHere(e)) return;
@@ -175,7 +299,8 @@
 
   // ---------- actions ----------
   function askRemove(ids: string[]) {
-    const ds = app.downloads.filter((d) => ids.includes(d.id));
+    const want = new Set(ids);
+    const ds = app.downloads.filter((d) => want.has(d.id));
     if (ds.length) removing = ds;
   }
   async function doRemove(deleteFiles: boolean) {
@@ -217,7 +342,8 @@
 
   // ---------- right-click menu (lean, JDownloader-style) ----------
   function openMenu(e: MouseEvent, ids: string[], clicked?: string) {
-    const ds = app.downloads.filter((d) => ids.includes(d.id));
+    const want = new Set(ids);
+    const ds = app.downloads.filter((d) => want.has(d.id));
     if (!ds.length) return;
     const one = ds.length === 1 ? ds[0] : null;
     const count = ds.length > 1 ? ` ${ds.length}` : "";
@@ -245,6 +371,22 @@
     items.push({ separator: true });
     if (one?.status === "completed") items.push({ label: "Open file", icon: "open", hint: "Enter", action: () => app.run(() => api.openItem(one.id, false)) });
     items.push({ label: "Show in folder", icon: "folder", disabled: !one, action: () => one && app.run(() => api.openItem(one.id, true)) });
+    // Private mode on: a finished file can go into it (encrypted, off this list).
+    if (one?.status === "completed" && !one.group && priv.status.on)
+      items.push({
+        label: "Move to Private",
+        icon: "lock",
+        action: () =>
+          app.run(async () => {
+            const warn = await api.privateMoveIn(one.id);
+            await app.refresh();
+            await priv.refreshList();
+            if (warn) app.toast(warn, "error");
+            else app.toast(`${one.name} is in Private mode now.`);
+          }),
+      });
+    // A finished archive: extracted with 7-Zip (its password asked when it has one).
+    if (one && canExtract(one)) items.push({ label: one.message === NEEDS_PASSWORD ? "Type the password…" : "Extract…", icon: "unlock", action: () => extractNow(one) });
     if (one) items.push({ label: "Open link in browser", icon: "globe", action: () => app.run(() => api.openLink(one.id)) });
     items.push({ label: ds.length > 1 ? `Copy ${ds.length} links` : "Copy link", icon: "link", action: () => copyLinks(ds) });
     if (one) items.push({ label: "Rename…", icon: "pencil", hint: "F2", disabled: isActive(one.status) && !one.viaBrowser, action: () => (renaming = one) });
@@ -258,8 +400,8 @@
     const unfinished = ds.filter((d) => d.status !== "completed");
     if (unfinished.length) {
       const ids = unfinished.map((d) => d.id);
-      const notifying = unfinished.every((d) => d.notify);
-      items.push({ label: "Notify when done", icon: "bell", hint: notifying ? "✓" : "", action: () => app.run(() => api.setNotify(ids, !notifying)) });
+      const level = sharedAlert(unfinished.map((d) => alertOf(d, doneAlert(app.settings))));
+      items.push(...alertMenu(level, (a) => app.run(() => api.setAlert(ids, a))));
       const all = (p: Priority) => unfinished.every((d) => d.priority === p);
       const off = browserOnly ? { hint: NOT_HERE, disabled: true } : {};
       items.push({ label: "Priority: First", icon: "up", hint: all("first") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "first")), ...off });
@@ -285,7 +427,11 @@
   /** A button, link or field has the keyboard focus: Enter belongs to it, not to the list. */
   function onControl() {
     const el = document.activeElement;
-    return !!el && !!el.closest("button, a[href], input, textarea, select, [contenteditable], [role='switch']");
+    return !!el && !!el.closest("button, a[href], input, textarea, select, [contenteditable], [role='switch'], [role='separator']");
+  }
+  /** A column's or the details panel's edge has the keyboard: its keys resize, nothing else. */
+  function onEdge() {
+    return !!document.activeElement?.closest("[role='separator']");
   }
   // The terms of use, before anything else (a new Pako, or once for one used before it had
   // terms): nothing else shows or runs until they're accepted.
@@ -328,6 +474,20 @@
   }
 
   /** A dialog or menu is open: the list behind it takes no shortcuts or pastes. */
+  /** Closes what covers the window (Settings, Help, a menu, the bell, the tutorial, dialogs that
+   *  can be closed): for Ctrl+Shift+P from anywhere. */
+  function uncover() {
+    settingsOpen = false;
+    addText = null;
+    renaming = null;
+    removing = null;
+    restarting = null;
+    menu = null;
+    app.bellOpen = false;
+    help.close();
+    if (tour.active) tour.stop();
+    window.dispatchEvent(new Event("pako-uncover"));
+  }
   function covered() {
     return termsAsk || app.modals > 0 || addText !== null || !!settingsOpen || !!renaming || !!removing || !!restarting || trayAsk || !!menu || help.open || tour.active || app.bellOpen;
   }
@@ -339,8 +499,43 @@
       if (!covered()) help.show();
       return;
     }
-    if (covered()) return;
     const ctrl = e.ctrlKey || e.metaKey;
+    // Private mode: open it, or lock it while it shows (only once it's turned on). From anywhere
+    // in Pako: Settings, Help, a menu, the bell or a dialog close first. Not while a PIN or
+    // password is being typed (the pad, Private mode's setup).
+    if (ctrl && e.shiftKey && e.key.toLowerCase() === "p") {
+      if (!priv.status.on) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (priv.pad || el?.matches?.('input[type="password"], .secret input, [data-secret]')) return;
+      e.preventDefault();
+      if (!covered()) {
+        priv.toggle();
+        return;
+      }
+      uncover();
+      // Dialogs leave with a short motion: then the pad (or the lock). One that can't be closed
+      // (the terms of use) stays, and so does the pad's turn: nothing opens over it.
+      const since = performance.now();
+      const later = () => {
+        if (!covered()) priv.toggle();
+        else if (performance.now() - since < 1200) setTimeout(later, 40);
+      };
+      setTimeout(later, 40);
+      return;
+    }
+    if (covered()) return;
+    // The private list has its own keys (see PrivateView).
+    if (showingPrivate || priv.pad) return;
+    // Shift+F10 / the Menu key: the focused row's own right-click menu, where the row is.
+    if (((e.shiftKey && e.key === "F10") || e.key === "ContextMenu") && !typing()) {
+      const row = document.querySelector<HTMLElement>(".row.focused, .srow.sel");
+      if (row) {
+        e.preventDefault();
+        const r = row.getBoundingClientRect();
+        row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.bottom - 4 }));
+        return;
+      }
+    }
     if (ctrl && (e.key.toLowerCase() === "f" || e.key.toLowerCase() === "k")) {
       e.preventDefault();
       titleBar?.focusSearch();
@@ -369,6 +564,8 @@
     } else if (e.key === " " && !onControl()) {
       e.preventDefault();
       app.toggleFocused();
+    } else if (e.key === "Delete" && onEdge()) {
+      return;
     } else if (e.key === "Delete" && app.view === "found") {
       removeFocusedFound();
     } else if (app.view === "found" && ctrl && e.key.toLowerCase() === "a") {
@@ -457,7 +654,7 @@
 
 <div class="app">
   <TitleBar bind:this={titleBar} onpastelinks={(t) => app.addToFound(t)} onnoticesettings={() => (settingsOpen = "notices")} />
-  <div class="main">
+  <div class="main" bind:clientWidth={mainW}>
     <Sidebar onsettings={(s) => (settingsOpen = s ?? "general")} onmenu={(x, y, items) => (menu = { x, y, items })} />
 
     <section class="content">
@@ -471,19 +668,27 @@
         <DirectView onmenu={(x, y, items) => (menu = { x, y, items })} />
       {:else if app.view === "devices"}
         <DevicesView />
+      {:else if showingPrivate}
+        <!-- The private list and the normal one give way to each other smoothly (open, lock,
+             All downloads); from any other page they appear at once, as every page does. -->
+        <div class="swap" in:viewIn={{ duration: swapMs, x: 12 }} out:viewOut={{ duration: swapMs ? 200 : 0, x: 12 }}>
+          <PrivateView onmenu={(x, y, items) => (menu = { x, y, items })} />
+        </div>
       {:else}
+      <div class="swap" in:viewIn={{ duration: swapMs, x: -12 }} out:viewOut={{ duration: swapMs ? 200 : 0, x: -12 }}>
       <div class="toolbar">
         <h1>{title}</h1>
         <TutorialButton id="downloads" />
         {#if sel.length}
           <div class="selchip">
-            <span><b>{sel.length} selected</b>{#if selSize}<span class="dim">{` · ${bytes(selSize)}`}</span>{/if}</span>
+            <span title="{sel.length} selected{selSize ? ` · ${bytes(selSize)}` : ''}"><b>{sel.length}<span class="sw">&nbsp;selected</span></b>{#if selSize}<span class="dim">{` · ${bytes(selSize)}`}</span>{/if}</span>
             <button aria-label="Clear selection" onclick={() => app.clearSelection()}><Icon name="x" size={10} stroke={2.4} /></button>
           </div>
         {:else}
           <span class="dim small count-text">{app.downloads.length} {app.downloads.length === 1 ? "item" : "items"}</span>
         {/if}
         <div class="spacer"></div>
+        {#if priv.status.unlocked}<PrivateSwitch on="normal" />{/if}
         <div class="seg" data-tour="dl-actions">
           <button title="Resume{n(resumeTargets)}" disabled={!resumeTargets.length} onclick={() => app.run(() => api.resume(resumeTargets.map((d) => d.id)))}>
             <Icon name="play" size={12} /><span class="lbl">Resume{n(resumeTargets)}</span>
@@ -498,19 +703,26 @@
         <button class="btn primary add" data-tour="dl-add" title="Add links" onclick={() => (addText = "")}><Icon name="plus" size={14} stroke={2.4} /><span class="lbl">Add links</span></button>
       </div>
 
-      <Table oncontext={openMenu} onadd={() => (addText = "")} onempty={emptyMenu} />
+      <Table oncontext={openMenu} onadd={() => (addText = "")} onempty={emptyMenu} onmenu={(x, y, items) => (menu = { x, y, items })} />
+      </div>
       {/if}
       <BottomBar />
+      {#if priv.pad && app.view === "downloads" && !priv.status.unlocked}
+        <PrivatePad onrecovered={() => (recovered = true)} />
+      {/if}
     </section>
 
     <!-- inert when closed: Tab can't reach the hidden panel's buttons. -->
     <aside
       class="side"
+      class:easing={panelEasing && !panelWidths.dragging}
+      style="--pw: {panelW}px"
       data-tour="details"
-      class:open={app.panelOpen && app.view !== "dashboard" && app.view !== "direct" && app.view !== "devices"}
-      aria-hidden={!app.panelOpen || app.view === "dashboard" || app.view === "direct" || app.view === "devices"}
-      inert={!app.panelOpen || app.view === "dashboard" || app.view === "direct" || app.view === "devices"}
+      class:open={app.panelOpen && app.view !== "dashboard" && app.view !== "direct" && app.view !== "devices" && !showingPrivate}
+      aria-hidden={!app.panelOpen || app.view === "dashboard" || app.view === "direct" || app.view === "devices" || showingPrivate}
+      inert={!app.panelOpen || app.view === "dashboard" || app.view === "direct" || app.view === "devices" || showingPrivate}
     >
+      <PanelResizer page={panelPage} width={panelW} avail={panelRoom} />
       {#if app.view === "found"}
         <FoundDetails />
       {:else if app.view === "send"}
@@ -542,8 +754,32 @@
   />
 {/if}
 
+{#if extracting.asking}
+  <ExtractPassword d={extracting.asking} onclose={() => (extracting.asking = null)} />
+{/if}
+
 {#if renaming}
   <RenameDialog d={renaming} onclose={() => (renaming = null)} />
+{/if}
+
+{#if priv.setupOpen}
+  <PrivateSetup onclose={() => (priv.setupOpen = false)} />
+{/if}
+{#if priv.manage}
+  <PrivateSetup only={priv.manage} onclose={() => (priv.manage = null)} />
+{/if}
+{#if recovered && priv.status.unlocked}
+  <PrivateSetup only="recovered" onclose={() => (recovered = false)} />
+{/if}
+<SaveAsk />
+{#if priv.leaveAsk}
+  <Modal title="Leave Private mode?" width={420} onclose={() => (priv.leaveAsk = null)}>
+    <p class="msg">{leaveQuestion(priv.leaveAsk.words)}</p>
+    {#snippet actions()}
+      <button class="btn ghost" onclick={() => (priv.leaveAsk = null)}>Stay</button>
+      <button class="btn primary" onclick={() => priv.leaveAnyway()}><Icon name="lock" size={13} />Leave and lock</button>
+    {/snippet}
+  </Modal>
 {/if}
 
 {#if app.whenDoneCountdown}
@@ -729,7 +965,16 @@
     min-height: 0;
     display: flex;
   }
+  /* The normal list or the private list (see viewIn / viewOut). */
+  .swap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
   .content {
+    position: relative;
     flex: 1;
     min-width: 0;
     display: flex;
@@ -747,7 +992,7 @@
     border-bottom: 1px solid var(--line);
     white-space: nowrap;
   }
-  @container (max-width: 760px) {
+  @container (max-width: 900px) {
     .toolbar .count-text {
       display: none;
     }
@@ -759,7 +1004,9 @@
     }
   }
   /* Smallest window with the details panel open: Add links keeps its icon and stays in view. */
-  @container (max-width: 520px) {
+  /* Narrower (a selection, Private mode's buttons): Add links keeps its icon, the selection
+     its count; the page title keeps its room. */
+  @container (max-width: 700px) {
     .toolbar {
       gap: 8px;
     }
@@ -770,6 +1017,26 @@
     .toolbar .btn.add {
       width: 32px;
       padding: 0;
+    }
+  }
+  /* Smallest window with the details panel open: icons and the count only, nothing cut. */
+  @container (max-width: 520px) {
+    .toolbar {
+      gap: 4px;
+      padding: 0 10px;
+    }
+    .selchip .sw {
+      display: none;
+    }
+    /* Tutorial stays in Help › Tutorials; here the page title keeps its room. */
+    .toolbar :global(.tut) {
+      display: none;
+    }
+    .seg button {
+      padding: 0 8px;
+    }
+    .toolbar :global(.pswitch) {
+      gap: 2px;
     }
   }
   h1 {
@@ -879,16 +1146,21 @@
 
   /* Details panel slides in and out */
   .side {
+    position: relative;
     width: 0;
     flex: none;
     overflow: hidden;
     border-left: 1px solid transparent;
+    transition: border-color var(--slow) ease;
+  }
+  /* Opening or closing: the width eases (dragging the edge or resizing the window: at once). */
+  .side.easing {
     transition:
       width var(--slow) var(--ease),
       border-color var(--slow) ease;
   }
   .side.open {
-    width: 320px;
+    width: var(--pw, 320px);
     border-left-color: var(--line);
   }
   .side :global(.panel) {

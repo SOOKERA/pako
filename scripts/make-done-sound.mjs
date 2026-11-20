@@ -4,8 +4,10 @@
 // Makes Pako's "download finished" chime, src-tauri/sounds/done.wav: two soft rising notes
 // (E5 then A5, an octave lower than the first try: softer, less sharp), sine waves with a gentle
 // start and fade, about 0.42 s, quiet (peak -16 dBFS), as a small
-// 16-bit mono WAV at 22.05 kHz. Pako plays it when a download marked "Notify when done"
-// finishes (src-tauri/src/notices.rs). Run again after changing it:
+// 16-bit mono WAV at 22.05 kHz. Pako plays it when files arrive: a download marked "Notify
+// when done" finishes, files arrive in Direct or My devices, or someone offers you files
+// (src-tauri/src/notices.rs; files you send have their own sound, make-sent-sound.mjs).
+// Run again after changing it:
 //
 //   node scripts/make-done-sound.mjs
 import { writeFileSync, mkdirSync } from "node:fs";

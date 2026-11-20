@@ -10,6 +10,7 @@
   import Modal from "./Modal.svelte";
   import { help } from "./help/help.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
+  import { priv } from "./private.svelte";
 
   let {
     onsettings,
@@ -84,34 +85,65 @@
     { key: "checking", label: "Checking", dot: "var(--st-check)", hollow: true },
   ];
 
+  // With Private mode open, any entry here other than Private leaves its screens and locks it
+  // (asked first while something runs there); only the list header's "Normal list" keeps it open.
   function pickLibrary(k: Library) {
-    app.library = k;
-    app.sourceFilter = null;
+    // The filter already showing on the normal list: nothing to do (and nothing locks).
+    if (!priv.showing && app.view === "downloads" && app.library === k && !app.sourceFilter) return;
+    priv.leaveTo(() => {
+      app.library = k;
+      app.sourceFilter = null;
+      priv.leave();
+    });
   }
   function pickSource(k: string) {
-    app.sourceFilter = app.sourceFilter === k ? null : k;
+    priv.leaveTo(() => {
+      app.sourceFilter = app.sourceFilter === k ? null : k;
+      priv.leave();
+    });
+  }
+  function pickDownloads() {
+    if (!priv.showing && app.view === "downloads") return;
+    priv.leaveTo(() => {
+      app.view = "downloads";
+      priv.leave();
+    });
+  }
+
+  /** The page tabs: ↑ ↓ (and Home / End) move to the next page, like any list of tabs. */
+  function tabKeys(e: KeyboardEvent) {
+    const order = ["downloads", "found", "send", "direct", "devices", "dashboard"] as const;
+    const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+    if (!step && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const i = Math.max(0, order.indexOf(app.view as (typeof order)[number]));
+    const to = e.key === "Home" ? 0 : e.key === "End" ? order.length - 1 : (i + step + order.length) % order.length;
+    const tabs = (e.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    tabs[to]?.click();
+    tabs[to]?.focus();
   }
 </script>
 
 <aside>
-  <div class="views" role="tablist" aria-label="Pako lists">
-    <button class="view" data-tour="nav-downloads" class:on={app.view === "downloads"} role="tab" aria-selected={app.view === "downloads"} onclick={() => (app.view = "downloads")}>
+  <!-- svelte-ignore a11y_interactive_supports_focus -->
+  <div class="views" role="tablist" aria-label="Pako lists" aria-orientation="vertical" onkeydown={tabKeys}>
+    <button class="view" data-tour="nav-downloads" class:on={app.view === "downloads"} role="tab" aria-selected={app.view === "downloads"} tabindex={app.view === "downloads" ? 0 : -1} onclick={pickDownloads}>
       <span class="lead"><Icon name="download" size={16} stroke={1.9} />Downloads</span>
       {#if app.runningCount}
         <span class="run" title="{app.runningCount} downloading"><span class="live"></span>{app.runningCount}</span>
       {/if}
     </button>
-    <button class="view" data-tour="nav-found" class:on={app.view === "found"} role="tab" aria-selected={app.view === "found"} onclick={() => (app.view = "found")}>
+    <button class="view" data-tour="nav-found" class:on={app.view === "found"} role="tab" aria-selected={app.view === "found"} tabindex={app.view === "found" ? 0 : -1} onclick={() => (app.view = "found")}>
       <span class="lead"><Icon name="link" size={16} stroke={1.9} />Links</span>
       {#if app.foundCounts.all}<span class="badge" title="{app.foundCounts.all} waiting to be picked" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.foundCounts.all}</span>{/if}
     </button>
-    <button class="view" data-tour="nav-send" class:on={app.view === "send"} role="tab" aria-selected={app.view === "send"} onclick={() => (app.view = "send")}>
+    <button class="view" data-tour="nav-send" class:on={app.view === "send"} role="tab" aria-selected={app.view === "send"} tabindex={app.view === "send" ? 0 : -1} onclick={() => (app.view = "send")}>
       <span class="lead"><Icon name="upload" size={16} stroke={1.9} />Upload</span>
       {#if app.uploadingCount}
         <span class="run" title="{app.uploadingCount} uploading"><span class="live"></span>{app.uploadingCount}</span>
       {/if}
     </button>
-    <button class="view" data-tour="nav-direct" class:on={app.view === "direct"} role="tab" aria-selected={app.view === "direct"} onclick={() => (app.view = "direct")}>
+    <button class="view" data-tour="nav-direct" class:on={app.view === "direct"} role="tab" aria-selected={app.view === "direct"} tabindex={app.view === "direct" ? 0 : -1} onclick={() => (app.view = "direct")}>
       <span class="lead"><Icon name="send" size={16} stroke={1.9} />Direct</span>
       {#if app.directWaiting}
         <span class="badge attn" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.directWaiting}</span>
@@ -119,7 +151,7 @@
         <span class="run" title="{app.directMoving} moving"><span class="live"></span>{app.directMoving}</span>
       {/if}
     </button>
-    <button class="view" data-tour="nav-devices" class:on={app.view === "devices"} role="tab" aria-selected={app.view === "devices"} onclick={() => (app.view = "devices")}>
+    <button class="view" data-tour="nav-devices" class:on={app.view === "devices"} role="tab" aria-selected={app.view === "devices"} tabindex={app.view === "devices" ? 0 : -1} onclick={() => (app.view = "devices")}>
       <span class="lead"><Icon name="devices" size={16} stroke={1.9} />My devices</span>
       {#if devices.waiting}
         <span class="badge attn" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{devices.waiting}</span>
@@ -127,7 +159,7 @@
         <span class="run" title="{devices.moving} moving"><span class="live"></span>{devices.moving}</span>
       {/if}
     </button>
-    <button class="view" data-tour="nav-dashboard" class:on={app.view === "dashboard"} role="tab" aria-selected={app.view === "dashboard"} onclick={() => (app.view = "dashboard")}>
+    <button class="view" data-tour="nav-dashboard" class:on={app.view === "dashboard"} role="tab" aria-selected={app.view === "dashboard"} tabindex={app.view === "dashboard" ? 0 : -1} onclick={() => (app.view = "dashboard")}>
       <span class="lead"><Icon name="chart" size={16} stroke={1.9} />Dashboard</span>
     </button>
   </div>
@@ -140,7 +172,7 @@
   {:else if app.view === "direct"}
     <nav>
       {#each directShows as f (f.key)}
-        <button class="item" class:on={app.directFilter === f.key} onclick={() => (app.directFilter = f.key)}>
+        <button class="item" class:on={app.directFilter === f.key} aria-current={app.directFilter === f.key ? "true" : undefined} onclick={() => (app.directFilter = f.key)}>
           <span class="lead">
             {#if f.dot}<span class="dot" style="--c: {f.dot}"></span>{:else}<Icon name={f.icon ?? "list"} size={15} />{/if}
             {f.label}
@@ -155,6 +187,7 @@
         <button
           class="item tagrow"
           class:on={app.directFilter === `tag:${t}`}
+          aria-current={app.directFilter === `tag:${t}` ? "true" : undefined}
           onclick={() => (app.directFilter = `tag:${t}`)}
           oncontextmenu={(e) => tagMenu(e, t)}
           title="{t} · right-click to rename or delete"
@@ -172,7 +205,7 @@
   {:else if app.view === "found"}
     <nav>
       {#each foundFilters as f (f.key)}
-        <button class="item" class:on={app.foundFilter === f.key} onclick={() => (app.foundFilter = f.key)}>
+        <button class="item" class:on={app.foundFilter === f.key} aria-current={app.foundFilter === f.key ? "true" : undefined} onclick={() => (app.foundFilter = f.key)}>
           <span class="lead">
             {#if f.dot}<span class="dot" class:hollow={f.hollow} style="--c: {f.dot}"></span>{:else}<Icon name="list" size={15} />{/if}
             {f.label}
@@ -184,11 +217,28 @@
   {:else}
   <nav>
     {#each libs as l (l.key)}
-      <button class="item" class:on={app.library === l.key && !app.sourceFilter} onclick={() => pickLibrary(l.key)}>
+      <button class="item" class:on={app.library === l.key && !app.sourceFilter && !priv.showing} aria-current={app.library === l.key && !app.sourceFilter && !priv.showing ? "true" : undefined} onclick={() => pickLibrary(l.key)}>
         <span class="lead"><Icon name={l.icon} size={15} />{l.label}</span>
         <span class="count mono" class:alert={l.key === "problems" && app.counts.problems > 0}>{app.counts[l.key]}</span>
       </button>
     {/each}
+    {#if priv.status.on}
+      <!-- Private mode: looks like the others while locked (nothing hints at it); violet, open
+           and with its count only while open. -->
+      <button
+        class="item priv"
+        class:open={priv.status.unlocked}
+        class:on={priv.showing && priv.status.unlocked}
+        aria-current={priv.showing && priv.status.unlocked ? "true" : undefined}
+        data-tour="private-entry"
+        title="Private (Ctrl+Shift+P)"
+        onclick={() => priv.enter()}
+        transition:rowSlide={{ duration: 200 }}
+      >
+        <span class="lead"><span class="lk"><Icon name={priv.status.unlocked ? "unlock" : "lock"} size={15} /></span>Private</span>
+        {#if priv.status.unlocked}<span class="count mono pc" in:fadeIn={{ duration: 160 }}>{priv.list.length}</span>{/if}
+      </button>
+    {/if}
   </nav>
   {/if}
 
@@ -196,7 +246,7 @@
     <div class="label">Sources</div>
     <nav>
       {#each app.sources as s (s.key)}
-        <button class="item" class:on={app.sourceFilter === s.key} onclick={() => pickSource(s.key)}>
+        <button class="item" class:on={app.sourceFilter === s.key} aria-current={app.sourceFilter === s.key ? "true" : undefined} onclick={() => pickSource(s.key)}>
           <span class="lead" title={s.label}><span class="dot" style="background: {s.color}"></span><span class="tname">{s.label}</span></span>
           <span class="count mono">{s.count}</span>
         </button>
@@ -458,6 +508,35 @@
   }
   .newtag {
     color: var(--text-3);
+  }
+  .item.priv .lk {
+    display: inline-grid;
+    transition:
+      transform var(--mid) var(--ease),
+      color var(--mid) ease;
+  }
+  /* Open: filled violet whenever Private mode is unlocked (whatever list shows), so you always
+     know; the private list showing adds the light edge the picked entry has. */
+  .item.priv.open {
+    background: var(--priv);
+    color: #fff;
+  }
+  .item.priv.open:hover {
+    background: color-mix(in srgb, var(--priv) 88%, #fff);
+  }
+  .item.priv.open .lk {
+    transform: rotate(-8deg);
+  }
+  .item.priv.open.on {
+    box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.75);
+  }
+  .item.priv.open .count {
+    color: rgba(255, 255, 255, 0.85);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .item.priv .lk {
+      transition: none;
+    }
   }
   .suggest {
     display: flex;

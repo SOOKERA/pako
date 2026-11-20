@@ -391,6 +391,7 @@ impl Engine {
                                     item.dest = old.dest;
                                     item.template.priority = old.template.priority;
                                     item.template.notify = old.template.notify;
+                                    item.template.alert = old.template.alert;
                                     item.template.private = old.template.private;
                                     inner.found[pos] = item;
                                 }
@@ -474,6 +475,7 @@ impl Engine {
                             it.dest = old.dest.clone();
                             it.template.priority = old.template.priority;
                             it.template.notify = old.template.notify;
+                            it.template.alert = old.template.alert;
                             it.template.link = link.clone();
                             it.template.private = old.template.private;
                             it.device = old.device.clone();
@@ -711,9 +713,13 @@ impl Engine {
     /// for yt-dlp and Pako's own HLS download), then the Download with Pako window first
     /// (quality, folder, name) when `ask`, else it starts and a notification says so.
     fn hand_over(self: &Arc<Self>, mut d: Download, cookies: Vec<crate::extension::SiteCookie>, ask: bool) {
-        // A private window's video never gets a cookie file (see `video_from_browser`).
+        // A private window's video never gets a cookie file (see `video_from_browser`), and
+        // whatever the browser told about it stays in memory only (never in browser-headers.dat).
         if !cookies.is_empty() && !d.private {
             crate::extension::remember_headers(&d.id, crate::extension::BrowserHeaders { site_cookies: cookies, ..Default::default() });
+        }
+        if d.private {
+            crate::extension::mark_headers_private(&d.id);
         }
         d.ask = ask;
         if d.ask {
@@ -728,7 +734,7 @@ impl Engine {
             crate::ask::enqueue(&id);
         } else {
             self.notify_as(private, "browser", "Downloading in Pako", &name, crate::notices::Go::item("downloads", id.clone()));
-            crate::ask::started();
+            crate::ask::started(private);
         }
     }
 
@@ -944,6 +950,7 @@ impl Engine {
                             it.dest = old.dest.clone();
                             it.template.priority = old.template.priority;
                             it.template.notify = old.template.notify;
+                            it.template.alert = old.template.alert;
                             it.template.private = old.template.private;
                             it.device = old.device.clone();
                             match it.state {
@@ -976,7 +983,10 @@ impl Engine {
 
     /// Turns the picked Found items into downloads, saved under `dest` (Drive folders keep
     /// their own folder inside it). `first` = Download first. Returns how many were added.
-    pub fn found_download(self: &Arc<Self>, ids: &[String], first: bool, dest: Option<PathBuf>, notify: bool) -> usize {
+    /// `alert`: Off · Pop-up · Important for all of them (None = each row's own choice).
+    /// `private`: "Download privately", straight into Private mode (only while it's on).
+    pub fn found_download(self: &Arc<Self>, ids: &[String], first: bool, dest: Option<PathBuf>, alert: Option<Alert>, private: bool) -> usize {
+        let private = private && crate::vault::get().is_on();
         let dest = dest.unwrap_or_else(|| self.settings().download_dir);
         let picked: Vec<FoundItem> = {
             let mut inner = self.inner.lock().unwrap();
@@ -1062,7 +1072,10 @@ impl Engine {
         for (k, f) in picked.into_iter().enumerate() {
             let mut d = f.template;
             d.id = uuid::Uuid::new_v4().to_string();
-            d.notify |= notify;
+            if let Some(a) = alert {
+                d.set_alert(a);
+            }
+            d.private |= private;
             d.added_at = base + k as u64;
             d.date = base;
             let base = f.dest.clone().unwrap_or_else(|| dest.clone());
@@ -1097,6 +1110,17 @@ impl Engine {
         // stopped in between, the picked links are in both lists rather than in neither.
         self.save_now();
         self.save_found();
+        if private {
+            // Sent privately: Links' safety copy (the version before) mustn't keep those links.
+            // (A slow disk: waited for again, so the copy is made from the file without them.)
+            for _ in 0..6 {
+                FOUND_SAVER.wait_all(Duration::from_secs(10));
+                if FOUND_SAVER.all_written() {
+                    break;
+                }
+            }
+            crate::paths::bak_like_now(&found_path());
+        }
         if first {
             self.download_first(&new_ids);
         } else {
@@ -1113,7 +1137,7 @@ impl Engine {
         ids: &[String],
         dest: Option<Option<PathBuf>>,
         priority: Option<Priority>,
-        notify: Option<bool>,
+        alert: Option<Alert>,
         extract: Option<bool>,
     ) {
         {
@@ -1125,8 +1149,8 @@ impl Engine {
                 if let Some(p) = priority {
                     f.template.priority = p;
                 }
-                if let Some(n) = notify {
-                    f.template.notify = n;
+                if let Some(a) = alert {
+                    f.template.set_alert(a);
                 }
                 if let Some(x) = extract {
                     f.extract = Some(x);
@@ -1343,6 +1367,29 @@ impl Engine {
     pub(crate) fn notify_row(&self, id: &str, kind: &str, title: &str, body: &str, go: crate::notices::Go) {
         let private = self.inner.lock().unwrap().found.iter().any(|f| f.id == id && f.template.private);
         self.notify_as(private, kind, title, body, go);
+    }
+
+    /// Links rows for `link` go, and Links' safety copy with them (Move to Private: Pako keeps
+    /// no record of a private download).
+    pub(crate) fn forget_links_for(&self, link: &str) {
+        let removed = {
+            let mut inner = self.inner.lock().unwrap();
+            let before = inner.found.len();
+            inner.found.retain(|f| f.template.link != link);
+            before != inner.found.len()
+        };
+        if !removed {
+            return;
+        }
+        self.save_found();
+        for _ in 0..6 {
+            FOUND_SAVER.wait_all(Duration::from_secs(10));
+            if FOUND_SAVER.all_written() {
+                break;
+            }
+        }
+        crate::paths::bak_like_now(&found_path());
+        self.list_changed();
     }
 
     pub fn found_remove(&self, ids: &[String]) {
@@ -1852,8 +1899,10 @@ impl AnswerClock {
 
 /// Can the bytes so far be checked against the next host with samples? The same known size,
 /// both can continue part-way, and something on disk to compare.
+/// Never for a Private mode download: its bytes on disk are encrypted, so samples from the
+/// next host could never match (it would always start over for nothing).
 pub(crate) fn can_spot_check(d: &Download, next: &Mirror) -> bool {
-    d.size.is_some() && d.size == next.size && d.resumable && next.resumable && d.segments.iter().any(|s| s.done > 0)
+    !d.vault && d.size.is_some() && d.size == next.size && d.resumable && next.resumable && d.segments.iter().any(|s| s.done > 0)
 }
 
 /// Moves a download to its next backup host (after `after_failure` said Switch). The failed

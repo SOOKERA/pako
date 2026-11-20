@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
-use tauri::{AppHandle, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::engine::Engine;
@@ -214,10 +214,36 @@ enum Mode {
 fn show_page(win: &tauri::WebviewWindow, title: &str) {
     let _ = win.eval(MANUAL_JS);
     let _ = win.set_title(title);
-    let _ = win.center();
+    to_middle(win);
     let _ = win.show();
     let _ = win.unminimize();
     let _ = win.set_focus();
+}
+
+/// A hidden link page about to show: in the middle of the screen the mouse is on (the one you
+/// are using), at the size it has. One already on screen stays where you put it.
+fn to_middle(win: &tauri::WebviewWindow) {
+    if win.is_visible().unwrap_or(false) {
+        return;
+    }
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let place = win
+        .outer_size()
+        .ok()
+        .map(|s| s.to_logical::<f64>(scale))
+        .and_then(|s| crate::tray::middle_of_pointer_screen(win.app_handle(), s.width, s.height));
+    match place {
+        Some(p) => {
+            let _ = win.set_position(p);
+            // Snapped elsewhere as it shows (a window manager): back in the middle; dragging it
+            // yourself ends that at once.
+            let me = win.clone();
+            crate::tray::hold_place(win, p, move || me.is_visible().unwrap_or(false));
+        }
+        None => {
+            let _ = win.center();
+        }
+    }
 }
 
 async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Result<String, String> {
@@ -260,6 +286,9 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
         .title("Pako · Opening link")
         .inner_size(520.0, 640.0)
         .min_inner_size(360.0, 420.0)
+        // No maximize button: with it, a window manager (PowerToys FancyZones) snaps even a popup
+        // window into a zone. It stays resizable, can be minimized and is on the taskbar.
+        .maximizable(false)
         .center()
         .visible(false)
         // Keeps nothing: the page runs in WebView2's InPrivate mode (same environment as Pako's
@@ -339,6 +368,8 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
         })
         .build()
         .map_err(|e| format!("Couldn't open the link page: {e}"))?;
+    // Like Download with Pako: FancyZones never snaps it into a zone (see to_middle too).
+    crate::tray::keep_dialog_out_of_zones(&win);
     let close_tx = tx.clone();
     win.on_window_event(move |e| {
         if matches!(e, tauri::WindowEvent::Destroyed) {
@@ -448,7 +479,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                 }
                 mode = Mode::Captcha;
                 let _ = win.set_title(&format!("Pako · Solve this to continue · {gate_host}"));
-                let _ = win.center();
+                to_middle(&win);
                 let _ = win.show();
                 let _ = win.set_focus();
                 engine.gate_status(id, Some(WAITING_FOR_YOU));

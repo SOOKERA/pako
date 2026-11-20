@@ -24,6 +24,7 @@
   import Icon from "./Icon.svelte";
   import SegPick from "./SegPick.svelte";
   import TransferItems from "./TransferItems.svelte";
+  import PanelResizer from "./PanelResizer.svelte";
   import { fadeIn, rowSlide } from "./motion";
   import { isLocal, itemsCount, pathLabel } from "./direct";
   import { quintOut } from "svelte/easing";
@@ -40,6 +41,7 @@
     onletgo,
     ontags,
     onfolder,
+    resize = null,
   }: {
     /** Over the conversation (a narrow window) rather than a column of its own. */
     drawer?: boolean;
@@ -56,6 +58,8 @@
     onletgo?: () => void;
     ontags: () => void;
     onfolder: () => void;
+    /** Over the conversation: its own edge to resize it (the column has its edge outside). */
+    resize?: { width: number; avail: number; listMin: number } | null;
   } = $props();
 
   let n = $state<ContactNumbers | null>(null);
@@ -181,6 +185,9 @@
 </script>
 
 <aside class="details" data-tour="direct-details" class:drawer aria-label="About {c.name}" transition:drawerSlide|global>
+  {#if drawer && resize}
+    <PanelResizer page="direct" width={resize.width} avail={resize.avail} listMin={resize.listMin} />
+  {/if}
   {#if transfer}
     {@const x = transfer}
     <section class="picked" aria-label="What was in {x.name}" in:fadeIn={{ duration: 160 }}>
@@ -353,7 +360,7 @@
     top: 0;
     right: 0;
     bottom: 0;
-    width: 288px;
+    width: var(--pw, 288px);
     z-index: 5;
     border: none;
     border-left: 1px solid var(--line-strong);

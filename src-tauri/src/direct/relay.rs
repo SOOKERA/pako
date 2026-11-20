@@ -946,10 +946,23 @@ impl Node {
             format!("Relayed {what} to {} for this device · {}", r.to_name, end_words(&r))
         };
         self.log(&r.device, r.mine, text, state == "delivered");
+        // The PC that asked: its files reached the contact, the sent sound.
+        if super::sent_sound_plays(state, !r.mine) {
+            self.sent_sound();
+            self.relay_delivered(&r);
+        }
         if !r.mine {
             self.relay_tell(id);
         }
         self.changed();
+    }
+
+    /// "Files delivered" on the PC that asked, once its relay reached the contact: their
+    /// conversation here if this PC knows them too, else the PC that passed it on.
+    fn relay_delivered(&self, r: &Relay) {
+        let known = self.inner.lock().unwrap().contacts.iter().any(|c| c.id == r.to && !c.device);
+        let go = if known { crate::notices::Go::item("direct", &r.to) } else { crate::notices::Go::item("devices", &r.device) };
+        self.tell(&r.device, "direct-sent", "Files delivered", &format!("{} has received {}.", r.to_name, r.name), go);
     }
 
     /// Deletes a relay's copy (only inside the relay folder), or moves what's in it to `keep_in`.

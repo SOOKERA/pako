@@ -819,8 +819,8 @@ pub struct ReportInfo {
     problems: Vec<Problem>,
 }
 
-/// What a report would carry (the window adds the description and the theme).
-#[tauri::command]
+/// What a report would carry (the window adds the description and the theme). The window asks
+/// for it through lib.rs's `report_info` (off its thread).
 pub fn report_info() -> ReportInfo {
     ReportInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1103,6 +1103,15 @@ fn windows_label(product: &str, display: Option<&str>, build: Option<&str>) -> S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_window_timing_line_survives_cleaning() {
+        let home = r"C:\Users\x";
+        let m = "Window: Tutorial private took 1012 ms to show: start 3 ms, first frame 950 ms, found 2 ms, shown 40 ms; 9 frames, longest 948 ms";
+        assert_eq!(clean_with(m, home), m);
+        let m2 = "Window: Tutorial step private-list waited 900 ms; moving (dx/dy/dw/dh px): div.list 0/0/0.5/0; div.body 0/0/0.5/0";
+        assert_eq!(clean_with(m2, home), m2);
+    }
+
     use super::*;
 
     const HOME: &str = r"C:\Users\Sam";

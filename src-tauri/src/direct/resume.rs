@@ -142,11 +142,6 @@ pub fn decode(full: &[[usize; 2]], part: &[FileHave], sizes: &[u64]) -> Option<V
     Some(out)
 }
 
-/// A file's last-modified time (ms), to see whether it changed since it was offered.
-pub fn mtime_of(m: &std::fs::Metadata) -> u64 {
-    m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
 /// What the receiving side keeps about a transfer cut short.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -190,6 +185,61 @@ pub struct OutNote {
     /// Bytes the receiver had, as last known.
     pub done: u64,
     pub since: u64,
+    /// Sent because another of your devices asked for it (no sent sound here). Left out when
+    /// not (and in notes from before).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ordered: bool,
+    /// A send of files from Private mode: their names (and the send's) are kept sealed for this
+    /// Windows user (DPAPI) instead of written out, so the note never names them on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<String>,
+}
+
+/// The names a note keeps sealed: the send's, then each file's (empty for files not private).
+#[derive(Serialize, Deserialize)]
+struct Names {
+    name: String,
+    files: Vec<Option<String>>,
+}
+
+/// The note as written to disk: a private file's name (and the send's) sealed. Not private:
+/// as it is.
+fn sealed_out(note: &OutNote) -> std::io::Result<OutNote> {
+    let private: Vec<bool> = note.files.iter().map(|f| crate::private_send::is_private(&f.path)).collect();
+    if !private.contains(&true) {
+        return Ok(note.clone());
+    }
+    let names = Names { name: note.name.clone(), files: note.files.iter().zip(&private).map(|(f, &p)| p.then(|| f.file.path.clone())).collect() };
+    let bytes = serde_json::to_vec(&names).map_err(std::io::Error::other)?;
+    let sealed = crate::secure::protect(&bytes).map_err(std::io::Error::other)?;
+    let mut out = note.clone();
+    out.name = String::new();
+    for (f, &p) in out.files.iter_mut().zip(&private) {
+        if p {
+            f.file.path = String::new();
+        }
+    }
+    use base64::Engine as _;
+    out.sealed = Some(base64::engine::general_purpose::STANDARD.encode(sealed));
+    Ok(out)
+}
+
+/// Its names back (None: they can't be read, e.g. another Windows user's copy).
+fn unsealed_out(mut note: OutNote) -> Option<OutNote> {
+    let Some(sealed) = note.sealed.take() else { return Some(note) };
+    use base64::Engine as _;
+    let raw = base64::engine::general_purpose::STANDARD.decode(sealed).ok()?;
+    let names: Names = serde_json::from_slice(&crate::secure::unprotect(&raw).ok()?).ok()?;
+    if names.files.len() != note.files.len() {
+        return None;
+    }
+    note.name = names.name;
+    for (f, n) in note.files.iter_mut().zip(names.files) {
+        if let Some(n) = n {
+            f.file.path = n;
+        }
+    }
+    Some(note)
 }
 
 fn dir(data: &Path) -> PathBuf {
@@ -198,6 +248,22 @@ fn dir(data: &Path) -> PathBuf {
 
 fn in_path(data: &Path, id: &str) -> PathBuf {
     dir(data).join(format!("{id}.in.json"))
+}
+
+/// How far a transfer coming in got (saved every few seconds while it moves, apart from the
+/// rest of its note, which is written once when it's accepted or continues).
+fn have_path(data: &Path, id: &str) -> PathBuf {
+    dir(data).join(format!("{id}.have.json"))
+}
+
+/// What changes while files arrive: the bytes written and synced, the files sent again, when
+/// it last moved. Small next to the full note of a big folder (every file, every place).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InProgress {
+    pub have: Vec<Ranges>,
+    pub retried: Vec<bool>,
+    pub since: u64,
 }
 
 fn out_path(data: &Path, id: &str) -> PathBuf {
@@ -212,12 +278,36 @@ fn save<T: Serialize>(path: PathBuf, note: &T) -> std::io::Result<()> {
     crate::paths::write_atomic(&path, &bytes)
 }
 
+/// The full note (when a transfer is accepted, continues, pauses or ends): it holds the
+/// progress too, so an older progress file is dropped.
 pub fn save_in(data: &Path, note: &InNote) -> std::io::Result<()> {
-    save(in_path(data, &note.id), note)
+    save(in_path(data, &note.id), note)?;
+    let _ = std::fs::remove_file(have_path(data, &note.id));
+    Ok(())
+}
+
+/// Only how far it got (every few seconds while it moves): written whole and replaced in one
+/// step (a cut leaves the last one), with no ".bak" copy; its note must be saved already.
+pub fn save_in_progress(data: &Path, id: &str, p: &InProgress) -> std::io::Result<()> {
+    if !in_path(data, id).exists() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no note yet"));
+    }
+    let path = have_path(data, id);
+    let bytes = serde_json::to_vec(p).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, &path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 pub fn save_out(data: &Path, note: &OutNote) -> std::io::Result<()> {
-    save(out_path(data, &note.id), note)
+    save(out_path(data, &note.id), &sealed_out(note)?)
 }
 
 fn remove(path: PathBuf) {
@@ -227,6 +317,7 @@ fn remove(path: PathBuf) {
 
 pub fn remove_in(data: &Path, id: &str) {
     remove(in_path(data, id));
+    let _ = std::fs::remove_file(have_path(data, id));
 }
 
 pub fn remove_out(data: &Path, id: &str) {
@@ -253,13 +344,23 @@ pub fn load(data: &Path) -> (Vec<InNote>, Vec<OutNote>) {
         let Ok(bytes) = std::fs::read(&p) else { continue };
         if name.ends_with(".in.json") {
             match serde_json::from_slice::<InNote>(&bytes) {
-                Ok(n) if n.id == id && [n.parts.len(), n.targets.len(), n.have.len(), n.retried.len()].iter().all(|&l| l == n.files.len()) => ins.push(n),
+                Ok(mut n) if n.id == id && [n.parts.len(), n.targets.len(), n.have.len(), n.retried.len()].iter().all(|&l| l == n.files.len()) => {
+                    // Newer progress saved apart (one that doesn't fit the note is ignored).
+                    if let Some(g) = std::fs::read(have_path(data, id)).ok().and_then(|b| serde_json::from_slice::<InProgress>(&b).ok()) {
+                        if g.have.len() == n.files.len() && g.retried.len() == n.files.len() && g.have.iter().zip(&n.files).all(|(r, f)| r.missing(f.size).iter().all(|m| m[1] <= f.size) && r.covered() <= f.size) {
+                            n.have = g.have;
+                            n.retried = g.retried;
+                            n.since = n.since.max(g.since);
+                        }
+                    }
+                    ins.push(n)
+                }
                 _ => remove(p),
             }
         } else {
-            match serde_json::from_slice::<OutNote>(&bytes) {
-                Ok(n) if n.id == id => outs.push(n),
-                _ => remove(p),
+            match serde_json::from_slice::<OutNote>(&bytes).ok().filter(|n| n.id == id).and_then(unsealed_out) {
+                Some(n) => outs.push(n),
+                None => remove(p),
             }
         }
     }
@@ -363,7 +464,7 @@ mod tests {
             since: 5,
         };
         save_in(&data, &n).unwrap();
-        let o = OutNote { id: id.clone(), contact: "c".into(), name: "x".into(), files: vec![], temp: None, done: 3, since: 5 };
+        let o = OutNote { id: id.clone(), contact: "c".into(), name: "x".into(), files: vec![], temp: None, done: 3, since: 5, ordered: false, sealed: None };
         save_out(&data, &o).unwrap();
         // Something else in the folder, and a note with a made-up name: left out.
         std::fs::write(dir(&data).join("junk.in.json"), b"{}").unwrap();
@@ -375,6 +476,86 @@ mod tests {
         remove_out(&data, &id);
         let (ins, outs) = load(&data);
         assert!(ins.is_empty() && outs.is_empty());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// A send another of your devices asked for keeps that after a restart (no sent sound when
+    /// it ends); notes from before load as not asked for, and a plain one doesn't write it.
+    #[test]
+    fn an_ordered_send_stays_ordered() {
+        let o = OutNote { id: "i".into(), contact: "c".into(), name: "x".into(), files: vec![], temp: None, done: 3, since: 5, ordered: true, sealed: None };
+        let back: OutNote = serde_json::from_slice(&serde_json::to_vec(&o).unwrap()).unwrap();
+        assert!(back.ordered);
+        let old: OutNote = serde_json::from_str(r#"{"id":"i","contact":"c","name":"x","files":[],"temp":null,"done":3,"since":5}"#).unwrap();
+        assert!(!old.ordered);
+        assert!(!serde_json::to_string(&OutNote { ordered: false, ..o }).unwrap().contains("ordered"));
+    }
+
+    /// While files arrive only their progress is saved, apart and without a ".bak" copy; the
+    /// note read back has it. Saving the full note again drops the separate progress.
+    #[test]
+    fn progress_is_saved_apart_and_read_back() {
+        let data = std::env::temp_dir().join(format!("pako-resume-progress-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let n = InNote {
+            id: id.clone(),
+            contact: "c".into(),
+            name: "x".into(),
+            files: vec![OfferFile { path: "a.bin".into(), size: 9 }, OfferFile { path: "b.bin".into(), size: 4 }],
+            targets: vec![data.join("a.bin"), data.join("b.bin")],
+            parts: vec![data.join("a.bin.pakorecv"), data.join("b.bin.pakorecv")],
+            saved_to: None,
+            have: vec![Ranges::default(), Ranges::default()],
+            retried: vec![false, false],
+            since: 5,
+        };
+        // No note yet: no progress either.
+        let mut a = Ranges::default();
+        a.insert(0, 6);
+        let p = InProgress { have: vec![a.clone(), Ranges::default()], retried: vec![false, true], since: 9 };
+        assert!(save_in_progress(&data, &id, &p).is_err());
+        save_in(&data, &n).unwrap();
+        save_in_progress(&data, &id, &p).unwrap();
+        save_in_progress(&data, &id, &p).unwrap();
+        assert!(!dir(&data).join(format!("{id}.have.bak")).exists() && !dir(&data).join(format!("{id}.have.json.bak")).exists(), "no .bak for progress");
+        let (ins, _) = load(&data);
+        assert_eq!(ins.len(), 1);
+        assert_eq!((ins[0].have.clone(), ins[0].retried.clone(), ins[0].since), (p.have.clone(), p.retried.clone(), 9));
+        // Progress that doesn't fit the note (another number of files) is ignored.
+        save_in_progress(&data, &id, &InProgress { have: vec![a.clone()], retried: vec![false], since: 11 }).unwrap();
+        assert_eq!(load(&data).0[0].have, n.have);
+        // A full save again: the separate progress goes.
+        save_in(&data, &n).unwrap();
+        assert!(!have_path(&data, &id).exists());
+        remove_in(&data, &id);
+        assert!(load(&data).0.is_empty());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// A send of files from Private mode never writes their names in its note: they're sealed
+    /// for this Windows user, and back when the note is read.
+    #[test]
+    fn private_names_are_sealed_in_the_note() {
+        let _turn = crate::private_send::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let data = std::env::temp_dir().join(format!("pako-resume-sealed-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let vault = crate::private_send::test_private_file(b"secret bytes", "Trip/Secret report.pdf");
+        let o = OutNote {
+            id: id.clone(),
+            contact: "c".into(),
+            name: "Secret report.pdf".into(),
+            files: vec![OutFile { path: vault.clone(), file: OfferFile { path: "Trip/Secret report.pdf".into(), size: 12 }, mtime: 1 }],
+            temp: None,
+            done: 0,
+            since: 5,
+            ordered: false,
+            sealed: None,
+        };
+        save_out(&data, &o).unwrap();
+        let raw = std::fs::read(out_path(&data, &id)).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("Secret"), "the name isn't on disk");
+        let (_, outs) = load(&data);
+        assert_eq!(outs, vec![o]);
         let _ = std::fs::remove_dir_all(&data);
     }
 }

@@ -3,11 +3,14 @@
 <script lang="ts">
   // Details panel of the Found tab: what the link is, and its own settings
   // (save folder, priority, notify) before it downloads.
+  import MiddleText from "./MiddleText.svelte";
   import { app, hostLook } from "./state.svelte";
+  import { priv } from "./private.svelte";
   import { api, canDownload, type FoundItem, type Priority } from "./api";
   import { bytes, duration, extension, pickQuality, sourceOf } from "./format";
   import Icon from "./Icon.svelte";
   import ItemSettings from "./ItemSettings.svelte";
+  import { alertOf, doneAlert, sharedAlert, type Alert } from "./alert";
   import VideoPreview from "./VideoPreview.svelte";
   import { isVideo } from "./format";
   import ContextMenu from "./ContextMenu.svelte";
@@ -80,7 +83,7 @@
     }
   }
 
-  async function change(o: { dest?: string | null; priority?: Priority; notify?: boolean; extract?: boolean }) {
+  async function change(o: { dest?: string | null; priority?: Priority; alert?: Alert; extract?: boolean }) {
     // Extracting is about the whole set, even parts hidden by the filter. Every host of a file
     // on several hosts gets the same settings (any of them may be the one that downloads).
     const target = app.withMirrors(o.extract !== undefined && set ? set.members : items);
@@ -158,14 +161,32 @@
     await app.refresh();
   }
 
-  // "Download on ▾" (only while one of your devices can take links): the arrow next to Download.
+  /** "Download privately": straight into Private mode, encrypted (never shown in Downloads). */
+  async function downloadPrivately() {
+    const ids = able.map((f) => f.id);
+    if (!ids.length) return;
+    await app.run(async () => {
+      const n = await api.foundDownload(ids, false, app.foundDest, null, true);
+      await app.refresh();
+      await priv.refreshList();
+      if (n) app.toast(`${n === 1 ? "1 file" : `${n} files`} downloading in Private mode`);
+    });
+  }
+
+  // The arrow next to Download (while one of your devices can take links, or Private mode is
+  // on): "Download on" another PC, and "Download privately".
   targets.start();
   let onMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const more = $derived(targets.list.length > 0 || priv.status.on);
   function openOn(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const these = able;
+    const items: MenuItem[] = targets.list.length
+      ? downloadOnMenu(targets.list, () => downloadThese(true), (t) => downloadFoundOn(t, these), true)
+      : [{ label: "Download on this PC", icon: "download", action: () => downloadThese(true) }];
+    if (priv.status.on) items.splice(1, 0, { label: "Download privately", icon: "lock", hint: "Private mode", action: downloadPrivately });
     // Opens upwards from the panel's foot, its right edge on the arrow's.
-    onMenu = { x: r.right, y: r.top - 6, items: downloadOnMenu(targets.list, () => downloadThese(true), (t) => downloadFoundOn(t, these), true) };
+    onMenu = { x: r.right, y: r.top - 6, items };
   }
 
   async function remove() {
@@ -180,7 +201,7 @@
   }
 </script>
 
-<div class="panel">
+<div class="panel details-panel">
   {#if items.length}
     {@const lk = one ? look(one) : { label: set ? "Split archive" : "Folder", color: "var(--text-2)" }}
     <section class="top">
@@ -249,12 +270,12 @@
       dest={items[0].dest ?? defaultDest}
       isDefault={items.every((f) => !f.dest)}
       priority={items[0].template.priority}
-      notify={items.every((f) => f.template.notify)}
+      alert={sharedAlert(items.map((f) => alertOf(f.template, doneAlert(app.settings))))}
       count={items.length}
       onDest={(dir) => change({ dest: dir })}
       onResetDest={() => change({ dest: null })}
       onPriority={(p) => change({ priority: p })}
-      onNotify={(on) => change({ notify: on })}
+      onAlert={(a) => change({ alert: a })}
     >
       {#snippet extra()}
         {#if choices.list.length || items.some((f) => f.device)}
@@ -313,27 +334,34 @@
       <section class="details">
         <div class="label">Details</div>
         <dl>
-          <dt>Link</dt><dd class="link" title={one.template.link}>{one.template.link}</dd>
+          <dt>Link</dt><dd class="link"><MiddleText text={one.template.link} /></dd>
           {#if extension(one.template.name)}<dt>Type</dt><dd>{extension(one.template.name)}</dd>{/if}
-          {#if one.folder}<dt>In folder</dt><dd>{one.folder}{one.relDir ? `\\${one.relDir}` : ""}</dd>{/if}
+          {#if one.folder}<dt>In folder</dt><dd><MiddleText text={`${one.folder}${one.relDir ? `\\${one.relDir}` : ""}`} /></dd>{/if}
           {#if one.template.source.kind === "video"}<dt>Length</dt><dd>{duration(one.template.source.duration)}</dd>{/if}
           <dt>Added</dt><dd>{when(one.template.date || one.template.addedAt)}</dd>
         </dl>
       </section>
     {/if}
 
-    <div class="actions">
+    <div class="panel-actions">
       <div class="split">
         <button class="btn primary" disabled={!able.length || sending.busy} onclick={() => downloadThese()}>
-          <Icon name="download" size={13} stroke={2.4} />{able.length > 1 ? `Download ${able.length}` : "Download"}
+          <Icon name="download" size={13} stroke={2.4} /><span class="l">{able.length > 1 ? `Download ${able.length}` : "Download"}</span>
         </button>
-        {#if targets.list.length}
-          <button class="btn primary more" disabled={!able.length || sending.busy} aria-label="Download on" aria-haspopup="menu" title="Download on this PC or on one of your devices" onclick={openOn}>
+        {#if more}
+          <button
+            class="btn primary more"
+            disabled={!able.length || sending.busy}
+            aria-label="More ways to download"
+            aria-haspopup="menu"
+            title={targets.list.length ? "Download on this PC, privately, or on one of your devices" : "Download, or Download privately"}
+            onclick={openOn}
+          >
             <Icon name="chevron" size={12} stroke={2.6} />
           </button>
         {/if}
       </div>
-      <button class="btn danger" onclick={remove}><Icon name="trash" size={13} />Remove</button>
+      <button class="btn danger" onclick={remove}><Icon name="trash" size={13} /><span class="l">Remove</span></button>
     </div>
   {:else}
     <div class="none">
@@ -354,7 +382,7 @@
 
 <style>
   .panel {
-    width: 320px;
+    width: var(--pw, 320px);
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -585,20 +613,23 @@
     white-space: nowrap;
     user-select: text;
   }
-  .actions {
-    margin-top: auto;
-    display: flex;
-    gap: 8px;
-    padding: 14px 18px;
-    border-top: 1px solid var(--line);
-  }
-  .actions .split {
-    flex: 1;
+  /* Download (with its arrow) takes two of the bar's three columns; on a narrow panel the
+     whole first row, and Remove the second. */
+  .panel-actions .split {
+    grid-column: span 2;
     min-width: 0;
     display: flex;
   }
-  .actions .split .btn:first-child {
+  .panel-actions .split .btn:first-child {
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+  @container details (max-width: 335px) {
+    .panel-actions .split,
+    .panel-actions > .btn.danger {
+      grid-column: 1 / -1;
+    }
   }
   .split .btn:not(:last-child) {
     border-top-right-radius: 0;

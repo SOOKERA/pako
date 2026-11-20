@@ -209,7 +209,15 @@
     {#if !x.online && x.device}
       <button class="btn small" onclick={() => app.run(() => api.directConnect(x.id))}><Icon name="retry" size={12} />Connect</button>
     {/if}
-    <div class="tabs" data-tour="devices-tabs">
+    <div class="tabwrap" data-tour="devices-tabs">
+    <!-- Narrow (a small window, the details beside it): a menu instead, so the name keeps room. -->
+    <select class="input small tabmenu" aria-label="Show" value={tab} onchange={(e) => (tab = e.currentTarget.value as Tab)}>
+      <option value="files">Files</option>
+      <option value="links">Links</option>
+      <option value="downloads">Downloads</option>
+      <option value="settings">Settings</option>
+    </select>
+    <div class="tabs">
       <SegPick
         small
         label="Show"
@@ -222,6 +230,7 @@
         value={tab}
         onpick={(v) => (tab = v as Tab)}
       />
+    </div>
     </div>
   </header>
 
@@ -281,7 +290,7 @@
         </div>
         <footer class="compose" data-tour="devices-send">
           <span class="dim grow">
-            {#if !x.paired}Files go without asking once both PCs confirmed.{:else if x.online}Drop files or folders anywhere here to send them to {x.name}, or{:else}{x.name} is offline: files go only while both PCs are on.{/if}
+            {#if !x.paired}Files go without asking once both PCs confirmed.{:else if x.online}Drop files or folders anywhere here to send them to {x.name}.{:else}{x.name} is offline: files go only while both PCs are on.{/if}
           </span>
           <button class="btn small" disabled={!x.online || sending} onclick={() => chooseFiles(false)}><Icon name="file" size={12} />Choose files</button>
           <button class="btn small" disabled={!x.online || sending} onclick={() => chooseFiles(true)}><Icon name="folder" size={12} />Choose folder</button>
@@ -332,7 +341,7 @@
             <div class="srow">
               <div class="stext">
                 <div class="slabel">{x.name} can control my Pako</div>
-                <div class="shint">It can see this PC's downloads, add links to them (into this PC's download folder, or a folder it names inside it), pause or resume them, change their priority, remove them, and get finished ones. Nothing else: it can't open or run anything here, or look in other folders. Turned off, its next order is refused.</div>
+                <div class="shint">It can see this PC's downloads, add links to them (into this PC's download folder, or a folder it names inside it), pause or resume them, change their priority, remove them, and get finished ones. It can also see your Direct contacts and your history with them, and send files to them through this PC. Nothing else: it can't open or run anything here, or look in other folders. Turned off, its next order is refused.</div>
               </div>
               <button class="switch" class:on={x.control} role="switch" aria-checked={x.control} aria-label="{x.name} can control my Pako" onclick={toggleControl}></button>
             </div>
@@ -412,6 +421,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    container: devpane / inline-size;
   }
   .head {
     flex: none;
@@ -454,7 +464,8 @@
     background: var(--st-retry);
   }
   .htext {
-    min-width: 0;
+    flex: 1 1 auto;
+    min-width: 72px;
   }
   .hname {
     font-weight: 600;
@@ -473,8 +484,30 @@
   .grow {
     flex: 1;
   }
+  .tabwrap,
   .tabs {
     flex: none;
+  }
+  .tabmenu {
+    display: none;
+    flex: none;
+    width: auto;
+  }
+  /* Narrow: the four tabs fold into a menu (the name stays readable), and the send bar's
+     words take their own line above the buttons. */
+  @container devpane (max-width: 560px) {
+    .tabs {
+      display: none;
+    }
+    .tabmenu {
+      display: block;
+    }
+    .compose {
+      flex-wrap: wrap;
+    }
+    .compose > .grow {
+      flex-basis: 100%;
+    }
   }
   .dim {
     color: var(--text-3);

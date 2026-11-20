@@ -12,6 +12,7 @@
   import { rowSlide } from "./motion";
   import Collapse from "./Collapse.svelte";
   import AdvancedFold from "./AdvancedFold.svelte";
+  import SetGroup from "./SetGroup.svelte";
 
   let { autoUpdate = $bindable(), onsetup }: { autoUpdate: boolean; onsetup: () => void } = $props();
 
@@ -144,6 +145,7 @@
 <section data-tour="set-updates">
   <h3>Features &amp; updates</h3>
 
+  <SetGroup title="Pako">
   <div class="line">
     <div>
       <div class="t">Pako <span class="ver mono">{app.version}</span><span class="kind">· {app.installed ? "Installed" : "Portable"}</span></div>
@@ -175,7 +177,7 @@
     </div>
   </div>
   <!-- Under the whole row, so it stays on one line. -->
-  <div class="by"><Credit /></div>
+  <div class="by attached"><Credit /></div>
   <div class="line">
     <div>
       <div class="t">Update Pako and its tools automatically</div>
@@ -185,7 +187,9 @@
       <button class="switch" class:on={autoUpdate} role="switch" aria-checked={autoUpdate} aria-label="Update Pako and its tools automatically" onclick={() => (autoUpdate = !autoUpdate)}></button>
     </div>
   </div>
+  </SetGroup>
 
+  <SetGroup title="Features">
   <div data-fold>
   <div class="fhead">
     <button class="fold" data-fold-toggle aria-expanded={toolsOpen} aria-controls="set-tools" onclick={() => (toolsOpen = !toolsOpen)}>
@@ -265,31 +269,31 @@
   </div>
   </Collapse>
   </div>
+  </SetGroup>
 
-  <AdvancedFold tab="updates" hint="First-start setup">
-    <div class="line">
-      <div>
-        <div class="t">First-start setup</div>
-        <div class="muted">Go through the welcome questions again.</div>
+  <AdvancedFold tab="updates" hint="Setup: run the first-start setup again">
+    <SetGroup title="Setup">
+      <div class="line">
+        <div>
+          <div class="t">First-start setup</div>
+          <div class="muted">Go through the welcome questions again.</div>
+        </div>
+        <div class="ctrl">
+          <button class="btn" onclick={onsetup}>Run setup again</button>
+        </div>
       </div>
-      <div class="ctrl">
-        <button class="btn" onclick={onsetup}>Run setup again</button>
-      </div>
-    </div>
+    </SetGroup>
   </AdvancedFold>
 </section>
 
 <style>
-  /* The same raised card as the other tabs of Settings (SettingsDialog.svelte). */
+  /* The same as Settings' other tabs (SettingsDialog.svelte): a title, then titled cards. */
   section {
-    padding: 16px 18px 18px;
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
+    padding: 0 0 4px;
   }
   h3 {
-    margin: -2px 0 4px;
-    font-size: 14px;
+    margin: 2px 0 -4px 2px;
+    font-size: 15px;
     font-weight: 600;
     letter-spacing: 0;
     color: var(--text);
@@ -300,9 +304,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 24px;
-    padding: 14px 0 0;
-    margin-top: 14px;
-    border-top: 1px solid var(--line-soft);
+    padding: 12px 14px;
   }
   .ctrl {
     flex: none;
@@ -343,7 +345,8 @@
     color: var(--st-done-text);
   }
   .fnote {
-    margin: 10px 0 0 20px;
+    margin: 0;
+    padding: 0 14px 0 34px;
   }
   .t {
     font-weight: 500;
@@ -355,7 +358,8 @@
     color: var(--text-3);
   }
   .by {
-    margin-top: 8px;
+    margin-top: -4px;
+    padding: 0 14px 12px;
   }
   .kind {
     margin-left: 6px;
@@ -373,17 +377,15 @@
     margin-top: 3px;
     color: var(--st-fail-text);
   }
+  /* Inside its group's card: one feature per row, a hairline between, as the other rows. */
   .feats {
     margin-top: 12px;
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
+    border-top: 1px solid var(--line);
   }
   .feat {
     padding: 12px 14px 10px;
-    background: var(--card);
   }
   .feat + .feat {
     border-top: 1px solid var(--line);

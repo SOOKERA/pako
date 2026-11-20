@@ -1,5 +1,20 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
+<script lang="ts" module>
+  import { clearWidths } from "./format";
+  /** Bumped when fonts finish loading: every cut text is measured again with the real font
+   *  (widths measured earlier used the stand-in font and could cut without "…"). */
+  let fontEpoch = $state(0);
+  if (typeof document !== "undefined" && document.fonts) {
+    const bump = () => {
+      clearWidths();
+      fontEpoch++;
+    };
+    document.fonts.addEventListener("loadingdone", bump);
+    document.fonts.ready.then(bump);
+  }
+</script>
+
 <script lang="ts">
   // Text cut in the middle when too long ("Project render fin…v3.mp4"), full text on hover.
   import { middleEllipsis } from "./format";
@@ -19,7 +34,10 @@
     return () => ro.disconnect();
   });
 
-  const shown = $derived(width && font ? middleEllipsis(text, width - 1, font) : text);
+  const shown = $derived.by(() => {
+    void fontEpoch;
+    return width && font ? middleEllipsis(text, width - 1, font) : text;
+  });
 </script>
 
 <span bind:this={el} class="mt {cls}" title={shown !== text ? text : undefined}>{shown}</span>

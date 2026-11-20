@@ -64,8 +64,13 @@ class Tour {
     return this.doneHere.has(id) || (app.settings?.toursDone ?? []).includes(id);
   }
 
+  /** When the last tutorial was asked for, and when it became active (to measure a slow start). */
+  clickedAt = 0;
+  activeAt = 0;
+
   async start(id: TourId) {
     if (this.active || this.starting) return;
+    this.clickedAt = performance.now();
     const prepare = PREPARE[id];
     if (prepare) {
       // What some steps depend on (the Dashboard's numbers), asked first; never more than a moment.
@@ -90,6 +95,7 @@ class Tour {
     this.steps = steps;
     this.index = 0;
     this.dir = 1;
+    this.activeAt = performance.now();
     this.active = true;
   }
 

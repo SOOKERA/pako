@@ -21,6 +21,9 @@
   import SegPick from "./SegPick.svelte";
   import { directExtra, hasList, initial, isLocal, itemsCount, nearbyNote, pathLabel, percent, sortContacts, statusOf, SUGGESTED_TAGS } from "./direct";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
+  import PanelResizer from "./PanelResizer.svelte";
+  import { panelWidths } from "./panelWidth.svelte";
+  import { shownWidth } from "./panelSize";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
 
@@ -129,7 +132,7 @@
   let search = $state("");
   const searching = $derived((fromId ? remoteAll.length : everyone.length) > 8 || search.length > 0);
   const contacts = $derived.by(() => {
-    const q = search.trim().toLowerCase();
+    const q = (search.trim() || app.search.trim()).toLowerCase();
     const list = fromId ? remoteShown : app.directShown;
     if (!q) return list;
     return list.filter((c) => c.name.toLowerCase().includes(q) || (c.theirName ?? "").toLowerCase().includes(q) || (c.tags ?? []).some((t) => t.toLowerCase().includes(q)));
@@ -295,6 +298,24 @@
   // A column of its own when there's room; on a narrower window it slides over the conversation.
   let bodyWidth = $state(0);
   const detailsInline = $derived(bodyWidth >= 1040);
+  // Its width, dragged on its edge and remembered. As a column: the room left after the people
+  // (260 px with details), the gaps and the page's padding, the conversation keeping 420 px.
+  // Over the conversation: up to the conversation's width, a strip of it still in view.
+  const inlineRoom = $derived(bodyWidth > 0 ? bodyWidth - 32 - 260 - 24 : 0);
+  const drawerRoom = $derived(bodyWidth > 0 ? bodyWidth - 32 - 280 - 12 : 0);
+  const DRAWER_LIST = 120;
+  // Its width eases only while it opens or closes (a window being resized moves it at once).
+  let detailsEasing = $state(false);
+  let detailsTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    void showDetails;
+    untrack(() => {
+      detailsEasing = true;
+      clearTimeout(detailsTimer);
+      detailsTimer = setTimeout(() => (detailsEasing = false), 420);
+    });
+  });
+  const detailsW = $derived(detailsInline ? shownWidth(panelWidths.of("direct", 288), inlineRoom) : shownWidth(panelWidths.of("direct", 288), drawerRoom, DRAWER_LIST));
   // Moving now (one waiting for them to come back isn't).
   const movingNow = $derived(current ? (d?.transfers ?? []).filter((t) => t.contact === current.id && t.state !== "waiting") : []);
   const endedWithThem = $derived(current ? (d?.history ?? []).filter((h) => h.contact === current.id).length : 0);
@@ -819,7 +840,7 @@
         </section>
       </div>
     {:else}
-    <div class="body" class:withdetails={showDetails && detailsInline} bind:clientWidth={bodyWidth} transition:fadeIn={{ duration: 220 }}>
+    <div class="body" class:withdetails={showDetails && detailsInline} style="--pw: {detailsW}px" bind:clientWidth={bodyWidth} transition:fadeIn={{ duration: 220 }}>
       <aside class="people card" data-tour="direct-people">
         <!-- You, sending from: your name and the PC, one button (the name renames it, the PC
              part picks another of your PCs to send from), the Pako ID under it. -->
@@ -1099,7 +1120,7 @@
           </div>
           {/key}
           {#if showDetails && !detailsInline}
-            <DirectDetails drawer contact={current} moving={movingNow} {speedOf} historyCount={endedWithThem} transfer={pickedInfo} onopen={(id, i, reveal) => app.run(() => openPart(id, i, reveal))} onletgo={letGo} ontags={() => openTags(current!)} onfolder={() => chooseFolder(current!)} />
+            <DirectDetails drawer resize={{ width: detailsW, avail: drawerRoom, listMin: DRAWER_LIST }} contact={current} moving={movingNow} {speedOf} historyCount={endedWithThem} transfer={pickedInfo} onopen={(id, i, reveal) => app.run(() => openPart(id, i, reveal))} onletgo={letGo} ontags={() => openTags(current!)} onfolder={() => chooseFolder(current!)} />
           {/if}
           </div>
 
@@ -1149,7 +1170,8 @@
         {/if}
       </section>
       {#if detailsInline && current}
-        <div class="dside" class:open={showDetails} aria-hidden={!showDetails} inert={!showDetails}>
+        <div class="dside" class:open={showDetails} class:easing={detailsEasing && !panelWidths.dragging} aria-hidden={!showDetails} inert={!showDetails}>
+          <PanelResizer page="direct" width={detailsW} avail={inlineRoom} />
           <DirectDetails contact={current} moving={movingNow} {speedOf} historyCount={endedWithThem} transfer={pickedInfo} onopen={(id, i, reveal) => app.run(() => openPart(id, i, reveal))} onletgo={letGo} ontags={() => openTags(current!)} onfolder={() => chooseFolder(current!)} />
         </div>
       {/if}
@@ -1350,21 +1372,25 @@
   }
   /* The details column: its width opens and closes like Downloads' side panel. */
   .dside {
+    position: relative;
     flex: none;
     width: 0;
     margin-left: 0;
     overflow: hidden;
     display: flex;
+  }
+  /* Opening or closing: width and gap ease (dragging the edge or resizing the window: at once). */
+  .dside.easing {
     transition:
       width var(--slow) var(--ease),
       margin-left var(--slow) var(--ease);
   }
   .dside.open {
-    width: 288px;
+    width: var(--pw, 288px);
     margin-left: 12px;
   }
   .dside > :global(.details) {
-    width: 288px;
+    width: var(--pw, 288px);
     flex: none;
     opacity: 0;
     transform: translateX(12px);

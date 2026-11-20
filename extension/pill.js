@@ -23,7 +23,9 @@
     if (/context invalidated/i.test(detail)) return { text: UPDATED, detail };
     console.warn("Pako:", detail);
     try {
-      Promise.resolve(api.storage.local.set({ lastError: NOT_ANSWERING, lastDetail: detail })).catch(() => {});
+      // A private tab's note stays in the browser's memory only, never on disk.
+      const store = api.extension?.inIncognitoContext && api.storage.session ? api.storage.session : api.storage.local;
+      Promise.resolve(store.set({ lastError: NOT_ANSWERING, lastDetail: detail })).catch(() => {});
     } catch {
       // the extension's storage can't be reached from here either
     }

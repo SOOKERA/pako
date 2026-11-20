@@ -5,11 +5,10 @@
   // as a QR code, when it gets deleted, how the upload went, downloads over time and your note.
   // Only what its row doesn't already say.
   import { untrack } from "svelte";
-  import { fade } from "svelte/transition";
   import { app } from "./state.svelte";
   import { api, type SentItem } from "./api";
   import { bytes, sentLook, shortDate, speed } from "./format";
-  import { rowSlide } from "./motion";
+  import { rowSlide, fadeIn } from "./motion";
   import { expiryLook, longDate, sevenMore, took, whoDeletes } from "./uploads";
   import Icon from "./Icon.svelte";
   import FileIcon from "./FileIcon.svelte";
@@ -112,10 +111,10 @@
   });
 </script>
 
-<div class="panel" bind:this={panel}>
+<div class="panel details-panel" bind:this={panel}>
   {#if s}
     {#key s.id}
-      <div class="inner" in:fade={{ duration: 160 }}>
+      <div class="inner" in:fadeIn={{ duration: 160 }}>
         <section class="top">
           <div class="headline">
             <span class="st" class:gone={s.gone} class:partial={s.incomplete}>{s.gone ? "Gone" : s.incomplete ? (uploading ? "Uploading" : "Not all uploaded") : "Uploaded"}</span>
@@ -141,13 +140,12 @@
             <div class="qrrow">
               <div class="qr" aria-label="QR code of the link" role="img">
                 {#if qr?.id === s.id}
-                  <div class="qrimg" in:fade={{ duration: 200 }}>{@html qr.svg}</div>
+                  <div class="qrimg" in:fadeIn={{ duration: 200 }}>{@html qr.svg}</div>
                 {/if}
               </div>
               <div class="qrside">
                 <button class="linkish mono" title="Open the download page" onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
                 <p class="hint">Point a phone's camera at the code to open the link.</p>
-                <button class="btn small" onclick={() => app.copyLink(s.link)}><Icon name="copy" size={12} />Copy link</button>
               </div>
             </div>
           </section>
@@ -156,7 +154,7 @@
             <div class="label">Delete after</div>
             {#if exp}
               {#key exp.label}
-                <div class="when {exp.tone}" in:fade={{ duration: 180 }}>
+                <div class="when {exp.tone}" in:fadeIn={{ duration: 180 }}>
                   <Icon name={s.deleteAt == null ? "check" : s.deleteError ? "alert" : "clock"} size={14} />
                   <div>
                     <div class="wt">{s.deleteAt == null ? "Kept until you delete it" : exp.label}</div>
@@ -176,7 +174,6 @@
                 {:else}
                   <button class="btn small" disabled={changing} onclick={() => app.setSentExpiry(s, sevenMore(s, Date.now()))}><Icon name="clock" size={12} />Delete in 7 days</button>
                 {/if}
-                <button class="btn small danger" onclick={() => (app.sentDeleting = s)}><Icon name="trash" size={12} />Delete now</button>
               </div>
             {/if}
           </section>
@@ -230,10 +227,23 @@
         <section class="notesec">
           <div class="label">
             Note
-            {#if saved}<span class="muted ok" transition:fade={{ duration: 160 }}>Saved</span>{/if}
+            {#if saved}<span class="muted ok" transition:fadeIn={{ duration: 160 }}>Saved</span>{/if}
           </div>
           <textarea class="input" rows="3" maxlength="500" placeholder="Who it's for, what's inside… (only on this PC)" bind:value={note} oninput={typed} onblur={saveNote}></textarea>
         </section>
+
+        <!-- The buttons, at the bottom as in every details panel: the main one first. -->
+        {#if !s.gone || canDelete}
+          <div class="panel-actions">
+            {#if !s.gone}
+              <button class="btn primary" title="Copy the link" onclick={() => app.copyLink(s.link)}><Icon name="copy" size={13} /><span class="l">Copy link</span></button>
+              <button class="btn" title="Open the download page in your browser" onclick={() => app.run(() => api.sentOpen(s.id))}><Icon name="globe" size={13} /><span class="l">Open page</span></button>
+            {/if}
+            {#if canDelete}
+              <button class="btn danger" title="Delete it now from where it was uploaded" onclick={() => (app.sentDeleting = s)}><Icon name="trash" size={13} /><span class="l">Delete now…</span></button>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/key}
   {:else}
@@ -251,7 +261,7 @@
 
 <style>
   .panel {
-    width: 320px;
+    width: var(--pw, 320px);
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -262,6 +272,7 @@
   .inner {
     display: flex;
     flex-direction: column;
+    min-height: 100%;
   }
   section {
     padding: 14px 18px;

@@ -119,6 +119,31 @@ pub enum Priority {
     Later,
 }
 
+/// How a finished download tells you: **Off** (nothing), **Pop-up** (the card at the bottom
+/// right and the arrived chime) or **Important** (a big card in the middle of the screen that
+/// stays until clicked, the chime, through Do not disturb but never over something full
+/// screen). Ordered: a folder or set says it as loud as its loudest file.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum Alert {
+    Off,
+    #[default]
+    Pop,
+    Important,
+}
+
+/// Settings › Notifications › "Chime when a download finishes".
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DoneChime {
+    /// Pop-up and Important.
+    #[default]
+    All,
+    /// Important only.
+    Important,
+    Never,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Segment {
     pub start: u64,
@@ -166,9 +191,13 @@ pub struct Download {
     pub force: bool,
     #[serde(default)]
     pub priority: Priority,
-    /// Show a Windows notification when this one finishes (even if the global setting is off).
-    #[serde(default)]
+    /// The old "Notify when done" (read from older lists: it is **Pop-up** now, see `alert_of`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub notify: bool,
+    /// Off · Pop-up · Important for this download. None = the default in Settings (or what an
+    /// older list's `notify` / `quiet` said).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert: Option<Alert>,
     /// Part of a split archive: extract the set once every part is downloaded.
     #[serde(default)]
     pub extract: bool,
@@ -181,8 +210,8 @@ pub struct Download {
     /// started until then).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ask: bool,
-    /// No notification for this one, even when every finished download is announced
-    /// ("Notify me" switched off in the Download with Pako window).
+    /// The old "Notify me" switched off in the Download with Pako window (read from older
+    /// lists: it is **Off** now, see `alert_of`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quiet: bool,
     /// The same file on other hosts (grouped in Links), in the order they are tried when the
@@ -218,6 +247,15 @@ pub struct Download {
     /// finishes (see `Settings::private_keep` and engine `private_keep_for`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub private: bool,
+    /// Kept in Private mode's vault: its file is encrypted as it's written (see `vault`), its
+    /// line is only in the private list (sealed), never in the list on disk. Always `private`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vault: bool,
+    /// In Private mode, a file of a folder download (a Drive folder, a split set, a playlist):
+    /// its place inside that folder ("Holiday\day 2"), the folder's own name first. Its file
+    /// waits in the vault, so this keeps the layout for the private list and for Decrypt….
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_folder: Option<String>,
 }
 
 /// A download the browser makes, followed by Pako (see `Download::via_browser`).
@@ -257,11 +295,38 @@ pub struct Mirror {
 }
 
 impl Download {
+    /// How this download tells you when it finishes: its own choice, else what an older list
+    /// said ("Notify when done" = Pop-up, the window's "Notify me" off = Off), else `default`
+    /// (Settings › Notifications › New downloads).
+    pub fn alert_of(&self, default: Alert) -> Alert {
+        self.alert.unwrap_or(if self.notify {
+            Alert::Pop
+        } else if self.quiet {
+            Alert::Off
+        } else {
+            default
+        })
+    }
+
+    /// Sets its choice. The older flags follow it, so an older Pako reading the list does the
+    /// same (its "Notify when done" for Pop-up and Important, its "Notify me" off for Off).
+    pub fn set_alert(&mut self, a: Alert) {
+        self.alert = Some(a);
+        self.notify = a != Alert::Off;
+        self.quiet = a == Alert::Off;
+    }
+
     pub fn final_path(&self) -> PathBuf {
+        if self.vault {
+            return crate::vault::get().file_path(&self.id);
+        }
         self.dest_dir.join(&self.name)
     }
-    /// The unfinished file while it downloads ("name.pakopart").
+    /// The unfinished file while it downloads ("name.pakopart"; in the vault, its own file).
     pub fn part_path(&self) -> PathBuf {
+        if self.vault {
+            return crate::vault::get().file_path(&self.id);
+        }
         crate::names::part_of(&self.dest_dir, &self.name)
     }
     /// The same file as an older Pako named it ("name.zdpart").
@@ -271,14 +336,24 @@ impl Download {
     /// A download left unfinished by an older Pako: its "name.zdpart" becomes "name.pakopart"
     /// (when both are there, the one changed last is kept), so it continues from the bytes it has.
     pub fn adopt_old_part(&self) {
+        if self.vault {
+            return;
+        }
         crate::names::adopt_old(&self.old_part_path(), &self.part_path());
     }
     /// Is its unfinished file on disk (under either name)?
     pub fn has_part(&self) -> bool {
+        if self.vault {
+            return self.part_path().exists();
+        }
         crate::names::part_exists(&self.dest_dir, &self.name)
     }
     /// Deletes its unfinished file, under either name.
     pub fn remove_part(&self) {
+        if self.vault {
+            crate::vault::blocks::remove(&self.part_path());
+            return;
+        }
         let _ = std::fs::remove_file(self.part_path());
         let _ = std::fs::remove_file(self.old_part_path());
     }
@@ -375,9 +450,24 @@ pub struct Settings {
     pub speed_limit_kb: u64,
     /// Check Drive files against Google's MD5 checksum when finished.
     pub verify_checksum: bool,
-    /// A pop-up when any download finishes (each download can also ask for one). It is the
-    /// "Download finished" kind's Pop-up switch in Settings › Notifications.
+    /// The old "Download finished › Pop-up" switch: read only to pick `done_alert`'s starting
+    /// value for settings saved before it (off: new downloads start at Off).
     pub notify_done: bool,
+    /// Settings › Notifications › "New downloads": Off · Pop-up · Important. None = from
+    /// `notify_done` (see `done_alert`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_alert: Option<Alert>,
+    /// "Chime when a download finishes". None = from `play_done_sound` (see `done_chime`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_chime: Option<DoneChime>,
+    /// The older Download with Pako window's remembered "Notify me" (read only, to start
+    /// `ask_off`).
+    #[serde(skip_serializing)]
+    pub ask_notify: Option<bool>,
+    /// That window had "Notify me" off: its downloads start at Off, until a level is picked in
+    /// the window or New downloads changes in Settings.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ask_off: bool,
     /// Settings › Notifications: each kind's Pop-up and Bell, where changed from the defaults
     /// (see `notices::pref`).
     pub notices: HashMap<String, NoticePref>,
@@ -386,9 +476,14 @@ pub struct Settings {
     /// No pop-ups while Windows says not now (full-screen game or video, presenting, Windows'
     /// own Do not disturb).
     pub follow_windows_quiet: bool,
-    /// A short chime when a download with its own "Notify when done" finishes (not during Do
-    /// not disturb, nor while Windows says not now when that is followed).
+    /// "Play a sound when files arrive": the arrived chime when files arrive in Direct or My
+    /// devices, or someone offers you files (not during Do not disturb, nor while Windows says
+    /// not now when that is followed). Finished downloads have their own choice (`done_chime`).
+    /// The key is the one from before Direct had sounds (`playDoneSound`).
     pub play_done_sound: bool,
+    /// "Play a sound when files are sent": the sent sound when an upload finishes or a Direct
+    /// or My devices send is delivered (the same quiet times).
+    pub play_sent_sound: bool,
     /// Split archives: extract when every part is downloaded (each set can change it).
     pub extract_default: bool,
     /// Minimize hides Pako in the taskbar tray (it keeps downloading).
@@ -410,12 +505,25 @@ pub struct Settings {
     /// (default, 10 minutes after it finished), "1h", or "close" (when Pako closes). Opening it
     /// from Pako, or its ✕, takes it off at once. Only the choice is saved, never the rows.
     pub private_keep: String,
+    /// Private mode locks itself after this long with no keyboard or mouse anywhere on the PC:
+    /// "1m", "5m" (default), "15m", "30m" or "never".
+    pub private_lock_after: String,
+    /// Private mode's list clears itself (rows and their files) this long after a download
+    /// finished: "never" (default), "3h", "12h", "3d", or a number of hours ("36h").
+    pub private_clear_after: String,
+    /// "Show real names when opening private files" (off: PrivateFile_<date>_<time>.ext).
+    pub private_real_names: bool,
+    /// The one-time tip about Private mode on the first "Done · private" row was shown.
+    pub private_tip_seen: bool,
     /// Pako starts when you sign in to Windows.
     pub start_with_windows: bool,
     /// ...straight to the tray (no window).
     pub start_in_tray: bool,
     /// The browser extension can reach Pako (registered with the browsers, per user).
     pub browser_connect: bool,
+    /// Pako Setup's window chose Start with Windows and the browser connection (installed copy):
+    /// first-start setup shows those choices as they are.
+    pub installer_choices: bool,
     /// The first-start setup was done (or skipped).
     pub setup_done: bool,
     /// Video downloading was offered (asked once when it arrives).
@@ -444,8 +552,6 @@ pub struct Settings {
     pub resume_uploads_on_start: bool,
     /// Downloads from the browser open the "Download with Pako" window first.
     pub ask_browser: bool,
-    /// That window's "Notify me when it's done" (remembered).
-    pub ask_notify: bool,
     /// The small window (the tray's list) opens by itself when a browser download starts.
     pub mini_on_browser: bool,
     /// The small window stays open and on top (doesn't close when you click elsewhere).
@@ -479,6 +585,33 @@ pub struct Settings {
     pub terms_accepted: Option<String>,
 }
 
+impl Settings {
+    /// "New downloads": as chosen, else from the old Download finished pop-up switch.
+    pub fn done_alert(&self) -> Alert {
+        self.done_alert.unwrap_or(if self.notify_done { Alert::Pop } else { Alert::Off })
+    }
+
+    /// "Chime when a download finishes": as chosen, else from the old arrived-sound switch
+    /// (which used to cover finished downloads too).
+    pub fn done_chime(&self) -> DoneChime {
+        self.done_chime.unwrap_or(if self.play_done_sound { DoneChime::All } else { DoneChime::Never })
+    }
+
+    /// Settles the finished-download choices once settings are read and before each save: New
+    /// downloads and the chime are pinned from the older switches the first time (so "Play a
+    /// sound when files arrive" changes only Direct's sound from then on), the old window's
+    /// "Notify me" off becomes `ask_off`, and the old Download finished switch is kept in step
+    /// for an older Pako.
+    pub fn settle_notify(&mut self) {
+        if self.done_alert.is_none() && self.ask_notify == Some(false) {
+            self.ask_off = true;
+        }
+        self.done_alert = Some(self.done_alert());
+        self.done_chime = Some(self.done_chime());
+        self.notify_done = self.done_alert() != Alert::Off;
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -489,10 +622,15 @@ impl Default for Settings {
             speed_limit_kb: 0,
             verify_checksum: true,
             notify_done: true,
+            done_alert: None,
+            done_chime: None,
+            ask_notify: None,
+            ask_off: false,
             notices: HashMap::new(),
             quiet: false,
             follow_windows_quiet: true,
             play_done_sound: true,
+            play_sent_sound: true,
             extract_default: false,
             minimize_to_tray: false,
             close_to_tray: false,
@@ -502,9 +640,14 @@ impl Default for Settings {
             confirm_quit: true,
             resume_on_start: true,
             private_keep: "10m".into(),
+            private_lock_after: "5m".into(),
+            private_clear_after: "never".into(),
+            private_real_names: false,
+            private_tip_seen: false,
             start_with_windows: false,
             start_in_tray: true,
             browser_connect: false,
+            installer_choices: false,
             setup_done: false,
             video_asked: false,
             auto_update: true,
@@ -519,7 +662,6 @@ impl Default for Settings {
             send_part_custom: false,
             resume_uploads_on_start: true,
             ask_browser: true,
-            ask_notify: true,
             mini_on_browser: true,
             mini_pinned: false,
             mini_pos: None,
@@ -591,8 +733,8 @@ pub struct AskView {
     pub total: usize,
     /// Downloads running now (then the window offers "Download now" and "Add to queue").
     pub running: usize,
-    /// "Notify me when it's done", as last chosen.
-    pub notify: bool,
+    /// Off · Pop-up · Important, starting at Settings' "New downloads".
+    pub alert: Alert,
     /// A video caught on a page or a recording: only this PC can make it (no "Download on").
     pub here_only: bool,
 }
@@ -611,9 +753,12 @@ pub struct AskAnswer {
     #[serde(default)]
     pub quality: Option<u32>,
     #[serde(default)]
-    pub notify: bool,
+    pub alert: Option<Alert>,
     #[serde(default)]
     pub dont_ask: bool,
+    /// "Download privately": straight into Private mode (only while it's on).
+    #[serde(default)]
+    pub private: bool,
 }
 
 #[cfg(test)]
@@ -782,6 +927,18 @@ mod tests {
         assert!(!serde_json::from_str::<Settings>(&off).expect("loads").play_done_sound);
     }
 
+    /// Settings saved before the sent sound existed load with it on (and the arrived one as
+    /// saved); off is kept, each switch on its own.
+    #[test]
+    fn old_settings_play_the_sent_sound() {
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true,"playDoneSound":false}"#).expect("loads");
+        assert!(s.play_sent_sound && !s.play_done_sound);
+        let again = serde_json::to_string(&Settings { play_sent_sound: false, play_done_sound: true, ..s }).unwrap();
+        assert!(again.contains(r#""playSentSound":false"#) && again.contains(r#""playDoneSound":true"#), "{again}");
+        let back: Settings = serde_json::from_str(&again).expect("loads");
+        assert!(!back.play_sent_sound && back.play_done_sound);
+    }
+
     /// Settings saved before "Remove private downloads from the list" existed: 10 minutes; a
     /// choice is kept.
     #[test]
@@ -791,5 +948,72 @@ mod tests {
         let again = serde_json::to_string(&Settings { private_keep: "close".into(), ..s }).unwrap();
         assert!(again.contains(r#""privateKeep":"close""#), "{again}");
         assert_eq!(serde_json::from_str::<Settings>(&again).expect("loads").private_keep, "close");
+    }
+
+    /// Off · Pop-up · Important: older lists and settings carry over. A row's old "Notify when
+    /// done" is Pop-up, the Download with Pako window's "Notify me" off is Off, any other row
+    /// follows the default; the old Download finished pop-up switch off makes the default Off
+    /// (nobody gets pop-ups and chimes they had turned off), the old arrived sound off makes
+    /// finished downloads silent.
+    #[test]
+    fn notify_levels_carry_over_from_older_files() {
+        let old = r#"{"id":"a","link":"https://a.example/x.zip","source":{"kind":"http","url":"https://a.example/x.zip"},"name":"x.zip","destDir":"C:/D","size":10,"md5":null,"status":"queued","message":null,"resumable":true,"segments":[],"downloaded":0,"addedAt":1,"finishedAt":null,"group":null,"resolved":false,"notify":true}"#;
+        let d: Download = serde_json::from_str(old).expect("loads");
+        assert_eq!(d.alert, None);
+        assert_eq!(d.alert_of(Alert::Off), Alert::Pop, "Notify when done = Pop-up");
+        let quiet = Download { notify: false, quiet: true, ..d.clone() };
+        assert_eq!(quiet.alert_of(Alert::Important), Alert::Off, "Notify me off = Off");
+        let plain = Download { notify: false, ..d.clone() };
+        assert_eq!(plain.alert_of(Alert::Important), Alert::Important, "the default");
+        // A choice wins, and is what's saved, with the old flags in step for an older Pako.
+        let mut chosen = d.clone();
+        chosen.set_alert(Alert::Important);
+        assert_eq!(chosen.alert_of(Alert::Off), Alert::Important);
+        let saved = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(saved["alert"], "important");
+        assert!(saved["notify"] == true && saved.get("quiet").is_none(), "{saved}");
+        chosen.set_alert(Alert::Off);
+        let saved = serde_json::to_value(&chosen).unwrap();
+        assert!(saved.get("notify").is_none() && saved["quiet"] == true, "{saved}");
+        chosen.set_alert(Alert::Pop);
+        assert_eq!(serde_json::to_value(&chosen).unwrap()["notify"], true);
+        assert!(serde_json::to_value(&plain).unwrap().get("alert").is_none(), "no choice: nothing written");
+
+        // Settings.
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true}"#).expect("loads");
+        assert_eq!((s.done_alert(), s.done_chime()), (Alert::Pop, DoneChime::All), "new: Pop-up, chime with both");
+        let s: Settings = serde_json::from_str(r#"{"setupDone":true,"notifyDone":false,"playDoneSound":false}"#).expect("loads");
+        assert_eq!((s.done_alert(), s.done_chime()), (Alert::Off, DoneChime::Never));
+        let s: Settings = serde_json::from_str(r#"{"notifyDone":false,"doneAlert":"important","doneChime":"important"}"#).expect("loads");
+        assert_eq!((s.done_alert(), s.done_chime()), (Alert::Important, DoneChime::Important), "a choice wins");
+        let again = serde_json::to_string(&s).unwrap();
+        assert!(again.contains(r#""doneAlert":"important""#) && again.contains(r#""doneChime":"important""#), "{again}");
+        assert!(!serde_json::to_string(&Settings::default()).unwrap().contains("doneAlert"), "not chosen: not written");
+        // Ordered: a folder says it as loud as its loudest file.
+        assert!(Alert::Off < Alert::Pop && Alert::Pop < Alert::Important);
+    }
+
+    /// Settled once read (and before each save): New downloads and the chime are pinned from the
+    /// older switches, so turning "Play a sound when files arrive" off later only quiets Direct;
+    /// the old window's "Notify me" off starts its downloads at Off; the old Download finished
+    /// switch follows New downloads for an older Pako.
+    #[test]
+    fn notify_choices_settle_once() {
+        let mut s: Settings = serde_json::from_str(r#"{"setupDone":true,"playDoneSound":true,"askNotify":false}"#).expect("loads");
+        s.settle_notify();
+        assert_eq!((s.done_alert, s.done_chime), (Some(Alert::Pop), Some(DoneChime::All)));
+        assert!(s.ask_off, "the window's Notify me was off");
+        s.play_done_sound = false;
+        s.settle_notify();
+        assert_eq!(s.done_chime(), DoneChime::All, "Direct's sound switch no longer moves it");
+        s.done_alert = Some(Alert::Off);
+        s.settle_notify();
+        assert!(!s.notify_done, "an older Pako sees Download finished off");
+        let again = serde_json::to_string(&s).unwrap();
+        assert!(again.contains(r#""askOff":true"#) && !again.contains("askNotify"), "{again}");
+        // Already chosen before: the old window value doesn't come back.
+        let mut chosen: Settings = serde_json::from_str(r#"{"doneAlert":"pop","askNotify":false}"#).expect("loads");
+        chosen.settle_notify();
+        assert!(!chosen.ask_off);
     }
 }

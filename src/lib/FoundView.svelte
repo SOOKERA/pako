@@ -10,6 +10,8 @@
   import Modal from "./Modal.svelte";
   import { VIRTUAL_MIN, layout, reveal, visible } from "./virtual";
   import type { MenuItem } from "./menu";
+  import { ALERTS, alertLabel, alertMenu, alertOf, doneAlert, nextAlert, sharedAlert, type Alert } from "./alert";
+  import SegPick from "./SegPick.svelte";
   import { bytes, dateTitle, extension, shortDate, sourceOf } from "./format";
   import Icon from "./Icon.svelte";
   import TutorialButton from "./tour/TutorialButton.svelte";
@@ -18,8 +20,34 @@
   import { choices, targets } from "./devices.svelte";
   import { downloadFoundOn, downloadOnMenu, downloadSplit, sending } from "./downloadOn.svelte";
   import { pop } from "./motion";
+  import { priv } from "./private.svelte";
+  import ColumnGrip from "./ColumnGrip.svelte";
+  import ColumnsButton from "./ColumnsButton.svelte";
+  import { listColumns } from "./columns.svelte";
+  import { LISTS, gridTemplate, shownColumns } from "./columns";
 
   let { onadd, onmenu }: { onadd: () => void; onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
+
+  // ---------- columns: widths, shown or hidden (columns.ts) ----------
+  const LIST = LISTS.found;
+  /** The column titles' width: the list's room, without the scrollbar's. */
+  let headW = $state(0);
+  const colState = $derived(listColumns.state("found"));
+  const frozen = $derived(listColumns.frozen?.list === "found" ? listColumns.frozen : null);
+  const shown = $derived(frozen ? { keys: frozen.keys, tight: false } : shownColumns(LIST, colState, headW));
+  const colsStyle = $derived(`--cols: ${gridTemplate(LIST, colState, shown.keys, shown.tight)}`);
+  const hideCls = $derived(
+    LIST.cols
+      .filter((c) => !shown.keys.includes(c.key))
+      .map((c) => `h-${c.key}`)
+      .join(" "),
+  );
+  const noRoom = $derived(LIST.cols.filter((c) => !colState.hidden.includes(c.key) && !shown.keys.includes(c.key)).map((c) => c.key));
+  const unsort = (key: string) => app.unsortIf("found", key);
+  function columnsMenu(e: MouseEvent) {
+    e.preventDefault();
+    onmenu(e.clientX, e.clientY, listColumns.menu("found", unsort, () => noRoom));
+  }
 
   const n = $derived(app.picked.length);
   /** Ticked rows as shown (a file on several hosts once; Remove takes all its hosts). */
@@ -44,7 +72,7 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     // "This PC" here is for this action only: every picked link downloads here, whatever its
     // own "Download on" says (and a device picked here overrides it the same way).
-    onmenu(r.left, r.bottom + 6, downloadOnMenu(targets.list, () => download(false, false, app.picked, false, true), (t) => downloadFoundOn(t, app.picked), true));
+    onmenu(r.left, r.bottom + 6, downloadOnMenu(targets.list, () => download(false, null, app.picked, false, true), (t) => downloadFoundOn(t, app.picked), true));
   }
 
   async function chooseDest() {
@@ -53,7 +81,7 @@
   }
 
   /** Picked links that are already downloaded: in the downloads list, or the file is in the folder. */
-  let dupAsk = $state<{ ids: string[]; dups: FoundItem[]; first: boolean; notify: boolean } | null>(null);
+  let dupAsk = $state<{ ids: string[]; dups: FoundItem[]; first: boolean; alert: Alert | null; privately: boolean } | null>(null);
 
   function sameFile(f: FoundItem, d: Download) {
     const a = f.template.source;
@@ -64,10 +92,12 @@
 
   /** `here`: download on this PC whatever each link's own "Download on" says (the menu's
    *  "Download on this PC"). Else links set to another PC go there (`downloadSplit`). */
-  async function download(first: boolean, notify = false, items: FoundItem[] = app.picked, checked = false, here = false): Promise<void> {
-    if (!here && !checked && items.some((f) => f.device)) {
+  /** `alert`: Off · Pop-up · Important for all of them (null = each row's own).
+   *  `privately`: "Download privately", straight into Private mode (on this PC). */
+  async function download(first: boolean, alert: Alert | null = null, items: FoundItem[] = app.picked, checked = false, here = false, privately = false): Promise<void> {
+    if (!here && !privately && !checked && items.some((f) => f.device)) {
       if (busy) return;
-      return downloadSplit(items, first, (rows): Promise<void> => download(first, notify, rows, false, true));
+      return downloadSplit(items, first, (rows): Promise<void> => download(first, alert, rows, false, true));
     }
     const ids = items.filter(canDownload).map((f) => f.id);
     if (!ids.length || busy) return;
@@ -76,15 +106,17 @@
     try {
       if (!checked) {
         const onDisk = new Set(await api.foundExisting(ids, app.foundDest).catch(() => [] as string[]));
-        const dups = app.found.filter((f) => ids.includes(f.id) && (onDisk.has(f.id) || app.downloads.some((d) => sameFile(f, d))));
+        const want = new Set(ids);
+        const dups = app.found.filter((f) => want.has(f.id) && (onDisk.has(f.id) || app.downloads.some((d) => sameFile(f, d))));
         if (dups.length) {
-          dupAsk = { ids, dups, first, notify };
+          dupAsk = { ids, dups, first, alert, privately };
           return;
         }
       }
-      const count = await api.foundDownload(ids, first, app.foundDest, notify);
+      const count = await api.foundDownload(ids, first, app.foundDest, alert, privately);
       await app.refresh();
-      if (count) app.toast(`${count === 1 ? "1 file" : `${count} files`} moved to Downloads`);
+      if (privately) await priv.refreshList();
+      if (count) app.toast(privately ? `${count === 1 ? "1 file" : `${count} files`} downloading in Private mode` : `${count === 1 ? "1 file" : `${count} files`} moved to Downloads`);
       // Nothing left to pick: show the downloads running.
       if (!app.found.length) app.view = "downloads";
     } catch (e) {
@@ -105,14 +137,26 @@
     if (ids.length) app.removeFound(ids, ids.length === 1 ? "1 broken link removed" : `${ids.length} broken links removed`);
   }
 
-  /** The arrow next to the main button: the same, plus a notification when done. */
+  /** The arrow next to the main button: how the picked links tell you when they finish (the
+   *  same three-way as beside it, for when the window is too narrow to show it), and "Download
+   *  privately" (Private mode on): straight into Private mode, encrypted, never in Downloads. */
   function moreMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const items: MenuItem[] = [
-      { label: startsNow ? "Download and notify me" : "Add to queue and notify me", icon: "bell", action: () => download(false, true) },
-    ];
-    if (!startsNow) items.push({ label: "Download first and notify me", icon: "up", action: () => download(true, true) });
+    const items: MenuItem[] = alertMenu(pickedAlert, setPickedAlert);
+    if (priv.status.on) items.push({ separator: true }, { label: "Download privately", icon: "lock", hint: "Private mode", action: () => download(false, null, app.picked, false, true, true) });
     onmenu(r.right - 230, r.bottom + 6, items);
+  }
+
+  /** How the picked links tell you when they finish (Off · Pop-up · Important), set on them
+   *  before they download; null when they differ. */
+  const pickedAlert = $derived(sharedAlert(app.picked.map((f) => alertOf(f.template, doneAlert(app.settings)))));
+  function setPickedAlert(a: Alert) {
+    const ids = app.picked.map((f) => f.id);
+    if (!ids.length) return;
+    app.run(async () => {
+      await api.foundSet(ids, { alert: a });
+      await app.refresh();
+    });
   }
 
   /** Right-click on a row: the ticked rows if it's one of them, else just this one. */
@@ -131,12 +175,13 @@
         await app.refresh();
       });
     const menu: MenuItem[] = [
-      { label: able.length > 1 ? `Download ${able.length}` : "Download", icon: "download", disabled: !able.length, action: () => download(false, false, able) },
-      { label: "Download first", icon: "up", disabled: !able.length, action: () => download(true, false, able) },
-      { label: "Download and notify me", icon: "bell", disabled: !able.length, action: () => download(false, true, able) },
+      { label: able.length > 1 ? `Download ${able.length}` : "Download", icon: "download", disabled: !able.length, action: () => download(false, null, able) },
+      { label: "Download first", icon: "up", disabled: !able.length, action: () => download(true, null, able) },
+      { label: "Download as Important", icon: "bell", disabled: !able.length, action: () => download(false, "important", able) },
+      ...(priv.status.on ? [{ label: "Download privately", icon: "lock", hint: "Private mode", disabled: !able.length, action: () => download(false, null, able, false, true, true) }] : []),
       ...(targets.list.length && able.length ? [{ separator: true }, ...downloadOnMenu(targets.list, null, (t) => downloadFoundOn(t, able), true)] : []),
       { separator: true },
-      { label: "Notify when done", icon: "bell", hint: items.every((f) => f.template.notify) ? "✓" : "", action: () => set({ notify: !items.every((f) => f.template.notify) }) },
+      ...alertMenu(sharedAlert(items.map((f) => alertOf(f.template, doneAlert(app.settings)))), (a) => set({ alert: a })),
       { label: "Priority: First", icon: "up", hint: all("first") ? "✓" : "", action: () => set({ priority: "first" }) },
       { label: "Priority: Normal", icon: "minus", hint: all("normal") ? "✓" : "", action: () => set({ priority: "normal" }) },
       { label: "Priority: Later", icon: "down", hint: all("later") ? "✓" : "", action: () => set({ priority: "later" }) },
@@ -304,7 +349,7 @@
   }
 </script>
 
-<div class="found">
+<div class="found {hideCls}" class:easing={listColumns.easing && app.foundRows.length <= 60} style={colsStyle}>
   <div class="toolbar">
     <h1>Links</h1>
     <TutorialButton id="found" />
@@ -340,6 +385,10 @@
         <Icon name="devices" size={14} /><span class="wide">Download on</span><span class="ochev"><Icon name="chevron" size={11} stroke={2.4} /></span>
       </button>
     {/if}
+    <div class="notify" data-tour="found-notify" title="When they finish: Off, Pop-up, or Important (a big pop-up in the middle of the screen)">
+      <Icon name={pickedAlert === "off" ? "bell-off" : "bell"} size={14} />
+      <SegPick small label="Notify when done" options={ALERTS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={n ? pickedAlert : null} onpick={setPickedAlert} />
+    </div>
     <div class="split" data-tour="found-download">
       <button class="btn primary" disabled={!n || busy} title={startsNow ? "Download" : "Add to queue"} onclick={() => download(false)}>
         {#if startsNow}
@@ -348,13 +397,13 @@
           <Icon name="queue" size={14} stroke={2.2} /><span class="mid">Add to queue ·</span> {n}
         {/if}
       </button>
-      <button class="btn primary more" disabled={!n || busy} aria-label="More download options" title="Download and notify me" onclick={moreMenu}>
+      <button class="btn primary more" disabled={!n || busy} aria-label="More download options" title={priv.status.on ? "Notify when done, or Download privately" : "Notify when done"} onclick={moreMenu}>
         <Icon name="chevron" size={12} stroke={2.6} />
       </button>
     </div>
   </div>
 
-  <div class="head">
+  <div class="head" role="presentation" oncontextmenu={columnsMenu} bind:clientWidth={headW}>
     <div class="cell">
       <button
         class="check"
@@ -375,18 +424,30 @@
       </button>
     </div>
     <div class="cell">Type</div>
-    {#each [["name", "Name", ""], ["source", "Source", "c-src"], ["size", "Size", "c-size"], ["link", "Link", ""], ["date", "Added on", "c-date"]] as [key, label, cls] (key)}
-      <button class="cell sorter {cls}" class:sorted={app.sortFound?.key === key} onclick={() => app.toggleSort("found", key as SortKey)} title="Sort by {label.toLowerCase()}">
-        {label}
-        {#if app.sortFound?.key === key}<Icon name={app.sortFound.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
-      </button>
+    <button class="cell sorter" class:sorted={app.sortFound?.key === "name"} onclick={() => app.toggleSort("found", "name")} title="Sort by name" aria-label="Name{app.sortFound?.key === 'name' ? (app.sortFound.dir > 0 ? ', sorted A to Z' : ', sorted Z to A') : ''}. Sort by name">
+      Name
+      {#if app.sortFound?.key === "name"}<Icon name={app.sortFound.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
+    </button>
+    {#each LIST.cols as c (c.key)}
+      <div class="cell hc c-{c.key}">
+        <ColumnGrip list="found" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />
+        <button class="sorter" class:sorted={app.sortFound?.key === c.key} onclick={() => app.toggleSort("found", c.key as SortKey)} title="Sort by {c.label.toLowerCase()}" aria-label="{c.label}{app.sortFound?.key === c.key ? (app.sortFound.dir > 0 ? ', sorted lowest first' : ', sorted highest first') : ''}. Sort by {c.label.toLowerCase()}">
+          {c.label}
+          {#if app.sortFound?.key === c.key}<Icon name={app.sortFound.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
+        </button>
+      </div>
     {/each}
+    <div class="cell colcell"><ColumnsButton list="found" {onmenu} onhide={unsort} noRoom={() => noRoom} /></div>
   </div>
 
   <div
     class="body"
     data-tour="found-list"
-    role="presentation"
+    role="grid"
+    tabindex="-1"
+    aria-label="Links"
+    aria-multiselectable="true"
+    aria-activedescendant={app.foundFocus && !app.foundFocus.startsWith("g:") ? "frow-" + app.foundFocus : undefined}
     bind:this={body}
     bind:clientHeight={viewH}
     onscroll={(e) => (scrollTop = (e.currentTarget as HTMLElement).scrollTop)}
@@ -470,14 +531,14 @@
                 <span class="chip">{t.total} {t.total === 1 ? "file" : "files"} · {t.on} picked</span>
               {/if}
             </div>
-            <div class="cell src c-src"><span class="dot" style="background: {sourceOf(r.items[0].template).color}"></span><span class="ell">{sourceOf(r.items[0].template).label}</span></div>
+            <div class="cell src c-source"><span class="dot" style="background: {sourceOf(r.items[0].template).color}"></span><span class="ell">{sourceOf(r.items[0].template).label}</span></div>
             <div class="cell size c-size mono">{size ? bytes(size) : ""}</div>
             {#if r.set}
-              <div class="cell link" class:ready={!r.set.missing.length} class:broken={r.set.missing.length > 0}>
+              <div class="cell link c-link" class:ready={!r.set.missing.length} class:broken={r.set.missing.length > 0}>
                 {#if r.set.missing.length}<Icon name="alert" size={13} /><span class="ell">Incomplete set</span>{:else}<Icon name="check" size={13} stroke={2.6} /><span class="ell">Split archive</span>{/if}
               </div>
             {:else}
-              <div class="cell link ready"><Icon name="check" size={13} stroke={2.6} />Opened</div>
+              <div class="cell link c-link ready"><Icon name="check" size={13} stroke={2.6} />Opened</div>
             {/if}
             <div class="cell date mono c-date" title={dateTitle(newest)}>{shortDate(newest)}</div>
           </div>
@@ -497,6 +558,9 @@
             class:tint-limit={f.state === "needsAccount"}
             class:focused={app.foundFocus === f.id}
             data-key={f.id}
+            id={"frow-" + f.id}
+            aria-selected={on}
+            aria-label="{f.template.name}, {f.state === 'broken' ? 'broken' : f.state === 'checking' ? 'checking' : f.message ?? f.state}"
             role="row"
             tabindex="-1"
             onclick={(e) => rowClick(e, f.id, all)}
@@ -529,6 +593,28 @@
             <div class="cell name">
               {#if r.kind === "child"}<span class="rail" class:end={r.last}></span>{/if}
               <MiddleText text={f.template.name} class="nm" />
+              {#if able || f.state === "checking"}
+                {@const level = alertOf(f.template, doneAlert(app.settings))}
+                <!-- How it tells you when it finishes (as on Downloads' rows): each click goes one
+                     step on. Pop-up (the usual) shows only while pointed at. -->
+                <button
+                  class="bell {level}"
+                  title="Notify when done: {alertLabel(level)} (click to change)"
+                  aria-label="Notify when done: {alertLabel(level)}"
+                  tabindex="-1"
+                  onpointerdown={(e) => e.stopPropagation()}
+                  ondblclick={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    app.run(async () => {
+                      await api.foundSet([f.id], { alert: nextAlert(level) });
+                      await app.refresh();
+                    });
+                  }}
+                >
+                  <Icon name={level === "off" ? "bell-off" : "bell"} size={level === "important" ? 13 : 12} stroke={2.2} />
+                </button>
+              {/if}
               {#if f.template.private}
                 <span
                   class="devmark"
@@ -557,18 +643,18 @@
                 ><span class="hlong">on {m.items.length} hosts</span><span class="hshort"><Icon name="globe" size={11} stroke={2.2} />{m.items.length}</span><Icon name="chevron" size={10} stroke={2.6} /></button>
               {/if}
             </div>
-            <div class="cell src c-src"><span class="dot" style="background: {sourceOf(f.template).color}"></span><span class="ell" title={sourceOf(f.template).label}>{sourceOf(f.template).label}</span></div>
+            <div class="cell src c-source"><span class="dot" style="background: {sourceOf(f.template).color}"></span><span class="ell" title={sourceOf(f.template).label}>{sourceOf(f.template).label}</span></div>
             <div class="cell size c-size mono" title={f.template.source.kind === "video" && f.template.size != null ? "Estimated size for the chosen quality" : ""}>{f.template.size != null ? (f.template.source.kind === "video" ? "≈ " : "") + bytes(f.template.size) : f.state === "checking" || f.state === "opening" ? "…" : "—"}</div>
             {#if f.deviceNote && able}
-              <div class="cell link needs" title={f.deviceNote}><Icon name="alert" size={12} /><span class="ell">{f.deviceNote}</span></div>
+              <div class="cell link c-link needs" title={f.deviceNote}><Icon name="alert" size={12} /><span class="ell">{f.deviceNote}</span></div>
             {:else if f.state === "ready"}
-              <div class="cell link ready" title={f.message ?? ""}>
+              <div class="cell link c-link ready" title={f.message ?? ""}>
                 <Icon name="check" size={13} stroke={2.6} /><span class="ell">{f.message ? "Ready · Google limit today" : "Ready"}</span>
               </div>
             {:else if f.state === "checking"}
-              <div class="cell link checking"><span class="ring"></span><span class="ell">{f.template.source.kind === "video" ? "Checking video…" : "Checking link"}</span></div>
+              <div class="cell link c-link checking"><span class="ring"></span><span class="ell">{f.template.source.kind === "video" ? "Checking video…" : "Checking link"}</span></div>
             {:else if f.state === "needsTools"}
-              <div class="cell link needs" title="Downloading videos uses three free tools: yt-dlp, Deno and ffmpeg (about 600 MB on disk).">
+              <div class="cell link c-link needs" title="Downloading videos uses three free tools: yt-dlp, Deno and ffmpeg (about 600 MB on disk).">
                 <span class="ell">Needs the video tools</span>
                 <button
                   class="addg"
@@ -583,7 +669,7 @@
               {@const waiting = (f.message ?? "").startsWith("Waiting for you")}
               {@const queued = (f.message ?? "").startsWith("Waiting for the link")}
               {@const check = (f.message ?? "").includes("check")}
-              <div class="cell link" class:checking={!waiting} class:needs={waiting} title={f.message ?? ""}>
+              <div class="cell link c-link" class:checking={!waiting} class:needs={waiting} title={f.message ?? ""}>
                 {#if waiting}
                   <span class="ell">Waiting for you</span>
                 {:else if queued}
@@ -603,9 +689,9 @@
                 {/if}
               </div>
             {:else if f.state === "broken"}
-              <div class="cell link broken" title={f.message ?? ""}><Icon name="x" size={12} stroke={2.6} /><span class="ell">{f.message ?? "Link broken"}</span></div>
+              <div class="cell link c-link broken" title={f.message ?? ""}><Icon name="x" size={12} stroke={2.6} /><span class="ell">{f.message ?? "Link broken"}</span></div>
             {:else}
-              <div class="cell link needs" title={f.message ?? ""}>
+              <div class="cell link c-link needs" title={f.message ?? ""}>
                 <span class="ell">Only in the browser</span>
                 <button
                   class="addg"
@@ -649,8 +735,9 @@
         class="btn"
         onclick={() => {
           dupAsk = null;
-          const items = app.found.filter((f) => ask.ids.includes(f.id));
-          download(ask.first, ask.notify, items, true);
+          const askIds = new Set(ask.ids);
+          const items = app.found.filter((f) => askIds.has(f.id));
+          download(ask.first, ask.alert, items, true, false, ask.privately);
         }}>Download again</button
       >
       {#if !all}
@@ -659,8 +746,9 @@
           onclick={() => {
             dupAsk = null;
             const skip = new Set(ask.dups.map((f) => f.id));
-            const items = app.found.filter((f) => ask.ids.includes(f.id) && !skip.has(f.id));
-            download(ask.first, ask.notify, items, true);
+            const askIds = new Set(ask.ids);
+            const items = app.found.filter((f) => askIds.has(f.id) && !skip.has(f.id));
+            download(ask.first, ask.alert, items, true, false, ask.privately);
           }}>Skip {ask.dups.length === 1 ? "it" : "them"}</button
         >
       {/if}
@@ -669,6 +757,60 @@
 {/if}
 
 <style>
+  /* Notify when done for the picked links (as in the Download with Pako window). */
+  .notify {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-3);
+  }
+  /* Less room: the three-way goes (the arrow next to Download offers it too). */
+  @container (max-width: 1100px) {
+    .notify {
+      display: none;
+    }
+  }
+  /* A row's bell (Notify when done), as on Downloads' rows. */
+  .bell {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin-left: 6px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-4);
+    cursor: pointer;
+    transition:
+      opacity var(--fast) ease,
+      color var(--fast) ease,
+      background var(--fast) ease;
+  }
+  .bell:hover {
+    color: var(--text);
+    background: var(--raise-hover);
+  }
+  .bell.pop {
+    opacity: 0;
+  }
+  .row:hover .bell.pop {
+    opacity: 1;
+  }
+  .bell.important {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .bell.important :global(path) {
+    fill: currentColor;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .bell {
+      transition: none;
+    }
+  }
   .dup-msg {
     margin: 0;
     color: var(--text-2);
@@ -768,7 +910,7 @@
   .split {
     display: flex;
   }
-  .split .btn:first-child {
+  .split .btn:first-child:not(:last-child) {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
   }
@@ -832,50 +974,62 @@
     }
   }
 
+  /* The columns as you set them (columns.ts): a narrow window drops the least important first
+     (the source, then the date, then the size) and never shows one you hid. */
   .head,
   .row {
     display: grid;
-    grid-template-columns: 30px 46px minmax(160px, 1fr) 140px 96px 220px 112px;
+    grid-template-columns: var(--cols);
     align-items: center;
     padding: 0 16px;
   }
-  /* Narrow window: drop the least important columns (like the Downloads table):
-     the source first, then the date, then the size. */
-  @container (max-width: 900px) {
-    .head,
-    .row {
-      grid-template-columns: 30px 46px minmax(150px, 1fr) 96px 200px 112px;
-    }
-    .c-src {
-      display: none !important;
-    }
+  .found.h-source .c-source,
+  .found.h-size .c-size,
+  .found.h-link .c-link,
+  .found.h-date .c-date {
+    /* Not shown: its place in the grid is at no width (see gridTemplate), nothing in it shows. */
+    visibility: hidden;
+    /* No sliver: its own padding or margin would still take room at no width. */
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden;
+    pointer-events: none;
   }
-  @container (max-width: 760px) {
-    .head,
-    .row {
-      grid-template-columns: 30px 46px minmax(140px, 1fr) 96px 180px;
-    }
-    .c-src,
-    .c-date {
-      display: none !important;
-    }
+  /* Shown or hidden from the columns menu: the columns ease to their new widths. */
+  .found.easing .head {
+    transition: grid-template-columns var(--mid) var(--ease);
+  }
+  .found.easing .row {
+    transition:
+      grid-template-columns var(--mid) var(--ease),
+      background var(--fast) ease,
+      --zb var(--mid) ease;
+  }
+  /* Meanwhile a column opening up keeps its content inside it (the titles keep their edges). */
+  .found.easing .row > * {
+    overflow: hidden;
   }
   @container (max-width: 600px) {
-    .head,
-    .row {
-      grid-template-columns: 30px 46px minmax(110px, 1fr) minmax(112px, 140px);
-    }
-    .c-size {
-      display: none !important;
-    }
     /* The Link column already says "Incomplete set". */
     .chip.warn {
       display: none;
     }
   }
+  .head .hc {
+    position: relative;
+    height: 100%;
+  }
+  .colcell {
+    justify-content: flex-end;
+  }
   .head {
     height: 32px;
     flex: none;
+    /* The list's scrollbar takes room from the rows: the titles keep the same room free, so
+       each title stays right above its column whether the list scrolls or not. */
+    overflow: hidden;
+    scrollbar-gutter: stable;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -887,6 +1041,7 @@
     /* Long lists draw only the rows on screen: the browser must not shift the scroll
        position when the space above them changes. */
     overflow-anchor: none;
+    scrollbar-gutter: stable;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -896,15 +1051,19 @@
   .row {
     height: 46px;
     border-bottom: 1px solid var(--line-soft);
-    transition: background var(--fast) ease;
+    transition:
+      background var(--fast) ease,
+      --zb var(--mid) ease;
   }
   .row:hover {
-    background: var(--hover);
+    background: var(--row-hover);
   }
   .row {
     cursor: default;
   }
   .sorter {
+    display: flex;
+    align-items: center;
     gap: 5px;
     height: 100%;
     padding: 0;
@@ -1307,9 +1466,14 @@
     background: var(--accent-soft);
     color: var(--accent);
   }
-  /* Every other row a touch lighter, so rows are easy to follow across. Stacks on top of
-     the row's own colour (folder files, red/purple tints, hover, selection). */
-  .row.alt:not(.tint-fail):not(.tint-limit):not(.selected) {
-    background-image: linear-gradient(var(--zebra), var(--zebra));
+  /* Every other row a touch lighter (see `alt`: a folder counts as one row, its files alternate
+     inside it). Lies over the row's own colour (folder files, tints, hover); the focused row
+     shows its own colour alone. Every link row carries the layer, so a row whose place changes
+     eases. */
+  .found .row:not(.focused):not(.folder) {
+    background-image: linear-gradient(var(--zb), var(--zb));
+  }
+  .row.alt {
+    --zb: var(--zebra);
   }
 </style>

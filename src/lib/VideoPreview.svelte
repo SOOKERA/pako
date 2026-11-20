@@ -114,7 +114,7 @@
   {#if site && !app.ffmpeg}
     <div class="note">Needs the video tools: Settings › Features &amp; updates › Download videos from YouTube and other sites.</div>
   {:else if !site && !app.ffmpeg}
-    <div class="note">MP4 and WebM play as they are. Install ffmpeg (Settings › Features &amp; updates) for other formats and for {quality}p.</div>
+    <div class="note">MP4 and WebM play as they are. For other kinds of video and for {quality}p, install <b>Preview more video types</b> in Settings › Features &amp; updates.</div>
   {/if}
 </section>
 

@@ -2,10 +2,11 @@
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
   // One integrated bar instead of the Windows frame. Empty areas drag the window.
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { api, inApp } from "./api";
   import { app } from "./state.svelte";
+  import { priv } from "./private.svelte";
   import { findLinks } from "./format";
   import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
@@ -34,6 +35,28 @@
     return () => {
       un.then((f) => f());
     };
+  });
+
+  /** What the box searches on each page (My devices and the Dashboard have nothing to search:
+   *  typing there goes to Downloads). The search belongs to its page: changing page clears it,
+   *  so a forgotten filter never hides downloads elsewhere. */
+  const searchWhat = $derived(
+    app.view === "found" ? "Search links" : app.view === "send" ? "Search uploads" : app.view === "direct" ? "Search contacts" : app.view === "downloads" && priv.showing ? "Search private downloads" : "Search downloads",
+  );
+  let typedAway = false;
+  function onSearchInput() {
+    if (app.search && (app.view === "devices" || app.view === "dashboard")) {
+      typedAway = true;
+      app.view = "downloads";
+    }
+  }
+  $effect(() => {
+    void app.view;
+    void priv.showing;
+    untrack(() => {
+      if (typedAway) typedAway = false;
+      else app.search = "";
+    });
   });
 
   export function focusSearch() {
@@ -75,10 +98,11 @@
       <input
         bind:this={searchEl}
         bind:value={app.search}
-        placeholder="Search, or paste links to download"
-        aria-label="Search downloads, or paste links"
+        placeholder="{searchWhat}, or paste links to download"
+        aria-label="{searchWhat}, or paste links"
         spellcheck="false"
         onkeydown={onSearchKey}
+        oninput={onSearchInput}
         onpaste={onSearchPaste}
       />
       {#if app.search}

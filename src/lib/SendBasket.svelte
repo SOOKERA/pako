@@ -4,28 +4,33 @@
   // The next send, before anything uploads: picked and dropped files and folders gather here,
   // with where they go and how, then one Send makes one send with one link.
   import { api, type DriveSendStatus, type SendMode } from "./api";
-  import { app } from "./state.svelte";
+  import { app, type BasketItem } from "./state.svelte";
   import { bytes } from "./format";
   import Icon from "./Icon.svelte";
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
   import SegPick from "./SegPick.svelte";
   import PartSize from "./PartSize.svelte";
-  import { fade } from "svelte/transition";
-  import { rowSlide } from "./motion";
+  import { rowSlide, fadeIn } from "./motion";
   import { DELETE_CHOICES, PARTS_NOTE, PART_DEFAULT_MB, partOk } from "./uploads";
 
   let {
-    onaddfiles,
-    onaddfolder,
+    onaddfiles = () => {},
+    onaddfolder = () => {},
     onsend,
     onroom,
+    basket = null,
+    onremove = null,
   }: {
-    onaddfiles: () => void;
-    onaddfolder: () => void;
+    onaddfiles?: () => void;
+    onaddfolder?: () => void;
+    /** Its own files instead of Upload's basket (Private mode's Upload…): no Add buttons and no
+     *  paths shown (a private file's place on disk means nothing to you). */
+    basket?: BasketItem[] | null;
+    onremove?: ((path: string) => void) | null;
     /** `mode` null = the setting; `name` null = Pako's usual name; `deleteDays` 0 = keep;
      *  `partMb` = "ZIP in parts"' part size (null when not in parts). */
-    onsend: (mode: SendMode | null, name: string | null, deleteDays: number, partMb: number | null) => Promise<void>;
+    onsend: (mode: SendMode | null, name: string | null, deleteDays: number, partMb: number | null, password: string | null) => Promise<void>;
     /** "Make room…" in your Google Drive. */
     onroom: () => void;
   } = $props();
@@ -53,7 +58,8 @@
   let name = $state("");
   let sending = $state(false);
 
-  const items = $derived(app.basket);
+  const own = $derived(basket !== null);
+  const items = $derived(basket ?? app.basket);
   const measured = $derived(items.every((b) => b.size != null));
   const totalSize = $derived(items.reduce((t, b) => t + (b.size ?? 0), 0));
   const totalFiles = $derived(items.reduce((t, b) => t + (b.files ?? (b.dir ? 0 : 1)), 0));
@@ -70,7 +76,12 @@
   let partMb = $state(partOk(app.settings?.sendPartMb) ? app.settings!.sendPartMb : PART_DEFAULT_MB);
   let partCustom = $state(app.settings?.sendPartCustom ?? false);
   let partValid = $state(true);
-  const blocked = $derived(inParts && !partValid);
+  /** "Protect with a password" (this upload only, never kept). */
+  let protect = $state(false);
+  let pass1 = $state("");
+  let pass2 = $state("");
+  const passOk = $derived(pass1.length >= 8 && pass1 === pass2);
+  const blocked = $derived((inParts && !partValid) || (protect && (!passOk || !app.sevenZip)));
 
   /** The name Pako would use (shown as the name field's hint). */
   const usualName = $derived.by(() => {
@@ -104,6 +115,7 @@
     const paths = items.filter((b) => !b.error).map((b) => b.path);
     const m = single ? singleMode : mode;
     void measured;
+    void app.driveTick;
     clearTimeout(timer);
     need = null;
     if (host !== "drive" || !paths.length) return;
@@ -138,10 +150,13 @@
       const how = single ? singleMode : picked && picked !== settingMode ? picked : null;
       const named = single && singleMode === "files" ? null : name.trim() || null;
       // In parts, the part size always goes with it (the one shown here).
-      await onsend(inParts ? "parts" : how, named, app.uploadDeleteDays, inParts ? partMb : null);
-      if (!app.basket.length) {
+      await onsend(inParts ? "parts" : how, named, app.uploadDeleteDays, inParts ? partMb : null, protect ? pass1 : null);
+      if (!items.length) {
         name = "";
         picked = null;
+        protect = false;
+        pass1 = "";
+        pass2 = "";
       }
     } finally {
       sending = false;
@@ -156,8 +171,10 @@
       {plural(items.length, "item")}{#if measured}{` · ${plural(totalFiles, "file")} · ${bytes(totalSize)}`}{:else}{" · measuring…"}{/if}
     </span>
     <span class="grow"></span>
-    <button class="btn ghost small" onclick={onaddfolder}><Icon name="folder" size={13} />Add folder</button>
-    <button class="btn ghost small" onclick={onaddfiles}><Icon name="plus" size={13} stroke={2.2} />Add files</button>
+    {#if !own}
+      <button class="btn ghost small" onclick={onaddfolder}><Icon name="folder" size={13} />Add folder</button>
+      <button class="btn ghost small" onclick={onaddfiles}><Icon name="plus" size={13} stroke={2.2} />Add files</button>
+    {/if}
   </header>
 
   <ul class="items">
@@ -166,12 +183,12 @@
         <FileIcon name={b.name} kind={b.dir ? "folder" : undefined} size={18} />
         <div class="nm-wrap">
           <MiddleText text={b.name} class="nm" />
-          <span class="sub" title={b.path}>
-            {#if b.error}{b.error}{:else if b.dir}{b.files == null ? "Counting files…" : plural(b.files, "file")}{:else}{b.path}{/if}
+          <span class="sub" title={own || b.private ? undefined : b.path}>
+            {#if b.error}{b.error}{:else if b.dir}{b.files == null ? "Counting files…" : plural(b.files, "file")}{:else if own || b.private}From Private mode{:else}{b.path}{/if}
           </span>
         </div>
         <span class="size mono">{b.size == null ? "…" : bytes(b.size)}</span>
-        <button class="icon-btn" aria-label="Remove {b.name} from this upload" title="Remove from this upload" onclick={() => app.removeFromBasket(b.path)}><Icon name="x" size={13} /></button>
+        <button class="icon-btn" aria-label="Remove {b.name} from this upload" title="Remove from this upload" onclick={() => (onremove ? onremove(b.path) : app.removeFromBasket(b.path))}><Icon name="x" size={13} /></button>
       </li>
     {/each}
   </ul>
@@ -188,20 +205,20 @@
       onpick={(v) => app.setSendHost(v)}
     />
     {#key app.sendHost}
-      <span class="note dim" in:fade={{ duration: 160 }}>{app.sendHost === "drive" ? "From your own Drive, shared with anyone who has the link" : "Free, no account needed"}</span>
+      <span class="note dim" in:fadeIn={{ duration: 160 }}>{app.sendHost === "drive" ? "From your own Drive, shared with anyone who has the link" : "Free, no account needed"}</span>
     {/key}
 
     <span class="lbl">Delete after</span>
     <SegPick label="Delete after" options={DELETE_CHOICES} value={app.uploadDeleteDays} onpick={(v) => app.setUploadDeleteDays(v)} />
     {#key deleteNote}
-      <span class="note dim" in:fade={{ duration: 160 }} title={deleteNote}>{deleteNote}</span>
+      <span class="note dim" in:fadeIn={{ duration: 160 }} title={deleteNote}>{deleteNote}</span>
     {/key}
 
     {#if single}
       <span class="lbl">Compression</span>
       <SegPick label="How the file is uploaded" options={SINGLE_MODES.map(([value, label]) => ({ value, label }))} value={singleMode} onpick={(v) => (picked = v)} />
       {#key singleMode}
-        <span class="note dim" in:fade={{ duration: 160 }}>{singleMode === "compress" ? "Packed into a smaller ZIP file (helps documents, not videos or photos)" : singleMode === "parts" ? "Packed into a ZIP, cut into numbered parts" : "Uploaded as it is"}</span>
+        <span class="note dim" in:fadeIn={{ duration: 160 }}>{singleMode === "compress" ? "Packed into a smaller ZIP file (helps documents, not videos or photos)" : singleMode === "parts" ? "Packed into a ZIP, cut into numbered parts" : "Uploaded as it is"}</span>
       {/key}
       {#if singleMode !== "files"}
         <span class="lbl">Name</span>
@@ -214,7 +231,7 @@
       <span class="lbl">Several files</span>
       <SegPick label="How several files are uploaded" options={MODES.map(([value, label]) => ({ value, label }))} value={mode} onpick={(v) => (picked = v)} />
       {#key mode}
-        <span class="note dim" in:fade={{ duration: 160 }}>{mode === "files" ? "One link to a folder with the files as they are" : mode === "zip" ? "Packed into one ZIP file, not compressed (fastest)" : mode === "parts" ? "Packed into one ZIP, cut into numbered parts" : "Packed into one smaller ZIP file (takes longer)"}</span>
+        <span class="note dim" in:fadeIn={{ duration: 160 }}>{mode === "files" ? "One link to a folder with the files as they are" : mode === "zip" ? "Packed into one ZIP file, not compressed (fastest)" : mode === "parts" ? "Packed into one ZIP, cut into numbered parts" : "Packed into one smaller ZIP file (takes longer)"}</span>
       {/key}
 
       <span class="lbl">Name</span>
@@ -222,12 +239,39 @@
       <span class="note dim">{mode === "files" ? "The folder's name" : "The ZIP file's name"}, optional</span>
     {/if}
 
+    <span class="lbl">Password</span>
+    <div class="protect">
+      <button class="switch" class:on={protect} role="switch" aria-checked={protect} aria-label="Protect with a password" onclick={() => (protect = !protect)}></button>
+      <span>Protect with a password</span>
+    </div>
+    {#key protect}
+      <span class="note dim" in:fadeIn={{ duration: 160 }}>{protect ? "Locked before it leaves this PC; names hidden too" : "Anyone with the link can open it"}</span>
+    {/key}
+    {#if protect}
+      <span class="lbl top" transition:fadeIn={{ duration: 160 }}></span>
+      <div class="pwds" transition:rowSlide={{ duration: 200 }}>
+        <input class="input" type="password" autocomplete="new-password" placeholder="Password" aria-label="Password for this upload" bind:value={pass1} />
+        <input class="input" type="password" autocomplete="new-password" placeholder="Type it again" aria-label="Type the password again" bind:value={pass2} />
+      </div>
+      <span class="explain dim" transition:fadeIn={{ duration: 160 }}>
+        {#if !app.sevenZip}
+          This needs 7-Zip: Settings › Features & updates › What Pako can do.
+        {:else if pass1 && pass1.length < 8}
+          At least 8 characters.
+        {:else if pass2 && pass1 !== pass2}
+          They don't match yet.
+        {:else}
+          It goes up as a 7-Zip archive (.7z). People open it with 7-Zip (free) or Pako, and this password. Pako doesn't keep it: tell them yourself, not in the same message as the link.
+        {/if}
+      </span>
+    {/if}
+
     {#if inParts}
-      <span class="lbl top" transition:fade={{ duration: 160 }}>Part size</span>
-      <div class="partsize" transition:fade={{ duration: 160 }}>
+      <span class="lbl top" transition:fadeIn={{ duration: 160 }}>Part size</span>
+      <div class="partsize" transition:fadeIn={{ duration: 160 }}>
         <PartSize bind:mb={partMb} bind:custom={partCustom} bind:valid={partValid} label="Size of each part" />
       </div>
-      <span class="explain dim" transition:fade={{ duration: 160 }}>{PARTS_NOTE}</span>
+      <span class="explain dim" transition:fadeIn={{ duration: 160 }}>{PARTS_NOTE}</span>
     {/if}
   </div>
 
@@ -378,6 +422,21 @@
      it); the explanation goes under it, in the same columns. */
   .partsize {
     grid-column: 2 / -1;
+    min-width: 0;
+  }
+  .protect {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .pwds {
+    grid-column: 2 / -1;
+    display: flex;
+    gap: 8px;
+  }
+  .pwds .input {
+    flex: 1;
     min-width: 0;
   }
   .explain {

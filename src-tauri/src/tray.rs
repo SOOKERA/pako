@@ -344,20 +344,66 @@ pub(crate) fn keep_out_of_zones(w: &WebviewWindow) {
     let _ = w;
 }
 
-/// Bumped to stop a running `stay_put`: the window opening again, or you dragging it.
-static STAY_PUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// A dialog-like window (Download with Pako) that stays an app window (on the taskbar, in
+/// Alt+Tab) but which window managers leave alone: PowerToys FancyZones doesn't snap a popup
+/// window that has no resizable frame with minimize and maximize buttons. Pako's dialogs have
+/// none of those, so marking them as popups is enough. Kept through the window library's style
+/// rewrites by the same hook as `keep_out_of_zones`; on Windows 11 its corners stay rounded.
+pub(crate) fn keep_dialog_out_of_zones(w: &WebviewWindow) {
+    #[cfg(windows)]
+    if let Ok(h) = w.hwnd() {
+        let hwnd = h.0 as isize;
+        // SAFETY: as in `keep_out_of_zones`.
+        if !unsafe { tool_window::make_popup(hwnd as _) } {
+            let _ = w.run_on_main_thread(move || unsafe {
+                tool_window::make_popup(hwnd as _);
+            });
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = w;
+}
+
+/// Per window (by its handle): bumped to stop its running `hold_place` (the window opening
+/// again, or you dragging it). One window's turn never ends another's.
+static STAY_PUT: std::sync::LazyLock<Mutex<std::collections::HashMap<isize, u64>>> = std::sync::LazyLock::new(Default::default);
+
+/// A new turn for the window `key`; returns it.
+fn stay_put_bump(key: isize) -> u64 {
+    let mut all = STAY_PUT.lock().unwrap();
+    let n = all.entry(key).or_insert(0);
+    *n += 1;
+    *n
+}
+fn stay_put_turn(key: isize) -> u64 {
+    STAY_PUT.lock().unwrap().get(&key).copied().unwrap_or(0)
+}
+/// The window's key for `STAY_PUT` (its handle on Windows).
+fn stay_key(w: &WebviewWindow) -> isize {
+    #[cfg(windows)]
+    {
+        w.hwnd().map(|h| h.0 as isize).unwrap_or(0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = w;
+        0
+    }
+}
 
 #[cfg(windows)]
 mod tool_window {
-    use std::sync::atomic::Ordering;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongW, STYLESTRUCT, SetWindowLongW, WM_ENTERSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING,
-        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, STYLESTRUCT, SetWindowLongW, WM_ENTERSIZEMOVE, WM_NCDESTROY,
+        WM_STYLECHANGING, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
 
     const ID: usize = 0x5041_4b4f;
+    /// What the hook keeps (its reference data): a tool window, or a popup (dialog) window.
+    const TOOL: usize = 0;
+    const POPUP: usize = 1;
 
     /// A tool window's extended style: not an app window (taskbar, Alt+Tab, window managers).
     pub(super) fn style(ex: u32) -> u32 {
@@ -373,21 +419,44 @@ mod tool_window {
         unsafe {
             let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             SetWindowLongW(hwnd, GWL_EXSTYLE, style(ex) as i32);
-            SetWindowSubclass(hwnd, Some(hook), ID, 0) != 0
+            SetWindowSubclass(hwnd, Some(hook), ID, TOOL) != 0
         }
     }
 
-    unsafe extern "system" fn hook(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, id: usize, _: usize) -> LRESULT {
+    /// Makes `hwnd` a popup window for good (style from any thread, hook only from its own:
+    /// false otherwise), with rounded corners on Windows 11 as an app window has.
+    ///
+    /// # Safety
+    /// `hwnd` is a live window.
+    pub(super) unsafe fn make_popup(hwnd: HWND) -> bool {
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+        unsafe {
+            let st = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            SetWindowLongW(hwnd, GWL_STYLE, (st | WS_POPUP) as i32);
+            // Windows 10 doesn't know the attribute and says so: nothing to do there.
+            let round = DWMWCP_ROUND;
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE as u32, &round as *const _ as _, 4);
+            SetWindowSubclass(hwnd, Some(hook), ID, POPUP) != 0
+        }
+    }
+
+    unsafe extern "system" fn hook(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, id: usize, kind: usize) -> LRESULT {
         match msg {
-            // SAFETY: for GWL_EXSTYLE, lParam is the STYLESTRUCT Windows is about to apply.
-            WM_STYLECHANGING if wp as i32 == GWL_EXSTYLE => {
+            // SAFETY: for GWL_EXSTYLE and GWL_STYLE, lParam is the STYLESTRUCT Windows is about
+            // to apply.
+            WM_STYLECHANGING if kind == TOOL && wp as i32 == GWL_EXSTYLE => {
                 if let Some(s) = unsafe { (lp as *mut STYLESTRUCT).as_mut() } {
                     s.styleNew = style(s.styleNew);
                 }
             }
+            WM_STYLECHANGING if kind == POPUP && wp as i32 == GWL_STYLE => {
+                if let Some(s) = unsafe { (lp as *mut STYLESTRUCT).as_mut() } {
+                    s.styleNew |= WS_POPUP;
+                }
+            }
             // You started dragging it: wherever you put it is where it goes.
             WM_ENTERSIZEMOVE => {
-                super::STAY_PUT.fetch_add(1, Ordering::SeqCst);
+                super::stay_put_bump(hwnd as isize);
             }
             WM_NCDESTROY => {
                 // SAFETY: our own hook, taken off the window it is on.
@@ -405,13 +474,22 @@ mod tool_window {
 /// unpinned one is checked, a few times in its first half second; it stops as soon as the
 /// window opens again or you start dragging it.
 fn stay_put(app: &AppHandle, w: &WebviewWindow, p: PhysicalPosition<f64>) {
-    use std::sync::atomic::Ordering;
-    let turn = STAY_PUT.fetch_add(1, Ordering::SeqCst) + 1;
-    let (w, app) = (w.clone(), app.clone());
+    let app = app.clone();
+    hold_place(w, p, move || !is_pinned(&app) && mini_showing(&app));
+}
+
+/// Puts a window back at `p` if something moves it in its first half second on screen (a window
+/// manager snapping it into a zone), while `still` holds. Stops as soon as a window held this
+/// way opens again or you start dragging it (the hook of `keep_out_of_zones` /
+/// `keep_dialog_out_of_zones` sees the drag start).
+pub(crate) fn hold_place(w: &WebviewWindow, p: PhysicalPosition<f64>, still: impl Fn() -> bool + Send + 'static) {
+    let key = stay_key(w);
+    let turn = stay_put_bump(key);
+    let w = w.clone();
     std::thread::spawn(move || {
         for wait in [60u64, 140, 300] {
             std::thread::sleep(Duration::from_millis(wait));
-            if STAY_PUT.load(Ordering::SeqCst) != turn || is_pinned(&app) || !mini_showing(&app) {
+            if stay_put_turn(key) != turn || !still() {
                 return;
             }
             let Ok(now) = w.outer_position() else { return };
@@ -420,6 +498,30 @@ fn stay_put(app: &AppHandle, w: &WebviewWindow, p: PhysicalPosition<f64>) {
             }
         }
     });
+}
+
+/// Where a window `width` × `height` (logical pixels) sits in the middle of the screen the mouse
+/// is on (the main screen if that can't be told), a little above the centre like a dialog.
+pub(crate) fn middle_of_pointer_screen(app: &AppHandle, width: f64, height: f64) -> Option<PhysicalPosition<f64>> {
+    let m = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    let area = m.work_area();
+    Some(middle_of(
+        (area.position.x as f64, area.position.y as f64),
+        (area.size.width as f64, area.size.height as f64),
+        (width * m.scale_factor(), height * m.scale_factor()),
+    ))
+}
+
+/// The top left corner that puts a window of `size` in the middle of the screen area at `at`
+/// with `area` (all physical pixels), a little above the centre; never off its top left.
+fn middle_of(at: (f64, f64), area: (f64, f64), size: (f64, f64)) -> PhysicalPosition<f64> {
+    let x = at.0 + ((area.0 - size.0) / 2.0).max(0.0);
+    let y = at.1 + ((area.1 - size.1) / 2.5).max(0.0);
+    PhysicalPosition::new(x.round(), y.round())
 }
 
 /// More than a couple of pixels from where it was put (rounding of scaled positions aside).
@@ -551,6 +653,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     // Ready in advance, hidden: the first click doesn't wait for it to load.
     mini_window(app.handle());
     crate::notices::make_window(app.handle());
+    crate::notices::make_important_window(app.handle());
     // The dot, if the bell has something unread from last time.
     crate::notices::start(app.handle());
     Ok(())
@@ -638,12 +741,49 @@ mod tests {
         assert!(moved_away(1500, 400, p));
     }
 
+    #[test]
+    fn a_dialog_opens_in_the_middle_of_the_screen_it_is_on() {
+        // A second screen to the right of the main one, its taskbar taking the bottom.
+        let p = middle_of((1920.0, 0.0), (2560.0, 1400.0), (630.0, 486.0));
+        assert_eq!((p.x, p.y), (1920.0 + 965.0, 366.0), "centred, a little above the middle");
+        // A window bigger than the screen: its top left corner stays on it.
+        let p = middle_of((-1280.0, 0.0), (800.0, 600.0), (1000.0, 700.0));
+        assert_eq!((p.x, p.y), (-1280.0, 0.0));
+    }
+
+    /// Download with Pako stays an app window (taskbar, Alt+Tab) but a popup one, which
+    /// FancyZones leaves alone; the window library's style rewrites can't drop that.
+    #[cfg(windows)]
+    #[test]
+    fn a_dialog_stays_a_popup_window_on_the_taskbar_through_a_rewrite() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, SetWindowLongW, WS_CLIPSIBLINGS,
+            WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU,
+        };
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        // SAFETY: a hidden window of this thread, destroyed at the end; only its style is used.
+        unsafe {
+            let hwnd = CreateWindowExW(WS_EX_APPWINDOW, class.as_ptr(), std::ptr::null(), WS_SYSMENU, 0, 0, 10, 10, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            assert!(!hwnd.is_null());
+            let st = || GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            let ex = || GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            assert!(tool_window::make_popup(hwnd));
+            assert_ne!(st() & WS_POPUP, 0);
+            // What the window library does on show(): the whole style, computed from its flags.
+            SetWindowLongW(hwnd, GWL_STYLE, (WS_SYSMENU | WS_CLIPSIBLINGS) as i32);
+            assert_ne!(st() & WS_POPUP, 0, "kept a popup window");
+            assert_ne!(st() & WS_CLIPSIBLINGS, 0, "the rest of the rewrite applies");
+            SetWindowLongW(hwnd, GWL_EXSTYLE, WS_EX_APPWINDOW as i32);
+            assert_eq!(ex() & (WS_EX_TOOLWINDOW | WS_EX_APPWINDOW), WS_EX_APPWINDOW, "still on the taskbar");
+            DestroyWindow(hwnd);
+        }
+    }
+
     /// The window library rewrites the whole extended style on each show and hide: the hook
     /// keeps the tool window style in every rewrite, and a drag stops `stay_put`.
     #[cfg(windows)]
     #[test]
     fn the_tool_window_style_survives_a_rewrite_and_a_drag_stops_stay_put() {
-        use std::sync::atomic::Ordering;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, GWL_EXSTYLE, GetWindowLongW, PM_NOREMOVE, PeekMessageW, SendMessageW, SetWindowLongW,
             WM_ENTERSIZEMOVE, WS_EX_ACCEPTFILES, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
@@ -673,9 +813,11 @@ mod tests {
             SetWindowLongW(hwnd, GWL_EXSTYLE, (WS_EX_APPWINDOW | WS_EX_ACCEPTFILES) as i32);
             assert_eq!(ex() & (WS_EX_TOOLWINDOW | WS_EX_APPWINDOW), WS_EX_TOOLWINDOW, "kept a tool window");
             assert_ne!(ex() & WS_EX_ACCEPTFILES, 0, "the rest of the rewrite applies");
-            let before = STAY_PUT.load(Ordering::SeqCst);
+            let before = stay_put_turn(hwnd as isize);
+            let other = stay_put_bump(hwnd as isize + 1);
             SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
-            assert_ne!(STAY_PUT.load(Ordering::SeqCst), before, "dragging stops stay_put");
+            assert_ne!(stay_put_turn(hwnd as isize), before, "dragging stops stay_put");
+            assert_eq!(stay_put_turn(hwnd as isize + 1), other, "another window's turn goes on");
             DestroyWindow(hwnd);
         }
     }

@@ -18,6 +18,7 @@
     closeLabel = "Close",
     outsideCloses = true,
     closable = true,
+    onuncover,
     children,
     actions,
   }: {
@@ -32,6 +33,9 @@
     outsideCloses?: boolean;
     /** Off: no ×, and Esc does nothing (the terms of use: only their own buttons answer). */
     closable?: boolean;
+    /** Ctrl+Shift+P (Private mode) wants the window clear: what to do instead of a plain close
+     *  (Settings saves its changes first, never dropping them). */
+    onuncover?: () => void;
     children: Snippet;
     actions?: Snippet;
   } = $props();
@@ -72,6 +76,13 @@
       stack.splice(stack.indexOf(me), 1);
       if (before?.isConnected) before.focus({ preventScroll: true });
     };
+  });
+
+  // Ctrl+Shift+P from anywhere (Private mode): a dialog that can be closed, closes.
+  onMount(() => {
+    const away = () => closable && (onuncover ? onuncover() : onclose());
+    window.addEventListener("pako-uncover", away);
+    return () => window.removeEventListener("pako-uncover", away);
   });
 
   function key(e: KeyboardEvent) {

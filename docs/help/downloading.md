@@ -7,7 +7,7 @@ Add links, follow your downloads, and get files from Google Drive, even big or b
 You can add links in several ways:
 
 - Press **Ctrl+V** anywhere in Pako. Whatever you copied is read for links.
-- Paste them in the search box at the top.
+- Paste them in the search box at the top. The box also searches the page you're on (downloads, links, uploads, contacts or private downloads); on **My devices** or the **Dashboard**, typing there takes you to Downloads. Changing page clears it.
 - Drag links, or a text file full of links, onto the window.
 - Click **Add links**, paste the links, and click **Add link** (or **Add 3 links**, and so on).
 - With **Settings › Downloads › Catch copied links** on, links you copy in another app go to Links by themselves (not while Pako's window is in front, and not links already in Pako).
@@ -16,14 +16,23 @@ New links first go to **Links**, where Pako checks them and you pick what to dow
 
 ## Follow your downloads
 
-The **Downloads** tab lists everything with its **Source**, **Progress**, **Speed**, **Status** and **Date**. Click a column title to sort by it; the newest downloads are at the top by default.
+The **Downloads** tab lists everything with its **Source**, **Progress**, **Speed**, **Status** and **Date**. Click a column title to sort by it; the newest downloads are at the top by default. Sorted by **Speed** or **Progress**, the list re-orders every few seconds, and holds still while the pointer is over it.
+
+You choose what the list shows, in every list with columns (Downloads, Links, Upload's Uploaded list and Private mode's list):
+
+- **Wider or narrower**: drag the line at the left of a column title. Double-click it for the first width. From the keyboard, press **Tab** until the line is selected, then **←** (wider) and **→** (narrower), **Shift** for bigger steps, **Home** for the widest and **End** for the narrowest. A column can't grow past the room left: the name always keeps some.
+- **Show or hide columns**: right-click the column titles, or click the small columns button at their right end, and tick the ones you want. **Name** always shows. **Reset columns** brings back every column at its first width.
+- Pako remembers this for each list. In a narrow window the columns first get narrower, then the least important step aside ("No room now" next to them in that menu) and come back when there's room (**Status** goes last, only below about 460 px of list); a column you hid stays hidden. Hiding the column a list is sorted by puts it back in its usual order (Downloads: newest first).
 
 The left side filters the list:
 
 - **All downloads**, **Downloading**, **Waiting**, **Finished** and **Problems**.
+- **Private**, with a lock, once [Private mode](private-mode.md) is on. While it's open, the list's header shows **Private downloads** and **Lock** (violet); picking another entry here locks it.
 - **Sources**: only Google Drive, only web links, and so on.
 
 Select a download to see its details on the right (**Ctrl+I** shows or hides that panel). You see its parts, where it's saved, whether it can continue after a pause, a **Preview** for an unfinished video file (play a short check before it's all there; types other than MP4 and WebM need **Preview more video types** in **Settings › Features & updates**; a video from YouTube or another site plays a short clip from the site instead), and buttons to **Pause**, **Resume** or **Try again** (**Open** once it's finished), open its **Folder**, or **Remove** it.
+
+Every details panel in Pako (Downloads, Links, Upload, Direct, Private mode) can be made wider or narrower: drag its left edge. Pako remembers the width for each page. Double-click the edge to go back to the first width. From the keyboard, press **Tab** until the edge is selected, then **←** and **→** (**Shift** for bigger steps), **Home** for the widest and **End** for the narrowest. When the window is narrow, the panel gets narrower first, so the list keeps its room.
 
 **Resume** and **Pause** at the top work on the downloads you selected, or on every one shown when nothing is selected. **Remove** works on the selected ones.
 
@@ -89,8 +98,10 @@ The same goes for a folder Google won't list: open it in your browser and downlo
 - **Download first** puts it ahead of the others, even outside the set hours.
 - **Pause**, **Resume**, or **Try again** for one that stopped.
 - **Priority: First**, **Normal** or **Later**, and **Move to top of queue** / **Move to bottom of queue**.
-- **Notify when done** shows a pop-up at the bottom right of the screen when it finishes, or if it stops, and plays a short chime when it finishes (see [Notifications](notifications.md)).
+- **Notify: Off**, **Notify: Pop-up** or **Notify: Important**: how it tells you when it finishes. **Pop-up** (the usual) is a pop-up at the bottom right and a chime; **Important** is a big pop-up in the middle of the screen that stays until you click it. The bell at the end of its row changes it too, one click at a time (see [Notifications](notifications.md#when-a-download-finishes-off-pop-up-important)).
 - **Open file**, **Show in folder**, **Open link in browser**, **Copy link**, **Rename…**
+- **Move to Private** (a finished file, once [Private mode](private-mode.md) is on): encrypts it into Private mode and takes it off this list.
+- **Extract…** (a finished .zip, .7z or .rar, or a split archive's first part): 7-Zip extracts it into a folder named after it, next to it (a split archive: where its parts are). One locked with a password asks for it; Pako hands it to 7-Zip and doesn't keep it. A wrong one is refused without writing anything. It needs 7-Zip (**Extract split archives** in **Settings › Features & updates › What Pako can do**).
 - **Remove**. For a finished download Pako asks whether to **Remove from list** only, or **Delete file too** (to the Recycle Bin). Unfinished parts are always deleted.
 
 Right-click an empty part of the list for **Paste links**, **Add links…**, **Select all** and **Clear finished**.
@@ -98,15 +109,20 @@ Right-click an empty part of the list for **Paste links**, **Add links…**, **S
 ## Keyboard shortcuts
 
 - **Ctrl+V**: paste links (anywhere).
-- **Ctrl+F** or **Ctrl+K**: search.
+- **Ctrl+F** or **Ctrl+K**: search the page you're on.
 - **Ctrl+I**: show or hide the details panel.
 - **Ctrl+Tab**: switch between Downloads and Links.
+- **Ctrl+Shift+P**: open [Private mode](private-mode.md) (once it's on), or lock it while the private list shows.
 - **↑ ↓**, **Home**, **End**: move through the list; hold **Shift** to select several.
+
 - **Space**: select or unselect the row you're on (tick or untick it, in Links).
 - **Ctrl+A**: select all. **Esc**: clear the selection.
 - **Delete**: remove. **F2**: rename. **Enter**: open a finished file.
+- **Shift+F10** or the **Menu** key: the row's right-click menu.
 - **Ctrl+Z**: undo the last removal, for a few seconds after it and in the same list (links, or finished downloads taken off the list without deleting the file). The message that shows also has **Undo**.
 - **F1**: open Help.
+
+The private list has its own keys, mostly the same (see [Private mode](private-mode.md#the-private-list)); **Ctrl+Tab** doesn't apply there.
 
 ## Light or dark
 
@@ -120,5 +136,5 @@ In **Settings › Window › Theme**, pick **Dark**, **Light** or **Match Window
 - A download's folder can be changed until it starts (details panel, **Save to**).
 - While a file downloads, it sits in its folder with `.pakopart` added to its name (`film.mp4.pakopart`), and gets its real name once it's complete. Downloads left unfinished by an older Pako carry on from what they have.
 - Drag finished downloads out of the list into any folder.
-- Split archives (.part1.rar, .7z.001, .zip.001…) are extracted when all parts are done (**Settings › Downloads › Extract split archives**, or **Extract when all parts are done** in the set's details). This needs 7-Zip: install it in **Settings › Features & updates**. A file of the same name already in the folder is kept: the extracted one gets a new name.
+- Split archives (.part1.rar, .7z.001, .zip.001…) are extracted when all parts are done (**Settings › Downloads › Extract split archives**, or **Extract when all parts are done** in the set's details). This needs 7-Zip: install **Extract split archives** (it brings 7-Zip) in **Settings › Features & updates › What Pako can do**. A file of the same name already in the folder is kept: the extracted one gets a new name. A split archive locked with a password waits: its details say **Type the password…** (also in its right-click menu), and it's extracted once you've typed it.
 - Everything Pako knows about your downloads stays on your PC.

@@ -265,7 +265,7 @@ impl Fetcher {
             .header(header::ACCEPT_ENCODING, "identity")
             .send()
             .await
-            .map_err(|e| FetchError::Retry(network_message(&e)))?;
+            .map_err(|e| send_error(&e))?;
         if self.not_this_pc && self.answered_by_this_pc(&resp).await {
             return Err(FetchError::Fatal(THIS_PC_MESSAGE.into()));
         }
@@ -364,7 +364,58 @@ pub fn is_html(resp: &Response) -> bool {
         .unwrap_or(false)
 }
 
+/// The server's name isn't known (a misspelled or gone site): said plainly, and the engine stops
+/// trying once the internet is known to work (`engine.rs` resolve).
+pub const NAME_NOT_FOUND: &str = "The server's name wasn't found. Check the link";
+/// The site's security certificate was refused (expired, for another site, not trusted).
+pub const BAD_CERTIFICATE: &str = "The site's security certificate isn't valid, so Pako didn't connect";
+
+/// What went wrong sending a request, from the whole chain of causes (reqwest says "connect" for
+/// a name that can't be found and for a refused certificate too).
+#[derive(Debug, PartialEq)]
+enum Cause {
+    NameNotFound,
+    BadCertificate,
+    Other,
+}
+
+fn cause_of(chain: &[String]) -> Cause {
+    let text = chain.join(" | ").to_lowercase();
+    if text.contains("invalid peer certificate") || text.contains("certificate verify failed") || text.contains("unknownissuer") || text.contains("notvalidforname") {
+        Cause::BadCertificate
+    } else if text.contains("no such host is known") || text.contains("os error 11001") || text.contains("failed to lookup address") || text.contains("name or service not known") {
+        Cause::NameNotFound
+    } else {
+        Cause::Other
+    }
+}
+
+fn chain_of(e: &reqwest::Error) -> Vec<String> {
+    let mut out = vec![e.to_string()];
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        out.push(s.to_string());
+        src = s.source();
+    }
+    out
+}
+
+/// A failed request: a refused certificate is final (trying again changes nothing); a name not
+/// found is retried with its own words (it may be the internet that's down: the engine decides).
+fn send_error(e: &reqwest::Error) -> FetchError {
+    match cause_of(&chain_of(e)) {
+        Cause::BadCertificate => FetchError::Fatal(BAD_CERTIFICATE.into()),
+        Cause::NameNotFound => FetchError::Retry(NAME_NOT_FOUND.into()),
+        Cause::Other => FetchError::Retry(network_message(e)),
+    }
+}
+
 pub fn network_message(e: &reqwest::Error) -> String {
+    match cause_of(&chain_of(e)) {
+        Cause::BadCertificate => return BAD_CERTIFICATE.into(),
+        Cause::NameNotFound => return NAME_NOT_FOUND.into(),
+        Cause::Other => {}
+    }
     if e.is_timeout() {
         "Connection timed out".into()
     } else if e.is_connect() {
@@ -416,6 +467,19 @@ pub fn content_range(resp: &Response) -> Option<(u64, Option<u64>)> {
 
 #[cfg(test)]
 mod tests {
+    /// A misspelled site and a refused certificate get their own words (reqwest reports both
+    /// as "connect"); other failures keep the general ones.
+    #[test]
+    fn names_what_went_wrong() {
+        use super::{Cause, cause_of};
+        let c = |v: &[&str]| cause_of(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(c(&["error sending request", "client error (Connect)", "dns error: failed to lookup address information: No such host is known. (os error 11001)"]), Cause::NameNotFound);
+        assert_eq!(c(&["error sending request", "client error (Connect)", "invalid peer certificate: Expired"]), Cause::BadCertificate);
+        assert_eq!(c(&["error sending request", "invalid peer certificate: UnknownIssuer"]), Cause::BadCertificate);
+        assert_eq!(c(&["error sending request", "client error (Connect)", "tcp connect error: No connection could be made because the target machine actively refused it. (os error 10061)"]), Cause::Other);
+        assert_eq!(c(&["operation timed out"]), Cause::Other);
+    }
+
     use super::*;
 
     /// A video stream's own headers are sent, except the ones Pako sets itself or that aren't valid.
