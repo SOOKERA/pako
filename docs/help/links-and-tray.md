@@ -40,9 +40,10 @@ Once that PC took them, they leave **Links** here, and a message says so: "Added
 ### What you see
 
 - **Folders**: a Drive folder or a playlist shows as a block. Click it to open or close it, and tick the box on its header to pick every file in it.
+- **Link** (the column after **Size**, whose title is a small link icon): how each link is doing, as one mark in its colour. Point at it to read it, and screen readers say it: a green ✓ for **Ready** (or **Opened** for a folder or playlist), a ✓ with a small dot for **Ready · Google limit today**, a ring while it's **Checking link** or **Opening link…**, a red ✗ when the link is broken, a purple warning mark when **Download on** can't send it (its note on hover), and a small button when it needs you (**Needs the video tools**, **Waiting for you**, **Only in the browser**): click it to do what it says.
 - **Added on**: when each link was added. Click a column title to sort by it. Columns can be made wider or narrower, and shown or hidden by right-clicking their titles (see [Downloading](downloading.md#follow-your-downloads)).
-- **Split archive** sets (.part1.rar, .7z.001, .zip.001…) are grouped, and **Incomplete set** warns when parts are missing.
-- **Ready · Google limit today**: a Drive file that can be downloaded, but Google's daily limit for it is reached. See [Google limit](downloading.md#google-limit-too-many-downloads-today).
+- **Split archive** sets (.part1.rar, .7z.001, .zip.001…) are grouped, and **Incomplete set** (a warning mark in the **Link** column) says parts are missing.
+- **Ready · Google limit today** (the ✓ with a small dot; point at it): a Drive file that can be downloaded, but Google's daily limit for it is reached. See [Google limit](downloading.md#google-limit-too-many-downloads-today).
 - Select a link to see its details on the right: type, size, and for videos the **Quality**. You can also set its **Save to** folder, **Priority**, **Notify when done** (**Off**, **Pop-up** or **Important**) and (with My devices) **Download on** there, before it downloads.
 - A link to a video file (.mp4, .mkv…) also gets a **Preview** in its details: play a short check that it's the right video before downloading it (**Settings › Downloads › Advanced › Video preview quality**). MP4 and WebM play as they are; other types, and the preview quality, need **Preview more video types** in **Settings › Features & updates**.
 - A YouTube (or other video site) link gets a **Preview** too: click play for about 20 seconds at 480p, just to check it's the right video (see [Videos](videos.md)).
@@ -72,13 +73,13 @@ On the left:
 
 - **Everything**: all links.
 - **Ready**: checked and ready to download.
-- **Only in the browser**: Google only gives these to certain accounts. Click **Open** on the link (or select it and click **Open in browser**) to download it there; Pako catches the download.
+- **Only in the browser**: Google only gives these to certain accounts. Click its mark in the **Link** column (or select it and click **Open in browser**) to download it there; Pako catches the download.
 - **Link broken**: the link doesn't work. **Clear broken** removes them all.
 - **Checking**: still being checked.
 
 ### Link pages
 
-Some links lead to a web page instead of the file: a page you have to click through, for example. Pako opens any such page in a hidden window of its own and looks for the file behind it, working through common "click to continue" pages by itself. The link shows "Opening link…" meanwhile. When a page needs you (a "I'm not a robot" check, for example), the link shows **Waiting for you** and a **Pako needs you** pop-up appears (see [Notifications](notifications.md)): click **Show page** (or **Show check**), finish it, and Pako carries on.
+Some links lead to a web page instead of the file: a page you have to click through, for example. Pako opens any such page in a hidden window of its own and looks for the file behind it, working through common "click to continue" pages by itself. Its mark shows "Opening link…" on hover meanwhile. When a page needs you (a "I'm not a robot" check, for example), the link's mark shows **Waiting for you** and a **Pako needs you** pop-up appears (see [Notifications](notifications.md)): click **Show page** (or **Show check**) in the pop-up, or the mark on the link's row, finish it, and Pako carries on. While it's still opening, clicking the mark shows the page too.
 
 The page runs in that window as it would in your browser, ads included, but without your browser's logins. It's a private window: its cookies and other site data are gone when it closes, and nothing is kept on your PC. Each link page starts fresh, so a site's check may ask you again for each link.
 

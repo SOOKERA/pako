@@ -4,7 +4,7 @@ Download videos from YouTube and many other sites, in the quality you choose, or
 
 ## Before the first video
 
-Videos need three free tools (yt-dlp, Deno and ffmpeg, about 600 MB on disk). If they're missing, a video link in **Links** shows **Needs the video tools**: click **Install** next to it. You can also install them in **Settings › Features & updates › Download videos from YouTube and other sites**. With **Update Pako and its tools automatically** on (same place), Pako keeps them up to date.
+Videos need three free tools (yt-dlp, Deno and ffmpeg, about 600 MB on disk). If they're missing, a video link in **Links** shows a small download button in its **Link** column (**Needs the video tools**): click it. You can also install them in **Settings › Features & updates › Download videos from YouTube and other sites**. With **Update Pako and its tools automatically** on (same place), Pako keeps them up to date.
 
 Pako installs the edition of yt-dlp that starts fastest (a folder with yt-dlp.exe inside, not the single file). A yt-dlp installed by an older Pako keeps working and switches at its next update: by itself with automatic updates on, else with **Update** under **What Pako can do**.
 

@@ -109,3 +109,10 @@ test("saved settings are read back safely; an older Pako's Downloads widths are 
   assert.equal(widthOf(dl, saved.downloads, "date"), 150);
   assert.equal(widthOf(dl, saved.downloads, "source"), col(dl, "source").def);
 });
+
+test("Links' Link column is a small mark: a width saved for its old words isn't kept", () => {
+  const saved = readSaved({ found: { w: { link: 260, source: 150 }, hidden: [] } });
+  assert.deepEqual(saved.found.w, { source: 150 }, "the old text width goes; others stay");
+  const small = readSaved({ found: { w: { link: 44 }, hidden: [] } });
+  assert.deepEqual(small.found.w, { link: 44 });
+});

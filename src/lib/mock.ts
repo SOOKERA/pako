@@ -20,6 +20,7 @@ import type {
 } from "./api";
 import type { Notice } from "./notices";
 import { showcase, showcaseNotices, showcaseParts, showcaseProgress, showcaseSend, showcaseSnapshot } from "./showcase";
+import { version as pakoVersion } from "../../package.json";
 
 let seq = 0;
 const base = (over: Partial<Download>): Download => ({
@@ -597,9 +598,9 @@ export function mockReport(): ReportInfo {
     [3 * 60, "download", "Couldn't reach the server (https://files.example.org). Pako tries again by itself."],
   ];
   return {
-    version: "1.0.0",
+    version: pakoVersion,
     installed: true,
     windows: "Windows 11 Pro 24H2 (build 26100)",
-    problems: empty ? [] : lines.map(([ago, area, message], i) => ({ time: now - ago * 1000, area, message, version: i < 2 ? "0.1.2" : "1.0.0" })),
+    problems: empty ? [] : lines.map(([ago, area, message], i) => ({ time: now - ago * 1000, area, message, version: i < 2 ? "1.2.10" : pakoVersion })),
   };
 }

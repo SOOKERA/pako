@@ -956,6 +956,9 @@ Function PakoGuiInit
   SetOutPath "$PLUGINSDIR\art"
   File "${PAKO_ART}\*.jpg"
   File "${PAKO_ART}\*.png"
+  ; [Pako] Out of the pictures' folder again: SetOutPath also made it Setup's working folder, and
+  ; Windows can't delete a working folder, so NSIS's own clean-up at exit left it behind, empty, in %TEMP%.
+  SetOutPath "$TEMP"
   Call PakoLookInit
   StrCpy $PakoA1 860
   StrCpy $PakoA2 540
@@ -1934,6 +1937,9 @@ Function un.PakoGuiInit
   File "${PAKO_ART}\b-uninstall-*.png"
   File "${PAKO_ART}\b-cancel-*.png"
   File "${PAKO_ART}\b-close-*.png"
+  ; [Pako] Out of the pictures' folder again: SetOutPath also made it Setup's working folder, and
+  ; Windows can't delete a working folder, so NSIS's own clean-up at exit left it behind, empty, in %TEMP%.
+  SetOutPath "$TEMP"
   Call un.PakoLookInit
   StrCpy $PakoA1 460
   StrCpy $PakoA2 320

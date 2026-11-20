@@ -20,6 +20,8 @@
   import { choices, targets } from "./devices.svelte";
   import { downloadFoundOn, downloadOnMenu, downloadSplit, sending } from "./downloadOn.svelte";
   import { pop } from "./motion";
+  import { linkLook, linkTip, type LinkLook } from "./linkState";
+
   import { priv } from "./private.svelte";
   import ColumnGrip from "./ColumnGrip.svelte";
   import ColumnsButton from "./ColumnsButton.svelte";
@@ -347,7 +349,23 @@
     const on = pool.filter((f) => app.isTicked(f)).length;
     return { all: pool.length > 0 && on === pool.length, some: on > 0 && on < pool.length, on, total: items.length };
   }
+
+  /** A mark's click: does what it says, once (a double-click doesn't open the page or the
+   *  browser twice). */
+  const markClicked = new Map<string, number>();
+  function markAct(id: string, look: LinkLook) {
+    const now = performance.now();
+    if (now - (markClicked.get(id) ?? -1e9) < 800) return;
+    markClicked.set(id, now);
+    if (look.act === "tools") app.installVideoTools();
+    else if (look.act === "page") app.run(() => api.gateFocus(id));
+    else if (look.act === "browser") app.run(() => api.openInDrive(id));
+  }
 </script>
+
+{#snippet markIcon(look: LinkLook)}
+  {#if look.mark === "check"}<Icon name="check" size={14} stroke={2.6} />{:else if look.mark === "limit"}<span class="lmark"><Icon name="check" size={14} stroke={2.6} /><span class="ldot"></span></span>{:else if look.mark === "ring"}<span class="ring"></span>{:else if look.mark === "alert"}<Icon name="alert" size={14} />{:else if look.mark === "x"}<Icon name="x" size={14} stroke={2.6} />{:else if look.mark === "tools"}<Icon name="download" size={13} stroke={2.2} />{:else}<Icon name="open" size={13} stroke={2.2} />{/if}
+{/snippet}
 
 <div class="found {hideCls}" class:easing={listColumns.easing && app.foundRows.length <= 60} style={colsStyle}>
   <div class="toolbar">
@@ -432,7 +450,7 @@
       <div class="cell hc c-{c.key}">
         <ColumnGrip list="found" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />
         <button class="sorter" class:sorted={app.sortFound?.key === c.key} onclick={() => app.toggleSort("found", c.key as SortKey)} title="Sort by {c.label.toLowerCase()}" aria-label="{c.label}{app.sortFound?.key === c.key ? (app.sortFound.dir > 0 ? ', sorted lowest first' : ', sorted highest first') : ''}. Sort by {c.label.toLowerCase()}">
-          {c.label}
+          {#if c.key === "link"}<Icon name="link" size={12} stroke={2.2} />{:else}{c.label}{/if}
           {#if app.sortFound?.key === c.key}<Icon name={app.sortFound.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
         </button>
       </div>
@@ -534,11 +552,12 @@
             <div class="cell src c-source"><span class="dot" style="background: {sourceOf(r.items[0].template).color}"></span><span class="ell">{sourceOf(r.items[0].template).label}</span></div>
             <div class="cell size c-size mono">{size ? bytes(size) : ""}</div>
             {#if r.set}
-              <div class="cell link c-link" class:ready={!r.set.missing.length} class:broken={r.set.missing.length > 0}>
-                {#if r.set.missing.length}<Icon name="alert" size={13} /><span class="ell">Incomplete set</span>{:else}<Icon name="check" size={13} stroke={2.6} /><span class="ell">Split archive</span>{/if}
+              {@const said = r.set.missing.length ? "Incomplete set" : "Split archive"}
+              <div class="cell link c-link" class:ready={!r.set.missing.length} class:broken={r.set.missing.length > 0} title={said} role="img" aria-label={said}>
+                {#if r.set.missing.length}<Icon name="alert" size={14} />{:else}<Icon name="check" size={14} stroke={2.6} />{/if}
               </div>
             {:else}
-              <div class="cell link c-link ready"><Icon name="check" size={13} stroke={2.6} />Opened</div>
+              <div class="cell link c-link ready" title="Opened" role="img" aria-label="Opened"><Icon name="check" size={14} stroke={2.6} /></div>
             {/if}
             <div class="cell date mono c-date" title={dateTitle(newest)}>{shortDate(newest)}</div>
           </div>
@@ -547,6 +566,7 @@
           {@const m = r.mirror}
           {@const all = m ? m.items : [f]}
           {@const able = canDownload(f)}
+          {@const look = linkLook({ state: f.state, message: f.message, video: f.template.source.kind === "video", deviceNote: f.deviceNote && able ? f.deviceNote : null, toolsBusy: app.videoToolsBusy })}
           {@const on = app.isTicked(f)}
           <div
             class="row"
@@ -560,7 +580,7 @@
             data-key={f.id}
             id={"frow-" + f.id}
             aria-selected={on}
-            aria-label="{f.template.name}, {f.state === 'broken' ? 'broken' : f.state === 'checking' ? 'checking' : f.message ?? f.state}"
+            aria-label="{f.template.name}, {look.word}"
             role="row"
             tabindex="-1"
             onclick={(e) => rowClick(e, f.id, all)}
@@ -645,63 +665,28 @@
             </div>
             <div class="cell src c-source"><span class="dot" style="background: {sourceOf(f.template).color}"></span><span class="ell" title={sourceOf(f.template).label}>{sourceOf(f.template).label}</span></div>
             <div class="cell size c-size mono" title={f.template.source.kind === "video" && f.template.size != null ? "Estimated size for the chosen quality" : ""}>{f.template.size != null ? (f.template.source.kind === "video" ? "≈ " : "") + bytes(f.template.size) : f.state === "checking" || f.state === "opening" ? "…" : "—"}</div>
-            {#if f.deviceNote && able}
-              <div class="cell link c-link needs" title={f.deviceNote}><Icon name="alert" size={12} /><span class="ell">{f.deviceNote}</span></div>
-            {:else if f.state === "ready"}
-              <div class="cell link c-link ready" title={f.message ?? ""}>
-                <Icon name="check" size={13} stroke={2.6} /><span class="ell">{f.message ? "Ready · Google limit today" : "Ready"}</span>
-              </div>
-            {:else if f.state === "checking"}
-              <div class="cell link c-link checking"><span class="ring"></span><span class="ell">{f.template.source.kind === "video" ? "Checking video…" : "Checking link"}</span></div>
-            {:else if f.state === "needsTools"}
-              <div class="cell link c-link needs" title="Downloading videos uses three free tools: yt-dlp, Deno and ffmpeg (about 600 MB on disk).">
-                <span class="ell">Needs the video tools</span>
-                <button
-                  class="addg"
-                  disabled={app.videoToolsBusy}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    app.installVideoTools();
-                  }}>{app.videoToolsBusy ? "Installing…" : "Install"}</button
-                >
-              </div>
-            {:else if f.state === "opening"}
-              {@const waiting = (f.message ?? "").startsWith("Waiting for you")}
-              {@const queued = (f.message ?? "").startsWith("Waiting for the link")}
-              {@const check = (f.message ?? "").includes("check")}
-              <div class="cell link c-link" class:checking={!waiting} class:needs={waiting} title={f.message ?? ""}>
-                {#if waiting}
-                  <span class="ell">Waiting for you</span>
-                {:else if queued}
-                  <span class="ring"></span><span class="ell">Waiting its turn</span>
-                {:else}
-                  <span class="ring"></span><span class="ell">Opening link…</span>
-                {/if}
-                {#if !queued}
+            <!-- The link's state as one small mark (its words in the tooltip and for screen readers,
+                 from linkState.ts); a state you can act on is a button that does it (install the
+                 tools, show the link page, open it in the browser). -->
+            <div class="cell link c-link {look.kind}">
+              {#key look.mark + look.kind}
+                {#if look.act}
                   <button
-                    class="addg"
-                    title={waiting ? "Bring the link page to the front" : "See the link page and finish it yourself"}
+                    class="sbtn"
+                    class:quiet={look.quiet}
+                    title={linkTip(look)}
+                    aria-label={look.word}
+                    in:pop={{ duration: 160, from: 0.6, y: 0 }}
                     onclick={(e) => {
                       e.stopPropagation();
-                      app.run(() => api.gateFocus(f.id));
-                    }}>{check ? "Show check" : "Show page"}</button
+                      markAct(f.id, look);
+                    }}>{@render markIcon(look)}</button
                   >
+                {:else}
+                  <span class="smark" title={linkTip(look)} role="img" aria-label={look.word} in:pop={{ duration: 160, from: 0.6, y: 0 }}>{@render markIcon(look)}</span>
                 {/if}
-              </div>
-            {:else if f.state === "broken"}
-              <div class="cell link c-link broken" title={f.message ?? ""}><Icon name="x" size={12} stroke={2.6} /><span class="ell">{f.message ?? "Link broken"}</span></div>
-            {:else}
-              <div class="cell link c-link needs" title={f.message ?? ""}>
-                <span class="ell">Only in the browser</span>
-                <button
-                  class="addg"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    app.run(() => api.openInDrive(f.id));
-                  }}
-                >Open</button>
-              </div>
-            {/if}
+              {/key}
+            </div>
             <div class="cell date mono c-date" title={dateTitle(f.template.date || f.template.addedAt)}>{shortDate(f.template.date || f.template.addedAt)}</div>
           </div>
         {/if}
@@ -1011,7 +996,7 @@
     overflow: hidden;
   }
   @container (max-width: 600px) {
-    /* The Link column already says "Incomplete set". */
+    /* The Link column's mark already says "Incomplete set" (on hover and for screen readers). */
     .chip.warn {
       display: none;
     }
@@ -1375,6 +1360,65 @@
   .link {
     gap: 7px;
     font-size: 12.5px;
+    justify-content: center;
+  }
+  /* The Link column's title is its icon, centred over the marks. */
+  .head .c-link :global(.sorter) {
+    width: 100%;
+    justify-content: center;
+  }
+  /* "Ready · Google limit today": the ✓ with a small dot in the limit colour. */
+  .lmark {
+    position: relative;
+    display: inline-flex;
+  }
+  .ldot {
+    position: absolute;
+    right: -3px;
+    top: -2px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--st-limit);
+    box-shadow: 0 0 0 1.5px var(--panel);
+  }
+  /* A state you can act on: a small button in the state's colour. */
+  .sbtn {
+    width: 26px;
+    height: 22px;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius);
+    background: rgba(209, 123, 240, 0.16);
+    color: inherit;
+    transition:
+      background var(--fast) ease,
+      transform var(--fast) var(--ease);
+  }
+  .sbtn.quiet {
+    background: transparent;
+  }
+  .sbtn:hover:not(:disabled) {
+    background: rgba(209, 123, 240, 0.26);
+  }
+  .sbtn.quiet:hover:not(:disabled) {
+    background: var(--btn-hover);
+  }
+  .sbtn:active:not(:disabled) {
+    transform: scale(0.94);
+  }
+  .sbtn:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+  .smark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   /* The mark keeps its size when a long message has to be cut. */
   .link :global(svg) {
@@ -1405,29 +1449,6 @@
     50% {
       opacity: 0.35;
     }
-  }
-  .addg {
-    flex: none;
-    height: 24px;
-    padding: 0 9px;
-    border: none;
-    border-radius: var(--radius);
-    background: rgba(209, 123, 240, 0.16);
-    color: #ebc3fa;
-    font-size: 12px;
-    font-weight: 600;
-    transition:
-      background var(--fast) ease,
-      transform var(--fast) var(--ease);
-  }
-  .addg:hover:not(:disabled) {
-    background: rgba(209, 123, 240, 0.26);
-  }
-  :global(:root[data-theme="light"]) .addg {
-    color: var(--st-limit-text);
-  }
-  .addg:active:not(:disabled) {
-    transform: scale(0.97);
   }
 
   .empty {

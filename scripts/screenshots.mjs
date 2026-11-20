@@ -43,11 +43,12 @@ const ASK = { width: 420, height: 324 };
 const STILL_CSS = `*, *::before, *::after { transition-duration: 0s !important; transition-delay: 0s !important; caret-color: transparent !important; }
 ::-webkit-scrollbar { width: 0 !important; height: 0 !important; }`;
 
-async function open(browser, scale, path, viewport, before) {
+async function open(browser, scale, path, viewport, before, columns) {
   const context = await browser.newContext({
     viewport,
     deviceScaleFactor: scale,
     locale: "en-GB",
+    timezoneId: "UTC",
     colorScheme: THEME,
     reducedMotion: "reduce",
   });
@@ -57,6 +58,13 @@ async function open(browser, scale, path, viewport, before) {
       localStorage.setItem("pako.theme", t);
     } catch {}
   }, THEME);
+  // The list's columns as a person set them (only for pictures that need room for names).
+  if (columns)
+    await context.addInitScript((c) => {
+      try {
+        localStorage.setItem("pako.listColumns", JSON.stringify(c));
+      } catch {}
+    }, columns);
   if (before) await before(context);
   const page = await context.newPage();
   page.on("pageerror", (e) => console.warn(`  page error on ${path}: ${e.message}`));
@@ -121,6 +129,7 @@ const SHOTS = {
   },
   links: {
     ...main(),
+    columns: { found: { w: {}, hidden: ["link"] } },
     async run(page) {
       await sidebar(page, "Links");
       // The Drive folder (first row) in the details panel, still open in the list.
@@ -208,6 +217,7 @@ const SHOTS = {
   "share-step-link": {
     path: "/?showcase=share",
     viewport: SHARE_LINK,
+    columns: { send: { w: {}, hidden: ["link"] } },
     async run(page) {
       await sidebar(page, "Upload");
       // The upload just made: the basket is empty again, its link was copied.
@@ -218,12 +228,18 @@ const SHOTS = {
       await page.locator(".panel").getByRole("button", { name: "Copy link" }).first().click();
       await park(page, 2, SHARE_LINK.height - 1);
       await settle(page, 900);
+      // The details panel from its top: its title, link, QR code and "Deletes in 7 days".
+      await page.evaluate(() => {
+        for (const el of document.querySelectorAll(".panel, .panel *")) if (el.scrollTop) el.scrollTop = 0;
+      });
+      await settle(page, 400);
     },
     clip: pageClip(SHARE_LINK, false),
   },
   "share-step-open": {
     path: "/?showcase=share",
     viewport: SHARE_OPEN,
+    columns: { found: { w: {}, hidden: ["link", "source"] } },
     async run(page) {
       await sidebar(page, "Links");
       await home(page);
@@ -369,6 +385,71 @@ const SHOTS = {
     async run(page) {
       await park(page, 0, 0);
       await settle(page);
+    },
+  },
+  // ---------- 1.3.0: Private mode, Protect with a password, Important, Extract… ----------
+  // Private mode in the preview is a pretend vault (src/lib/privateMock.ts, PIN 1234).
+  "private-list": {
+    ...main("/?showcase&private=open"),
+    async run(page) {
+      await sidebar(page, "Private");
+      await settle(page, 900);
+      // A finished file picked: its details panel on the right.
+      await page.getByRole("option", { name: /^Tax return 2026\.pdf/ }).first().click();
+      await park(page, 700, 860);
+      await settle(page, 1200);
+    },
+  },
+  "private-pad": {
+    ...main("/?showcase&private=on"),
+    async run(page) {
+      await sidebar(page, "Private");
+      await settle(page, 900);
+      // Two of the four digits typed.
+      await page.keyboard.type("12");
+      await park(page, 2, 899);
+      await settle(page, 700);
+    },
+  },
+  "upload-protect": {
+    path: "/?showcase=share",
+    viewport: SHARE_DROP,
+    async run(page) {
+      await sidebar(page, "Upload");
+      await closePanel(page);
+      await page.getByLabel("Name of this upload").fill("Wedding");
+      await page.getByRole("switch", { name: "Protect with a password" }).click();
+      await page.getByLabel("Password for this upload").fill("wedding-2026");
+      await page.getByLabel("Type the password again").fill("wedding-2026");
+      await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+      await park(page, 2, SHARE_DROP.height - 1);
+      await settle(page, 1200);
+    },
+    async clip(page) {
+      const b = await page.locator(".basket").boundingBox();
+      return { x: 220, y: 40, width: SHARE_DROP.width - 220, height: b.y + b.height + 16 - 40 };
+    },
+  },
+  "important-card": {
+    path: "/important",
+    viewport: { width: 500, height: 260 },
+    transparent: true,
+    css: ".frame.preview { background: transparent !important; }",
+    async run(page) {
+      await park(page, 0, 0);
+      await settle(page, 900);
+    },
+  },
+  "extract-password": {
+    ...main(),
+    async run(page) {
+      // A finished archive locked with a password: Extract… asks for it.
+      await page.getByRole("row", { name: /^Course materials\.zip/ }).first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Extract…" }).click();
+      await settle(page, 900);
+      await page.getByRole("dialog").locator('input[type="password"]').fill("course2026");
+      await park(page, 2, 899);
+      await settle(page, 700);
     },
   },
   notification: {
@@ -756,12 +837,25 @@ const CAUGHT = [
   { kind: "file", height: null, host: "media.example.org", url: "https://media.example.org/clips/trailer.mp4" },
 ];
 /** Just enough of `chrome.*` for the popup to say Connected (and list `videos` on the page). */
+/** The extension's own version: its popup checks the background script says the same one. */
+const EXT_VERSION = JSON.parse(readFileSync(join(root, "extension", "manifest.chromium.json"), "utf8")).version;
 const chromeStub = (videos) => `(() => {
   const store = { takeOver: true, playerButton: true, lastError: "", lastDetail: "" };
+  const session = { lastError: "", lastDetail: "" };
   const caught = ${JSON.stringify(videos)};
+  const version = ${JSON.stringify(EXT_VERSION)};
   window.chrome = {
-    runtime: { sendMessage: async (m) => (m && m.type === "videos" ? { ok: true, list: caught, playing: caught.length > 0 } : { ok: true }), sendNativeMessage: (_h, _m, cb) => cb && cb({ ok: true }), lastError: undefined },
-    storage: { local: { get: async (d) => ({ ...d, ...store }), set: async (v) => Object.assign(store, v) } },
+    runtime: {
+      sendMessage: async (m) => (m && m.type === "videos" ? { ok: true, list: caught, playing: caught.length > 0 } : { ok: true, script: version }),
+      sendNativeMessage: (_h, _m, cb) => cb && cb({ ok: true }),
+      getManifest: () => ({ version }),
+      reload: () => {},
+      lastError: undefined,
+    },
+    storage: {
+      local: { get: async (d) => ({ ...d, ...store }), set: async (v) => Object.assign(store, v) },
+      session: { get: async (d) => ({ ...d, ...session }), set: async (v) => Object.assign(session, v) },
+    },
     action: { setBadgeText: () => {} },
     tabs: { query: async () => [{ id: 1, url: "https://example.com/" }], update: async () => {}, create: async () => {} },
   };
@@ -773,7 +867,7 @@ async function shootExtension(browser, name, edition, videos = false) {
   const { dir, cleanup } = extensionDir(edition);
   try {
     for (const { scale, dir: outDir } of SCALES) {
-      const context = await browser.newContext({ viewport: { width: 360, height: 420 }, deviceScaleFactor: scale, colorScheme: THEME, reducedMotion: "reduce" });
+      const context = await browser.newContext({ viewport: { width: 360, height: 420 }, deviceScaleFactor: scale, colorScheme: THEME, reducedMotion: "reduce", timezoneId: "UTC" });
       await context.addInitScript(chromeStub(videos ? CAUGHT : []));
       await context.route("http://pako-extension.local/**", (route) => {
         const file = join(dir, decodeURIComponent(new URL(route.request().url()).pathname));
@@ -811,7 +905,7 @@ async function shoot(browser, name, shot) {
   if (shot.extension) return shootExtension(browser, name, shot.extension, !!shot.videos);
   if (shot.before) await sampleClip(browser);
   for (const { scale, dir } of SCALES) {
-    const { context, page } = await open(browser, scale, shot.path, shot.viewport, shot.before);
+    const { context, page } = await open(browser, scale, shot.path, shot.viewport, shot.before, shot.columns);
     await shot.run(page);
     if (shot.css) await page.addStyleTag({ content: shot.css });
     const file = join(dir, `${name}${SUFFIX}.png`);

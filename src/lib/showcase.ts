@@ -5,6 +5,7 @@
 // address. Everything going well; plain made-up names, no brands, no real people.
 import type { DirectFrom, DirectHistory, DirectState, Download, FoundItem, Part, Progress, RemoteBook, RemoteTalk, SendState, Snapshot } from "./api";
 import type { Notice, PopupCard } from "./notices";
+import { version as pakoVersion } from "../../package.json";
 
 export const showcase = typeof location !== "undefined" && new URLSearchParams(location.search).has("showcase");
 /** A scene for one picture, from "?showcase=<scene>": "sets" (Links with split archives),
@@ -258,12 +259,12 @@ export const showcaseSnapshot: Snapshot = {
     extractDefault: true, minimizeToTray: true, closeToTray: true, trayAsked: true, previewQuality: 480, keepAwake: true, confirmQuit: true, resumeOnStart: true, startWithWindows: true, startInTray: true,
     videoQuality: 1080, setupDone: true, videoAsked: true, autoUpdate: true, scheduleOn: false, scheduleStart: 1320, scheduleEnd: 420, catchClipboard: true, browserConnect: true, installerChoices: false,
     sendCompression: "off", sendMode: "files", sendPartMb: 500, sendPartCustom: false, resumeUploadsOnStart: true, askBrowser: true, miniOnBrowser: true, miniPinned: false, miniPos: null, sendHost: "gofile", uploadDeleteDays: 7,
-    whatsNewSeen: "1.0.0", tourOffered: true, toursDone: ["downloads", "found", "send", "direct", "devices", "dashboard", "settings", "full"],
+    whatsNewSeen: "1.0.0", tourOffered: true, toursDone: ["downloads", "found", "send", "direct", "devices", "dashboard", "settings", "private", "full"],
   },
   dataDir: "C:\\Users\\Sam\\AppData\\Roaming\\Pako",
   sevenZip: true,
   ffmpeg: true,
-  version: "1.0.0",
+  version: pakoVersion,
   installed: true,
 };
 

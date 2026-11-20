@@ -695,5 +695,7 @@ kbd {
   *::after {
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
+    /* Endless ones (a breathing ring) play once and stay still. */
+    animation-iteration-count: 1 !important;
   }
 }

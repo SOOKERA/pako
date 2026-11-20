@@ -1,5 +1,15 @@
 # What's new
 
+## 1.3.1
+
+### Links
+
+- The **Link** column in Links is now a small mark (point at it for the link's state; click it when it asks for something), so names get the room.
+
+### Fixed
+
+- Pako Setup no longer leaves an empty folder in your temporary files.
+
 ## 1.3.0
 
 ### Pako Setup

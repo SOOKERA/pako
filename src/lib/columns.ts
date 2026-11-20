@@ -76,7 +76,7 @@ export const LISTS: Record<string, ListDef> = {
   },
   found: {
     id: "found",
-    cols: [col("source", "Source", 140, 80, 300, 1), col("size", "Size", 96, 64, 180, 3), col("link", "Link", 220, 120, 420, 4), col("date", "Added on", 112, 80, 200, 2)],
+    cols: [col("source", "Source", 140, 80, 300, 1), col("size", "Size", 96, 64, 180, 3), col("link", "Link", 36, 32, 56, 4), col("date", "Added on", 112, 80, 200, 2)],
     pre: ["30px", "46px"],
     prePx: [30, 46],
     post: ["24px"],
@@ -221,7 +221,10 @@ export function readSaved(raw: unknown, legacy?: unknown): Record<string, ListSt
     const fromW = one?.w && typeof one.w === "object" ? one.w : id === "downloads" && legacy && typeof legacy === "object" && !one ? (legacy as Record<string, unknown>) : {};
     for (const c of list.cols) {
       const v = (fromW as Record<string, unknown>)[c.key];
-      if (typeof v === "number" && Number.isFinite(v) && Math.round(v) !== c.def) w[c.key] = clampWidth(c, v);
+      // Links' Link column was words before 1.3.1 and is a small mark now: a width saved for the
+      // words isn't kept (it starts at its new width). Other columns are only capped.
+      const outgrown = id === "found" && c.key === "link" && typeof v === "number" && v > c.max;
+      if (typeof v === "number" && Number.isFinite(v) && Math.round(v) !== c.def && !outgrown) w[c.key] = clampWidth(c, v);
     }
     const hidden = Array.isArray(one?.hidden) ? one!.hidden.filter((k): k is string => typeof k === "string" && list.cols.some((c) => c.key === k)) : [];
     out[id] = { w, hidden: [...new Set(hidden)] };
