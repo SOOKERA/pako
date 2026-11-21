@@ -1,5 +1,16 @@
 # What's new
 
+## 1.3.2
+
+### Pako Setup
+
+- The slides in Pako Setup now slide sideways as they fade from one to the next (the first one slides in when Setup opens), and move on a little sooner.
+- **Start Pako with Windows** is now on at first, in Pako Setup and in a portable Pako's first-start setup (switch it off there if you'd rather not).
+
+### Fixed
+
+- Pako Setup's slides no longer stay on the first one too long, or flash white between slides, while Windows is busy just after Setup opens.
+
 ## 1.3.1
 
 ### Links

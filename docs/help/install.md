@@ -7,7 +7,7 @@ Get Pako, keep it up to date, and remove it if you need to. Pako runs on Windows
 Pako comes two ways. Both are the same program and update themselves the same way.
 
 - **Pako Setup** installs Pako for you, without admin rights, in `%LOCALAPPDATA%\Programs\Pako` (you can pick another folder). It puts Pako in the Start menu (and on the desktop if you like) and in Windows' Apps list, so it can be uninstalled like any app.
-- **Pako Portable** is one file, `Pako.exe`. Put it in any folder and run it. It isn't added to the Start menu or Windows' Apps list. Give it a folder of its own that only you change (not your Downloads folder, where web pages can save files next to it).
+- **Pako Portable** is one file, `Pako.exe`. Put it in any folder and run it. It isn't added to the Start menu or Windows' Apps list. Give it a folder of its own that only you change (not your Downloads folder, where web pages can save files next to it). Its first-start setup has the same choices on at first as Pako Setup: **Start Pako with Windows** and **Add Pako to my browsers**.
 
 **Settings › Features & updates**, the first tab of Settings, shows which one you have: **Installed** or **Portable**, next to the version.
 
@@ -15,11 +15,11 @@ Pako comes two ways. Both are the same program and update themselves the same wa
 
 Pako Setup is one window, in Windows' light or dark look:
 
-- **On the left**, five short slides show what Pako does. They move on by themselves every few seconds and wait while your mouse is on them. Click **‹** or **›**, or a dot, to flip them yourself (then they stay where you put them).
+- **On the left**, five short slides show what Pako does. They slide on by themselves every few seconds and wait while you point at them. Click **‹** or **›**, or a dot, to flip them yourself (then they stay where you put them).
 - **On the right**, everything you can choose, all at once:
   - **Install in**: the folder, `%LOCALAPPDATA%\Programs\Pako` at first. **Change** picks another one (Pako gets a folder of its own in the one you pick).
   - **Desktop shortcut** (on at first).
-  - **Start Pako with Windows** (off at first).
+  - **Start Pako with Windows** (on at first, unless a portable Pako already starts with Windows: that one keeps doing so).
   - **Connect Pako to your browsers** (on at first), so the browser extension can talk to Pako.
 - Click **Install**. The window shows **Installing Pako…** with a bar, then **Pako is installed**: **Open Pako** starts it (so does **Enter**); **Close**, **Esc** and the window's **✕** don't.
 - If something goes wrong while installing (Pako couldn't be closed, for example), the line under the bar says what, in red, and **Close** ends Setup.

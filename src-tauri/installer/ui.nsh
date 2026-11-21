@@ -1,5 +1,5 @@
 ; Pako Setup's own window (user-approved design, 2026-11-18): one wide window that follows
-; Windows' light or dark look. Left: five feature slides that move on by themselves every 6 s
+; Windows' light or dark look. Left: five feature slides that slide on by themselves every 4.5 s
 ; (they wait while the mouse is on them; the dots and arrows flip them, and a click stops them).
 ; Right: Pako's logo and every option at once (folder, desktop shortcut, start with Windows, the
 ; browser connection), one Install button and the terms line. Then the same window shows the
@@ -60,15 +60,32 @@ Var PakoS4
 Var PakoS5
 Var PakoSlide         ; 1..5
 Var PakoAuto          ; 1 = moves on by itself
-Var PakoIdle          ; tenths of a second without the mouse on the slides
+Var PakoIdleT0        ; when the slide last changed or the mouse was last on it (ms)
+Var PakoCur0          ; where the mouse was when the slides showed ("x,y")
+Var PakoMouseSeen     ; 1 = the mouse has moved since then (only then does it hold the slides)
 Var PakoSlideCtl
 Var PakoFailName      ; the file PakoCanWrite couldn't write
-; [Pako] The slide crossfade: the slide control always shows $PakoFrame, which is redrawn from
-; $PakoFrom (what showed) blended into $PakoFadeTo (the new slide) for 240 ms.
+; [Pako] The slide change: the new slide comes in sideways while it fades in over the one that
+; showed, which moves off the other way (PakoSlideDraw). Each step is drawn into $PakoOut and put
+; on the screen in one go (never through the picture control's own painting, which showed a white
+; flash while Windows was busy); $PakoFrame keeps the last step for the control's own repaints.
 Var PakoFrame
 Var PakoFrom
-Var PakoFadeTo
+Var PakoTo
+Var PakoOut
+Var PakoMix
+Var PakoDcF           ; picks up a picture shared with a control, for one copy at a time
+Var PakoDcFrom
+Var PakoDcTo
+Var PakoDcOut
+Var PakoDcMix
+Var PakoDir           ; 1 = the next slide (comes from the right), -1 = the previous one
+Var PakoIntro         ; 1 = the first slide still has to come in (once, when Setup's window shows)
 Var PakoFadeT0
+Var PakoSW            ; the slide's size, the moving part's height and how far it moves, on screen
+Var PakoSH
+Var PakoSTop
+Var PakoShift
 ; pictures and buttons
 Var PakoBmpLogo
 Var PakoBmpOn
@@ -141,6 +158,21 @@ Var PakoRet
   IntOp ${OUT} ${VAL} * $PakoDpi
   IntOp ${OUT} ${OUT} + 48
   IntOp ${OUT} ${OUT} / 96
+!macroend
+
+; Draws the slide in SRC into DC, moved sideways by X (the strip it leaves gets the background),
+; and the dots and arrows under it where they are.
+!macro PakoShifted DC SRC X
+  System::Call "gdi32::BitBlt(p ${DC}, i ${X}, i 0, i $PakoSW, i $PakoSTop, p ${SRC}, i 0, i 0, i 0x00CC0020)"
+  ${If} ${X} < 0
+    IntOp $6 $PakoSW + ${X}
+    IntOp $5 0 - ${X}
+    System::Call "gdi32::PatBlt(p ${DC}, i r6, i 0, i r5, i $PakoSTop, i 0x00F00021)"
+  ${ElseIf} ${X} > 0
+    System::Call "gdi32::PatBlt(p ${DC}, i 0, i 0, i ${X}, i $PakoSTop, i 0x00F00021)"
+  ${EndIf}
+  IntOp $5 $PakoSH - $PakoSTop
+  System::Call "gdi32::BitBlt(p ${DC}, i 0, i $PakoSTop, i $PakoSW, i r5, p ${SRC}, i 0, i $PakoSTop, i 0x00CC0020)"
 !macroend
 
 ; A control on the current nsDialogs page: VAR = its handle.
@@ -451,7 +483,7 @@ Function ${UN}PakoImage
     System::Call "gdiplus::GdipDisposeImage(p r4)"
     System::Call "gdiplus::GdipDisposeImage(p r3)"
     ; Made 24-bit: a picture control (comctl32 6) keeps its own copy of every 32-bit picture it
-    ; is given, which would never be freed (the slides change every 6 s, the buttons on hover).
+    ; is given, which would never be freed (the slides change every 4.5 s, the buttons on hover).
     ${If} $9 != 0
       Push $2
       System::Call "user32::GetDC(p 0) p .r2"
@@ -1012,7 +1044,8 @@ Function PakoGuiInit
   StrCpy $PakoBmpField $PakoRet
   StrCpy $PakoSlide 1
   StrCpy $PakoAuto 1
-  StrCpy $PakoIdle 0
+  StrCpy $PakoDir 1
+  StrCpy $PakoIntro 1
 FunctionEnd
 
 ; The window's title on every page (Windows sets "Pako Setup" again on each one).
@@ -1045,7 +1078,9 @@ Function PakoDetect
   StrCpy $PakoMode "install"
   StrCpy $PakoOldVersion ""
   StrCpy $PakoDesktop 1
-  StrCpy $PakoStart 0
+  ; [Pako] A new install starts with Windows unless it's switched off (user, 2026-11-21); over an
+  ; installed Pako the switch shows what it has now (below).
+  StrCpy $PakoStart 1
   StrCpy $PakoBrowsers 1
   Call FindWixInstall
   StrCpy $PakoR6 $R6
@@ -1056,6 +1091,25 @@ Function PakoDetect
     ReadRegStr $R0 SHCTX "${UNINSTKEY}" ""
     ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
     ${If} "$R0$R1" == ""
+      ; [Pako] A portable Pako that already starts with Windows keeps doing so: Windows has one
+      ; "Pako" start-up entry, and a new install switched on would take it over. Its entry is
+      ; "<exe in quotes>" [--tray]; one whose Pako is gone doesn't count.
+      ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+      StrCpy $R1 $0 1
+      ${If} $R1 == '"'
+        StrCpy $R0 1
+        ${Do}
+          StrCpy $R1 $0 1 $R0
+          ${IfThen} $R1 == '"' ${|} ${Break} ${|}
+          ${IfThen} $R1 == "" ${|} ${Break} ${|}
+          IntOp $R0 $R0 + 1
+        ${Loop}
+        IntOp $R0 $R0 - 1
+        StrCpy $R1 $0 $R0 1
+        ${If} ${FileExists} "$R1"
+          StrCpy $PakoStart 0
+        ${EndIf}
+      ${EndIf}
       Goto pako_detect_done
     ${EndIf}
     ReadRegStr $PakoOldVersion SHCTX "${UNINSTKEY}" "DisplayVersion"
@@ -1076,6 +1130,7 @@ Function PakoDetect
   ; The switches show what this Pako has now.
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
   Pop $PakoDesktop
+  StrCpy $PakoStart 0
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
   ${StrCase} $0 $0 "L"
   ${StrCase} $R0 "$INSTDIR\${MAINBINARYNAME}.exe" "L"
@@ -1119,6 +1174,7 @@ FunctionEnd
 Function PakoPrevSlide
   Pop $0
   StrCpy $PakoAuto 0
+  StrCpy $PakoDir -1
   IntOp $PakoSlide $PakoSlide - 1
   ${IfThen} $PakoSlide < 1 ${|} StrCpy $PakoSlide 5 ${|}
   Call PakoShowSlide
@@ -1127,6 +1183,7 @@ FunctionEnd
 Function PakoNextSlide
   Pop $0
   StrCpy $PakoAuto 0
+  StrCpy $PakoDir 1
   IntOp $PakoSlide $PakoSlide + 1
   ${IfThen} $PakoSlide > 5 ${|} StrCpy $PakoSlide 1 ${|}
   Call PakoShowSlide
@@ -1170,8 +1227,77 @@ Function PakoNewFrame
   Pop $0
 FunctionEnd
 
-; Draws $PakoA2 into $PakoA1 (both slide-sized pictures), at $PakoA3 of 255 (255: a plain copy).
-Function PakoCompose
+; Copies the picture $PakoA1 (a slide, or $PakoFrame) into the drawing $PakoA2 (one of the
+; memory DCs). The picture is held only for the copy: a picture control can't draw one that is
+; held somewhere else.
+Function PakoCopyIn
+  Push $0
+  System::Call "gdi32::SelectObject(p $PakoDcF, p $PakoA1) p .r0"
+  System::Call "gdi32::BitBlt(p $PakoA2, i 0, i 0, i $PakoSW, i $PakoSH, p $PakoDcF, i 0, i 0, i 0x00CC0020)"
+  System::Call "gdi32::SelectObject(p $PakoDcF, p r0)"
+  Pop $0
+FunctionEnd
+
+; $PakoOut -> $PakoFrame (what the control shows when Windows asks it to repaint).
+Function PakoFrameSave
+  Push $0
+  System::Call "gdi32::SelectObject(p $PakoDcF, p $PakoFrame) p .r0"
+  System::Call "gdi32::BitBlt(p $PakoDcF, i 0, i 0, i $PakoSW, i $PakoSH, p $PakoDcOut, i 0, i 0, i 0x00CC0020)"
+  System::Call "gdi32::SelectObject(p $PakoDcF, p r0)"
+  Pop $0
+FunctionEnd
+
+; Once: the pictures and drawings the slide changes use (kept until Setup closes).
+Function PakoSlideSetup
+  Push $0
+  Push $1
+  !insertmacro PakoScale $PakoSW 530
+  !insertmacro PakoScale $PakoSH 540
+  ; The picture and the words move; the dots and arrows under them only fade.
+  !insertmacro PakoScale $PakoSTop 496
+  !insertmacro PakoScale $PakoShift 80
+  Call PakoNewFrame
+  StrCpy $PakoFrame $PakoRet
+  Call PakoNewFrame
+  StrCpy $PakoFrom $PakoRet
+  Call PakoNewFrame
+  StrCpy $PakoTo $PakoRet
+  Call PakoNewFrame
+  StrCpy $PakoOut $PakoRet
+  Call PakoNewFrame
+  StrCpy $PakoMix $PakoRet
+  System::Call "user32::GetDC(p 0) p .r0"
+  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
+  StrCpy $PakoDcF $1
+  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
+  StrCpy $PakoDcFrom $1
+  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
+  StrCpy $PakoDcTo $1
+  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
+  StrCpy $PakoDcOut $1
+  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
+  StrCpy $PakoDcMix $1
+  System::Call "user32::ReleaseDC(p 0, p r0)"
+  System::Call "gdi32::SelectObject(p $PakoDcFrom, p $PakoFrom)"
+  System::Call "gdi32::SelectObject(p $PakoDcTo, p $PakoTo)"
+  System::Call "gdi32::SelectObject(p $PakoDcOut, p $PakoOut)"
+  System::Call "gdi32::SelectObject(p $PakoDcMix, p $PakoMix)"
+  ; What shows beside a moving slide: the slides' own background (read from the first one, so it
+  ; matches the picture exactly).
+  StrCpy $PakoA1 $PakoS1
+  StrCpy $PakoA2 $PakoDcTo
+  Call PakoCopyIn
+  System::Call "gdi32::GetPixel(p $PakoDcTo, i 2, i 2) i .r0"
+  System::Call "gdi32::CreateSolidBrush(i r0) p .r1"
+  System::Call "gdi32::SelectObject(p $PakoDcOut, p r1)"
+  System::Call "gdi32::SelectObject(p $PakoDcMix, p r1)"
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; One step of the change, $PakoA1 = how far it is (0 to 1000, eased): what showed ($PakoFrom)
+; moves off one way and fades out while the new slide ($PakoTo) comes in from the other side.
+Function PakoSlideDraw
   Push $0
   Push $1
   Push $2
@@ -1179,25 +1305,36 @@ Function PakoCompose
   Push $4
   Push $5
   Push $6
-  !insertmacro PakoScale $5 530
-  !insertmacro PakoScale $6 540
-  System::Call "user32::GetDC(p 0) p .r0"
-  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
-  System::Call "gdi32::CreateCompatibleDC(p r0) p .r2"
-  System::Call "user32::ReleaseDC(p 0, p r0)"
-  System::Call "gdi32::SelectObject(p r1, p $PakoA1) p .r3"
-  System::Call "gdi32::SelectObject(p r2, p $PakoA2) p .r4"
-  ${If} $PakoA3 >= 255
-    System::Call "gdi32::BitBlt(p r1, i 0, i 0, i r5, i r6, p r2, i 0, i 0, i 0x00CC0020)"
+  IntOp $1 $PakoA1 * $PakoShift
+  IntOp $1 $1 / 1000
+  IntOp $2 $PakoShift - $1
+  ${If} $PakoDir < 0
+    StrCpy $3 $1
+    IntOp $4 0 - $2
   ${Else}
-    ; BLENDFUNCTION { AC_SRC_OVER, 0, alpha, 0 } as one 32-bit value.
-    IntOp $0 $PakoA3 << 16
-    System::Call "msimg32::AlphaBlend(p r1, i 0, i 0, i r5, i r6, p r2, i 0, i 0, i r5, i r6, i r0)"
+    IntOp $3 0 - $1
+    StrCpy $4 $2
   ${EndIf}
-  System::Call "gdi32::SelectObject(p r1, p r3)"
-  System::Call "gdi32::SelectObject(p r2, p r4)"
-  System::Call "gdi32::DeleteDC(p r1)"
-  System::Call "gdi32::DeleteDC(p r2)"
+  ${If} $PakoA1 >= 1000
+    System::Call "gdi32::BitBlt(p $PakoDcOut, i 0, i 0, i $PakoSW, i $PakoSH, p $PakoDcTo, i 0, i 0, i 0x00CC0020)"
+  ${Else}
+    !insertmacro PakoShifted $PakoDcOut $PakoDcFrom $3
+    !insertmacro PakoShifted $PakoDcMix $PakoDcTo $4
+    ; BLENDFUNCTION { AC_SRC_OVER, 0, alpha, 0 } as one 32-bit value.
+    IntOp $0 $PakoA1 * 255
+    IntOp $0 $0 / 1000
+    ${If} $0 > 0
+      IntOp $0 $0 << 16
+      System::Call "msimg32::AlphaBlend(p $PakoDcOut, i 0, i 0, i $PakoSW, i $PakoSH, p $PakoDcMix, i 0, i 0, i $PakoSW, i $PakoSH, i r0)"
+    ${EndIf}
+  ${EndIf}
+  ; Straight onto the screen in one copy, and the control isn't asked to paint it again.
+  ; DCX_CACHE | DCX_CLIPSIBLINGS: the focus ring over the arrows stays.
+  System::Call "user32::GetDCEx(p $PakoSlideCtl, p 0, i 0x12) p .r1"
+  System::Call "gdi32::BitBlt(p r1, i 0, i 0, i $PakoSW, i $PakoSH, p $PakoDcOut, i 0, i 0, i 0x00CC0020)"
+  System::Call "user32::ReleaseDC(p $PakoSlideCtl, p r1)"
+  System::Call "user32::ValidateRect(p $PakoSlideCtl, p 0)"
+  Call PakoFrameSave
   Pop $6
   Pop $5
   Pop $4
@@ -1207,82 +1344,99 @@ Function PakoCompose
   Pop $0
 FunctionEnd
 
-; A new slide control: it shows the frame, with the current slide in it (no fade).
+; A new slide control: it shows the current slide (no move). The slides wait 4.5 s from now.
 Function PakoSlideInit
+  Push $0
+  Push $1
+  Push $2
   ${If} $PakoFrame == ""
   ${OrIf} $PakoFrame = 0
-    Call PakoNewFrame
-    StrCpy $PakoFrame $PakoRet
-    Call PakoNewFrame
-    StrCpy $PakoFrom $PakoRet
+    Call PakoSlideSetup
   ${EndIf}
-  Call PakoSlideBmp
-  StrCpy $PakoFadeTo $PakoRet
-  StrCpy $PakoA1 $PakoFrame
-  StrCpy $PakoA2 $PakoFadeTo
-  StrCpy $PakoA3 255
-  Call PakoCompose
+  ${NSD_KillTimer} PakoFade
+  ; With Windows' "Animation effects" off there's nothing to come in: the slide shows at once.
+  StrCpy $0 1
+  System::Call "user32::SystemParametersInfoW(i 0x1042, i 0, *i .r0, i 0)" ; SPI_GETCLIENTAREAANIMATION
+  ${IfThen} $0 = 0 ${|} StrCpy $PakoIntro 0 ${|}
+  ${If} $PakoIntro = 1
+    ; The first time: only the slides' background, and the first slide comes in once the
+    ; window shows (PakoTick).
+    System::Call "gdi32::PatBlt(p $PakoDcOut, i 0, i 0, i $PakoSW, i $PakoSH, i 0x00F00021)"
+  ${Else}
+    Call PakoSlideBmp
+    StrCpy $PakoA1 $PakoRet
+    StrCpy $PakoA2 $PakoDcOut
+    Call PakoCopyIn
+  ${EndIf}
+  Call PakoFrameSave
   SendMessage $PakoSlideCtl ${STM_SETIMAGE} 0 $PakoFrame
+  System::Call "kernel32::GetTickCount() i .r0"
+  StrCpy $PakoIdleT0 $0
+  StrCpy $PakoMouseSeen 0
+  System::Call "*(i 0, i 0) p .r1"
+  System::Call "user32::GetCursorPos(p r1)"
+  System::Call "*$1(i .r0, i .r2)"
+  System::Free $1
+  StrCpy $PakoCur0 "$0,$2"
+  Pop $2
+  Pop $1
+  Pop $0
 FunctionEnd
 
-; The slide changed ($PakoSlide): it fades in over what showed (also from the middle of a fade),
-; or appears at once when Windows' "Show animations" is off.
+; The slide changed ($PakoSlide, in the direction $PakoDir): it slides in (also from the middle
+; of a change), or appears at once when Windows' "Animation effects" are off.
 Function PakoShowSlide
   Push $0
+  ; A slide flipped before the first one came in replaces that coming in (it never runs after).
+  StrCpy $PakoIntro 0
+  ; What shows now (maybe half-way through a change) is what moves off.
+  StrCpy $PakoA1 $PakoFrame
+  StrCpy $PakoA2 $PakoDcFrom
+  Call PakoCopyIn
   Call PakoSlideBmp
-  StrCpy $PakoFadeTo $PakoRet
+  StrCpy $PakoA1 $PakoRet
+  StrCpy $PakoA2 $PakoDcTo
+  Call PakoCopyIn
+  System::Call "kernel32::GetTickCount() i .r0"
+  StrCpy $PakoIdleT0 $0
+  StrCpy $PakoFadeT0 $0
   StrCpy $0 1
   System::Call "user32::SystemParametersInfoW(i 0x1042, i 0, *i .r0, i 0)" ; SPI_GETCLIENTAREAANIMATION
   ${If} $0 = 0
     ${NSD_KillTimer} PakoFade
-    StrCpy $PakoA1 $PakoFrame
-    StrCpy $PakoA2 $PakoFadeTo
-    StrCpy $PakoA3 255
-    Call PakoCompose
-    System::Call "user32::InvalidateRect(p $PakoSlideCtl, p 0, i 0)"
+    StrCpy $PakoA1 1000
+    Call PakoSlideDraw
   ${Else}
-    StrCpy $PakoA1 $PakoFrom
-    StrCpy $PakoA2 $PakoFrame
-    StrCpy $PakoA3 255
-    Call PakoCompose
-    System::Call "kernel32::GetTickCount() i .r0"
-    StrCpy $PakoFadeT0 $0
-    ${NSD_CreateTimer} PakoFade 15
+    StrCpy $PakoA1 0
+    Call PakoSlideDraw
+    ${NSD_CreateTimer} PakoFade 10
   ${EndIf}
   Pop $0
 FunctionEnd
 
-; One step of the fade (every 15 ms while it runs): eased out, done after 240 ms.
+; One step of the change (as often as Windows' timer allows): eased out (cubic), done after 650 ms.
+; Timed by the clock, so a busy PC skips steps instead of slowing the change down.
 Function PakoFade
   Push $0
   Push $1
   System::Call "kernel32::GetTickCount() i .r0"
   IntOp $0 $0 - $PakoFadeT0
-  StrCpy $PakoA1 $PakoFrame
-  ${If} $0 >= 240
+  ${If} $0 >= 650
   ${OrIf} $0 < 0
     ${NSD_KillTimer} PakoFade
-    StrCpy $PakoA2 $PakoFadeTo
-    StrCpy $PakoA3 255
-    Call PakoCompose
+    StrCpy $PakoA1 1000
   ${Else}
-    ; 255 × (1 - (1 - t)³), t = $0 / 240, in hundredths.
-    IntOp $1 $0 * 100
-    IntOp $1 $1 / 240
-    IntOp $1 100 - $1
+    ; 1000 × (1 - (1 - t)³), t = $0 / 650, in thousandths.
+    IntOp $1 $0 * 1000
+    IntOp $1 $1 / 650
+    IntOp $1 1000 - $1
     IntOp $0 $1 * $1
+    IntOp $0 $0 / 1000
     IntOp $0 $0 * $1
-    IntOp $0 $0 * 255
-    IntOp $0 $0 / 1000000
-    IntOp $0 255 - $0
-    StrCpy $PakoA2 $PakoFrom
-    StrCpy $PakoA3 255
-    Call PakoCompose
-    StrCpy $PakoA2 $PakoFadeTo
-    StrCpy $PakoA3 $0
-    Call PakoCompose
+    IntOp $0 $0 / 1000
+    IntOp $PakoA1 1000 - $0
   ${EndIf}
-  System::Call "user32::InvalidateRect(p $PakoSlideCtl, p 0, i 0)"
+  Call PakoSlideDraw
   Pop $1
   Pop $0
 FunctionEnd
@@ -1310,12 +1464,14 @@ Function PakoSlideClick
     ${If} $2 >= 444
     ${AndIf} $2 < 474
       StrCpy $PakoAuto 0
+      StrCpy $PakoDir -1
       IntOp $PakoSlide $PakoSlide - 1
       ${IfThen} $PakoSlide < 1 ${|} StrCpy $PakoSlide 5 ${|}
       Call PakoShowSlide
     ${ElseIf} $2 >= 474
     ${AndIf} $2 < 508
       StrCpy $PakoAuto 0
+      StrCpy $PakoDir 1
       IntOp $PakoSlide $PakoSlide + 1
       ${IfThen} $PakoSlide > 5 ${|} StrCpy $PakoSlide 1 ${|}
       Call PakoShowSlide
@@ -1330,8 +1486,13 @@ Function PakoSlideClick
         IntOp $0 $0 + 3
         ${If} $2 < $0
           StrCpy $PakoAuto 0
-          StrCpy $PakoSlide $4
-          Call PakoShowSlide
+          ; A dot further on comes from the right, an earlier one from the left.
+          ${If} $4 <> $PakoSlide
+            StrCpy $PakoDir 1
+            ${IfThen} $4 < $PakoSlide ${|} StrCpy $PakoDir -1 ${|}
+            StrCpy $PakoSlide $4
+            Call PakoShowSlide
+          ${EndIf}
           ${Break}
         ${EndIf}
         IntOp $1 $0 + 3
@@ -1345,25 +1506,48 @@ Function PakoSlideClick
   Pop $1
 FunctionEnd
 
-; Every tenth of a second on the pages with slides: the next slide after 6 s without the mouse
-; on them, and the buttons' hover pictures.
+; Every tenth of a second on the pages with slides: the next slide after 4.5 s without the mouse
+; on them, and the buttons' hover pictures. The 4.5 s are read from the clock (a busy PC, Windows
+; checking the new Setup say, sends these ticks late, and counting them kept the first slide far
+; too long). The mouse holds the slides only once it has moved since they showed: resting where
+; Setup was double-clicked, it may just happen to be over them.
 Function PakoTick
   Push $0
-  StrCpy $PakoA1 $PakoSlideCtl
-  Call PakoMouseOn
-  ${If} $PakoRet = 1
-    StrCpy $PakoIdle 0
-  ${Else}
-    IntOp $PakoIdle $PakoIdle + 1
+  Push $1
+  Push $2
+  ; The first slide comes in once Setup's window is on the screen.
+  ${If} $PakoIntro = 1
+    System::Call "user32::IsWindowVisible(p $HWNDPARENT) i .r0"
+    ${If} $0 <> 0
+      StrCpy $PakoIntro 0
+      StrCpy $PakoDir 1
+      Call PakoShowSlide
+    ${EndIf}
   ${EndIf}
+  ${If} $PakoMouseSeen <> 1
+    System::Call "*(i 0, i 0) p .r1"
+    System::Call "user32::GetCursorPos(p r1)"
+    System::Call "*$1(i .r0, i .r2)"
+    System::Free $1
+    ${IfThen} "$0,$2" != $PakoCur0 ${|} StrCpy $PakoMouseSeen 1 ${|}
+  ${EndIf}
+  System::Call "kernel32::GetTickCount() i .r0"
+  ${If} $PakoMouseSeen = 1
+    StrCpy $PakoA1 $PakoSlideCtl
+    Call PakoMouseOn
+    ${IfThen} $PakoRet = 1 ${|} StrCpy $PakoIdleT0 $0 ${|}
+  ${EndIf}
+  IntOp $1 $0 - $PakoIdleT0
   ${If} $PakoAuto = 1
-  ${AndIf} $PakoIdle >= 60
-    StrCpy $PakoIdle 0
+  ${AndIf} $1 >= 4500
+    StrCpy $PakoDir 1
     IntOp $PakoSlide $PakoSlide + 1
     ${IfThen} $PakoSlide > 5 ${|} StrCpy $PakoSlide 1 ${|}
     Call PakoShowSlide
   ${EndIf}
   Call PakoButtonsTick
+  Pop $2
+  Pop $1
   Pop $0
 FunctionEnd
 
@@ -1764,6 +1948,8 @@ Function PakoMainLeave
   ${EndIf}
   ${NSD_KillTimer} PakoTick
   ${NSD_KillTimer} PakoFade
+  ; Installed before the first slide came in: the last page shows it at once.
+  StrCpy $PakoIntro 0
   !insertmacro PakoRingNone
 FunctionEnd
 

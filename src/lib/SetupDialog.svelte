@@ -29,10 +29,12 @@
   let autoUpdate = $state(s.autoUpdate);
   let minimize = $state(s.trayAsked ? s.minimizeToTray : true);
   let close = $state(s.trayAsked ? s.closeToTray : true);
-  let startWithWindows = $state(s.startWithWindows);
+  /** These two are on by default the first time (the same as in Pako Setup, so a portable Pako
+   * starts the same way); "Run setup again", or Pako Setup's choice, shows what they are now. */
+  const firstTime = !s.setupDone && !s.installerChoices;
+  let startWithWindows = $state(firstTime || s.startWithWindows);
   let startInTray = $state(s.startInTray);
-  /** On by default the first time; "Run setup again", or Pako Setup's choice, shows what it is now. */
-  let browsers = $state((!s.setupDone && !s.installerChoices) || s.browserConnect);
+  let browsers = $state(firstTime || s.browserConnect);
 
   // Sending with your own Google Drive: offered only when this PC has its registration.
   let sendDrive = $state<DriveSendStatus | null>(null);
