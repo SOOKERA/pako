@@ -1,5 +1,11 @@
 # What's new
 
+## 1.3.3
+
+### Pako Setup
+
+- Pako Setup shows the version it installs under Pako's logo, and the uninstaller the version it removes.
+
 ## 1.3.2
 
 ### Pako Setup

@@ -1551,14 +1551,15 @@ Function PakoTick
   Pop $0
 FunctionEnd
 
-; Logo and the line under it, at the top of the right side.
-; $PakoA1 = the line under the logo.
+; Logo, the version under it (user, 2026-11-21) and the line under that, at the top of the right
+; side. $PakoA1 = the line under the logo.
 Function PakoHeader
   Push $0
   Push $1
   StrCpy $1 $PakoA1
-  !insertmacro PakoPicture $0 615 44 160 44 $PakoBmpLogo
-  !insertmacro PakoLabel $0 554 98 282 18 0x50000081 $PakoFSmall MUT BG $1
+  !insertmacro PakoPicture $0 615 34 160 44 $PakoBmpLogo
+  !insertmacro PakoLabel $0 554 80 282 16 0x50000081 $PakoFTiny MUT BG "$(pakoVersion)"
+  !insertmacro PakoLabel $0 554 104 282 18 0x50000081 $PakoFSmall MUT BG $1
   Pop $1
   Pop $0
 FunctionEnd
@@ -1984,10 +1985,13 @@ Function PakoInstShow
   ${EndIf}
   !insertmacro PakoRaw $1 $0 STATIC ${PAKO_LABEL} 530 0 1 540 ""
   !insertmacro PakoColors $1 LN LN
-  !insertmacro PakoRaw $1 $0 STATIC ${PAKO_PIC} 615 44 160 44 ""
+  !insertmacro PakoRaw $1 $0 STATIC ${PAKO_PIC} 615 34 160 44 ""
   SendMessage $1 ${STM_SETIMAGE} 0 $PakoBmpLogo
+  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 554 80 282 16 "$(pakoVersion)"
+  SendMessage $1 ${WM_SETFONT} $PakoFTiny 1
+  !insertmacro PakoColors $1 MUT BG
   Call PakoModeTag
-  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 554 98 282 18 $PakoRet
+  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 554 104 282 18 $PakoRet
   SendMessage $1 ${WM_SETFONT} $PakoFSmall 1
   !insertmacro PakoColors $1 MUT BG
   ${If} $PakoMode == "update"
@@ -2171,9 +2175,10 @@ Function un.PakoUnPage
   StrCpy $PakoHeld 0
   StrCpy $DeleteAppDataCheckboxState 0
   StrCpy $PakoDeletePrivate 0
-  !insertmacro PakoPicture $0 150 26 160 44 $PakoBmpLogo
-  !insertmacro PakoLabel $0 24 80 412 24 0x50000081 $PakoFTitle TEXT BG "$(pakoUnTitle)"
-  !insertmacro PakoLabel $0 24 108 412 36 0x50000081 $PakoFBody MUT BG "$(pakoUnText)"
+  !insertmacro PakoPicture $0 150 18 160 44 $PakoBmpLogo
+  !insertmacro PakoLabel $0 24 64 412 16 0x50000081 $PakoFTiny MUT BG "$(pakoVersion)"
+  !insertmacro PakoLabel $0 24 84 412 24 0x50000081 $PakoFTitle TEXT BG "$(pakoUnTitle)"
+  !insertmacro PakoLabel $0 24 112 412 36 0x50000081 $PakoFBody MUT BG "$(pakoUnText)"
   !insertmacro PakoLabel $0 24 152 412 1 ${PAKO_LABEL} $PakoFBody LN LN ""
   ; [Pako] Two switches: the settings and lists, and Private mode's files apart (they can't be
   ; downloaded again, and the first switch never deletes them).
@@ -2268,6 +2273,9 @@ Function un.PakoInstShow
   Call un.PakoPageFill
   !insertmacro PakoRaw $1 $0 STATIC ${PAKO_PIC} 150 32 160 44 ""
   SendMessage $1 ${STM_SETIMAGE} 0 $PakoBmpLogo
+  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 24 78 412 16 "$(pakoVersion)"
+  SendMessage $1 ${WM_SETFONT} $PakoFTiny 1
+  !insertmacro PakoColors $1 MUT BG
   !insertmacro PakoRaw $1 $0 STATIC 0x50000081 24 120 412 24 "$(pakoRemoving)"
   SendMessage $1 ${WM_SETFONT} $PakoFTitle 1
   !insertmacro PakoColors $1 TEXT BG
@@ -2308,8 +2316,9 @@ Function un.PakoDonePage
   !insertmacro PakoColors $PakoDialog TEXT BG
   StrCpy $PakoB2Ctl 0
   !insertmacro PakoPicture $0 150 32 160 44 $PakoBmpLogo
-  !insertmacro PakoLabel $0 24 92 412 24 0x50000081 $PakoFTitle TEXT BG "$(pakoUnDone)"
-  !insertmacro PakoLabel $0 24 122 412 36 0x50000081 $PakoFBody MUT BG "$(pakoUnDoneText)"
+  !insertmacro PakoLabel $0 24 78 412 16 0x50000081 $PakoFTiny MUT BG "$(pakoVersion)"
+  !insertmacro PakoLabel $0 24 100 412 24 0x50000081 $PakoFTitle TEXT BG "$(pakoUnDone)"
+  !insertmacro PakoLabel $0 24 130 412 36 0x50000081 $PakoFBody MUT BG "$(pakoUnDoneText)"
   StrCpy $PakoA1 "close"
   StrCpy $PakoA2 412
   Call un.PakoLoadButton1

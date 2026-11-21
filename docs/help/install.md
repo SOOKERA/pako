@@ -16,7 +16,7 @@ Pako comes two ways. Both are the same program and update themselves the same wa
 Pako Setup is one window, in Windows' light or dark look:
 
 - **On the left**, five short slides show what Pako does. They slide on by themselves every few seconds and wait while you point at them. Click **‹** or **›**, or a dot, to flip them yourself (then they stay where you put them).
-- **On the right**, everything you can choose, all at once:
+- **On the right**, under Pako's logo and the version Setup installs (**Version 1.3.2**, say), everything you can choose, all at once:
   - **Install in**: the folder, `%LOCALAPPDATA%\Programs\Pako` at first. **Change** picks another one (Pako gets a folder of its own in the one you pick).
   - **Desktop shortcut** (on at first).
   - **Start Pako with Windows** (on at first, unless a portable Pako already starts with Windows: that one keeps doing so).
@@ -93,7 +93,7 @@ You can also run a newer **Pako Setup** over the installed Pako. Its window is t
 
 ### Pako Setup
 
-1. Open Windows **Settings › Apps** (**Installed apps**), find Pako and click **Uninstall**. The **Uninstall Pako** window opens, in Pako's look. (If you installed Pako with a Pako Setup older than 1.3.0, the uninstaller is still that version's: a plainer window with an **Also delete Pako's settings and lists** check box and an **Uninstall** button. Pako's own updates don't replace it; running a newer Pako Setup once does.)
+1. Open Windows **Settings › Apps** (**Installed apps**), find Pako and click **Uninstall**. The **Uninstall Pako** window opens, in Pako's look, with the version you're removing under Pako's logo. (If you installed Pako with a Pako Setup older than 1.3.0, the uninstaller is still that version's: a plainer window with an **Also delete Pako's settings and lists** check box and an **Uninstall** button. Pako's own updates don't replace it; running a newer Pako Setup once does.)
 2. Turn on **Also delete Pako's settings and lists** only if you want them gone too. It's off at first, so reinstalling later picks up where you left off. It never deletes [Private mode](private-mode.md)'s files: they have their own switch, **Also delete Private mode's files** (off at first too). Your encrypted private downloads can't be downloaded again, so they're kept unless you turn that one on; deleting them can't be undone. (An uninstaller from before 1.3.0 keeps them too.)
 3. Click **Uninstall** (or **Cancel**). If Pako is open, the uninstaller offers to close it first. Then the window says **Pako is uninstalled**: click **Close**.
 

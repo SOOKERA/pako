@@ -33,6 +33,7 @@ LangString deleteAppData ${LANG_ENGLISH} "Also delete Pako's settings and lists"
 LangString pakoDirNotWritable ${LANG_ENGLISH} "Pako Setup installs Pako for you only, without admin rights, so it needs a folder you can change. Windows doesn't let you change $INSTDIR (folders like Program Files need admin rights).$\n$\nPick another folder, for example $LOCALAPPDATA\Programs\Pako."
 LangString pakoDirNotWritableSilent ${LANG_ENGLISH} "Pako Setup installs Pako for you only, without admin rights, so it needs a folder you can change. Windows doesn't let you change $INSTDIR (folders like Program Files need admin rights). Pick another folder with /D=, for example /D=$LOCALAPPDATA\Programs\Pako$\n"
 ; [Pako] Pako Setup's own window (installer/ui.nsh). Plain words, the window's exact labels.
+LangString pakoVersion ${LANG_ENGLISH} "Version ${VERSION}"
 LangString pakoTag ${LANG_ENGLISH} "Downloads, uploads and Direct, on your PC"
 LangString pakoTagUpdate ${LANG_ENGLISH} "Updates Pako $PakoOldVersion to ${VERSION}"
 LangString pakoTagSame ${LANG_ENGLISH} "Pako ${VERSION} is installed: this installs it again"
