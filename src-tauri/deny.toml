@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
+# `cargo deny check`, which scripts/release.ps1 runs before every release build (advisories,
+# licences, bans, sources). Needs cargo-deny 0.19 or newer (the `unmaintained` and `unsound` keys
+# below). Pako is GPL-3.0-only: every crate built into it (or into its build) must carry a licence
+# that may be combined into a GPL-3.0 program, none may have a known vulnerability, and all come
+# from crates.io.
+
+[graph]
+# Pako ships for Windows only: the Linux and macOS crates (gtk, webkit2gtk…) aren't built in.
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+# A known vulnerability always fails (cargo-deny's own rule). Unmaintained or unsound crates are
+# reported by cargo audit as warnings, which the release shows without stopping.
+unmaintained = "none"
+unsound = "none"
+yanked = "warn"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.9
+# All compatible with the GPL version 3. (A crate offering several licences, "MIT OR
+# Apache-2.0", needs one of them here.) Add one only after checking it is GPL-3.0 compatible:
+# https://www.gnu.org/licenses/license-list.html
+allow = [
+    "GPL-3.0-only",          # Pako itself
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "BSD-2-Clause",          # spez (iroh, Direct's connections); the FSF's "FreeBSD license"
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+# Tauri's tree carries several versions of a few crates (windows-sys, bitflags…): said, never a
+# failure.
+multiple-versions = "warn"
+# A dependency on "any version" can change under a release: refused (Pako's own path
+# dependencies excepted).
+wildcards = "deny"
+allow-wildcard-paths = true
+# Pako's connections use rustls only: OpenSSL or the system TLS crate coming in means a
+# dependency changed its features.
+deny = [
+    { crate = "openssl", reason = "Pako uses rustls only" },
+    { crate = "openssl-sys", reason = "Pako uses rustls only" },
+    { crate = "native-tls", reason = "Pako uses rustls only" },
+]
+
+[sources]
+# Crates come from crates.io only: no other registry, no git repository.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

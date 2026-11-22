@@ -3,18 +3,18 @@
 <script lang="ts">
   // The small list that opens from the tray icon: what's downloading, at a glance.
   import { onMount } from "svelte";
-  import { app } from "$lib/state.svelte";
-  import { api, inApp, isActive, listen, type DirectHistory, type DirectTransfer, type Download } from "$lib/api";
-  import { devices } from "$lib/devices.svelte";
-  import { initial, percent } from "$lib/direct";
-  import { bytes, sentLook, speed, statusLook } from "$lib/format";
-  import Icon from "$lib/Icon.svelte";
-  import Logo from "$lib/Logo.svelte";
-  import MiddleText from "$lib/MiddleText.svelte";
-  import WinButton from "$lib/WinButton.svelte";
-  import Toasts from "$lib/Toasts.svelte";
-  import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "$lib/motion";
-  import { confirmClick, CONFIRM_FOR, type Armed } from "$lib/confirm";
+  import { app } from "#lib/state.svelte.ts";
+  import { api, inApp, isActive, listen, type DirectHistory, type DirectTransfer, type Download } from "#lib/api.ts";
+  import { devices } from "#lib/devices.svelte.ts";
+  import { initial, percent } from "#lib/direct.ts";
+  import { bytes, sentLook, speed, statusLook } from "#lib/format.ts";
+  import Icon from "#lib/Icon.svelte";
+  import Logo from "#lib/Logo.svelte";
+  import MiddleText from "#lib/MiddleText.svelte";
+  import WinButton from "#lib/WinButton.svelte";
+  import Toasts from "#lib/Toasts.svelte";
+  import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "#lib/motion.ts";
+  import { confirmClick, CONFIRM_FOR, type Armed } from "#lib/confirm.ts";
 
   onMount(() => app.start());
   // Transfers with your own PCs come from My devices (Direct's state leaves them out). Asked

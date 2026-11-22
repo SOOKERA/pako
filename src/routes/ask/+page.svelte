@@ -5,19 +5,19 @@
   // folder, quality (videos) and "Notify me". Several at once come one after another.
   import { onMount, tick } from "svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-  import { api, inApp, listen, type AskView, type PrivateStatus } from "$lib/api";
-  import { bytes } from "$lib/format";
-  import FileIcon from "$lib/FileIcon.svelte";
-  import Logo from "$lib/Logo.svelte";
-  import MiddleText from "$lib/MiddleText.svelte";
-  import WinButton from "$lib/WinButton.svelte";
-  import { fadeIn, pop } from "$lib/motion";
-  import ContextMenu from "$lib/ContextMenu.svelte";
-  import Icon from "$lib/Icon.svelte";
-  import SegPick from "$lib/SegPick.svelte";
-  import { ALERTS, type Alert } from "$lib/alert";
-  import type { MenuItem } from "$lib/menu";
-  import { devicesApi, downloadOnMenu, targets, type DownloadTarget } from "$lib/devices.svelte";
+  import { api, inApp, listen, type AskView, type PrivateStatus } from "#lib/api.ts";
+  import { bytes } from "#lib/format.ts";
+  import FileIcon from "#lib/FileIcon.svelte";
+  import Logo from "#lib/Logo.svelte";
+  import MiddleText from "#lib/MiddleText.svelte";
+  import WinButton from "#lib/WinButton.svelte";
+  import { fadeIn, pop } from "#lib/motion.ts";
+  import ContextMenu from "#lib/ContextMenu.svelte";
+  import Icon from "#lib/Icon.svelte";
+  import SegPick from "#lib/SegPick.svelte";
+  import { ALERTS, type Alert } from "#lib/alert.ts";
+  import type { MenuItem } from "#lib/menu.ts";
+  import { devicesApi, downloadOnMenu, targets, type DownloadTarget } from "#lib/devices.svelte.ts";
 
   let view = $state<AskView | null>(null);
   /** "Download on" another PC: offered while one is online, never for a video caught on a page

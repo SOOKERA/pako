@@ -3,8 +3,8 @@
 <script lang="ts">
   import "../app.css";
   import { onMount } from "svelte";
-  import { theme } from "$lib/theme.svelte";
-  import { prewarm } from "$lib/prewarm";
+  import { theme } from "#lib/theme.svelte.ts";
+  import { prewarm } from "#lib/prewarm.ts";
   let { children } = $props();
   // Light or dark, in every window.
   onMount(() => theme.start());

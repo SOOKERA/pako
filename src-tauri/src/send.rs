@@ -3947,7 +3947,7 @@ mod tests {
             let mut f = a.by_index(i).unwrap();
             let mut v = Vec::new();
             f.read_to_end(&mut v).expect("checksum ok");
-            out.push((f.name().to_string(), v));
+            out.push((f.name().unwrap().to_string(), v));
         }
         out
     }

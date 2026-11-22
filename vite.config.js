@@ -2,13 +2,23 @@
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+import adapter from "@sveltejs/adapter-static";
+import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 // @ts-ignore: no types without the @types/node package (web-ext, a dev tool, brings it in)
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [sveltekit()],
+  plugins: [
+    // SvelteKit 3 keeps its settings here (no svelte.config.js). Tauri has no Node.js server, so
+    // the window is static files with a fallback to index.html (a single-page app; ssr = false in
+    // src/routes/+layout.ts). https://svelte.dev/docs/kit/single-page-apps
+    sveltekit({
+      preprocess: vitePreprocess(),
+      adapter: adapter({ fallback: "index.html" }),
+    }),
+  ],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

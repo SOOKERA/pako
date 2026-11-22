@@ -603,7 +603,7 @@ fn unzip_tree(zip_path: &Path, out: &Path) -> Result<usize> {
     let mut n = 0;
     for i in 0..archive.len() {
         let mut f = archive.by_index(i)?;
-        let raw = f.name().to_string();
+        let raw = f.name()?.to_string();
         // A "\" in a zip name is a folder too on Windows.
         let parts: Vec<&str> = raw.trim_end_matches(['/', '\\']).split(['/', '\\']).collect();
         if parts.iter().any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':')) {
@@ -694,8 +694,9 @@ fn unzip(zip_path: &Path, out: &Path, keep: impl Fn(&str) -> bool) -> Result<usi
             continue;
         }
         // Only the file's own name (a "\" in a zip name is a folder too on Windows), never "..".
-        let name = f.name().rsplit(['/', '\\']).next().unwrap_or_default().to_string();
-        if name.is_empty() || name == ".." || !keep(f.name()) {
+        let full = f.name()?.to_string();
+        let name = full.rsplit(['/', '\\']).next().unwrap_or_default().to_string();
+        if name.is_empty() || name == ".." || !keep(&full) {
             continue;
         }
         let mut dest = std::fs::File::create(out.join(&name))?;

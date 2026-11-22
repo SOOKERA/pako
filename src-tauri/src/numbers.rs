@@ -1073,9 +1073,13 @@ pub fn reset() -> Result<(), String> {
 
 /// All or nothing: a reset cut off part-way leaves the numbers as they were.
 fn reset_at(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(&format!(
-        "BEGIN; DELETE FROM events; DELETE FROM totals; INSERT OR REPLACE INTO meta(k, v) VALUES('{BACKFILL}', 'reset'); COMMIT;"
-    ))
+    // One transaction: a statement failing part-way rolls it all back (dropped without commit)
+    // instead of leaving it open on the connection.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(&format!(
+        "DELETE FROM events; DELETE FROM totals; INSERT OR REPLACE INTO meta(k, v) VALUES('{BACKFILL}', 'reset');"
+    ))?;
+    tx.commit()
 }
 
 #[cfg(test)]
@@ -1357,6 +1361,21 @@ mod tests {
         // Weeks come from the days: no week rows are kept.
         let weeks: i64 = c.query_row("SELECT COUNT(*) FROM totals WHERE period = 'week'", [], |r| r.get(0)).unwrap();
         assert_eq!(weeks, 0);
+    }
+
+    /// A reset that fails part-way changes nothing and leaves no transaction open: the next
+    /// event is still counted.
+    #[test]
+    fn a_failed_reset_rolls_back() {
+        let mut c = mem();
+        insert(&mut c, &Event::new("dl:1", at(d(2026, 11, 10)), DOWNLOAD)).unwrap();
+        // The reset's last statement (writing to meta) fails, after the two DELETEs ran.
+        c.execute_batch("CREATE TRIGGER no_meta BEFORE INSERT ON meta BEGIN SELECT RAISE(ABORT, 'no'); END;").unwrap();
+        assert!(reset_at(&c).is_err());
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the DELETEs were rolled back");
+        assert!(c.is_autocommit(), "no transaction left open");
+        assert!(insert(&mut c, &Event::new("dl:2", at(d(2026, 11, 11)), DOWNLOAD)).unwrap());
     }
 
     /// Reset empties everything at once; a damaged file is set aside and the numbers start again.

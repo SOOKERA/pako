@@ -10,11 +10,11 @@
   import { onMount, tick } from "svelte";
   import { cubicIn } from "svelte/easing";
   import type { TransitionConfig } from "svelte/transition";
-  import { api, inApp, listen } from "$lib/api";
-  import { kindInfo, type PopupCard } from "$lib/notices";
-  import { showcase, showcaseCards } from "$lib/showcase";
-  import Icon from "$lib/Icon.svelte";
-  import { flipIf, flipOpts, reduced, toastIn } from "$lib/motion";
+  import { api, inApp, listen } from "#lib/api.ts";
+  import { kindInfo, type PopupCard } from "#lib/notices.ts";
+  import { showcase, showcaseCards } from "#lib/showcase.ts";
+  import Icon from "#lib/Icon.svelte";
+  import { flipIf, flipOpts, reduced, toastIn } from "#lib/motion.ts";
 
   const SHOWN = 3;
   /** How long a card stays (ms), and at least this long again after the mouse leaves it. */

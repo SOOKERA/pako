@@ -10,10 +10,10 @@
   import { onMount, tick } from "svelte";
   import { cubicIn } from "svelte/easing";
   import type { TransitionConfig } from "svelte/transition";
-  import { api, inApp, listen } from "$lib/api";
-  import type { PopupCard } from "$lib/notices";
-  import Icon from "$lib/Icon.svelte";
-  import { pop, reduced, rowSlide } from "$lib/motion";
+  import { api, inApp, listen } from "#lib/api.ts";
+  import type { PopupCard } from "#lib/notices.ts";
+  import Icon from "#lib/Icon.svelte";
+  import { pop, reduced, rowSlide } from "#lib/motion.ts";
 
   /** The see-through margin around the card (holds its shadow), as in the window's width. */
   const PAD = 16;

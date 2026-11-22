@@ -1093,7 +1093,8 @@ Function PakoDetect
     ${If} "$R0$R1" == ""
       ; [Pako] A portable Pako that already starts with Windows keeps doing so: Windows has one
       ; "Pako" start-up entry, and a new install switched on would take it over. Its entry is
-      ; "<exe in quotes>" [--tray]; one whose Pako is gone doesn't count.
+      ; "<exe in quotes>" [--tray] (an unquoted exe then args is read too, as in the template);
+      ; one whose Pako is gone doesn't count.
       ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
       StrCpy $R1 $0 1
       ${If} $R1 == '"'
@@ -1108,6 +1109,22 @@ Function PakoDetect
         StrCpy $R1 $0 $R0 1
         ${If} ${FileExists} "$R1"
           StrCpy $PakoStart 0
+        ${EndIf}
+      ${ElseIf} $0 != ""
+        ; Unquoted: the exe is everything up to the first ".exe".
+        StrCpy $R0 0
+        ${Do}
+          StrCpy $R1 $0 4 $R0
+          ${IfThen} $R1 == ".exe" ${|} ${Break} ${|}
+          ${IfThen} $R1 == "" ${|} ${Break} ${|}
+          IntOp $R0 $R0 + 1
+        ${Loop}
+        ${If} $R1 == ".exe"
+          IntOp $R0 $R0 + 4
+          StrCpy $R1 $0 $R0
+          ${If} ${FileExists} "$R1"
+            StrCpy $PakoStart 0
+          ${EndIf}
         ${EndIf}
       ${EndIf}
       Goto pako_detect_done

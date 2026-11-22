@@ -34,9 +34,22 @@
 #
 # The signing key is in %USERPROFILE%\.pako-signing (made once with: cargo run -- --release keygen
 # in src-tauri). Keep a backup of it: without it, Pako can't take updates any more.
+#
+# Before building, the libraries Pako is made of are checked (a release stops on a problem):
+#   cargo audit   no known vulnerability in src-tauri/Cargo.lock (its "unmaintained" / "unsound"
+#                 warnings are shown, never a stop)
+#   cargo deny    what is built for Windows: no known vulnerability, only licences that may ship
+#                 in a GPL-3.0 program, no OpenSSL / native-tls, no "any version" dependency,
+#                 crates from crates.io only (src-tauri/deny.toml; cargo-deny 0.19 or newer)
+#   npm audit     no known vulnerability (moderate or worse) in the npm packages, except the
+#                 ones checked by hand in scripts/check-npm-audit.mjs
+# Install the two cargo tools once with: cargo install cargo-audit cargo-deny --locked
+# All three need the internet (the advisory lists). -SkipSupplyChecks builds without them, loudly,
+# for an emergency only.
 param(
     [string]$Notes = "",
-    [switch]$WithoutFirefox
+    [switch]$WithoutFirefox,
+    [switch]$SkipSupplyChecks
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -123,6 +136,45 @@ Remove-Variable client
 # A release always has Google's features: building without them is only for other builders.
 if ($env:PAKO_WITHOUT_GOOGLE) {
     throw "PAKO_WITHOUT_GOOGLE is set: a release must have the Google key and sign-in built in. Remove it first."
+}
+# The libraries Pako is made of (see the top of this file).
+if ($SkipSupplyChecks) {
+    Write-Host ""
+    Write-Host "  -SkipSupplyChecks: the libraries were NOT checked (cargo audit, cargo deny, npm audit)." -ForegroundColor Yellow
+    Write-Host ""
+} else {
+    if (-not (Get-Command cargo-audit -ErrorAction SilentlyContinue)) {
+        throw "cargo audit isn't installed, so the Rust libraries can't be checked for known vulnerabilities. Install it once with: cargo install cargo-audit --locked"
+    }
+    $denyVersion = $null
+    if (Get-Command cargo-deny -ErrorAction SilentlyContinue) {
+        # (Windows PowerShell stops on any stderr line under "2>" when errors stop the script.)
+        $was = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { $said = (cargo deny --version 2>$null) | Out-String } finally { $ErrorActionPreference = $was }
+        $m = [regex]::Match($said, '(\d+)\.(\d+)\.(\d+)')
+        if ($m.Success) { $denyVersion = [version]"$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)" }
+    }
+    if (-not $denyVersion -or $denyVersion -lt [version]"0.19.0") {
+        throw "cargo deny 0.19 or newer is needed to check the Rust libraries' licences and sources (src-tauri/deny.toml). Install or update it with: cargo install cargo-deny --locked"
+    }
+    Push-Location (Join-Path $root "src-tauri")
+    try {
+        Write-Host "Checking the Rust libraries for known vulnerabilities (cargo audit)..."
+        # It reads all of Cargo.lock, Linux-only crates too (their warnings show); --target-os /
+        # --target-arch only leave out advisories that are about another system.
+        cargo audit --target-os windows --target-arch x86_64
+        if ($LASTEXITCODE -ne 0) { throw "cargo audit found a known vulnerability in a Rust library (above), or couldn't read the advisories (offline?). Update that library (cargo update -p <crate>, or a newer version in Cargo.toml) or replace it. Pako wasn't built." }
+        Write-Host "Checking the Rust libraries' licences, vulnerabilities, bans and sources (cargo deny $denyVersion)..."
+        cargo deny check
+        if ($LASTEXITCODE -ne 0) { throw "cargo deny found a Rust library whose licence can't ship in a GPL-3.0 program, a known vulnerability, a banned crate or one from somewhere other than crates.io (above; src-tauri/deny.toml). Pako wasn't built." }
+    } finally { Pop-Location }
+    Push-Location $root
+    try {
+        Write-Host "Checking the npm packages for known vulnerabilities (npm audit)..."
+        node scripts/check-npm-audit.mjs
+        if ($LASTEXITCODE -ne 0) { throw "npm audit found a known vulnerability in an npm package (above), or couldn't run (offline?). Update the package, or, only after reading the advisory against Pako's code, add it with the reason to ALLOWED in scripts/check-npm-audit.mjs. Pako wasn't built." }
+    } finally { Pop-Location }
 }
 Write-Host "Building Pako $version..."
 Push-Location $root

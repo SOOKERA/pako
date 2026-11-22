@@ -1,5 +1,11 @@
 # What's new
 
+## 1.3.4
+
+### Fixed
+
+- Pako now uses newer versions of the parts it unpacks its tools with and keeps the Dashboard's numbers in: the older ones had known security problems (Pako's own code never reached them).
+
 ## 1.3.3
 
 ### Pako Setup
