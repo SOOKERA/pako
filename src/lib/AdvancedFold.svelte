@@ -8,6 +8,7 @@
   import type { Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import Collapse from "./Collapse.svelte";
+  import { t } from "./i18n.svelte";
 
   let { tab, hint, children }: { tab: string; /** What's inside, in a few words. */ hint: string; children: Snippet } = $props();
 
@@ -36,7 +37,7 @@
   <button class="fold" data-fold-toggle aria-expanded={open} aria-controls="adv-{tab}" onclick={toggle}>
     <span class="chev" class:on={open}><Icon name="chevron" size={12} stroke={2.6} /></span>
     <span class="words">
-      <span class="t">Advanced</span>
+      <span class="t">{t("Advanced")}</span>
       <span class="muted">{hint}</span>
     </span>
   </button>

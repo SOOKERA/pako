@@ -12,6 +12,7 @@
   import SegPick from "./SegPick.svelte";
   import { theme } from "./theme.svelte";
   import type { ThemeChoice } from "./api";
+  import { i18n, t, LANGUAGES, type Lang } from "./i18n.svelte";
   import { fadeIn, rowSlide } from "./motion";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
 
@@ -45,7 +46,7 @@
     connecting = true;
     try {
       const email = await api.sendDriveSignIn();
-      app.toast(`Google Drive connected for uploads (${email})`);
+      app.toast(t("Google Drive connected for uploads ({email})", { email }));
       sendDrive = await api.sendDriveStatus();
       // Connected here = that's where sends go (Gofile stays one click away in Send).
       await app.setSendHost("drive");
@@ -69,16 +70,23 @@
   );
   const totalMb = $derived(toInstall.reduce((n, k) => n + SIZE[k], 0));
 
+  // Language: asked here for a portable Pako (Pako Setup asks it for an installed one; English
+  // until either says French). Shown and saved as soon as it's picked, like the look below, so
+  // the rest of the setup is already in it.
+  function pickLanguage(l: Lang) {
+    i18n.set(l).catch((e) => app.toast(String(e), "error"));
+  }
+
   // Look: shows and is saved as soon as it's picked (like the folder below), so the rest of
   // the setup already shows in it.
-  function pickTheme(t: ThemeChoice) {
-    theme.set(t).catch((e) => app.toast(String(e), "error"));
+  function pickTheme(c: ThemeChoice) {
+    theme.set(c).catch((e) => app.toast(String(e), "error"));
   }
 
   // Where downloads go: Windows' Downloads folder unless picked here (saved straight away).
   let folder = $state(s.downloadDir);
   async function changeFolder() {
-    const picked = await pickFolder({ directory: true, defaultPath: folder || undefined, title: "Where should downloads go?" });
+    const picked = await pickFolder({ directory: true, defaultPath: folder || undefined, title: t("Where should downloads go?") });
     if (typeof picked !== "string" || picked === folder || !app.settings) return;
     const next = { ...app.settings, downloadDir: picked };
     try {
@@ -117,7 +125,7 @@
     const list = [...toInstall];
     if (!(await save(true)) || !list.length) return;
     const names: Record<ComponentKind, string> = { sevenZip: "7-Zip", ffmpeg: "ffmpeg", ytDlp: "yt-dlp", deno: "Deno" };
-    app.toast(list.length === 1 ? "Getting it ready in the background…" : "Getting them ready in the background…");
+    app.toast(list.length === 1 ? t("Getting it ready in the background…") : t("Getting them ready in the background…"));
     // One after the other, in the background (progress in Settings › Features & updates).
     (async () => {
       for (const k of list) await app.installComponent(k, names[k]);
@@ -126,42 +134,47 @@
   }
 </script>
 
-<Modal title="Set up Pako" width={540} closeLabel="Skip for now" outsideCloses={false} onclose={() => save(false)}>
-  <p class="intro">Pick what you'd like Pako to do. You can change all of this later in Settings.</p>
+<Modal title={t("Set up Pako")} width={540} closeLabel={t("Skip for now")} outsideCloses={false} onclose={() => save(false)}>
+  <p class="intro">{t("Pick what you'd like Pako to do. You can change all of this later in Settings.")}</p>
 
-  <h4>Look</h4>
+  <h4>{t("Language")}</h4>
+  <div class="look">
+    <SegPick label={t("Language")} options={LANGUAGES} value={i18n.lang} onpick={(l) => pickLanguage(l as Lang)} />
+  </div>
+
+  <h4>{t("Look")}</h4>
   <div class="look">
     <SegPick
-      label="Look"
+      label={t("Look")}
       options={[
-        { value: "dark", label: "Dark" },
-        { value: "light", label: "Light" },
-        { value: "system", label: "Match Windows" },
+        { value: "dark", label: t("Dark") },
+        { value: "light", label: t("Light") },
+        { value: "system", label: t("Match Windows") },
       ]}
       value={theme.choice}
-      onpick={(t) => pickTheme(t as ThemeChoice)}
+      onpick={(c) => pickTheme(c as ThemeChoice)}
     />
   </div>
-  <p class="hint">The sun or moon at the top of Pako switches it any time.</p>
+  <p class="hint">{t("The sun or moon at the top of Pako switches it any time.")}</p>
 
-  <h4>Downloads go to</h4>
+  <h4>{t("Downloads go to")}</h4>
   <div class="folder">
     <Icon name="folder" size={15} />
     {#key folder}<span class="path" title={folder} in:fadeIn={{ duration: 160 }}>{folder}</span>{/key}
-    <button class="btn" onclick={changeFolder}>Change…</button>
+    <button class="btn" onclick={changeFolder}>{t("Change…")}</button>
   </div>
-  <p class="hint">Files people send you in Direct go in a folder inside it, like "From Rado".</p>
+  <p class="hint">{t("Files people send you in Direct go in a folder inside it, like \"From Rado\".")}</p>
 
-  <h4>Features</h4>
+  <h4>{t("Features")}</h4>
   <div class="opts">
     <button class="opt" onclick={() => (archives = !archives)} role="checkbox" aria-checked={archives}>
       <span class="check" class:on={archives} aria-hidden="true">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
       </span>
       <span class="body">
-        <span class="t">Extract split archives</span>
-        <span class="d">When every part of a set (.part1.rar, .7z.001…) is downloaded, Pako unpacks it for you.</span>
-        <span class="tool">{app.sevenZip ? "Ready · uses 7-Zip" : "Uses 7-Zip · about 2 MB"}</span>
+        <span class="t">{t("Extract split archives")}</span>
+        <span class="d">{t("When every part of a set (.part1.rar, .7z.001…) is downloaded, Pako unpacks it for you.")}</span>
+        <span class="tool">{app.sevenZip ? t("Ready · uses 7-Zip") : t("Uses 7-Zip · about 2 MB")}</span>
       </span>
     </button>
 
@@ -170,9 +183,9 @@
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
       </span>
       <span class="body">
-        <span class="t">Preview more video types before downloading</span>
-        <span class="d">Watch MKV, AVI and other videos in the details panel to check it's the right one.</span>
-        <span class="tool">{app.ffmpeg ? "Ready · uses ffmpeg" : "Uses ffmpeg · about 150 MB"}</span>
+        <span class="t">{t("Preview more video types before downloading")}</span>
+        <span class="d">{t("Watch MKV, AVI and other videos in the details panel to check it's the right one.")}</span>
+        <span class="tool">{app.ffmpeg ? t("Ready · uses ffmpeg") : t("Uses ffmpeg · about 150 MB")}</span>
       </span>
     </button>
 
@@ -181,9 +194,9 @@
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
       </span>
       <span class="body">
-        <span class="t">Download videos from YouTube and other sites</span>
-        <span class="d">Paste a video or playlist link, pick the quality (or audio only), and Pako does the rest.</span>
-        <span class="tool">{videoReady ? "Ready · uses yt-dlp, Deno and ffmpeg" : "Uses yt-dlp, Deno and ffmpeg · about 600 MB"}</span>
+        <span class="t">{t("Download videos from YouTube and other sites")}</span>
+        <span class="d">{t("Paste a video or playlist link, pick the quality (or audio only), and Pako does the rest.")}</span>
+        <span class="tool">{videoReady ? t("Ready · uses yt-dlp, Deno and ffmpeg") : t("Uses yt-dlp, Deno and ffmpeg · about 600 MB")}</span>
       </span>
     </button>
 
@@ -192,26 +205,26 @@
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
       </span>
       <span class="body">
-        <span class="t">Keep Pako and its tools up to date automatically</span>
-        <span class="d">Once a day, also while Pako stays open in the tray. Tools update quietly; a new Pako waits for you to restart.</span>
+        <span class="t">{t("Keep Pako and its tools up to date automatically")}</span>
+        <span class="d">{t("Once a day, also while Pako stays open in the tray. Tools update quietly; a new Pako waits for you to restart.")}</span>
       </span>
     </button>
   </div>
 
-  <h4>Browser</h4>
+  <h4>{t("Browser")}</h4>
   <div class="opts">
     <button class="opt" onclick={() => (browsers = !browsers)} role="checkbox" aria-checked={browsers}>
       <span class="check" class:on={browsers} aria-hidden="true">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
       </span>
       <span class="body">
-        <span class="t">Add Pako to my browsers (right-click › Download link with Pako)</span>
-        <span class="d">Links, files and videos go from your browser to Pako, plus a Download button on video players (YouTube, Vimeo, Twitch, Facebook, Instagram). Everything stays on this PC.</span>
+        <span class="t">{t("Add Pako to my browsers (right-click › Download link with Pako)")}</span>
+        <span class="d">{t("Links, files and videos go from your browser to Pako, plus a Download button on video players (YouTube, Vimeo, Twitch, Facebook, Instagram). Everything stays on this PC.")}</span>
       </span>
     </button>
     {#if browsers}
       <div class="extra" transition:rowSlide={{ duration: 220 }}>
-        <span class="tool">Add Pako's extension to your browser:</span>
+        <span class="tool">{t("Add Pako's extension to your browser:")}</span>
         <AddToBrowser flat />
       </div>
     {/if}
@@ -219,21 +232,21 @@
 
   {#if sendDrive?.configured && !skipDrive}
     <div class="reveal" transition:rowSlide={{ duration: 220 }}>
-    <h4>Upload</h4>
+    <h4>{t("Upload")}</h4>
     <div class="lines drive">
       <div class="line">
         <div>
-          <div class="t">Upload big files to your Google Drive</div>
+          <div class="t">{t("Upload big files to your Google Drive")}</div>
           {#if sendDrive.signedIn}
-            <div class="muted ok" in:fadeIn={{ duration: 160 }}><span class="dot"></span>Connected: {sendDrive.email}</div>
+            <div class="muted ok" in:fadeIn={{ duration: 160 }}><span class="dot"></span>{t("Connected: {email}", { email: sendDrive.email ?? "" })}</div>
           {:else}
-            <div class="muted">Optional. Pako only sees the files it uploads. Without it, Upload uses Gofile (no account needed).</div>
+            <div class="muted">{t("Optional. Pako only sees the files it uploads. Without it, Upload uses Gofile (no account needed).")}</div>
           {/if}
         </div>
         {#if !sendDrive.signedIn}
           <div class="pair">
-            <button class="btn ghost small" onclick={() => (skipDrive = true)}>Not now</button>
-            <button class="btn small" disabled={connecting} onclick={connectDrive}>{connecting ? "Waiting for Google…" : "Connect"}</button>
+            <button class="btn ghost small" onclick={() => (skipDrive = true)}>{t("Not now")}</button>
+            <button class="btn small" disabled={connecting} onclick={connectDrive}>{connecting ? t("Waiting for Google…") : t("Connect")}</button>
           </div>
         {/if}
       </div>
@@ -242,36 +255,36 @@
   {/if}
 
   {#if askWindow}
-    <h4>Window</h4>
+    <h4>{t("Window")}</h4>
     <div class="lines">
       <div class="line">
         <div>
-          <div class="t">Minimize to the tray</div>
-          <div class="muted">Minimize hides Pako next to the clock; it keeps downloading.</div>
+          <div class="t">{t("Minimize to the tray")}</div>
+          <div class="muted">{t("Minimize hides Pako next to the clock; it keeps downloading.")}</div>
         </div>
-        <button class="switch" class:on={minimize} role="switch" aria-checked={minimize} aria-label="Minimize to the tray" onclick={() => (minimize = !minimize)}></button>
+        <button class="switch" class:on={minimize} role="switch" aria-checked={minimize} aria-label={t("Minimize to the tray")} onclick={() => (minimize = !minimize)}></button>
       </div>
       <div class="line">
         <div>
-          <div class="t">Close to the tray</div>
-          <div class="muted">The close button hides Pako; downloads keep going. Quit from the tray icon.</div>
+          <div class="t">{t("Close to the tray")}</div>
+          <div class="muted">{t("The close button hides Pako; downloads keep going. Quit from the tray icon.")}</div>
         </div>
-        <button class="switch" class:on={close} role="switch" aria-checked={close} aria-label="Close to the tray" onclick={() => (close = !close)}></button>
+        <button class="switch" class:on={close} role="switch" aria-checked={close} aria-label={t("Close to the tray")} onclick={() => (close = !close)}></button>
       </div>
       <div class="line">
         <div>
-          <div class="t">Start Pako with Windows</div>
-          <div class="muted">Waiting downloads carry on by themselves after you sign in.</div>
+          <div class="t">{t("Start Pako with Windows")}</div>
+          <div class="muted">{t("Waiting downloads carry on by themselves after you sign in.")}</div>
         </div>
-        <button class="switch" class:on={startWithWindows} role="switch" aria-checked={startWithWindows} aria-label="Start Pako with Windows" onclick={() => (startWithWindows = !startWithWindows)}></button>
+        <button class="switch" class:on={startWithWindows} role="switch" aria-checked={startWithWindows} aria-label={t("Start Pako with Windows")} onclick={() => (startWithWindows = !startWithWindows)}></button>
       </div>
       {#if startWithWindows}
         <div class="line sub" transition:rowSlide={{ duration: 220 }}>
           <div>
-            <div class="t">Start in the tray</div>
-            <div class="muted">No window at sign-in: Pako waits next to the clock.</div>
+            <div class="t">{t("Start in the tray")}</div>
+            <div class="muted">{t("No window at sign-in: Pako waits next to the clock.")}</div>
           </div>
-          <button class="switch" class:on={startInTray} role="switch" aria-checked={startInTray} aria-label="Start in the tray" onclick={() => (startInTray = !startInTray)}></button>
+          <button class="switch" class:on={startInTray} role="switch" aria-checked={startInTray} aria-label={t("Start in the tray")} onclick={() => (startInTray = !startInTray)}></button>
         </div>
       {/if}
     </div>
@@ -279,10 +292,10 @@
 
   {#snippet actions()}
     <span class="total">
-      {#if totalMb}<span class="tin" transition:fadeIn={{ duration: 160 }}><Icon name="download" size={13} />Downloads about {totalMb} MB</span>{/if}
+      {#if totalMb}<span class="tin" transition:fadeIn={{ duration: 160 }}><Icon name="download" size={13} />{t("Downloads about {n} MB", { n: totalMb })}</span>{/if}
     </span>
-    <button class="btn ghost" onclick={() => save(false)}>Skip for now</button>
-    <button class="btn primary" onclick={setUp}>Set up</button>
+    <button class="btn ghost" onclick={() => save(false)}>{t("Skip for now")}</button>
+    <button class="btn primary" onclick={setUp}>{t("Set up")}</button>
   {/snippet}
 </Modal>
 

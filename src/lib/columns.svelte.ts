@@ -4,8 +4,12 @@
 // preferences ("listColumns"). The Downloads widths an older Pako kept ("columns") carry over.
 // The rules are in columns.ts.
 import { LS } from "./state.svelte";
-import { EMPTY, LISTS, clampWidth, readSaved, toggled, type ColDef, type ListState } from "./columns";
+import { EMPTY, LISTS, clampWidth, columnWords, readSaved, toggled, type ColDef, type ListState } from "./columns";
 import type { MenuItem } from "./menu";
+import { i18n, t, type Key } from "./i18n.svelte";
+
+// Column titles in the language shown (live: a title read in a template follows a switch).
+columnWords((name) => t(name as Key), () => i18n.lang === "fr");
 
 class ListColumns {
   private all = $state<Record<string, ListState>>(readSaved(LS.get("listColumns", null), LS.get("columns", null)));
@@ -64,12 +68,12 @@ class ListColumns {
   menu(list: string, onhide?: (key: string) => void, noRoom: () => string[] = () => []): MenuItem[] {
     const def = LISTS[list];
     return [
-      { label: "Name", checked: true, disabled: true, note: "Always shown" },
+      { label: t("Name"), checked: true, disabled: true, note: t("Always shown") },
       ...def.cols.map(
         (c): MenuItem => ({
           label: c.label,
           checked: () => !this.state(list).hidden.includes(c.key),
-          note: () => (noRoom().includes(c.key) && !this.state(list).hidden.includes(c.key) ? "No room now" : undefined),
+          note: () => (noRoom().includes(c.key) && !this.state(list).hidden.includes(c.key) ? t("No room now") : undefined),
           keepOpen: true,
           action: () => {
             const hiding = !this.state(list).hidden.includes(c.key);
@@ -79,7 +83,7 @@ class ListColumns {
         }),
       ),
       { separator: true },
-      { label: "Reset columns", icon: "restart", action: () => this.reset(list) },
+      { label: t("Reset columns"), icon: "restart", action: () => this.reset(list) },
     ];
   }
 }

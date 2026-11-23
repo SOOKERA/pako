@@ -72,7 +72,7 @@ The device's **Links** tab shows the links this PC sent it to download, one card
 
 - Each card says how many links, their priority and quality, when they were sent and where they go: "3 links · Normal · Best up to 1080p", "Sent today 14:02 · into Downloads".
 - While that PC is online, the next line says how they're doing there, from its download list: "2 done · 1 downloading 64%". A PC with an older Pako doesn't say which downloads it made: its cards just say **Sent**.
-- **Show the links** lists them, with the same buttons as the **Downloads** tab (pause, resume, priority, remove, **Get this file**).
+- **Show the … links** lists them, with the same buttons as the **Downloads** tab (pause, resume, priority, remove, **Get this file**).
 - This PC keeps the last 200 sends for each device.
 
 To send more, use the box at the bottom:
@@ -114,7 +114,7 @@ A playlist opened in **Links** is sent video by video (only the ticked ones), an
 
 Once that PC took them, they leave **Links** here, and a message says so ("Added 2 links to the downloads on Home PC"). A link it couldn't take, or links for a PC that's offline, stay here with a note on the row saying why. A link that only works while you're signed in on this PC may not work there: only the link is sent, never your browser's login.
 
-## This device can control my Pako
+## … can control my Pako {#this-device-can-control-my-pako}
 
 In the device's **Settings** tab, **… can control my Pako** says whether that PC may see this PC's downloads and give the orders above. It's on when you pair, and you can turn it off for each device. Turned off, its very next order is refused and it stops seeing your downloads. Files between the two PCs still go without asking.
 

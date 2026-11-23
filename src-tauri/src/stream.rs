@@ -90,8 +90,8 @@ pub fn validate_stream(r: Request) -> Result<Request, String> {
     if r.light {
         return Err(LIGHT_REFUSED.into());
     }
-    let [url] = r.urls.as_slice() else { return Err("Send one video at a time.".into()) };
-    let url = web_link(url).ok_or("Pako only takes http and https links.")?;
+    let [url] = r.urls.as_slice() else { return Err(tr!("Send one video at a time.", "Envoyez une vidéo à la fois.")) };
+    let url = web_link(url).ok_or_else(|| tr!("Pako only takes http and https links.", "Pako n’accepte que les liens http et https."))?;
     let page = web_link(&r.referrer).unwrap_or_default();
     let referrer = referrer_for(&page, &url);
     // A private window's: no cookies (the extension sends none either), no trace in Pako.
@@ -189,20 +189,20 @@ pub fn validate_record(r: RecordRequest, light: bool) -> Result<Record, String> 
     let session = clean_session(&r.session)?;
     match r.action.as_str() {
         "start" => {
-            let page = web_link(&r.page).ok_or("Pako only takes http and https links.")?;
+            let page = web_link(&r.page).ok_or_else(|| tr!("Pako only takes http and https links.", "Pako n’accepte que les liens http et https."))?;
             Ok(Record::Start { session, page, title: clean_title(&r.title) })
         }
         "chunk" => {
             if r.track >= MAX_TRACKS {
                 return Err("Unknown track.".into());
             }
-            let mime = clean_mime(&r.mime).ok_or("Pako can't record this kind of video.")?;
+            let mime = clean_mime(&r.mime).ok_or_else(|| tr!("Pako can't record this kind of video.", "Pako ne peut pas enregistrer ce type de vidéo."))?;
             if r.data.len() > MAX_CHUNK.div_ceil(3) * 4 + 4 {
-                return Err("This part of the recording is too big.".into());
+                return Err(tr!("This part of the recording is too big.", "Cette partie de l’enregistrement est trop grande."));
             }
-            let data = base64::engine::general_purpose::STANDARD.decode(r.data.as_bytes()).map_err(|_| "This part of the recording is damaged.")?;
+            let data = base64::engine::general_purpose::STANDARD.decode(r.data.as_bytes()).map_err(|_| tr!("This part of the recording is damaged.", "Cette partie de l’enregistrement est endommagée."))?;
             if data.is_empty() || data.len() > MAX_CHUNK {
-                return Err("This part of the recording is damaged.".into());
+                return Err(tr!("This part of the recording is damaged.", "Cette partie de l’enregistrement est endommagée."));
             }
             Ok(Record::Chunk { session, track: r.track, mime, seq: r.seq, data })
         }
@@ -331,10 +331,10 @@ pub fn start_in(root: &Path, session: &str, page: &str, title: &str) -> Result<(
         return Ok(());
     }
     if map.len() >= MAX_SESSIONS {
-        return Err("Pako is already recording other videos. Stop one first.".into());
+        return Err(tr!("Pako is already recording other videos. Stop one first.", "Pako enregistre déjà d’autres vidéos. Arrêtez-en une d’abord."));
     }
     let dir = root.join(format!("rec-{session}"));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't start recording: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| tr!("Couldn't start recording: {e}", "Impossible de commencer l’enregistrement : {e}"))?;
     map.insert(
         session.to_string(),
         Session { dir, page: page.to_string(), title: title.to_string(), tracks: HashMap::new(), bytes: 0, last: Instant::now() },
@@ -345,18 +345,18 @@ pub fn start_in(root: &Path, session: &str, page: &str, title: &str) -> Result<(
 /// One chunk, in order. A chunk sent again (the extension retried) is ignored; a gap stops.
 pub fn chunk(session: &str, track: u32, mime: &str, seq: u64, data: &[u8]) -> Result<(), String> {
     let mut map = SESSIONS.lock().unwrap();
-    let s = map.get_mut(session).ok_or("This recording stopped. Start it again.")?;
+    let s = map.get_mut(session).ok_or_else(|| tr!("This recording stopped. Start it again.", "Cet enregistrement s’est arrêté. Recommencez-le."))?;
     s.last = Instant::now();
     if s.bytes + data.len() as u64 > MAX_RECORDING {
-        return Err("This recording is too big.".into());
+        return Err(tr!("This recording is too big.", "Cet enregistrement est trop grand."));
     }
     if !s.tracks.contains_key(&track) {
         if seq != 0 {
-            return Err("Part of the recording is missing. Start it again.".into());
+            return Err(tr!("Part of the recording is missing. Start it again.", "Une partie de l’enregistrement manque. Recommencez-le."));
         }
-        let ext = ext_of(mime).ok_or("Pako can't record this kind of video.")?;
+        let ext = ext_of(mime).ok_or_else(|| tr!("Pako can't record this kind of video.", "Pako ne peut pas enregistrer ce type de vidéo."))?;
         let name = format!("t{track}.{ext}");
-        let file = std::fs::File::create(s.dir.join(&name)).map_err(|e| format!("Couldn't save the recording: {e}"))?;
+        let file = std::fs::File::create(s.dir.join(&name)).map_err(|e| tr!("Couldn't save the recording: {e}", "Impossible de sauvegarder l’enregistrement : {e}"))?;
         s.tracks.insert(
             track,
             TrackFile {
@@ -374,15 +374,15 @@ pub fn chunk(session: &str, track: u32, mime: &str, seq: u64, data: &[u8]) -> Re
     }
     let t = s.tracks.get_mut(&track).ok_or("Unknown track.")?;
     if ext_of(&t.mime) != ext_of(mime) {
-        return Err("The video changed kind while recording. Start it again.".into());
+        return Err(tr!("The video changed kind while recording. Start it again.", "La vidéo a changé de type pendant l’enregistrement. Recommencez-le."));
     }
     if seq < t.next {
         return Ok(());
     }
     if seq > t.next {
-        return Err("Part of the recording is missing. Start it again.".into());
+        return Err(tr!("Part of the recording is missing. Start it again.", "Une partie de l’enregistrement manque. Recommencez-le."));
     }
-    let saving = |e: std::io::Error| format!("Couldn't save the recording: {e}");
+    let saving = |e: std::io::Error| tr!("Couldn't save the recording: {e}", "Impossible de sauvegarder l’enregistrement : {e}");
     let ext = ext_of(mime).unwrap_or("mp4");
     let init = starts_init(ext, data);
     if init && t.media {
@@ -396,7 +396,7 @@ pub fn chunk(session: &str, track: u32, mime: &str, seq: u64, data: &[u8]) -> Re
         // Another quality: its own file (one file holds one init part; players read only the
         // first, and the picture after a change would be broken).
         if t.files.len() >= MAX_PARTS {
-            return Err("The video changed quality too often while recording.".into());
+            return Err(tr!("The video changed quality too often while recording.", "La vidéo a changé de qualité trop souvent pendant l’enregistrement."));
         }
         // (What matched the old init so far, e.g. the same `ftyp` box sent on its own, belongs
         // to the new one too.)
@@ -431,7 +431,7 @@ pub fn chunk(session: &str, track: u32, mime: &str, seq: u64, data: &[u8]) -> Re
 
 /// The recording is complete: its files are closed and listed, ready to be joined.
 pub fn end(session: &str) -> Result<Recorded, String> {
-    let s = SESSIONS.lock().unwrap().remove(session).ok_or("This recording stopped. Start it again.")?;
+    let s = SESSIONS.lock().unwrap().remove(session).ok_or_else(|| tr!("This recording stopped. Start it again.", "Cet enregistrement s’est arrêté. Recommencez-le."))?;
     let dir = s.dir.clone();
     let r = finish(s);
     if r.is_err() {
@@ -447,7 +447,7 @@ fn finish(s: Session) -> Result<Recorded, String> {
     let mut all: Vec<(u32, TrackFile)> = s.tracks.into_iter().collect();
     all.sort_unstable_by_key(|(id, _)| *id);
     for (_, t) in all.iter_mut() {
-        t.file.flush().map_err(|e| format!("Couldn't save the recording: {e}"))?;
+        t.file.flush().map_err(|e| tr!("Couldn't save the recording: {e}", "Impossible de sauvegarder l’enregistrement : {e}"))?;
     }
     let best = |video: bool| all.iter().filter(|(_, t)| track_kind(&t.mime).0 == video && t.bytes > 0).max_by_key(|(_, t)| t.bytes).map(|(id, _)| *id);
     let video = best(true);
@@ -470,9 +470,9 @@ fn finish(s: Session) -> Result<Recorded, String> {
         tracks.push(RecordedTrack { file, ext: ext.into(), has_video, has_audio, more: files.collect(), width, height });
     }
     if tracks.is_empty() {
-        return Err("Nothing was recorded: the video didn't play.".into());
+        return Err(tr!("Nothing was recorded: the video didn't play.", "Rien n’a été enregistré : la vidéo ne s’est pas lue."));
     }
-    std::fs::write(s.dir.join(TRACKS_FILE), serde_json::to_vec(&tracks).unwrap_or_default()).map_err(|e| format!("Couldn't save the recording: {e}"))?;
+    std::fs::write(s.dir.join(TRACKS_FILE), serde_json::to_vec(&tracks).unwrap_or_default()).map_err(|e| tr!("Couldn't save the recording: {e}", "Impossible de sauvegarder l’enregistrement : {e}"))?;
     Ok(Recorded { dir: s.dir, page: s.page, title: s.title, tracks })
 }
 

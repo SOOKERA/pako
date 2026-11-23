@@ -9,6 +9,7 @@
   import { priv } from "../private.svelte";
   import { pop, reduced } from "../motion";
   import Icon from "../Icon.svelte";
+  import { t } from "../i18n.svelte";
 
   let { onrecovered }: { onrecovered: () => void } = $props();
 
@@ -26,15 +27,15 @@
   onMount(() => {
     wait = priv.status.wait;
     input?.focus();
-    const t = setInterval(() => {
+    const tick = setInterval(() => {
       if (wait > 0) wait--;
     }, 1000);
-    return () => clearInterval(t);
+    return () => clearInterval(tick);
   });
 
   function waitText(s: number) {
-    if (s >= 90) return `${Math.ceil(s / 60)} minutes`;
-    return s === 1 ? "1 second" : `${s} seconds`;
+    if (s >= 90) return t("{n} minutes", { n: Math.ceil(s / 60) });
+    return t("{n} seconds", { n: s });
   }
 
   async function submit() {
@@ -105,14 +106,14 @@
 </script>
 
 <div class="veil" role="presentation" onkeydown={onkey} out:pop={{ duration: 200, from: 0.98, y: 18 }}>
-  <div class="card" class:shake class:opened role="dialog" aria-modal="true" aria-label="Open Private mode">
-    <button class="close icon-btn" aria-label="Cancel" title="Cancel (Esc)" onclick={() => (priv.pad = false)}><Icon name="x" size={14} /></button>
+  <div class="card" class:shake class:opened role="dialog" aria-modal="true" aria-label={t("Open Private mode")}>
+    <button class="close icon-btn" aria-label={t("Cancel")} title={t("Cancel (Esc)")} onclick={() => (priv.pad = false)}><Icon name="x" size={14} /></button>
     <div class="mark" class:open={opened}>
       <Icon name={opened ? "unlock" : "lock"} size={22} stroke={1.8} />
     </div>
-    <h2>Private downloads</h2>
+    <h2>{t("Private downloads")}</h2>
     {#if mode === "secret"}
-      <p class="sub">{pin ? "Type your PIN" : "Type your password"}</p>
+      <p class="sub">{pin ? t("Type your PIN") : t("Type your password")}</p>
       {#if pin}
         <div class="dots" aria-hidden="true">
           {#each [0, 1, 2, 3] as i (i)}<span class="d" class:on={value.length > i}></span>{/each}
@@ -123,7 +124,7 @@
           type="password"
           inputmode="numeric"
           maxlength="4"
-          aria-label="PIN"
+          aria-label={t("PIN")}
           autocomplete="off"
           disabled={busy || wait > 0}
           value={value}
@@ -136,7 +137,7 @@
           {/each}
           <span></span>
           <button class="k" disabled={busy || wait > 0} onclick={() => key("0")}>0</button>
-          <button class="k" aria-label="Delete a digit" disabled={busy || wait > 0 || !value} onclick={() => key("back")}><Icon name="x" size={14} /></button>
+          <button class="k" aria-label={t("Delete a digit")} disabled={busy || wait > 0 || !value} onclick={() => key("back")}><Icon name="x" size={14} /></button>
         </div>
       {:else}
         <form
@@ -146,12 +147,12 @@
             submit();
           }}
         >
-          <input bind:this={input} class="input" type="password" aria-label="Password" autocomplete="current-password" disabled={busy || wait > 0} bind:value />
-          <button class="btn primary" disabled={busy || wait > 0 || !value}>{busy ? "Opening…" : "Open"}</button>
+          <input bind:this={input} class="input" type="password" aria-label={t("Password")} autocomplete="current-password" disabled={busy || wait > 0} bind:value />
+          <button class="btn primary" disabled={busy || wait > 0 || !value}>{busy ? t("Opening…") : t("Open")}</button>
         </form>
       {/if}
     {:else}
-      <p class="sub">Type your recovery code</p>
+      <p class="sub">{t("Type your recovery code")}</p>
       <form
         class="pw"
         onsubmit={(e) => {
@@ -159,12 +160,12 @@
           submit();
         }}
       >
-        <input bind:this={input} class="input mono codein" aria-label="Recovery code" placeholder="XXXX-XXXX-…" autocomplete="off" spellcheck="false" disabled={busy || wait > 0} bind:value={code} />
-        <button class="btn primary" disabled={busy || wait > 0 || !code.trim()}>{busy ? "Opening…" : "Open"}</button>
+        <input bind:this={input} class="input mono codein" aria-label={t("Recovery code")} placeholder="XXXX-XXXX-…" autocomplete="off" spellcheck="false" disabled={busy || wait > 0} bind:value={code} />
+        <button class="btn primary" disabled={busy || wait > 0 || !code.trim()}>{busy ? t("Opening…") : t("Open")}</button>
       </form>
     {/if}
     <p class="msg" class:bad={!!message} aria-live="polite">
-      {#if wait > 0}Wait {waitText(wait)} before trying again.{:else if message}{message}{:else}&nbsp;{/if}
+      {#if wait > 0}{t("Wait {time} before trying again.", { time: waitText(wait) })}{:else if message}{message}{:else}&nbsp;{/if}
     </p>
     {#if priv.status.hasRecovery}
       <button
@@ -173,7 +174,7 @@
           mode = mode === "secret" ? "code" : "secret";
           message = "";
           setTimeout(() => input?.focus(), 0);
-        }}>{mode === "secret" ? `Forgot your ${pin ? "PIN" : "password"}?` : `Use your ${pin ? "PIN" : "password"}`}</button
+        }}>{mode === "secret" ? (pin ? t("Forgot your PIN?") : t("Forgot your password?")) : pin ? t("Use your PIN") : t("Use your password")}</button
       >
     {/if}
   </div>

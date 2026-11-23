@@ -11,6 +11,7 @@
   import { isToday, kindInfo, noticeTime, type Notice } from "./notices";
   import Icon from "./Icon.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
+  import { t, tMaybe } from "./i18n.svelte";
 
   let { onsettings }: { onsettings?: () => void } = $props();
 
@@ -58,28 +59,28 @@
   let now = $state(Date.now());
   $effect(() => {
     if (!app.bellOpen) return;
-    const t = setInterval(() => (now = Date.now()), 30_000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(timer);
   });
 
   const groups = $derived.by(() => {
     const today = app.notices.filter((n) => isToday(n.at, now));
     const earlier = app.notices.filter((n) => !isToday(n.at, now));
     return [
-      { name: "Today", list: today },
-      { name: "Earlier", list: earlier },
+      { id: "today", name: t("Today"), list: today },
+      { id: "earlier", name: t("Earlier"), list: earlier },
     ].filter((g) => g.list.length);
   });
 
   /** What a line offers: how a question ended once settled ("Accepted", "Done"...), else
    *  Direct's questions while they still wait. */
   function answerOf(n: Notice): { kind: "offer" | "request" } | { kind: "done"; text: string } | null {
-    if (n.answered) return { kind: "done", text: n.answered };
+    if (n.answered) return { kind: "done", text: tMaybe(n.answered) };
     if (n.kind !== "direct-offer" && n.kind !== "direct-request") return null;
     const d = app.direct;
     if (!d?.ready) return null;
-    if (n.kind === "direct-offer") return (d.offers ?? []).some((o) => o.id === n.go.offer) ? { kind: "offer" } : { kind: "done", text: "No longer waiting" };
-    return (d.requests ?? []).some((r) => r.peer === n.go.peer) ? { kind: "request" } : { kind: "done", text: "No longer waiting" };
+    if (n.kind === "direct-offer") return (d.offers ?? []).some((o) => o.id === n.go.offer) ? { kind: "offer" } : { kind: "done", text: t("No longer waiting") };
+    return (d.requests ?? []).some((r) => r.peer === n.go.peer) ? { kind: "request" } : { kind: "done", text: t("No longer waiting") };
   }
 
   function open(n: Notice) {
@@ -144,8 +145,8 @@
   class:on={app.bellOpen}
   aria-haspopup="dialog"
   aria-expanded={app.bellOpen}
-  aria-label={app.noticesUnread ? `Notifications, ${app.noticesUnread} unread` : "Notifications"}
-  title="Notifications"
+  aria-label={app.noticesUnread ? t("Notifications, {n} unread", { n: app.noticesUnread }) : t("Notifications")}
+  title={t("Notifications")}
   onclick={toggle}
 >
   <span class="glyph"><Icon name="bell" size={15} stroke={1.8} /></span>
@@ -157,27 +158,27 @@
 </button>
 
 {#if app.bellOpen}
-  <button class="scrim" aria-label="Close notifications" tabindex="-1" onclick={() => close(false)}></button>
+  <button class="scrim" aria-label={t("Close notifications")} tabindex="-1" onclick={() => close(false)}></button>
   <div
     bind:this={panel}
     class="panel"
     role="dialog"
-    aria-label="Notifications"
+    aria-label={t("Notifications")}
     tabindex="-1"
     style="top: {at.top}px; right: {at.right}px"
     transition:pop={{ duration: 200, from: 0.97, y: -6, origin: "top right" }}
     onfocusout={focusOut}
   >
     <header>
-      <h2>Notifications</h2>
+      <h2>{t("Notifications")}</h2>
       <span class="grow"></span>
-      <button class="link" disabled={!app.noticesUnread} onclick={() => then(() => app.readNotices(null))}>Mark all as read</button>
-      <button class="link" disabled={!app.notices.length} onclick={() => then(() => app.clearNotices())}>Clear</button>
+      <button class="link" disabled={!app.noticesUnread} onclick={() => then(() => app.readNotices(null))}>{t("Mark all as read")}</button>
+      <button class="link" disabled={!app.notices.length} onclick={() => then(() => app.clearNotices())}>{t("Clear")}</button>
       {#if onsettings}
         <button
           class="icon-btn gear"
-          title="Choose what shows here"
-          aria-label="Notification settings"
+          title={t("Choose what shows here")}
+          aria-label={t("Notification settings")}
           onclick={() => {
             close(false);
             onsettings?.();
@@ -190,11 +191,11 @@
       {#if !app.notices.length}
         <div class="empty" in:fadeIn={{ duration: 180 }}>
           <span class="ring"><Icon name="bell" size={18} stroke={1.8} /></span>
-          <p class="et">No notifications</p>
-          <p class="es">People asking to connect, files waiting for your answer and links that need you show up here.</p>
+          <p class="et">{t("No notifications")}</p>
+          <p class="es">{t("People asking to connect, files waiting for your answer and links that need you show up here.")}</p>
         </div>
       {:else}
-        {#each groups as g (g.name)}
+        {#each groups as g (g.id)}
           <div class="group" transition:rowSlide={{ duration: 200 }}>
             <div class="gname">{g.name}</div>
             {#each g.list as n (n.id)}
@@ -204,8 +205,8 @@
                 <!-- A line with its own answers (Accept / Decline) is a group holding buttons, not a button
                      around buttons; Enter on the line still opens it. -->
                 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-                <div class="line" class:unread={!n.read} role={ans ? "group" : "button"} aria-label={ans ? `${n.title}: ${n.body}` : undefined} tabindex="0" onclick={() => open(n)} onkeydown={(e) => e.target === e.currentTarget && lineKey(e, n)}>
-                  {#if !n.read}<span class="dot" transition:pop={{ duration: 180, from: 0.92, y: 0 }} aria-label="Unread"></span>{/if}
+                <div class="line" class:unread={!n.read} role={ans ? "group" : "button"} aria-label={ans ? t("{word}: {more}", { word: n.title, more: n.body }) : undefined} tabindex="0" onclick={() => open(n)} onkeydown={(e) => e.target === e.currentTarget && lineKey(e, n)}>
+                  {#if !n.read}<span class="dot" transition:pop={{ duration: 180, from: 0.92, y: 0 }} aria-label={t("Unread")}></span>{/if}
                   <span class="chip" style:color={tones[k.tone]}><Icon name={k.icon} size={14} stroke={2} /></span>
                   <div class="txt">
                     <div class="top">
@@ -215,16 +216,16 @@
                     <div class="body">{n.body}</div>
                     {#if ans?.kind === "offer"}
                       <div class="acts" in:fadeIn={{ duration: 160 }}>
-                        <button class="btn small" disabled={sending[n.id]} onclick={(e) => (e.stopPropagation(), answer(n, false))}>Decline</button>
-                        <button class="btn primary small" disabled={sending[n.id]} onclick={(e) => (e.stopPropagation(), answer(n, true))}><Icon name="download" size={12} stroke={2.2} />Accept</button>
+                        <button class="btn small" disabled={sending[n.id]} onclick={(e) => (e.stopPropagation(), answer(n, false))}>{t("Decline")}</button>
+                        <button class="btn primary small" disabled={sending[n.id]} onclick={(e) => (e.stopPropagation(), answer(n, true))}><Icon name="download" size={12} stroke={2.2} />{t("Accept")}</button>
                       </div>
                     {:else if ans?.kind === "request"}
                       <div class="acts" in:fadeIn={{ duration: 160 }}>
-                        <button class="btn small" onclick={(e) => (e.stopPropagation(), review(n))}>Review</button>
+                        <button class="btn small" onclick={(e) => (e.stopPropagation(), review(n))}>{t("Review")}</button>
                       </div>
                     {:else if n.kind === "update-ready" && updateWaiting(n)}
                       <div class="acts" in:fadeIn={{ duration: 160 }}>
-                        <button class="btn primary small" onclick={(e) => (e.stopPropagation(), restart(n))}>Restart now</button>
+                        <button class="btn primary small" onclick={(e) => (e.stopPropagation(), restart(n))}>{t("Restart now")}</button>
                       </div>
                     {:else if ans?.kind === "done"}
                       <div class="answered" in:fadeIn={{ duration: 200 }}><Icon name="check" size={11} stroke={2.4} />{ans.text}</div>

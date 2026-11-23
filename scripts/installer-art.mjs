@@ -8,6 +8,13 @@
 // Run it again after a screenshot in docs/screenshots changes, or the wording below. The slides
 // are JPEG (small enough for Setup), the rest PNG. Every picture is drawn on its own background
 // colour: Windows' picture controls don't blend, so nothing is transparent.
+//
+// [Pako] French (template 1.1.0): every slide also has `fr: { title, desc }`, drawn on the French
+// screenshots (docs/screenshots/fr/, made by `node scripts/screenshots.mjs --fr [--light] <name>`),
+// as slideN-<look>-fr.jpg ("1 sur 5"), and every button has its French words,
+// b-<name>-<state>-<look>-fr.png. Setup shows them when Français is picked (installer/ui.nsh).
+// The French is typed with its typography: a no-break space before : and inside « », and the
+// curly apostrophe.
 import { chromium } from "playwright";
 import { mkdirSync, readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -32,53 +39,76 @@ const fontDisplay = `"Segoe UI Variable Display", "Segoe UI", system-ui, sans-se
 const dataUrl = (file) =>
   `data:${file.endsWith(".svg") ? "image/svg+xml" : "image/png"};base64,${readFileSync(file).toString("base64")}`;
 const asUrl = (f) => dataUrl(join(shots, f));
-const shot = (name, look) => asUrl(`${name}${look === "l" ? "-light" : ""}.png`);
-const svgShot = (name, look) => dataUrl(join(shots, "src", `${name}${look === "l" ? "-light" : ""}.svg`));
+const shot = (name, look, lang) => asUrl(`${lang === "fr" ? "fr/" : ""}${name}${look === "l" ? "-light" : ""}.png`);
+const svgShot = (name, look, lang) =>
+  dataUrl(join(shots, ...(lang === "fr" ? ["fr"] : []), "src", `${name}${look === "l" ? "-light" : ""}.svg`));
 
-// The slides: wording approved by the user (2026-11-18).
+// The slides: wording approved by the user (2026-11-18). fr: the French set, with the window's and
+// the extension's French words (Envoi, Télécharger), as the French screenshots show them.
 const slides = [
   {
     title: "Downloads go straight to Pako",
     desc: "Click a download in your browser: Pako takes it at once, before any Save as, and downloads it faster.",
-    main: (k) => ({ src: shot("browser-handoff", k) }),
+    fr: {
+      title: "Les téléchargements vont droit dans Pako",
+      desc: "Cliquez sur un téléchargement dans votre navigateur : Pako le prend aussitôt, avant tout « Enregistrer sous », et le télécharge plus vite.",
+    },
+    main: (k, l) => ({ src: shot("browser-handoff", k, l) }),
   },
   {
     title: "Keep the videos you watch",
     desc: "On any page with a video, click Download and pick the quality, or audio only. Pako saves it to your PC, playlists too.",
-    main: (k) => ({ src: svgShot("pill-on-video", k), fit: "contain" }),
-    card: (k) => ({ src: shot("tray-video", k), side: "left", width: 38 }),
+    fr: {
+      title: "Gardez les vidéos que vous regardez",
+      desc: "Sur toute page avec une vidéo, cliquez sur Télécharger et choisissez la qualité, ou l’audio seul. Pako l’enregistre sur votre PC, playlists comprises.",
+    },
+    main: (k, l) => ({ src: svgShot("pill-on-video", k, l), fit: "contain" }),
+    card: (k, l) => ({ src: shot("tray-video", k, l), side: "left", width: 38 }),
   },
   {
     title: "Share files with a link",
     desc: "Drop files in Upload: Pako zips them, uploads them and copies the link. Pick when they're deleted.",
-    main: (k) => ({ src: shot("share-step-link", k) }),
+    fr: {
+      title: "Partagez des fichiers avec un lien",
+      desc: "Déposez des fichiers dans Envoi : Pako les compresse, les met en ligne et copie le lien. Choisissez quand ils sont supprimés.",
+    },
+    main: (k, l) => ({ src: shot("share-step-link", k, l) }),
   },
   {
     title: "Send files PC to PC with Direct",
     desc: "Straight to a friend's Pako, encrypted, any size. A transfer cut off picks up where it stopped.",
-    main: (k) => ({ src: shot("direct", k) }),
+    fr: {
+      title: "Envoyez des fichiers de PC à PC avec Direct",
+      desc: "Directement dans le Pako d’un ami, chiffrés, quelle que soit leur taille. Un transfert coupé reprend là où il s’était arrêté.",
+    },
+    main: (k, l) => ({ src: shot("direct", k, l) }),
   },
   {
     title: "Your PCs work together",
     desc: "Send files between your own PCs, and from your laptop make your home PC download for you. Follow it all live.",
-    main: (k) => ({ src: shot("devices-files", k) }),
-    card: (k) => ({ src: shot("devices-downloads", k), side: "right", width: 56 }),
+    fr: {
+      title: "Vos PC travaillent ensemble",
+      desc: "Envoyez des fichiers entre vos PC et, depuis votre portable, faites télécharger votre PC de la maison. Suivez tout en direct.",
+    },
+    main: (k, l) => ({ src: shot("devices-files", k, l) }),
+    card: (k, l) => ({ src: shot("devices-downloads", k, l), side: "right", width: 56 }),
   },
 ];
 
 // The left panel: 530 × 540. Dots start at x 28 (7 wide, the current one 20, 6 apart), centre
 // y 514; the arrows are 26 × 26 boxes at x 448 and 476, y 501.
-function slideHtml(i, k) {
+function slideHtml(i, k, lang = "en") {
   const c = looks[k];
   const s = slides[i];
-  const m = s.main(k);
-  const card = s.card?.(k);
+  const words = lang === "fr" ? s.fr : s;
+  const m = s.main(k, lang);
+  const card = s.card?.(k, lang);
   const dots = slides
     .map((_, j) => `<span style="width:${j === i ? 20 : 7}px;background:${j === i ? ACCENT : c.off}"></span>`)
     .join("");
   const chevron = (d) =>
     `<svg width="26" height="26" viewBox="0 0 26 26"><path d="${d}" fill="none" stroke="${c.mut}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
+  return `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><style>
     html,body{margin:0;width:530px;height:540px;overflow:hidden;background:${c.pane};font-family:${font};-webkit-font-smoothing:antialiased}
     .k{position:absolute;left:28px;top:28px;font-size:12px;color:${ACCENT};letter-spacing:.02em;margin:0}
     h2{position:absolute;left:28px;top:46px;right:28px;margin:0;font:600 20px/26px ${fontDisplay};color:${c.text}}
@@ -90,9 +120,9 @@ function slideHtml(i, k) {
     .dots span{height:7px;border-radius:4px;display:block}
     .nav{position:absolute;top:501px;left:448px;display:flex;gap:2px}
   </style></head><body>
-    <p class="k">${i + 1} of ${slides.length}</p>
-    <h2>${s.title}</h2>
-    <p class="d">${s.desc}</p>
+    <p class="k">${i + 1} ${lang === "fr" ? "sur" : "of"} ${slides.length}</p>
+    <h2>${words.title}</h2>
+    <p class="d">${words.desc}</p>
     <div class="shot"><img class="main" src="${m.src}">${card ? `<img class="card" src="${card.src}">` : ""}</div>
     <div class="dots">${dots}</div>
     <div class="nav">${chevron("M15 8 L10 13 L15 18")}${chevron("M11 8 L16 13 L11 18")}</div>
@@ -160,6 +190,18 @@ const buttons = [
   ["cancel", "Cancel", 200, "second"],
   ["close", "Close", 412, "second"],
 ];
+// [Pako] Their French words (installer/French.nsh; the pictures end in -fr).
+const buttonsFr = {
+  install: "Installer",
+  update: "Mettre à jour",
+  again: "Réinstaller",
+  older: "Installer cette version",
+  open: "Ouvrir Pako",
+  done: "Fermer",
+  uninstall: "Désinstaller",
+  cancel: "Annuler",
+  close: "Fermer",
+};
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ deviceScaleFactor: 2 });
@@ -175,6 +217,7 @@ async function render(name, html, w, h, type = "png") {
 
 for (const k of ["d", "l"]) {
   for (let i = 0; i < slides.length; i++) await render(`slide${i + 1}-${k}`, slideHtml(i, k), 530, 540, "jpeg");
+  for (let i = 0; i < slides.length; i++) await render(`slide${i + 1}-${k}-fr`, slideHtml(i, k, "fr"), 530, 540, "jpeg");
   await render(`logo-${k}`, logoHtml(k), 160, 44);
   await render(`on-${k}`, sw(k, true), 32, 18);
   await render(`off-${k}`, sw(k, false), 32, 18);
@@ -182,6 +225,7 @@ for (const k of ["d", "l"]) {
   for (const [name, label, width, kind] of buttons) {
     for (const st of kind === "main" ? ["n", "h", "x"] : ["n", "h"]) {
       await render(`b-${name}-${st}-${k}`, button(k, label, width, kind, st), width, 40);
+      await render(`b-${name}-${st}-${k}-fr`, button(k, buttonsFr[name], width, kind, st), width, 40);
     }
   }
 }

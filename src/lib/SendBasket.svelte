@@ -12,7 +12,8 @@
   import SegPick from "./SegPick.svelte";
   import PartSize from "./PartSize.svelte";
   import { rowSlide, fadeIn } from "./motion";
-  import { DELETE_CHOICES, PARTS_NOTE, PART_DEFAULT_MB, partOk } from "./uploads";
+  import { deleteChoices, PARTS_NOTE, PART_DEFAULT_MB, partOk } from "./uploads";
+  import { num, t, type Key } from "./i18n.svelte";
 
   let {
     onaddfiles = () => {},
@@ -35,7 +36,7 @@
     onroom: () => void;
   } = $props();
 
-  const MODES: [SendMode, string][] = [
+  const MODES: [SendMode, Key][] = [
     ["files", "As they are"],
     ["zip", "One ZIP"],
     ["compress", "Compressed ZIP"],
@@ -43,7 +44,7 @@
   ];
   /** One file: as it is, compressed into a ZIP (a plain ZIP of one file adds nothing), or a ZIP
    *  in parts (a big file over a shaky connection). */
-  const SINGLE_MODES: [SendMode, string][] = [
+  const SINGLE_MODES: [SendMode, Key][] = [
     ["files", "As it is"],
     ["compress", "Compressed ZIP"],
     ["parts", "ZIP in parts"],
@@ -86,23 +87,24 @@
   /** The name Pako would use (shown as the name field's hint). */
   const usualName = $derived.by(() => {
     if (!items.length) return "";
-    if ((single ? singleMode : mode) === "files") return items.length === 1 && items[0].dir ? items[0].name : `${totalFiles.toLocaleString()} files`;
+    if ((single ? singleMode : mode) === "files") return items.length === 1 && items[0].dir ? items[0].name : t("{n} files", { n: num(totalFiles) });
     if (items.length === 1) return `${items[0].name}.zip`;
     const stem = items[0].name.includes(".") ? items[0].name.replace(/\.[^.]+$/, "") : items[0].name;
-    return `${stem} and ${items.length - 1} more.zip`;
+    return t("{name} and {n} more.zip", { name: stem, n: items.length - 1 });
   });
 
-  const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  /** "1 file", "1,234 files" (the number written the language's way). */
+  const count = (key: Key, n: number) => t(key, { n: num(n) });
 
   /** What "Delete after" means for where it goes. */
   const deleteNote = $derived(
     app.uploadDeleteDays === 0
       ? app.sendHost === "drive"
-        ? "Stays in your Drive until you delete it"
-        : "Kept until you delete it (Gofile may remove files nobody downloads for 10 days)"
+        ? t("Stays in your Drive until you delete it")
+        : t("Kept until you delete it (Gofile may remove files nobody downloads for 10 days)")
       : app.sendHost === "drive"
-        ? "Pako deletes it from your Drive on that day (or the next time it runs)"
-        : "Deleted on that day: by Gofile if it accepts the date (even with your PC off), else by Pako",
+        ? t("Pako deletes it from your Drive on that day (or the next time it runs)")
+        : t("Deleted on that day: by Gofile if it accepts the date (even with your PC off), else by Pako"),
   );
 
   // ---------- Google Drive: does it fit? ----------
@@ -164,16 +166,17 @@
   }
 </script>
 
-<section class="basket" data-tour="send-basket" aria-label="New upload">
+<section class="basket" data-tour="send-basket" aria-label={t("New upload")}>
   <header>
-    <h2>New upload</h2>
+    <h2>{t("New upload")}</h2>
     <span class="dim">
-      {plural(items.length, "item")}{#if measured}{` · ${plural(totalFiles, "file")} · ${bytes(totalSize)}`}{:else}{" · measuring…"}{/if}
+      {count("{n} items", items.length)}{#if measured}{` · ${count("{n} files", totalFiles)} · ${bytes(totalSize)}`}{:else}{` · ${t("measuring…")}`}{/if}
     </span>
-    <span class="grow"></span>
     {#if !own}
-      <button class="btn ghost small" onclick={onaddfolder}><Icon name="folder" size={13} />Add folder</button>
-      <button class="btn ghost small" onclick={onaddfiles}><Icon name="plus" size={13} stroke={2.2} />Add files</button>
+      <span class="adds">
+        <button class="btn ghost small" onclick={onaddfolder}><Icon name="folder" size={13} />{t("Add folder")}</button>
+        <button class="btn ghost small" onclick={onaddfiles}><Icon name="plus" size={13} stroke={2.2} />{t("Add files")}</button>
+      </span>
     {/if}
   </header>
 
@@ -184,19 +187,19 @@
         <div class="nm-wrap">
           <MiddleText text={b.name} class="nm" />
           <span class="sub" title={own || b.private ? undefined : b.path}>
-            {#if b.error}{b.error}{:else if b.dir}{b.files == null ? "Counting files…" : plural(b.files, "file")}{:else if own || b.private}From Private mode{:else}{b.path}{/if}
+            {#if b.error}{b.error}{:else if b.dir}{b.files == null ? t("Counting files…") : count("{n} files", b.files)}{:else if own || b.private}{t("From Private mode")}{:else}{b.path}{/if}
           </span>
         </div>
         <span class="size mono">{b.size == null ? "…" : bytes(b.size)}</span>
-        <button class="icon-btn" aria-label="Remove {b.name} from this upload" title="Remove from this upload" onclick={() => (onremove ? onremove(b.path) : app.removeFromBasket(b.path))}><Icon name="x" size={13} /></button>
+        <button class="icon-btn" aria-label={t("Remove {name} from this upload", { name: b.name })} title={t("Remove from this upload")} onclick={() => (onremove ? onremove(b.path) : app.removeFromBasket(b.path))}><Icon name="x" size={13} /></button>
       </li>
     {/each}
   </ul>
 
   <div class="opts" data-tour="send-options">
-    <span class="lbl">Upload to</span>
+    <span class="lbl">{t("Upload to")}</span>
     <SegPick
-      label="Upload to"
+      label={t("Upload to")}
       options={[
         { value: "gofile", label: "Gofile", icon: "globe" },
         { value: "drive", label: "Google Drive", icon: "drive" },
@@ -205,102 +208,102 @@
       onpick={(v) => app.setSendHost(v)}
     />
     {#key app.sendHost}
-      <span class="note dim" in:fadeIn={{ duration: 160 }}>{app.sendHost === "drive" ? "From your own Drive, shared with anyone who has the link" : "Free, no account needed"}</span>
+      <span class="note dim" in:fadeIn={{ duration: 160 }}>{app.sendHost === "drive" ? t("From your own Drive, shared with anyone who has the link") : t("Free, no account needed")}</span>
     {/key}
 
-    <span class="lbl">Delete after</span>
-    <SegPick label="Delete after" options={DELETE_CHOICES} value={app.uploadDeleteDays} onpick={(v) => app.setUploadDeleteDays(v)} />
+    <span class="lbl">{t("Delete after")}</span>
+    <SegPick label={t("Delete after")} options={deleteChoices()} value={app.uploadDeleteDays} onpick={(v) => app.setUploadDeleteDays(v)} />
     {#key deleteNote}
       <span class="note dim" in:fadeIn={{ duration: 160 }} title={deleteNote}>{deleteNote}</span>
     {/key}
 
     {#if single}
-      <span class="lbl">Compression</span>
-      <SegPick label="How the file is uploaded" options={SINGLE_MODES.map(([value, label]) => ({ value, label }))} value={singleMode} onpick={(v) => (picked = v)} />
+      <span class="lbl">{t("Compression")}</span>
+      <SegPick label={t("How the file is uploaded")} options={SINGLE_MODES.map(([value, label]) => ({ value, label: t(label) }))} value={singleMode} onpick={(v) => (picked = v)} />
       {#key singleMode}
-        <span class="note dim" in:fadeIn={{ duration: 160 }}>{singleMode === "compress" ? "Packed into a smaller ZIP file (helps documents, not videos or photos)" : singleMode === "parts" ? "Packed into a ZIP, cut into numbered parts" : "Uploaded as it is"}</span>
+        <span class="note dim" in:fadeIn={{ duration: 160 }}>{singleMode === "compress" ? t("Packed into a smaller ZIP file (helps documents, not videos or photos)") : singleMode === "parts" ? t("Packed into a ZIP, cut into numbered parts") : t("Uploaded as it is")}</span>
       {/key}
       {#if singleMode !== "files"}
-        <span class="lbl">Name</span>
-        <input class="input" bind:value={name} placeholder={usualName} maxlength="120" spellcheck="false" aria-label="Name of this upload" />
-        <span class="note dim">The ZIP file's name, optional</span>
+        <span class="lbl">{t("Name")}</span>
+        <input class="input" bind:value={name} placeholder={usualName} maxlength="120" spellcheck="false" aria-label={t("Name of this upload")} />
+        <span class="note dim">{t("The ZIP file's name, optional")}</span>
       {/if}
     {/if}
 
     {#if several}
-      <span class="lbl">Several files</span>
-      <SegPick label="How several files are uploaded" options={MODES.map(([value, label]) => ({ value, label }))} value={mode} onpick={(v) => (picked = v)} />
+      <span class="lbl">{t("Several files")}</span>
+      <SegPick label={t("How several files are uploaded")} options={MODES.map(([value, label]) => ({ value, label: t(label) }))} value={mode} onpick={(v) => (picked = v)} />
       {#key mode}
-        <span class="note dim" in:fadeIn={{ duration: 160 }}>{mode === "files" ? "One link to a folder with the files as they are" : mode === "zip" ? "Packed into one ZIP file, not compressed (fastest)" : mode === "parts" ? "Packed into one ZIP, cut into numbered parts" : "Packed into one smaller ZIP file (takes longer)"}</span>
+        <span class="note dim" in:fadeIn={{ duration: 160 }}>{mode === "files" ? t("One link to a folder with the files as they are") : mode === "zip" ? t("Packed into one ZIP file, not compressed (fastest)") : mode === "parts" ? t("Packed into one ZIP, cut into numbered parts") : t("Packed into one smaller ZIP file (takes longer)")}</span>
       {/key}
 
-      <span class="lbl">Name</span>
-      <input class="input" bind:value={name} placeholder={usualName} maxlength="120" spellcheck="false" aria-label="Name of this upload" />
-      <span class="note dim">{mode === "files" ? "The folder's name" : "The ZIP file's name"}, optional</span>
+      <span class="lbl">{t("Name")}</span>
+      <input class="input" bind:value={name} placeholder={usualName} maxlength="120" spellcheck="false" aria-label={t("Name of this upload")} />
+      <span class="note dim">{mode === "files" ? t("The folder's name, optional") : t("The ZIP file's name, optional")}</span>
     {/if}
 
-    <span class="lbl">Password</span>
+    <span class="lbl">{t("Password")}</span>
     <div class="protect">
-      <button class="switch" class:on={protect} role="switch" aria-checked={protect} aria-label="Protect with a password" onclick={() => (protect = !protect)}></button>
-      <span>Protect with a password</span>
+      <button class="switch" class:on={protect} role="switch" aria-checked={protect} aria-label={t("Protect with a password")} onclick={() => (protect = !protect)}></button>
+      <span>{t("Protect with a password")}</span>
     </div>
     {#key protect}
-      <span class="note dim" in:fadeIn={{ duration: 160 }}>{protect ? "Locked before it leaves this PC; names hidden too" : "Anyone with the link can open it"}</span>
+      <span class="note dim" in:fadeIn={{ duration: 160 }}>{protect ? t("Locked before it leaves this PC; names hidden too") : t("Anyone with the link can open it")}</span>
     {/key}
     {#if protect}
       <span class="lbl top" transition:fadeIn={{ duration: 160 }}></span>
       <div class="pwds" transition:rowSlide={{ duration: 200 }}>
-        <input class="input" type="password" autocomplete="new-password" placeholder="Password" aria-label="Password for this upload" bind:value={pass1} />
-        <input class="input" type="password" autocomplete="new-password" placeholder="Type it again" aria-label="Type the password again" bind:value={pass2} />
+        <input class="input" type="password" autocomplete="new-password" placeholder={t("Password")} aria-label={t("Password for this upload")} bind:value={pass1} />
+        <input class="input" type="password" autocomplete="new-password" placeholder={t("Type it again")} aria-label={t("Type the password again")} bind:value={pass2} />
       </div>
       <span class="explain dim" transition:fadeIn={{ duration: 160 }}>
         {#if !app.sevenZip}
-          This needs 7-Zip: Settings › Features & updates › What Pako can do.
+          {t("This needs 7-Zip: Settings › Features & updates › What Pako can do.")}
         {:else if pass1 && pass1.length < 8}
-          At least 8 characters.
+          {t("At least 8 characters.")}
         {:else if pass2 && pass1 !== pass2}
-          They don't match yet.
+          {t("They don't match yet.")}
         {:else}
-          It goes up as a 7-Zip archive (.7z). People open it with 7-Zip (free) or Pako, and this password. Pako doesn't keep it: tell them yourself, not in the same message as the link.
+          {t("It goes up as a 7-Zip archive (.7z). People open it with 7-Zip (free) or Pako, and this password. Pako doesn't keep it: tell them yourself, not in the same message as the link.")}
         {/if}
       </span>
     {/if}
 
     {#if inParts}
-      <span class="lbl top" transition:fadeIn={{ duration: 160 }}>Part size</span>
+      <span class="lbl top" transition:fadeIn={{ duration: 160 }}>{t("Part size")}</span>
       <div class="partsize" transition:fadeIn={{ duration: 160 }}>
-        <PartSize bind:mb={partMb} bind:custom={partCustom} bind:valid={partValid} label="Size of each part" />
+        <PartSize bind:mb={partMb} bind:custom={partCustom} bind:valid={partValid} label={t("Size of each part")} />
       </div>
-      <span class="explain dim" transition:fadeIn={{ duration: 160 }}>{PARTS_NOTE}</span>
+      <span class="explain dim" transition:fadeIn={{ duration: 160 }}>{t(PARTS_NOTE)}</span>
     {/if}
   </div>
 
   {#if app.sendHost === "drive" && items.length}
     <div class="fit" class:ok={fits === true} class:no={fits === false}>
       {#if drive && !drive.configured}
-        <Icon name="alert" size={13} /><span>Uploading to Google Drive isn't set up in this Pako. Choose Gofile to upload.</span>
+        <Icon name="alert" size={13} /><span>{t("Uploading to Google Drive isn't set up in this Pako. Choose Gofile to upload.")}</span>
       {:else if drive && !drive.signedIn}
-        <Icon name="alert" size={13} /><span>Connect Google Drive first (the bar above), or choose Gofile.</span>
+        <Icon name="alert" size={13} /><span>{t("Connect Google Drive first (the bar above), or choose Gofile.")}</span>
       {:else if fits === true}
-        <Icon name="check" size={13} stroke={2.4} /><span>This upload needs {bytes(need ?? 0)}. {bytes(free ?? 0)} free in your Google Drive.</span>
+        <Icon name="check" size={13} stroke={2.4} /><span>{t("This upload needs {need}. {free} free in your Google Drive.", { need: bytes(need ?? 0), free: bytes(free ?? 0) })}</span>
       {:else if fits === false}
-        <Icon name="alert" size={13} /><span>This upload needs {bytes(need ?? 0)}, but only {bytes(free ?? 0)} is free in your Google Drive.</span>
-        <button class="btn ghost small" onclick={onroom}><Icon name="trash" size={12} />Make room…</button>
-        <button class="btn ghost small" onclick={() => app.setSendHost("gofile")}>Upload to Gofile instead</button>
+        <Icon name="alert" size={13} /><span>{t("This upload needs {need}, but only {free} is free in your Google Drive.", { need: bytes(need ?? 0), free: bytes(free ?? 0) })}</span>
+        <button class="btn ghost small" onclick={onroom}><Icon name="trash" size={12} />{t("Make room…")}</button>
+        <button class="btn ghost small" onclick={() => app.setSendHost("gofile")}>{t("Upload to Gofile instead")}</button>
       {:else}
-        <span class="dim">Checking your Google Drive's free space…</span>
+        <span class="dim">{t("Checking your Google Drive's free space…")}</span>
       {/if}
     </div>
   {/if}
 
   <footer>
     {#if unreadable.length}
-      <span class="warn">{unreadable.length === 1 ? "1 item can't be read" : `${unreadable.length} items can't be read`}. Remove {unreadable.length === 1 ? "it" : "them"} to upload the rest.</span>
+      <span class="warn">{t("{n} items can't be read. Remove them to upload the rest.", { n: unreadable.length })}</span>
     {/if}
     <span class="grow"></span>
-    <button class="btn ghost" disabled={sending} onclick={() => app.clearBasket()}>Clear</button>
+    <button class="btn ghost" disabled={sending} onclick={() => app.clearBasket()}>{t("Clear")}</button>
     <button class="btn primary" data-tour="send-go" disabled={sending || !items.length || unreadable.length > 0 || blocked} onclick={send}>
-      <Icon name="upload" size={14} stroke={2.2} />{sending ? "Starting…" : "Upload"}
+      <Icon name="upload" size={14} stroke={2.2} />{sending ? t("Starting…") : t("Upload (button)")}
     </button>
   </footer>
 </section>
@@ -314,11 +317,21 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
   }
+  /* One line; where the title and the buttons don't fit side by side (longer words, a narrow
+     window), the buttons go under it, on the right. The count takes the room between and gives
+     it up first. */
   header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 6px 8px;
     min-width: 0;
+  }
+  .adds {
+    display: flex;
+    gap: 8px;
+    flex: none;
+    margin-left: auto;
   }
   h2 {
     margin: 0 4px 0 0;
@@ -330,6 +343,7 @@
     color: var(--text-3);
   }
   header .dim {
+    flex: 1 1 0;
     font-size: 12.5px;
     white-space: nowrap;
     overflow: hidden;

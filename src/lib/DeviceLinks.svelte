@@ -16,6 +16,7 @@
   import MiddleText from "./MiddleText.svelte";
   import RemoteRow from "./RemoteRow.svelte";
   import { fadeIn, pop, rowSlide } from "./motion";
+  import { i18n, num, t, type Key } from "./i18n.svelte";
 
   let { device: x, state: s, ongot }: { device: Device; state: DevicesState; ongot?: () => void } = $props();
 
@@ -24,29 +25,29 @@
   const defaultQ = $derived(app.settings?.videoQuality ?? 1080);
 
   // ---------- the cards ----------
-  const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
-  const PRIO: Record<string, string> = { first: "First", normal: "Normal", later: "Later" };
-  const qLabel = (q: number) => (q === 0 ? "Audio only" : `Best up to ${q}p`);
+  const PRIO: Record<string, Key> = { first: "First", normal: "Normal", later: "Later" };
+  const qLabel = (q: number) => (q === 0 ? t("Audio only") : t("Best up to {q}p", { q }));
   /** "3 links · Normal · Best up to 1080p" */
   function headline(c: SentCard) {
-    const parts = [plural(c.links.length, "link")];
+    const parts = [t("{n} links", { n: num(c.links.length) })];
     const ps = [...new Set(c.links.map((l) => l.priority ?? "normal"))];
-    parts.push(ps.length === 1 ? PRIO[ps[0]] ?? "Normal" : "Mixed priority");
+    parts.push(ps.length === 1 ? t(PRIO[ps[0]] ?? "Normal") : t("Mixed priority"));
     const qs = [...new Set(c.links.filter((l) => l.quality != null).map((l) => l.quality as number))];
-    if (qs.length) parts.push(qs.length === 1 ? qLabel(qs[0]) : "Mixed quality");
+    if (qs.length) parts.push(qs.length === 1 ? qLabel(qs[0]) : t("Mixed quality"));
     return parts.join(" · ");
   }
   function when(ms: number) {
     const d = new Date(ms);
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (new Date().toDateString() === d.toDateString()) return `today ${time}`;
-    return `${d.toLocaleDateString([], { day: "numeric", month: "short" })}, ${time}`;
+    const loc = i18n.dates;
+    const time = d.toLocaleTimeString(loc, { hour: "2-digit", minute: "2-digit" });
+    if (new Date().toDateString() === d.toDateString()) return t("today {time}", { time });
+    return `${d.toLocaleDateString(loc, { day: "numeric", month: "short" })}, ${time}`;
   }
   /** "Sent today 14:02 · into Downloads" (or the subfolder). */
   function subline(c: SentCard) {
     const fs = [...new Set(c.links.map((l) => l.folder ?? ""))];
-    const into = fs.length === 1 ? (fs[0] ? `into ${fs[0]}` : "into Downloads") : "into several folders";
-    return `Sent ${when(c.date)} · ${into}`;
+    const into = fs.length === 1 ? (fs[0] ? t("into {folder}", { folder: fs[0] }) : t("into Downloads")) : t("into several folders");
+    return t("Sent {when} · {into}", { when: when(c.date), into });
   }
   /** Its downloads there, as that PC's list shows them now (undefined: no longer in it). */
   const itemsOf = (l: SentLink) => (l.ids ?? []).map((id) => remote?.find((r) => r.id === id));
@@ -54,9 +55,9 @@
   function live(c: SentCard): { text: string; tone: "done" | "run" | "bad" | "idle" } | null {
     const ids = c.links.flatMap((l) => l.ids ?? []);
     const failed = c.links.filter((l) => l.failed).length;
-    if (!ids.length) return failed ? { text: `${failed} not taken`, tone: "bad" } : { text: "Sent", tone: "idle" };
-    if (!x.online) return { text: `Shows how they're doing while ${x.name} is on`, tone: "idle" };
-    if (!remote) return { text: "Asking for their state…", tone: "idle" };
+    if (!ids.length) return failed ? { text: t("{n} not taken", { n: failed }), tone: "bad" } : { text: t("Sent"), tone: "idle" };
+    if (!x.online) return { text: t("Shows how they're doing while {name} is on", { name: x.name }), tone: "idle" };
+    if (!remote) return { text: t("Asking for their state…"), tone: "idle" };
     const got = ids.map((id) => remote.find((r) => r.id === id));
     const by = (f: (r: RemoteItem) => boolean) => got.filter((r): r is RemoteItem => !!r && f(r));
     const done = by((r) => r.status === "completed");
@@ -66,18 +67,18 @@
     const bad = by((r) => !["completed", "downloading", "starting", "retrying", "verifying", "queued", "paused"].includes(r.status));
     const gone = got.filter((r) => !r).length;
     const parts: string[] = [];
-    if (done.length) parts.push(`${done.length} done`);
+    if (done.length) parts.push(t("{n} done", { n: done.length }));
     if (running.length) {
       const size = running.reduce((a, r) => a + r.size, 0);
       const pct = size ? Math.floor((running.reduce((a, r) => a + r.done, 0) / size) * 100) : 0;
-      parts.push(`${running.length} downloading${size ? ` ${pct}%` : ""}`);
+      parts.push(`${t("{n} downloading", { n: running.length })}${size ? ` ${t("{pct}%", { pct })}` : ""}`);
     }
-    if (waiting.length) parts.push(`${waiting.length} waiting`);
-    if (paused.length) parts.push(`${paused.length} paused`);
-    if (bad.length + failed) parts.push(`${bad.length + failed} failed`);
-    if (gone) parts.push(`${gone} off the list`);
+    if (waiting.length) parts.push(t("{n} waiting", { n: waiting.length }));
+    if (paused.length) parts.push(t("{n} paused", { n: paused.length }));
+    if (bad.length + failed) parts.push(t("{n} failed", { n: bad.length + failed }));
+    if (gone) parts.push(t("{n} off the list", { n: gone }));
     const tone = bad.length + failed ? "bad" : running.length || waiting.length ? "run" : done.length === ids.length ? "done" : "idle";
-    return { text: parts.join(" · ") || "Sent", tone };
+    return { text: parts.join(" · ") || t("Sent"), tone };
   }
   let open = $state<Record<string, boolean>>({});
 
@@ -88,7 +89,7 @@
   const isPlaylist = (link: string) => /youtube\.com\/playlist|\/sets\/|\/album\/|\/showcase\//i.test(link);
   const isFolder = (link: string) => /drive\.google\.com\/(drive\/)?(u\/\d+\/)?folders\//i.test(link);
   function reading(p: Picker) {
-    return isPlaylist(p.link) ? "Reading the playlist…" : isFolder(p.link) ? "Reading the folder…" : "Opening the link page…";
+    return isPlaylist(p.link) ? t("Reading the playlist…") : isFolder(p.link) ? t("Reading the folder…") : t("Opening the link page…");
   }
   async function addPicker(link: string) {
     if (pickers.some((p) => p.link === link && p.state !== "failed")) return;
@@ -128,9 +129,9 @@
       if (left.size) {
         p.items = p.items.filter((i) => i.on && left.has(i.link.trim()));
         p.sending = false;
-        p.error = `${x.name} didn't take ${left.size === 1 ? "this one" : `these ${left.size}`}: ${r.text}`;
+        p.error = t("{name} didn't take these {n}: {why}", { name: x.name, n: left.size, why: r.text });
       } else pickers = pickers.filter((q) => q.key !== p.key);
-      result = { ok: !r.failed.length, text: `${r.text} on ${x.name}.` };
+      result = { ok: !r.failed.length, text: t("{what} on {name}.", { what: r.text, name: x.name }) };
       devicesRefresh();
     } catch (e) {
       p.sending = false;
@@ -154,8 +155,8 @@
       const r = await devicesApi.download(x.id, text, qOf(quality), priority === "normal" ? null : priority, folder.trim() || null);
       text = "";
       for (const l of r.pick) addPicker(l);
-      if (r.text) result = { ok: true, text: `${r.text} on ${x.name}.` };
-      else if (r.pick.length) result = { ok: true, text: `Pick what to send in the ${r.pick.length === 1 ? "card" : "cards"} above.` };
+      if (r.text) result = { ok: true, text: t("{what} on {name}.", { what: r.text, name: x.name }) };
+      else if (r.pick.length) result = { ok: true, text: t("Pick what to send in the cards above.", { n: r.pick.length }) };
       devicesRefresh();
     } catch (e) {
       result = { ok: false, text: String(e) };
@@ -198,7 +199,7 @@
           {/if}
           <div class="mfoot">
             <button class="link" aria-expanded={!!open[c.id]} onclick={() => (open = { ...open, [c.id]: !open[c.id] })}>
-              {open[c.id] ? "Hide the links" : c.links.length === 1 ? "Show the link" : `Show the ${c.links.length} links`}
+              {open[c.id] ? t("Hide the links") : t("Show the {n} links", { n: c.links.length })}
             </button>
           </div>
           {#if open[c.id]}
@@ -211,7 +212,7 @@
                   <div class="iline">
                     <MiddleText text={l.name || l.link} class="iname" />
                     <span class="istate" class:bad={l.failed}>
-                      {#if l.failed}Not taken{:else if (l.ids ?? []).length && remote}Off its list{:else if (l.ids ?? []).length}Sent{:else}Sent · no live state from that Pako{/if}
+                      {#if l.failed}{t("Not taken")}{:else if (l.ids ?? []).length && remote}{t("Off its list")}{:else if (l.ids ?? []).length}{t("Sent")}{:else}{t("Sent · no live state from that Pako")}{/if}
                     </span>
                   </div>
                 {/if}
@@ -229,7 +230,7 @@
           <div class="mtop">
             <span class="licon"><Icon name={isFolder(p.link) ? "folder" : p.items.some((i) => i.video) || isPlaylist(p.link) ? "play" : "link"} size={14} /></span>
             <span class="mhead"><MiddleText text={p.title || p.link} /></span>
-            <button class="icon-btn" aria-label="Cancel" title="Cancel" onclick={() => (pickers = pickers.filter((q) => q.key !== p.key))}><Icon name="x" size={13} /></button>
+            <button class="icon-btn" aria-label={t("Cancel")} title={t("Cancel")} onclick={() => (pickers = pickers.filter((q) => q.key !== p.key))}><Icon name="x" size={13} /></button>
           </div>
           {#if p.state === "reading"}
             <div class="mmeta reading" in:fadeIn={{ duration: 160 }}><span class="ring"></span>{reading(p)}</div>
@@ -237,22 +238,22 @@
             <div class="mstate bad" in:fadeIn={{ duration: 160 }}>{p.error}</div>
           {:else}
             <div class="mmeta pickhead">
-              <span>{plural(p.items.length, p.items.some((i) => i.video) ? "video" : "file")} · {picked} picked</span>
-              <button class="link" onclick={() => { const all = picked < p.items.length; for (const i of p.items) i.on = all; }}>{picked < p.items.length ? "Tick all" : "Untick all"}</button>
+              <span>{p.items.some((i) => i.video) ? t("{n} videos", { n: num(p.items.length) }) : t("{n} files", { n: num(p.items.length) })} · {t("{n} picked", { n: picked })}</span>
+              <button class="link" onclick={() => { const all = picked < p.items.length; for (const i of p.items) i.on = all; }}>{picked < p.items.length ? t("Tick all") : t("Untick all")}</button>
             </div>
             <div class="plist" transition:rowSlide={{ duration: 200 }}>
               {#each p.items as i (i.link)}
                 <div class="prow" class:off={!i.on}>
-                  <button class="check" class:on={i.on} role="checkbox" aria-checked={i.on} aria-label={i.on ? `Untick ${i.name}` : `Tick ${i.name}`} onclick={() => (i.on = !i.on)}>
+                  <button class="check" class:on={i.on} role="checkbox" aria-checked={i.on} aria-label={i.on ? t("Untick {name}", { name: i.name }) : t("Tick {name}", { name: i.name })} onclick={() => (i.on = !i.on)}>
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
                   </button>
                   <MiddleText text={i.name} class="pname" />
                   <span class="pmeta mono">{i.video ? (i.duration ? duration(i.duration) : "") : i.size != null ? bytes(i.size) : ""}</span>
                   {#if i.video}
-                    <select class="input tiny" aria-label="Quality of {i.name}" bind:value={i.q} disabled={!i.on}>
+                    <select class="input tiny" aria-label={t("Quality of {name}", { name: i.name })} bind:value={i.q} disabled={!i.on}>
                       <option value="default">{qLabel(defaultQ)}</option>
                       {#each HEIGHTS as h (h)}<option value={String(h)}>{h}p</option>{/each}
-                      <option value="0">Audio only</option>
+                      <option value="0">{t("Audio only")}</option>
                     </select>
                   {/if}
                 </div>
@@ -260,10 +261,10 @@
             </div>
             {#if p.error}<div class="mstate bad">{p.error}</div>{/if}
             <div class="pfoot">
-              <span class="dim">Into {folder.trim() || p.items[0]?.folder || "Downloads"} on {x.name}</span>
-              <button class="btn ghost small" onclick={() => (pickers = pickers.filter((q) => q.key !== p.key))}>Cancel</button>
+              <span class="dim">{t("Into {folder} on {name}", { folder: folder.trim() || p.items[0]?.folder || t("Downloads"), name: x.name })}</span>
+              <button class="btn ghost small" onclick={() => (pickers = pickers.filter((q) => q.key !== p.key))}>{t("Cancel")}</button>
               <button class="btn primary small" disabled={!picked || p.sending || !x.online} onclick={() => sendPicked(p)}>
-                <Icon name="send" size={12} />Send {picked} to {x.name}
+                <Icon name="send" size={12} />{t("Send {n} to {name}", { n: picked, name: x.name })}
               </button>
             </div>
           {/if}
@@ -274,37 +275,37 @@
     {#if !cards.length && !pickers.length}
       <div class="nothing">
         <Icon name="link" size={20} />
-        <p>No links sent to {x.name} yet.</p>
-        <p class="dim">Paste links below: {x.name} downloads them into its own download folder. A playlist or a folder opens here first, to pick what to send.</p>
+        <p>{t("No links sent to {name} yet.", { name: x.name })}</p>
+        <p class="dim">{t("Paste links below: {name} downloads them into its own download folder. A playlist or a folder opens here first, to pick what to send.", { name: x.name })}</p>
       </div>
     {/if}
   </div>
 
   <footer class="compose" data-tour="devices-order">
     <div class="orow">
-      <input class="input grow" bind:value={text} placeholder="Paste links for {x.name} to download" spellcheck="false" aria-label="Links for {x.name} to download" onkeydown={(e) => e.key === "Enter" && send()} />
-      <button class="btn primary small send" disabled={!text.trim() || busy || !x.online} title={x.online ? "" : `${x.name} is offline`} onclick={send}><Icon name="send" size={12} />Send</button>
+      <input class="input grow" bind:value={text} placeholder={t("Paste links for {name} to download", { name: x.name })} spellcheck="false" aria-label={t("Links for {name} to download", { name: x.name })} onkeydown={(e) => e.key === "Enter" && send()} />
+      <button class="btn primary small send" disabled={!text.trim() || busy || !x.online} title={x.online ? "" : t("{name} is offline", { name: x.name })} onclick={send}><Icon name="send" size={12} />{t("Send")}</button>
     </div>
     <div class="opts">
       <label class="opt">
-        <span>Quality</span>
-        <select class="input tiny" bind:value={quality} aria-label="Quality for videos">
+        <span>{t("Quality")}</span>
+        <select class="input tiny" bind:value={quality} aria-label={t("Quality for videos")}>
           <option value="default">{qLabel(defaultQ)}</option>
           {#each HEIGHTS as h (h)}<option value={String(h)}>{h}p</option>{/each}
-          <option value="0">Audio only</option>
+          <option value="0">{t("Audio only")}</option>
         </select>
       </label>
       <label class="opt">
-        <span>Priority</span>
-        <select class="input tiny" bind:value={priority} aria-label="Priority">
-          <option value="first">First</option>
-          <option value="normal">Normal</option>
-          <option value="later">Later</option>
+        <span>{t("Priority")}</span>
+        <select class="input tiny" bind:value={priority} aria-label={t("Priority")}>
+          <option value="first">{t("First")}</option>
+          <option value="normal">{t("Normal")}</option>
+          <option value="later">{t("Later")}</option>
         </select>
       </label>
       <label class="opt grow">
-        <span>Into folder</span>
-        <input class="input tiny grow" bind:value={folder} maxlength="120" placeholder="Optional, inside its download folder" spellcheck="false" aria-label="Into folder (optional)" />
+        <span>{t("Into folder")}</span>
+        <input class="input tiny grow" bind:value={folder} maxlength="120" placeholder={t("Optional, inside its download folder")} spellcheck="false" aria-label={t("Into folder (optional)")} />
       </label>
     </div>
     {#if result}

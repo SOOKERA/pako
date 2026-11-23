@@ -9,6 +9,7 @@
   import { ALERTS, type Alert } from "./alert";
   import Icon from "./Icon.svelte";
   import { rowSlide } from "./motion";
+  import { t, type Key } from "./i18n.svelte";
 
   let {
     dest,
@@ -44,10 +45,10 @@
   } = $props();
 
   const folderName = $derived(dest.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dest);
-  const levels: { key: Priority; label: string; icon?: string }[] = [
-    { key: "first", label: "First", icon: "up" },
-    { key: "normal", label: "Normal" },
-    { key: "later", label: "Later", icon: "down" },
+  const levels: { key: Priority; label: Key; icon?: string }[] = [
+    { key: "first", label: "First (priority)", icon: "up" },
+    { key: "normal", label: "Normal (priority)" },
+    { key: "later", label: "Later (priority)", icon: "down" },
   ];
 
   async function choose() {
@@ -57,29 +58,29 @@
 </script>
 
 <section class="settings">
-  <div class="label">Settings{#if count > 1}<span class="muted">{` · for ${count} files`}</span>{/if}</div>
+  <div class="label">{t("Settings")}{#if count > 1}<span class="muted">{` · ${t("for {n} files", { n: count })}`}</span>{/if}</div>
 
   <div class="field">
-    <span class="k">Save to</span>
+    <span class="k">{t("Save to")}</span>
     <div class="dest">
       <button class="folder" title={dest} disabled={destLocked} onclick={choose}>
         <Icon name="folder" size={14} />
         <span class="fn">{folderName}</span>
-        {#if isDefault}<span class="tag">default</span>{/if}
+        {#if isDefault}<span class="tag">{t("default")}</span>{/if}
       </button>
       {#if onResetDest && !isDefault && !destLocked}
-        <button class="icon-btn" title="Back to the default folder" aria-label="Back to the default folder" onclick={onResetDest}><Icon name="x" size={12} stroke={2.2} /></button>
+        <button class="icon-btn" title={t("Back to the default folder")} aria-label={t("Back to the default folder")} onclick={onResetDest}><Icon name="x" size={12} stroke={2.2} /></button>
       {/if}
     </div>
-    {#if destLocked}<span class="note">Already started: it stays in this folder.</span>{/if}
+    {#if destLocked}<span class="note">{t("Already started: it stays in this folder.")}</span>{/if}
   </div>
 
   <div class="field">
-    <span class="k">Priority</span>
-    <div class="seg" role="radiogroup" aria-label="Priority">
+    <span class="k">{t("Priority")}</span>
+    <div class="seg" role="radiogroup" aria-label={t("Priority")}>
       {#each levels as l (l.key)}
         <button role="radio" aria-checked={priority === l.key} class:on={priority === l.key} disabled={!!priorityOff} title={priorityOff} onclick={() => onPriority(l.key)}>
-          {#if l.icon}<Icon name={l.icon} size={11} stroke={2.6} />{/if}{l.label}
+          {#if l.icon}<Icon name={l.icon} size={11} stroke={2.6} />{/if}{t(l.label)}
         </button>
       {/each}
     </div>
@@ -87,15 +88,15 @@
   </div>
 
   <div class="field" data-tour="notify-when-done">
-    <span class="k">Notify when done</span>
-    <div class="seg" role="radiogroup" aria-label="Notify when done">
+    <span class="k">{t("Notify when done")}</span>
+    <div class="seg" role="radiogroup" aria-label={t("Notify when done")}>
       {#each ALERTS as a (a.id)}
         <button role="radio" aria-checked={alert === a.id} class:on={alert === a.id} title={a.hint} onclick={() => onAlert(a.id)}>
           {#if a.id === "off"}<Icon name="bell-off" size={11} stroke={2.4} />{:else if a.id === "important"}<Icon name="bell" size={11} stroke={2.4} />{/if}{a.label}
         </button>
       {/each}
     </div>
-    {#if alert === "important"}<span class="note" transition:rowSlide>A big pop-up in the middle of the screen that stays until you click it.</span>{/if}
+    {#if alert === "important"}<span class="note" transition:rowSlide>{t("A big pop-up in the middle of the screen that stays until you click it.")}</span>{/if}
   </div>
 
   {@render extra?.()}

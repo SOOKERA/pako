@@ -4,13 +4,14 @@
   import { app, type FoundFilter, type Library } from "./state.svelte";
   import { api } from "./api";
   import type { MenuItem } from "./menu";
-  import { SUGGESTED_TAGS } from "./direct";
+  import { suggestedTags } from "./direct";
   import { devices } from "./devices.svelte";
   import Icon from "./Icon.svelte";
   import Modal from "./Modal.svelte";
   import { help } from "./help/help.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
   import { priv } from "./private.svelte";
+  import { t } from "./i18n.svelte";
 
   let {
     onsettings,
@@ -21,13 +22,13 @@
   devices.start();
 
   // ---------- Direct: filters and your tags ----------
-  const directShows: { key: string; label: string; icon?: string; dot?: string }[] = [
-    { key: "all", label: "All contacts", icon: "user" },
-    { key: "online", label: "Online", dot: "var(--st-done)" },
+  const directShows: { key: string; label: string; icon?: string; dot?: string }[] = $derived([
+    { key: "all", label: t("All contacts"), icon: "user" },
+    { key: "online", label: t("Online"), dot: "var(--st-done)" },
     // Coral like the "!" on a contact that waits for your answer (amber on a contact = waiting for them).
-    { key: "waiting", label: "Waiting for you", dot: "var(--accent)" },
-    { key: "favourites", label: "Favourites", icon: "star" },
-  ];
+    { key: "waiting", label: t("Waiting for you (contacts)"), dot: "var(--accent)" },
+    { key: "favourites", label: t("Favourites"), icon: "star" },
+  ]);
   function directCount(key: string) {
     if (key === "waiting") return app.directWaiting;
     return app.directCounts[key as "all" | "online" | "favourites"] ?? 0;
@@ -44,8 +45,8 @@
     e.preventDefault();
     e.stopPropagation();
     onmenu?.(e.clientX, e.clientY, [
-      { label: "Rename tag…", action: () => openTag("rename", tag) },
-      { label: "Delete tag…", danger: true, action: () => openTag("delete", tag) },
+      { label: t("Rename tag…"), action: () => openTag("rename", tag) },
+      { label: t("Delete tag…"), danger: true, action: () => openTag("delete", tag) },
     ]);
   }
   async function saveTag(name = tagName) {
@@ -69,21 +70,21 @@
     }
   }
 
-  const libs: { key: Library; label: string; icon: string }[] = [
-    { key: "all", label: "All downloads", icon: "list" },
-    { key: "active", label: "Downloading", icon: "download" },
-    { key: "waiting", label: "Waiting", icon: "clock" },
-    { key: "done", label: "Finished", icon: "check" },
-    { key: "problems", label: "Problems", icon: "alert" },
-  ];
+  const libs: { key: Library; label: string; icon: string }[] = $derived([
+    { key: "all", label: t("All downloads"), icon: "list" },
+    { key: "active", label: t("Downloading (filter)"), icon: "download" },
+    { key: "waiting", label: t("Waiting"), icon: "clock" },
+    { key: "done", label: t("Finished"), icon: "check" },
+    { key: "problems", label: t("Problems"), icon: "alert" },
+  ]);
 
-  const foundFilters: { key: FoundFilter; label: string; dot: string; hollow?: boolean }[] = [
-    { key: "all", label: "Everything", dot: "" },
-    { key: "ready", label: "Ready", dot: "var(--st-done)" },
-    { key: "needs", label: "Only in the browser", dot: "var(--st-limit)" },
-    { key: "broken", label: "Link broken", dot: "var(--st-fail)" },
-    { key: "checking", label: "Checking", dot: "var(--st-check)", hollow: true },
-  ];
+  const foundFilters: { key: FoundFilter; label: string; dot: string; hollow?: boolean }[] = $derived([
+    { key: "all", label: t("Everything"), dot: "" },
+    { key: "ready", label: t("Ready (filter)"), dot: "var(--st-done)" },
+    { key: "needs", label: t("Only in the browser"), dot: "var(--st-limit)" },
+    { key: "broken", label: t("Link broken"), dot: "var(--st-fail)" },
+    { key: "checking", label: t("Checking (filter)"), dot: "var(--st-check)", hollow: true },
+  ]);
 
   // With Private mode open, any entry here other than Private leaves its screens and locks it
   // (asked first while something runs there); only the list header's "Normal list" keeps it open.
@@ -126,47 +127,47 @@
 
 <aside>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
-  <div class="views" role="tablist" aria-label="Pako lists" aria-orientation="vertical" onkeydown={tabKeys}>
+  <div class="views" role="tablist" aria-label={t("Pako lists")} aria-orientation="vertical" onkeydown={tabKeys}>
     <button class="view" data-tour="nav-downloads" class:on={app.view === "downloads"} role="tab" aria-selected={app.view === "downloads"} tabindex={app.view === "downloads" ? 0 : -1} onclick={pickDownloads}>
-      <span class="lead"><Icon name="download" size={16} stroke={1.9} />Downloads</span>
+      <span class="lead"><Icon name="download" size={16} stroke={1.9} />{t("Downloads")}</span>
       {#if app.runningCount}
-        <span class="run" title="{app.runningCount} downloading"><span class="live"></span>{app.runningCount}</span>
+        <span class="run" title={t("{n} downloading", { n: app.runningCount })}><span class="live"></span>{app.runningCount}</span>
       {/if}
     </button>
     <button class="view" data-tour="nav-found" class:on={app.view === "found"} role="tab" aria-selected={app.view === "found"} tabindex={app.view === "found" ? 0 : -1} onclick={() => (app.view = "found")}>
-      <span class="lead"><Icon name="link" size={16} stroke={1.9} />Links</span>
-      {#if app.foundCounts.all}<span class="badge" title="{app.foundCounts.all} waiting to be picked" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.foundCounts.all}</span>{/if}
+      <span class="lead"><Icon name="link" size={16} stroke={1.9} />{t("Links")}</span>
+      {#if app.foundCounts.all}<span class="badge" title={t("{n} waiting to be picked", { n: app.foundCounts.all })} transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.foundCounts.all}</span>{/if}
     </button>
     <button class="view" data-tour="nav-send" class:on={app.view === "send"} role="tab" aria-selected={app.view === "send"} tabindex={app.view === "send" ? 0 : -1} onclick={() => (app.view = "send")}>
-      <span class="lead"><Icon name="upload" size={16} stroke={1.9} />Upload</span>
+      <span class="lead"><Icon name="upload" size={16} stroke={1.9} />{t("Upload (page)")}</span>
       {#if app.uploadingCount}
-        <span class="run" title="{app.uploadingCount} uploading"><span class="live"></span>{app.uploadingCount}</span>
+        <span class="run" title={t("{n} uploading", { n: app.uploadingCount })}><span class="live"></span>{app.uploadingCount}</span>
       {/if}
     </button>
     <button class="view" data-tour="nav-direct" class:on={app.view === "direct"} role="tab" aria-selected={app.view === "direct"} tabindex={app.view === "direct" ? 0 : -1} onclick={() => (app.view = "direct")}>
       <span class="lead"><Icon name="send" size={16} stroke={1.9} />Direct</span>
       {#if app.directWaiting}
-        <span class="badge attn" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.directWaiting}</span>
+        <span class="badge attn" title={t("Waiting for your answer")} transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.directWaiting}</span>
       {:else if app.directMoving}
-        <span class="run" title="{app.directMoving} moving"><span class="live"></span>{app.directMoving}</span>
+        <span class="run" title={t("{n} moving", { n: app.directMoving })}><span class="live"></span>{app.directMoving}</span>
       {/if}
     </button>
     <button class="view" data-tour="nav-devices" class:on={app.view === "devices"} role="tab" aria-selected={app.view === "devices"} tabindex={app.view === "devices" ? 0 : -1} onclick={() => (app.view = "devices")}>
-      <span class="lead"><Icon name="devices" size={16} stroke={1.9} />My devices</span>
+      <span class="lead"><Icon name="devices" size={16} stroke={1.9} />{t("My devices")}</span>
       {#if devices.waiting}
-        <span class="badge attn" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{devices.waiting}</span>
+        <span class="badge attn" title={t("Waiting for your answer")} transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{devices.waiting}</span>
       {:else if devices.moving}
-        <span class="run" title="{devices.moving} moving"><span class="live"></span>{devices.moving}</span>
+        <span class="run" title={t("{n} moving", { n: devices.moving })}><span class="live"></span>{devices.moving}</span>
       {/if}
     </button>
     <button class="view" data-tour="nav-dashboard" class:on={app.view === "dashboard"} role="tab" aria-selected={app.view === "dashboard"} tabindex={app.view === "dashboard" ? 0 : -1} onclick={() => (app.view = "dashboard")}>
-      <span class="lead"><Icon name="chart" size={16} stroke={1.9} />Dashboard</span>
+      <span class="lead"><Icon name="chart" size={16} stroke={1.9} />{t("Dashboard")}</span>
     </button>
   </div>
 
   {#key app.view}
   <div class="filters" data-tour="filters" in:fadeIn={{ duration: 160 }}>
-  {#if app.view !== "dashboard" && app.view !== "send" && app.view !== "devices"}<div class="label">Show</div>{/if}
+  {#if app.view !== "dashboard" && app.view !== "send" && app.view !== "devices"}<div class="label">{t("Show")}</div>{/if}
   {#if app.view === "dashboard" || app.view === "send" || app.view === "devices"}
     <!-- the Dashboard has its own period picker -->
   {:else if app.view === "direct"}
@@ -181,25 +182,25 @@
         </button>
       {/each}
     </nav>
-    <div class="label">Tags</div>
+    <div class="label">{t("Tags")}</div>
     <nav data-tour="tags">
-      {#each app.directTags as t (t)}
+      {#each app.directTags as tag (tag)}
         <button
           class="item tagrow"
-          class:on={app.directFilter === `tag:${t}`}
-          aria-current={app.directFilter === `tag:${t}` ? "true" : undefined}
-          onclick={() => (app.directFilter = `tag:${t}`)}
-          oncontextmenu={(e) => tagMenu(e, t)}
-          title="{t} · right-click to rename or delete"
+          class:on={app.directFilter === `tag:${tag}`}
+          aria-current={app.directFilter === `tag:${tag}` ? "true" : undefined}
+          onclick={() => (app.directFilter = `tag:${tag}`)}
+          oncontextmenu={(e) => tagMenu(e, tag)}
+          title={t("{tag} · right-click to rename or delete", { tag })}
           transition:rowSlide={{ duration: 200 }}
           animate:flipIf={flipOpts}
         >
-          <span class="lead"><Icon name="tag" size={15} /><span class="tname">{t}</span></span>
-          <span class="count mono">{app.directCounts.tags[t] ?? 0}</span>
+          <span class="lead"><Icon name="tag" size={15} /><span class="tname">{tag}</span></span>
+          <span class="count mono">{app.directCounts.tags[tag] ?? 0}</span>
         </button>
       {/each}
       <button class="item newtag" onclick={() => openTag("new")}>
-        <span class="lead"><Icon name="plus" size={15} />New tag</span>
+        <span class="lead"><Icon name="plus" size={15} />{t("New tag")}</span>
       </button>
     </nav>
   {:else if app.view === "found"}
@@ -231,11 +232,11 @@
         class:on={priv.showing && priv.status.unlocked}
         aria-current={priv.showing && priv.status.unlocked ? "true" : undefined}
         data-tour="private-entry"
-        title="Private (Ctrl+Shift+P)"
+        title={t("Private (Ctrl+Shift+P)")}
         onclick={() => priv.enter()}
         transition:rowSlide={{ duration: 200 }}
       >
-        <span class="lead"><span class="lk"><Icon name={priv.status.unlocked ? "unlock" : "lock"} size={15} /></span>Private</span>
+        <span class="lead"><span class="lk"><Icon name={priv.status.unlocked ? "unlock" : "lock"} size={15} /></span>{t("Private")}</span>
         {#if priv.status.unlocked}<span class="count mono pc" in:fadeIn={{ duration: 160 }}>{priv.list.length}</span>{/if}
       </button>
     {/if}
@@ -243,7 +244,7 @@
   {/if}
 
   {#if app.view === "downloads" && app.sources.length}
-    <div class="label">Sources</div>
+    <div class="label">{t("Sources")}</div>
     <nav>
       {#each app.sources as s (s.key)}
         <button class="item" class:on={app.sourceFilter === s.key} aria-current={app.sourceFilter === s.key ? "true" : undefined} onclick={() => pickSource(s.key)}>
@@ -259,52 +260,52 @@
   {#if tagDialog}
     {@const dlg = tagDialog}
     <Modal
-      title={dlg.mode === "new" ? "New tag" : dlg.mode === "rename" ? `Rename "${dlg.tag}"` : `Delete "${dlg.tag}"?`}
+      title={dlg.mode === "new" ? t("New tag") : dlg.mode === "rename" ? t('Rename "{tag}"', { tag: dlg.tag }) : t('Delete "{tag}"?', { tag: dlg.tag })}
       width={420}
       onclose={() => (tagDialog = null)}
     >
       {#if dlg.mode === "delete"}
-        <p class="msg">The tag is taken off {app.directCounts.tags[dlg.tag] === 1 ? "1 contact" : `${app.directCounts.tags[dlg.tag] ?? 0} contacts`}. The contacts themselves stay.</p>
+        <p class="msg">{t("The tag is taken off {n} contacts. The contacts themselves stay.", { n: app.directCounts.tags[dlg.tag] ?? 0 })}</p>
       {:else}
         <input
           class="input"
           bind:value={tagName}
           maxlength="30"
-          placeholder={dlg.mode === "new" ? "Friends, Work…" : ""}
-          aria-label="Tag name"
+          placeholder={dlg.mode === "new" ? t("Friends, Work…") : ""}
+          aria-label={t("Tag name")}
           onkeydown={(e) => e.key === "Enter" && tagName.trim() && saveTag()}
         />
         {#if dlg.mode === "new" && !app.directTags.length}
           <div class="suggest">
-            <span class="hint">Or pick one:</span>
-            {#each SUGGESTED_TAGS as sug (sug)}
+            <span class="hint">{t("Or pick one:")}</span>
+            {#each suggestedTags() as sug (sug)}
               <button class="chip" onclick={() => saveTag(sug)}>{sug}</button>
             {/each}
           </div>
         {/if}
         {#if tagError}<p class="err">{tagError}</p>{/if}
-        <p class="hint">Tags are only on this PC: your contacts never see them.</p>
+        <p class="hint">{t("Tags are only on this PC: your contacts never see them.")}</p>
       {/if}
       {#snippet actions()}
-        <button class="btn ghost" onclick={() => (tagDialog = null)}>Cancel</button>
+        <button class="btn ghost" onclick={() => (tagDialog = null)}>{t("Cancel")}</button>
         {#if dlg.mode === "delete"}
-          <button class="btn danger-fill" onclick={() => saveTag()}><Icon name="trash" size={13} />Delete tag</button>
+          <button class="btn danger-fill" onclick={() => saveTag()}><Icon name="trash" size={13} />{t("Delete tag")}</button>
         {:else}
-          <button class="btn primary" disabled={!tagName.trim()} onclick={() => saveTag()}>{dlg.mode === "new" ? "Add tag" : "Rename"}</button>
+          <button class="btn primary" disabled={!tagName.trim()} onclick={() => saveTag()}>{dlg.mode === "new" ? t("Add tag") : t("Rename")}</button>
         {/if}
       {/snippet}
     </Modal>
   {/if}
 
   <div class="bottom">
-    <button class="item" data-tour="help" title="Help (F1)" onclick={() => help.show()}>
-      <span class="lead"><Icon name="help" size={15} />Help</span>
+    <button class="item" data-tour="help" title={t("Help (F1)")} onclick={() => help.show()}>
+      <span class="lead"><Icon name="help" size={15} />{t("Help")}</span>
     </button>
     <button class="item" onclick={() => onsettings("accounts")}>
-      <span class="lead"><Icon name="user" size={15} />Accounts</span>
+      <span class="lead"><Icon name="user" size={15} />{t("Accounts")}</span>
     </button>
     <button class="item" data-tour="settings" onclick={() => onsettings()}>
-      <span class="lead"><Icon name="settings" size={15} />Settings</span>
+      <span class="lead"><Icon name="settings" size={15} />{t("Settings")}</span>
     </button>
   </div>
 </aside>

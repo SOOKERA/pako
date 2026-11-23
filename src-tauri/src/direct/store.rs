@@ -640,12 +640,12 @@ pub fn find_tag(tags: &[String], name: &str) -> Option<usize> {
 
 /// Adds a tag (or returns the existing one with the same name).
 pub fn add_tag(tags: &mut Vec<String>, name: &str) -> Result<String, String> {
-    let name = clean_tag(name).ok_or("Give the tag a name.")?;
+    let name = clean_tag(name).ok_or_else(|| crate::tr!("Give the tag a name.", "Donnez un nom à l’étiquette."))?;
     if let Some(i) = find_tag(tags, &name) {
         return Ok(tags[i].clone());
     }
     if tags.len() >= MAX_TAGS {
-        return Err(format!("You can have up to {MAX_TAGS} tags."));
+        return Err(crate::tr!("You can have up to {MAX_TAGS} tags.", "Vous pouvez avoir jusqu’à {MAX_TAGS} étiquettes."));
     }
     tags.push(name.clone());
     Ok(name)
@@ -666,8 +666,8 @@ pub fn set_contact_tags(tags: &mut Vec<String>, contact: &mut Contact, wanted: &
 
 /// Renames a tag everywhere; renaming onto an existing tag merges the two.
 pub fn rename_tag(tags: &mut Vec<String>, contacts: &mut [Contact], old: &str, new: &str) -> Result<(), String> {
-    let i = find_tag(tags, old).ok_or("That tag doesn't exist any more.")?;
-    let new = clean_tag(new).ok_or("Give the tag a name.")?;
+    let i = find_tag(tags, old).ok_or_else(|| crate::tr!("That tag doesn't exist any more.", "Cette étiquette n’existe plus."))?;
+    let new = clean_tag(new).ok_or_else(|| crate::tr!("Give the tag a name.", "Donnez un nom à l’étiquette."))?;
     let from = tags[i].clone();
     let into = match find_tag(tags, &new) {
         Some(j) if j != i => {

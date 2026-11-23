@@ -7,6 +7,7 @@
   import { app } from "../state.svelte";
   import { priv } from "../private.svelte";
   import Modal from "../Modal.svelte";
+  import { around, t } from "../i18n.svelte";
 
   const ask = $derived(priv.saveAsks[0]);
 
@@ -15,21 +16,26 @@
     priv.saveAsks = priv.saveAsks.slice(1);
     app.run(async () => {
       await api.privateKeepChanges(a.copy, save);
-      if (save) app.toast("Your changes are saved in Private mode.");
+      if (save) app.toast(t("Your changes are saved in Private mode."));
       await priv.refreshList();
     });
   }
 </script>
 
 {#if ask}
-  <Modal title="Save your changes into Private mode?" width={440} onclose={() => answer(false)} closeLabel="Don't save" outsideCloses={false}>
+  {@const [before, after] = around(
+    t("{name} was changed in the app you opened it with. Save those changes into Private mode, or keep the file as it was? The temporary copy is deleted either way."),
+    "{name}",
+  )}
+  <Modal title={t("Save your changes into Private mode?")} width={440} onclose={() => answer(false)} closeLabel={t("Don't save")} outsideCloses={false}>
     <p class="msg">
-      {#if ask.name}<b>{ask.name}</b> was{:else}A private file you opened was{/if} changed in the app you opened it with. Save those changes into Private mode, or keep the
-      file as it was? The temporary copy is deleted either way.
+      {#if ask.name}{before}<b>{ask.name}</b>{after}{:else}{t(
+          "A private file you opened was changed in the app you opened it with. Save those changes into Private mode, or keep the file as it was? The temporary copy is deleted either way.",
+        )}{/if}
     </p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => answer(false)}>Don't save</button>
-      <button class="btn primary" onclick={() => answer(true)}>Save changes</button>
+      <button class="btn ghost" onclick={() => answer(false)}>{t("Don't save")}</button>
+      <button class="btn primary" onclick={() => answer(true)}>{t("Save changes")}</button>
     {/snippet}
   </Modal>
 {/if}

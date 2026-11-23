@@ -8,13 +8,14 @@
   import { app } from "./state.svelte";
   import { api } from "./api";
   import Icon from "./Icon.svelte";
+  import { around, said, t, type Words } from "./i18n.svelte";
 
   let { id, site = false }: { id: string; site?: boolean } = $props();
 
   let quality = $state(app.settings?.previewQuality ?? 480);
   let src = $state<string | null>(null);
   let converted = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<Words | null>(null);
   let loading = $state(false);
   /** Bumped by each request and by a change of item: an older reply is dropped. */
   let ticket = 0;
@@ -71,7 +72,7 @@
   function failed() {
     if (site) {
       src = null;
-      error = "This video can't be previewed. The site didn't send it.";
+      error = () => t("This video can't be previewed. The site didn't send it.");
     }
   }
 
@@ -83,38 +84,39 @@
 
 <section class="preview">
   <div class="label">
-    Preview
-    {#if src}<span class="muted">{site ? "short clip" : converted ? `${quality}p` : "as it is"}</span>{/if}
+    {t("Preview")}
+    {#if src}<span class="muted">{site ? t("short clip") : converted ? `${quality}p` : t("as it is")}</span>{/if}
   </div>
   <div class="screen">
     {#if src}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video bind:this={video} {src} controls autoplay preload="metadata" onerror={failed}></video>
     {:else}
-      <button class="play" disabled={loading} aria-label="Play a preview" onclick={() => play()}>
+      <button class="play" disabled={loading} aria-label={t("Play a preview")} onclick={() => play()}>
         <Icon name="play" size={18} />
       </button>
       <span class="hint">
-        {#if loading}{site ? "Asking the site…" : "Starting…"}{:else}{site ? "Play a few seconds to check it's the right video" : "Play a short check before downloading"}{/if}
+        {#if loading}{site ? t("Asking the site…") : t("Starting…")}{:else}{site ? t("Play a few seconds to check it's the right video") : t("Play a short check before downloading")}{/if}
       </span>
     {/if}
   </div>
   {#if error}
-    <div class="note">{error}</div>
+    <div class="note">{said(error)}</div>
   {/if}
   {#if site}
-    <div class="note">About 20 seconds at 480p, fetched from the site when you press play.</div>
+    <div class="note">{t("About 20 seconds at 480p, fetched from the site when you press play.")}</div>
   {:else}
-    <div class="seg" role="radiogroup" aria-label="Preview quality">
+    <div class="seg" role="radiogroup" aria-label={t("Preview quality")}>
       {#each [360, 480, 720] as q (q)}
         <button role="radio" aria-checked={quality === q} class:on={quality === q} onclick={() => setQuality(q)}>{q}p</button>
       {/each}
     </div>
   {/if}
   {#if site && !app.ffmpeg}
-    <div class="note">Needs the video tools: Settings › Features &amp; updates › Download videos from YouTube and other sites.</div>
+    <div class="note">{t("Needs the video tools: Settings › Features & updates › Download videos from YouTube and other sites.")}</div>
   {:else if !site && !app.ffmpeg}
-    <div class="note">MP4 and WebM play as they are. For other kinds of video and for {quality}p, install <b>Preview more video types</b> in Settings › Features &amp; updates.</div>
+    {@const [a, b] = around(t("MP4 and WebM play as they are. For other kinds of video and for {q}p, install {tool} in Settings › Features & updates.", { q: quality }), "{tool}")}
+    <div class="note">{a}<b>{t("Preview more video types")}</b>{b}</div>
   {/if}
 </section>
 

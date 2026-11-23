@@ -16,6 +16,7 @@
   import TutorialButton from "./tour/TutorialButton.svelte";
   import DeviceDetails from "./DeviceDetails.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
+  import { around, t } from "./i18n.svelte";
 
   const direct = $derived(app.direct);
   // Devices ride on Direct: opening this page starts it, like the Direct page does.
@@ -35,7 +36,7 @@
   /** Direct relays going through this device (or for it, on the PC passing them on): one
    *  small line each ("Relaying 2 files to Rado"). */
   function relayLines(id: string) {
-    return (d?.relays ?? []).filter((r) => r.device === id && !r.ended).map((r) => `Relaying ${r.files === 1 ? "1 file" : `${r.files} files`} to ${r.toName}`);
+    return (d?.relays ?? []).filter((r) => r.device === id && !r.ended).map((r) => t("Relaying {n} files to {name}", { n: r.files, name: r.toName }));
   }
   const list = $derived.by(() => {
     const rank = (x: Device) => (x.asksToPair ? 0 : x.online ? 1 : 2);
@@ -47,18 +48,18 @@
   });
 
   function status(x: Device) {
-    if (x.asksToPair) return "Wants to pair with this PC";
-    if (x.online && !x.paired) return "Waiting for you to confirm on it";
-    if (x.online) return `Online · ${pathLabel(x.path) || "connected"}`;
-    if (x.waiting || !x.paired) return "Confirm on the other PC";
-    if (d && !d.internet) return "Not reachable without internet";
-    return `Offline · ${ago(x.lastSeen)}`;
+    if (x.asksToPair) return t("Wants to pair with this PC");
+    if (x.online && !x.paired) return t("Waiting for you to confirm on it");
+    if (x.online) return t("Online · {how}", { how: pathLabel(x.path) || t("connected") });
+    if (x.waiting || !x.paired) return t("Confirm on the other PC");
+    if (d && !d.internet) return t("Not reachable without internet");
+    return t("Offline · {seen}", { seen: ago(x.lastSeen) });
   }
-  const moving = (id: string) => (d?.transfers ?? []).filter((t) => t.contact === id && (t.state === "sending" || t.state === "receiving"));
+  const moving = (id: string) => (d?.transfers ?? []).filter((m) => m.contact === id && (m.state === "sending" || m.state === "receiving"));
   function rowPct(id: string) {
     const m = moving(id);
-    const size = m.reduce((a, t) => a + t.size, 0);
-    return size ? Math.min(100, Math.floor((m.reduce((a, t) => a + Math.min(t.done, t.size), 0) / size) * 100)) : 0;
+    const size = m.reduce((a, tr) => a + tr.size, 0);
+    return size ? Math.min(100, Math.floor((m.reduce((a, tr) => a + Math.min(tr.done, tr.size), 0) / size) * 100)) : 0;
   }
 
   // ---------- files dropped on a device's row: sent to it ----------
@@ -83,7 +84,7 @@
   // ---------- this PC ----------
   const shortId = (id: string) => `${id.slice(0, 6)}…${id.slice(-6)}`;
   function copyId() {
-    if (d?.myId) app.run(() => api.copyText(d.myId)).then(() => app.toast("This PC's Pako ID is copied. Enter it on your other PC, under My devices › Add a device."));
+    if (d?.myId) app.run(() => api.copyText(d.myId)).then(() => app.toast(t("This PC's Pako ID is copied. Enter it on your other PC, under My devices › Add a device.")));
   }
 
   // ---------- this PC's name (renamed in place) ----------
@@ -106,7 +107,7 @@
     if (!n || n === d?.pcName) return;
     await app.run(async () => {
       await devicesApi.setPcName(n);
-      app.toast(`This PC is now called ${n} on your devices.`);
+      app.toast(t("This PC is now called {name} on your devices.", { name: n }));
       devices.refresh();
     });
   }
@@ -144,20 +145,20 @@
   $effect(() => {
     if (!devices.adding || folderPicked) return;
     const n = newName;
-    devicesApi.defaultFolder(n.trim() || "my device").then((f) => {
+    devicesApi.defaultFolder(n.trim()).then((f) => {
       if (!folderPicked && newName === n) folder = f;
     }, () => {});
   });
   async function chooseFolder(title: string): Promise<string | null> {
     if (!inApp) {
-      app.toast("Preview mode: no folder picker.");
+      app.toast(t("Preview mode: no folder picker."));
       return null;
     }
     const r = await pick({ directory: true, multiple: false, title });
     return typeof r === "string" ? r : null;
   }
   async function pickAddFolder() {
-    const f = await chooseFolder("Where files from this device are saved");
+    const f = await chooseFolder(t("Where files from this device are saved"));
     if (f) {
       folder = f;
       folderPicked = true;
@@ -166,7 +167,7 @@
   async function addDevice() {
     addError = "";
     if (nameMissing && !pcName.trim()) {
-      addError = "Name this PC first: your other PC sees this name.";
+      addError = t("Name this PC first: your other PC sees this name.");
       return;
     }
     busy = true;
@@ -175,7 +176,7 @@
       await devicesApi.add(newId.trim(), newName.trim(), folder || null);
       devices.adding = false;
       devices.picked = null;
-      app.toast("Paired on this PC. Now confirm on the other one: it asks you there.");
+      app.toast(t("Paired on this PC. Now confirm on the other one: it asks you there."));
       devices.refresh();
     } catch (e) {
       addError = String(e);
@@ -243,7 +244,7 @@
         else await devicesApi.add(a.id, null, f);
         if (yes) {
           devices.picked = a.id;
-          app.toast(`${a.name} is paired. Files between your two PCs now go without asking.`);
+          app.toast(t("{name} is paired. Files between your two PCs now go without asking.", { name: a.name }));
         }
         devices.refresh();
       });
@@ -252,22 +253,26 @@
     }
   }
   async function changeAskFolder(a: Ask) {
-    const f = await chooseFolder(`Where files from ${a.name} are saved`);
+    const f = await chooseFolder(t("Where files from {name} are saved", { name: a.name }));
     if (f) askFolders = { ...askFolders, [a.id]: f };
   }
+  /** The questions' sentences, around the name in bold. */
+  const wantsLine = $derived(around(t("{name} wants to pair with this PC as one of your devices."), "{name}"));
+  const saysLine = $derived(around(t("{name}, one of your Direct contacts, says this PC is one of its devices."), "{name}"));
+  const checkLine = $derived(around(t("Check that {name} shows the same safety code:"), "{name}"));
 </script>
 
 <div class="devices">
   <div class="toolbar">
-    <h1>My devices</h1>
+    <h1>{t("My devices")}</h1>
     <TutorialButton id="devices" />
-    <span class="dim small sub">Your own PCs: send files between them, see and start their downloads</span>
+    <span class="dim small sub">{t("Your own PCs: send files between them, see and start their downloads")}</span>
   </div>
 
   {#if !direct}
-    <div class="center dim">Starting…</div>
+    <div class="center dim">{t("Starting…")}</div>
   {:else if !direct.ready || !d}
-    <div class="center dim">{direct.error ?? "Getting ready…"}</div>
+    <div class="center dim">{direct.error ?? t("Getting ready…")}</div>
   {:else}
     {#if asks.length}
       <div class="asks">
@@ -276,24 +281,24 @@
             <span class="avatar">{initial(a.name)}</span>
             <div class="asktext">
               {#if a.request}
-                <div class="askhead"><b>{a.name}</b> wants to pair with this PC as one of your devices.</div>
+                <div class="askhead">{wantsLine[0]}<b>{a.name}</b>{wantsLine[1]}</div>
                 {#if a.knownAs}
-                  <p class="warn">You already have a device or contact called {a.knownAs}. This is a different PC: if you expected {a.knownAs}, decline.</p>
+                  <p class="warn">{t("You already have a device or contact called {name}. This is a different PC: if you expected {name}, decline.", { name: a.knownAs })}</p>
                 {/if}
               {:else}
-                <div class="askhead"><b>{a.name}</b>, one of your Direct contacts, says this PC is one of its devices.</div>
+                <div class="askhead">{saysLine[0]}<b>{a.name}</b>{saysLine[1]}</div>
               {/if}
-              <p class="dim">Check that <b>{a.name}</b> shows the same safety code: <span class="mono code">{a.code}</span>. If it doesn't, {a.request ? "decline" : "don't confirm"}. Only for your own PCs: it can then send files here without asking, see and add to this PC's downloads, get finished ones, see your Direct contacts and your history with them, and send files to them through this PC.</p>
+              <p class="dim">{checkLine[0]}<b>{a.name}</b>{checkLine[1]} <span class="mono code">{a.code}</span>. {a.request ? t("If it doesn't, decline.") : t("If it doesn't, don't confirm.")} {t("Only for your own PCs: it can then send files here without asking, see and add to this PC's downloads, get finished ones, see your Direct contacts and your history with them, and send files to them through this PC.")}</p>
               <div class="frow">
-                <span class="mlabel">Its files are saved in</span>
+                <span class="mlabel">{t("Its files are saved in")}</span>
                 <span class="path mono" title={askFolders[a.id]}>{askFolders[a.id] || "…"}</span>
-                <button class="btn small" onclick={() => changeAskFolder(a)}>Change…</button>
+                <button class="btn small" onclick={() => changeAskFolder(a)}>{t("Change…")}</button>
                 {#if nameMissing}
-                  <input class="input small" class:missing={needName} bind:value={askName} placeholder="This PC's name (like Desk PC)" maxlength="60" aria-label="This PC's name" aria-invalid={needName} />
+                  <input class="input small" class:missing={needName} bind:value={askName} placeholder={t("This PC's name (like Desk PC)")} maxlength="60" aria-label={t("This PC's name")} aria-invalid={needName} />
                 {/if}
                 <div class="askgo">
-                  <button class="btn small ghost" disabled={answering === a.id} onclick={() => confirm(a, false)}>{a.request ? "Decline" : "Not now"}</button>
-                  <button class="btn small primary" class:arming={!armed(a)} aria-disabled={!armed(a)} disabled={answering === a.id} onclick={() => confirm(a, true)}><Icon name="check" size={12} stroke={2.4} />This is my device</button>
+                  <button class="btn small ghost" disabled={answering === a.id} onclick={() => confirm(a, false)}>{a.request ? t("Decline") : t("Not now")}</button>
+                  <button class="btn small primary" class:arming={!armed(a)} aria-disabled={!armed(a)} disabled={answering === a.id} onclick={() => confirm(a, true)}><Icon name="check" size={12} stroke={2.4} />{t("This is my device")}</button>
                 </div>
               </div>
             </div>
@@ -307,27 +312,27 @@
         <div class="body solo" transition:fadeIn={{ duration: 220 }}>
           <section class="card welcome" data-tour="devices-welcome">
             <div class="empty-icon"><Icon name="devices" size={26} /></div>
-            <h3>Your PCs, together</h3>
-            <p class="dim">Pair your own PCs once, like this one and your laptop. Then send files between them without anyone accepting, see the other PC's downloads live, and start downloads on it from here. Everything goes PC to PC, encrypted: on your home network it doesn't even use the internet.</p>
+            <h3>{t("Your PCs, together")}</h3>
+            <p class="dim">{t("Pair your own PCs once, like this one and your laptop. Then send files between them without anyone accepting, see the other PC's downloads live, and start downloads on it from here. Everything goes PC to PC, encrypted: on your home network it doesn't even use the internet.")}</p>
             <div class="idbox">
-              <span class="mlabel">This PC's Pako ID</span>
+              <span class="mlabel">{t("This PC's Pako ID")}</span>
               <div class="idrow">
                 <span class="mono idtext" title={d.myId}>{d.myId}</span>
-                <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />Copy</button>
+                <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />{t("Copy")}</button>
               </div>
-              <span class="hint">On your other PC, open My devices › Add a device and enter this ID, or enter that PC's ID here.</span>
+              <span class="hint">{t("On your other PC, open My devices › Add a device and enter this ID, or enter that PC's ID here.")}</span>
             </div>
-            <button class="btn primary" onclick={openAdd}><Icon name="plus" size={14} stroke={2.2} />Add a device</button>
+            <button class="btn primary" onclick={openAdd}><Icon name="plus" size={14} stroke={2.2} />{t("Add a device")}</button>
           </section>
         </div>
       {:else}
         <div class="body" transition:fadeIn={{ duration: 220 }}>
           <aside class="side card" data-tour="devices-list">
             <div class="phead">
-              <span class="ptitle">Your devices</span>
+              <span class="ptitle">{t("Your devices")}</span>
               <span class="pcount mono">{list.length}</span>
               <div class="spacer"></div>
-              <button class="btn small" onclick={openAdd} title="Pair another of your PCs"><Icon name="plus" size={12} stroke={2.2} />Add</button>
+              <button class="btn small" onclick={openAdd} title={t("Pair another of your PCs")}><Icon name="plus" size={12} stroke={2.2} />{t("Add")}</button>
             </div>
             <div class="plist">
               {#each list as x (x.id)}
@@ -340,13 +345,13 @@
                   ondragover={(e) => rowOver(e, x)}
                   ondragleave={() => dropRow === x.id && (dropRow = null)}
                   ondrop={(e) => rowDrop(e, x)}
-                  title={x.paired ? `Drop files here to send them to ${x.name}` : undefined}
+                  title={x.paired ? t("Drop files here to send them to {name}", { name: x.name }) : undefined}
                   transition:rowSlide={{ duration: 220 }} animate:flipIf={flipOpts}>
                   <span class="avatar dev"><Icon name="devices" size={15} /><span class="dot" class:online={x.online} class:local={onLan(x)} class:wait={!x.paired}></span></span>
                   <span class="ptext">
                     <span class="pname">{x.name}</span>
                     {#if m.length}
-                      <span class="pstat live"><Icon name={m.some((t) => t.outgoing) ? "up" : "down"} size={11} stroke={2.4} />{m.some((t) => t.outgoing) ? "Sending" : "Receiving"} {rowPct(x.id)}%</span>
+                      <span class="pstat live"><Icon name={m.some((tr) => tr.outgoing) ? "up" : "down"} size={11} stroke={2.4} />{m.some((tr) => tr.outgoing) ? t("Sending {pct}%", { pct: rowPct(x.id) }) : t("Receiving {pct}%", { pct: rowPct(x.id) })}</span>
                     {:else}
                       <span class="pstat">{status(x)}</span>
                     {/if}
@@ -354,31 +359,31 @@
                       <span class="pstat relay" transition:rowSlide={{ duration: 200 }}><Icon name="send" size={10} stroke={2.4} />{line}</span>
                     {/each}
                   </span>
-                  {#if x.asksToPair}<span class="badge" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>!</span>{/if}
+                  {#if x.asksToPair}<span class="badge" title={t("Waiting for your answer")} transition:pop={{ duration: 180, from: 0.92, y: 0 }}>!</span>{/if}
                   {#if m.length}<span class="rowbar" aria-hidden="true" transition:fadeIn={{ duration: 200 }}><i style:transform="scaleX({rowPct(x.id) / 100})"></i></span>{/if}
                 </button>
               {/each}
             </div>
             <div class="me">
-              <span class="mlabel">This PC</span>
+              <span class="mlabel">{t("This PC")}</span>
               {#if editingName}
                 <input
                   class="input mename-edit"
                   bind:this={nameInput}
                   bind:value={nameDraft}
                   maxlength="60"
-                  placeholder="Like Desk PC"
-                  aria-label="This PC's name"
+                  placeholder={t("Like Desk PC")}
+                  aria-label={t("This PC's name")}
                   onkeydown={nameKey}
                   onblur={saveName} />
               {:else}
-                <button class="mename" class:unset={!d.pcName} title="Rename this PC (your other PCs see this name)" onclick={editName}>
-                  <span class="mtext">{d.pcName || "Name this PC"}</span><Icon name="pencil" size={11} />
+                <button class="mename" class:unset={!d.pcName} title={t("Rename this PC (your other PCs see this name)")} onclick={editName}>
+                  <span class="mtext">{d.pcName || t("Name this PC")}</span><Icon name="pencil" size={11} />
                 </button>
               {/if}
               <div class="idrow">
                 <span class="mono idtext" title={d.myId}>{shortId(d.myId)}</span>
-                <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />Copy ID</button>
+                <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />{t("Copy ID")}</button>
               </div>
             </div>
           </aside>
@@ -396,35 +401,35 @@
 </div>
 
 {#if devices.adding && d}
-  <Modal title="Add a device" width={520} onclose={() => (devices.adding = false)}>
+  <Modal title={t("Add a device")} width={520} onclose={() => (devices.adding = false)}>
     <div class="form">
-      <p class="dim lead">Pair another of your own PCs. Do this on both PCs, or enter one PC's ID on the other: the other PC then asks you to confirm.</p>
-      <span class="mlabel">This PC's Pako ID</span>
+      <p class="dim lead">{t("Pair another of your own PCs. Do this on both PCs, or enter one PC's ID on the other: the other PC then asks you to confirm.")}</p>
+      <span class="mlabel">{t("This PC's Pako ID")}</span>
       <div class="idrow boxed">
         <span class="mono idtext" title={d.myId}>{d.myId}</span>
-        <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />Copy</button>
+        <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />{t("Copy")}</button>
       </div>
       {#if nameMissing}
-        <label class="mlabel" for="pcname">This PC's name</label>
-        <input id="pcname" class="input" bind:value={pcName} placeholder="Like Desk PC (your other PC sees it)" maxlength="60" />
+        <label class="mlabel" for="pcname">{t("This PC's name")}</label>
+        <input id="pcname" class="input" bind:value={pcName} placeholder={t("Like Desk PC (your other PC sees it)")} maxlength="60" />
       {/if}
       <div class="sep"></div>
-      <label class="mlabel" for="devid">The other PC's Pako ID</label>
-      <input id="devid" class="input mono" bind:value={newId} placeholder="On that PC: My devices › Add a device › Copy" spellcheck="false" />
-      <label class="mlabel" for="devname">Its name</label>
-      <input id="devname" class="input" bind:value={newName} placeholder="Like Laptop or Home PC" maxlength="60" onkeydown={(e) => e.key === "Enter" && addDevice()} />
-      <span class="mlabel">Files from it are saved in</span>
+      <label class="mlabel" for="devid">{t("The other PC's Pako ID")}</label>
+      <input id="devid" class="input mono" bind:value={newId} placeholder={t("On that PC: My devices › Add a device › Copy")} spellcheck="false" />
+      <label class="mlabel" for="devname">{t("Its name")}</label>
+      <input id="devname" class="input" bind:value={newName} placeholder={t("Like Laptop or Home PC")} maxlength="60" onkeydown={(e) => e.key === "Enter" && addDevice()} />
+      <span class="mlabel">{t("Files from it are saved in")}</span>
       <div class="idrow boxed">
         <span class="mono idtext" title={folder}>{folder || "…"}</span>
-        <button class="btn small" onclick={pickAddFolder}><Icon name="folder" size={12} />Change…</button>
+        <button class="btn small" onclick={pickAddFolder}><Icon name="folder" size={12} />{t("Change…")}</button>
       </div>
-      <p class="dim small">Files from this device are saved here, and only here. It can't pick another place on this PC.</p>
+      <p class="dim small">{t("Files from this device are saved here, and only here. It can't pick another place on this PC.")}</p>
       {#if addError}<p class="err" role="alert">{addError}</p>{/if}
-      <p class="dim small">The other PC asks you to confirm and shows a safety code: check that it's the same on both PCs.</p>
+      <p class="dim small">{t("The other PC asks you to confirm and shows a safety code: check that it's the same on both PCs.")}</p>
     </div>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (devices.adding = false)}>Cancel</button>
-      <button class="btn primary" disabled={!newId.trim() || !newName.trim() || busy} onclick={addDevice}>Pair this device</button>
+      <button class="btn ghost" onclick={() => (devices.adding = false)}>{t("Cancel")}</button>
+      <button class="btn primary" disabled={!newId.trim() || !newName.trim() || busy} onclick={addDevice}>{t("Pair this device")}</button>
     {/snippet}
   </Modal>
 {/if}

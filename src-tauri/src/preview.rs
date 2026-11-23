@@ -47,8 +47,15 @@ const FOUND_FOR: Duration = Duration::from_secs(20 * 60);
 /// What yt-dlp picks for a preview: one small file with picture and sound when there is one,
 /// else small picture + sound. Never DASH pieces (ffmpeg can't pick one stream out of them).
 const SITE_FORMAT: &str = "b[height<=480][protocol!*=dash]/bv*[height<=480][protocol!*=dash]+ba[protocol!*=dash]/b[protocol!*=dash]/bv*[protocol!*=dash]+ba[protocol!*=dash]";
-const NEEDS_TOOLS: &str = "Previewing this video needs the video tools: Settings › Features & updates › Download videos from YouTube and other sites.";
-const LIVE: &str = "Live streams can't be previewed.";
+fn needs_tools() -> String {
+    tr!(
+        "Previewing this video needs the video tools: Settings › Features & updates › Download videos from YouTube and other sites.",
+        "L’aperçu de cette vidéo a besoin des outils vidéo : Paramètres › Fonctions et mises à jour › Télécharger des vidéos depuis YouTube et d’autres sites."
+    )
+}
+fn live() -> String {
+    tr!("Live streams can't be previewed.", "Les directs ne peuvent pas avoir d’aperçu.")
+}
 
 #[derive(Default)]
 struct SiteSlot {
@@ -167,7 +174,7 @@ impl Preview {
             let map = self.entries.lock().unwrap();
             map.get(token).and_then(|e| Some((e.source.clone(), e.owner.clone(), e.site.clone()?)))
         };
-        let Some((source, owner, slot)) = entry else { return Err("This preview is gone. Press play again.".into()) };
+        let Some((source, owner, slot)) = entry else { return Err(tr!("This preview is gone. Press play again.", "Cet aperçu n’est plus là. Appuyez à nouveau sur lecture.")) };
         // One question to yt-dlp at a time per preview; the others wait for its answer.
         let mut found = slot.found.lock().await;
         if let Some((at, clip)) = &*found {
@@ -280,7 +287,7 @@ impl Preview {
             Ok(c) => c,
             Err(m) => return refuse(sock, &m).await,
         };
-        let Some(ffmpeg) = crate::components::ffmpeg() else { return refuse(sock, NEEDS_TOOLS).await };
+        let Some(ffmpeg) = crate::components::ffmpeg() else { return refuse(sock, &needs_tools()).await };
         let mut cmd = tokio::process::Command::new(&ffmpeg);
         // From its own folder, never Pako's working folder (DLLs placed there aren't loaded).
         crate::components::in_own_folder_async(&mut cmd, AsRef::<std::path::Path>::as_ref(&ffmpeg));
@@ -295,7 +302,7 @@ impl Preview {
             Ok(c) => c,
             Err(m) => return refuse(sock, &m).await,
         };
-        let Some(input) = clip.inputs.get(n).filter(|i| !i.pieces) else { return refuse(sock, "No such stream.").await };
+        let Some(input) = clip.inputs.get(n).filter(|i| !i.pieces) else { return refuse(sock, &tr!("No such stream.", "Ce flux n’existe pas.")).await };
         let mut req = self.http.get(&input.url);
         for (k, v) in &input.headers {
             req = req.header(k.as_str(), v.as_str());
@@ -305,8 +312,8 @@ impl Preview {
         }
         match req.send().await {
             Ok(resp) if resp.status().is_success() => pass_through(sock, resp, None).await,
-            Ok(resp) => refuse(sock, &format!("The site refused the preview ({}).", resp.status().as_u16())).await,
-            Err(_) => refuse(sock, "No connection to the site.").await,
+            Ok(resp) => refuse(sock, &tr!("The site refused the preview ({}).", "Le site a refusé l’aperçu ({}).", resp.status().as_u16())).await,
+            Err(_) => refuse(sock, &crate::model::say(crate::video::NO_SITE)).await,
         }
     }
 }
@@ -333,7 +340,7 @@ impl Preview {
 async fn serve_vault(mut sock: TcpStream, file: std::path::PathBuf, name: &str, range: Option<&str>) -> Result<()> {
     let reader = match tauri::async_runtime::spawn_blocking(move || crate::vault::get().reader(&file)).await {
         Ok(Ok(r)) => Arc::new(r),
-        _ => return refuse(sock, "This private video can't be read now.").await,
+        _ => return refuse(sock, &tr!("This private video can't be read now.", "Cette vidéo privée ne peut pas être lue pour le moment.")).await,
     };
     let len = reader.len();
     let (from, to) = parse_range(range);
@@ -526,16 +533,16 @@ fn clean(s: &str) -> String {
 }
 
 fn cant(why: &str) -> String {
-    format!("This video can't be previewed. {why}")
+    tr!("This video can't be previewed. {why}", "Cette vidéo ne peut pas avoir d’aperçu. {why}")
 }
 
 /// Asks yt-dlp for a small stream of a video-site link (nothing is downloaded).
 async fn find_clip(source: &Source, owner: Option<&str>) -> Result<Clip, String> {
-    let Source::Video { url, referrer, recording, .. } = source else { return Err(cant("It isn't a video-site link.")) };
+    let Source::Video { url, referrer, recording, .. } = source else { return Err(cant(&tr!("It isn't a video-site link.", "Ce n’est pas un lien de site vidéo."))) };
     if recording.is_some() {
-        return Err(cant("It is recorded from the page as it plays."));
+        return Err(cant(&tr!("It is recorded from the page as it plays.", "Elle est enregistrée depuis la page pendant la lecture.")));
     }
-    let (Some(t), Some(_)) = (crate::video::tools(), crate::components::ffmpeg()) else { return Err(NEEDS_TOOLS.into()) };
+    let (Some(t), Some(_)) = (crate::video::tools(), crate::components::ffmpeg()) else { return Err(needs_tools()) };
     // The browser's login for this video, when it came from the browser (deleted right after).
     let jar = owner.and_then(crate::video::cookie_file_for);
     let mut cmd = tokio::process::Command::new(&t.yt_dlp);
@@ -559,7 +566,7 @@ async fn find_clip(source: &Source, owner: Option<&str>) -> Result<Clip, String>
     }
     cmd.args(["-J", "--no-playlist", "--no-warnings", "-f", SITE_FORMAT]).arg("--").arg(url);
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
-    let child = crate::video::spawn(&mut cmd).map_err(|e| format!("Couldn't start the video tool: {e}"))?;
+    let child = crate::video::spawn(&mut cmd).map_err(|e| tr!("Couldn't start the video tool: {e}", "Impossible de lancer l’outil vidéo : {e}"))?;
     let pid = child.id();
     // Kept here (not inside a timeout) so that yt-dlp's launcher still runs when the time is up:
     // the tree is ended from it first (its Python part, Deno). Dropping it first would end only
@@ -569,13 +576,13 @@ async fn find_clip(source: &Source, owner: Option<&str>) -> Result<Clip, String>
     let out = tokio::select! {
         r = &mut wait => match r {
             Ok(o) => o,
-            Err(e) => return Err(format!("The video tool stopped: {e}")),
+            Err(e) => return Err(tr!("The video tool stopped: {e}", "L’outil vidéo s’est arrêté : {e}")),
         },
         _ = tokio::time::sleep(FIND_LIMIT) => {
             if let Some(pid) = pid {
                 let _ = tokio::task::spawn_blocking(move || crate::video::kill_tree(pid)).await;
             }
-            return Err("The site took too long to answer.".into());
+            return Err(tr!("The site took too long to answer.", "Le site a mis trop de temps à répondre."));
         }
     };
     drop(jar);
@@ -593,10 +600,10 @@ fn site_error(stderr: &str) -> String {
         return crate::video::friendly_error(stderr).0;
     }
     if lower.contains("is live") || lower.contains("live stream") || lower.contains("livestream") {
-        return LIVE.into();
+        return live();
     }
     let (msg, _) = crate::video::friendly_error(stderr);
-    if crate::video::is_network(&msg) || msg == crate::video::SITE_CHANGED {
+    if crate::video::is_network(&msg) || crate::model::is_said(&msg, crate::video::SITE_CHANGED) {
         msg
     } else {
         cant(&msg)
@@ -639,25 +646,25 @@ struct ClipInfo {
 
 /// Reads yt-dlp's answer (`-J -f SITE_FORMAT`) into the streams ffmpeg reads.
 fn parse_clip(json: &str) -> Result<Clip, String> {
-    let info: ClipInfo = serde_json::from_str(json).map_err(|_| "The video tool gave an answer Pako couldn't read.".to_string())?;
+    let info: ClipInfo = serde_json::from_str(json).map_err(|_| crate::model::say(crate::video::UNREADABLE))?;
     if info.is_live == Some(true) || info.live_status.as_deref() == Some("is_live") {
-        return Err(LIVE.into());
+        return Err(live());
     }
     let formats = match info.requested_formats {
         Some(list) if !list.is_empty() => list,
         _ => vec![info.top],
     };
     if formats.iter().any(|f| f.has_drm.as_ref().is_some_and(|v| v.as_bool() == Some(true))) {
-        return Err(cant(crate::video::DRM));
+        return Err(cant(&crate::model::say(crate::video::DRM)));
     }
-    const UNREADABLE: &str = "The site sends it in a way the preview can't read.";
+    let unreadable = || cant(&tr!("The site sends it in a way the preview can't read.", "Le site l’envoie d’une façon que l’aperçu ne sait pas lire."));
     let mut inputs = Vec::new();
     for f in formats {
-        let Some(url) = f.url.filter(|u| u.starts_with("https://") || u.starts_with("http://")) else { return Err(cant(UNREADABLE)) };
+        let Some(url) = f.url.filter(|u| u.starts_with("https://") || u.starts_with("http://")) else { return Err(unreadable()) };
         let pieces = match f.protocol.as_deref().unwrap_or("https") {
             "http" | "https" if f.fragments.is_none() => false,
             "m3u8" | "m3u8_native" => true,
-            _ => return Err(cant(UNREADABLE)),
+            _ => return Err(unreadable()),
         };
         let mut headers: Vec<(String, String)> = f.http_headers.unwrap_or_default().into_iter().collect();
         if let Some(c) = f.cookies.as_deref().map(crate::video::cookie_header).filter(|c| !c.is_empty()) {
@@ -667,13 +674,13 @@ fn parse_clip(json: &str) -> Result<Clip, String> {
         // ffmpeg reads HLS pieces itself: a login would have to go on its command line, where
         // other programs can read it. Not done.
         if pieces && headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("cookie")) {
-            return Err(cant("It needs your browser login, which the preview doesn't pass on."));
+            return Err(cant(&tr!("It needs your browser login, which the preview doesn't pass on.", "Elle a besoin de la connexion de votre navigateur, que l’aperçu ne transmet pas.")));
         }
         let has = |c: &Option<String>| c.as_deref() != Some("none");
         inputs.push(Input { url, headers, pieces, video: has(&f.vcodec), audio: has(&f.acodec) });
     }
     if !inputs.iter().any(|i| i.video) {
-        return Err(cant("It has no picture."));
+        return Err(cant(&tr!("It has no picture.", "Elle n’a pas d’image.")));
     }
     // Longer videos: a few seconds in, past a dark intro.
     let start = if info.duration.is_some_and(|d| d >= 60.0) { 5 } else { 0 };
@@ -807,7 +814,7 @@ mod tests {
 
     #[test]
     fn says_why_a_video_cant_be_previewed() {
-        assert_eq!(parse_clip(r#"{"is_live": true, "url": "https://x/l.m3u8", "protocol": "m3u8"}"#).unwrap_err(), LIVE);
+        assert_eq!(parse_clip(r#"{"is_live": true, "url": "https://x/l.m3u8", "protocol": "m3u8"}"#).unwrap_err(), live());
         assert!(parse_clip(r#"{"url": "https://x/v", "protocol": "https", "has_drm": true}"#).unwrap_err().starts_with("This video can't be previewed."));
         assert!(parse_clip(r#"{"url": "https://x/m.mpd", "protocol": "http_dash_segments"}"#).unwrap_err().contains("can't read"));
         assert!(parse_clip(r#"{"url": "https://x/i.m3u8", "protocol": "m3u8", "cookies": "a=1"}"#).unwrap_err().contains("login"));
@@ -815,7 +822,7 @@ mod tests {
         assert!(parse_clip(r#"{"url": "https://x/a", "protocol": "https", "vcodec": "none", "acodec": "mp4a"}"#).unwrap_err().contains("no picture"));
         assert_eq!(site_error("ERROR: [youtube] abc: Private video. Sign in"), "This video can't be previewed. This video is private.");
         assert!(site_error("ERROR: [youtube] abc: Sign in to confirm your age").starts_with("This video can't be previewed. Age-restricted"));
-        assert_eq!(site_error("ERROR: [twitch:stream] x: The channel is live stream only"), LIVE);
+        assert_eq!(site_error("ERROR: [twitch:stream] x: The channel is live stream only"), live());
         assert_eq!(site_error("ERROR: Unable to download webpage: timed out"), "No connection to the site.");
     }
 }

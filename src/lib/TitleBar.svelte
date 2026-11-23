@@ -13,6 +13,7 @@
   import WinButton from "./WinButton.svelte";
   import Bell from "./Bell.svelte";
   import { theme } from "./theme.svelte";
+  import { t } from "./i18n.svelte";
 
   let {
     onpastelinks,
@@ -41,7 +42,15 @@
    *  typing there goes to Downloads). The search belongs to its page: changing page clears it,
    *  so a forgotten filter never hides downloads elsewhere. */
   const searchWhat = $derived(
-    app.view === "found" ? "Search links" : app.view === "send" ? "Search uploads" : app.view === "direct" ? "Search contacts" : app.view === "downloads" && priv.showing ? "Search private downloads" : "Search downloads",
+    app.view === "found"
+      ? { hint: t("Search links, or paste links to download"), label: t("Search links, or paste links") }
+      : app.view === "send"
+        ? { hint: t("Search uploads, or paste links to download"), label: t("Search uploads, or paste links") }
+        : app.view === "direct"
+          ? { hint: t("Search contacts, or paste links to download"), label: t("Search contacts, or paste links") }
+          : app.view === "downloads" && priv.showing
+            ? { hint: t("Search private downloads, or paste links to download"), label: t("Search private downloads, or paste links") }
+            : { hint: t("Search downloads, or paste links to download"), label: t("Search downloads, or paste links") },
   );
   let typedAway = false;
   function onSearchInput() {
@@ -98,15 +107,15 @@
       <input
         bind:this={searchEl}
         bind:value={app.search}
-        placeholder="{searchWhat}, or paste links to download"
-        aria-label="{searchWhat}, or paste links"
+        placeholder={searchWhat.hint}
+        aria-label={searchWhat.label}
         spellcheck="false"
         onkeydown={onSearchKey}
         oninput={onSearchInput}
         onpaste={onSearchPaste}
       />
       {#if app.search}
-        <button class="clear" aria-label="Clear search" onclick={() => (app.search = "")}><Icon name="x" size={11} stroke={2.2} /></button>
+        <button class="clear" aria-label={t("Clear search")} onclick={() => (app.search = "")}><Icon name="x" size={11} stroke={2.2} /></button>
       {:else}
         <kbd>Ctrl F</kbd>
       {/if}
@@ -119,8 +128,8 @@
     <button
       class="tool mode"
       class:light={theme.shown === "light"}
-      aria-label={theme.shown === "light" ? "Dark mode" : "Light mode"}
-      title={theme.shown === "light" ? "Dark mode" : "Light mode"}
+      aria-label={theme.shown === "light" ? t("Dark mode") : t("Light mode")}
+      title={theme.shown === "light" ? t("Dark mode") : t("Light mode")}
       onclick={() => app.run(() => theme.toggle())}
     >
       <svg class="sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -134,8 +143,8 @@
     <button
       class="tool layout"
       class:on={app.panelOpen}
-      aria-label={app.panelOpen ? "Hide details panel (Ctrl+I)" : "Show details panel (Ctrl+I)"}
-      title={app.panelOpen ? "Hide details panel (Ctrl+I)" : "Show details panel (Ctrl+I)"}
+      aria-label={app.panelOpen ? t("Hide details panel (Ctrl+I)") : t("Show details panel (Ctrl+I)")}
+      title={app.panelOpen ? t("Hide details panel (Ctrl+I)") : t("Show details panel (Ctrl+I)")}
       onclick={() => app.togglePanel()}
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
@@ -146,15 +155,15 @@
     </button>
     <span class="sep"></span>
     {#if !app.settings?.minimizeToTray}
-      <WinButton kind="tray" label="Hide in the taskbar tray" title="Hide in the taskbar tray (keeps downloading)" onclick={() => app.run(() => api.hideToTray())} />
+      <WinButton kind="tray" label={t("Hide in the taskbar tray")} title={t("Hide in the taskbar tray (keeps downloading)")} onclick={() => app.run(() => api.hideToTray())} />
     {/if}
     <WinButton
       kind="minimize"
-      label={app.settings?.minimizeToTray ? "Minimize to the taskbar tray" : "Minimize"}
+      label={app.settings?.minimizeToTray ? t("Minimize to the taskbar tray") : t("Minimize")}
       onclick={() => (app.settings?.minimizeToTray ? app.run(() => api.hideToTray()) : win?.minimize())}
     />
-    <WinButton kind={maximized ? "restore" : "maximize"} label={maximized ? "Restore" : "Maximize"} onclick={() => win?.toggleMaximize()} />
-    <WinButton kind="close" label="Close" onclick={() => win?.close()} />
+    <WinButton kind={maximized ? "restore" : "maximize"} label={maximized ? t("Restore") : t("Maximize")} onclick={() => win?.toggleMaximize()} />
+    <WinButton kind="close" label={t("Close")} onclick={() => win?.close()} />
   </div>
 </div>
 

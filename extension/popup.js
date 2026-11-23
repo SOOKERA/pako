@@ -15,14 +15,83 @@ const NOT_CONNECTED = "Pako isn't connected. Click the Pako button in the toolba
 /** Opens Pako and connects it to the browsers (Pako registers this link for itself). */
 const CONNECT_LINK = "pako://connect";
 
+// ---------- Pako's language (lang.js) ----------
+// This window speaks Pako's language, as the extension last heard it (`pakoLang`), and follows
+// Pako's answer when it asks. The last one it showed is also kept in its own storage, read at
+// once, so it opens in it straight away.
+
+const WORDS = globalThis.__pakoWords;
+let lang = "en";
+try {
+  lang = WORDS ? WORDS.langOf(localStorage.getItem("pakoLang")) : "en";
+} catch {
+  // no storage of its own here: the extension's, a moment later
+}
+const tr = (key, vars) => (WORDS ? WORDS.tr(lang, key, vars) : key);
+/** Text that may be one of the extension's (or an older Pako's) English sentences. */
+const trMaybe = (text) => (WORDS ? WORDS.maybe(lang, text) : text);
+/** The words this window was written with (popup.html), by text and label. */
+const written = new Map();
+/** What the script put in an element since: shown again in a new language. */
+const shown = new Map();
+
+/** Puts `words` (a function, so a new language says it again) in `el`. */
+function show(el, words) {
+  shown.set(el, words);
+  el.textContent = words();
+}
+
+/** The page in the language of the moment. */
+function translatePage() {
+  if (document.documentElement) document.documentElement.lang = lang;
+  if (!written.size && typeof document.createTreeWalker === "function" && document.body) {
+    // (4: the walker's "text nodes only".)
+    const walk = document.createTreeWalker(document.body, 4);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) if (n.nodeValue.trim()) written.set(n, n.nodeValue);
+    for (const el of document.querySelectorAll("[aria-label]")) written.set(el, el.getAttribute("aria-label"));
+  }
+  for (const [node, text] of written) {
+    if (node.nodeType !== 3) {
+      node.setAttribute("aria-label", tr(text));
+      continue;
+    }
+    // (The spaces around a text stay: "No Pako on this PC yet? " before its link.)
+    const [, before, words, after] = /^(\s*)([\s\S]*?)(\s*)$/.exec(text);
+    const said = before + tr(words) + after;
+    if (node.nodeValue !== said) node.nodeValue = said;
+  }
+  for (const [el, words] of shown) el.textContent = words();
+}
+
+/** Pako's language, as said (`value`); a change shows every word again in it. */
+function setLang(value) {
+  const next = WORDS ? WORDS.langOf(value) : "en";
+  try {
+    localStorage.setItem("pakoLang", next);
+  } catch {
+    // only this window's own copy: the extension's storage still has it
+  }
+  if (next === lang) return;
+  lang = next;
+  translatePage();
+}
+
+/** "Pako isn't connected", in either language. */
+const notConnected = (text) => text === NOT_CONNECTED || (!!WORDS && text === WORDS.tr("fr", NOT_CONNECTED));
+
+translatePage();
+
+/** The error shown now, as it came (a new language says it again). */
+let errorNow = "";
 function showError(text) {
-  $("error").textContent = text || "";
+  errorNow = text || "";
+  show($("error"), () => trMaybe(errorNow));
   $("error").hidden = !text;
 }
 
 /** The browser's own error text, in small grey print under the status. */
 function showDetail(text) {
-  $("detail").textContent = text ? `Details: ${text}` : "";
+  show($("detail"), () => (text ? tr("Details: {text}", { text }) : ""));
   $("detail").hidden = !text;
 }
 
@@ -44,7 +113,8 @@ function nativePing() {
 }
 
 /** Asks the background page (the message wakes it if it was asleep); if it can't answer (just
- *  reloaded, or no answer at all), the popup asks Pako's helper itself. */
+ *  reloaded, or no answer at all), the popup asks Pako's helper itself. Either way Pako's
+ *  language comes with the answer (an older Pako's says none: English). */
 async function ping() {
   let viaBackground;
   try {
@@ -55,10 +125,19 @@ async function ping() {
   /* full-only:start */
   backgroundSaid = viaBackground;
   /* full-only:end */
-  if (viaBackground && typeof viaBackground === "object" && (viaBackground.ok || viaBackground.detail)) return viaBackground;
+  if (viaBackground && typeof viaBackground === "object" && (viaBackground.ok || viaBackground.detail)) {
+    if (typeof viaBackground.lang === "string") setLang(viaBackground.lang);
+    return viaBackground;
+  }
   try {
     const reply = await nativePing();
-    return reply && typeof reply === "object" ? reply : { ok: false, error: "Pako didn't answer.", detail: `No answer from ${HOST}` };
+    if (reply && typeof reply === "object") {
+      setLang(reply.lang);
+      // (The background page follows the extension's storage.)
+      await Promise.resolve(api.storage.local.set({ pakoLang: lang })).catch(() => {});
+      return reply;
+    }
+    return { ok: false, error: "Pako didn't answer.", detail: tr("No answer from {host}", { host: HOST }) };
   } catch (e) {
     const detail = e?.message || String(e);
     console.warn(`Pako: couldn't reach ${HOST}:`, detail);
@@ -81,12 +160,12 @@ async function lightEdition() {
     $("yield").hidden = false;
     $("main").hidden = true;
     $("lines").hidden = true;
-    $("status").textContent = "Not in use";
+    show($("status"), () => tr("Not in use"));
     return true;
   }
   if (edition?.skipped) {
     $("send").disabled = true;
-    $("light-hint").textContent = "Pako Light doesn't work on this site.";
+    show($("light-hint"), () => tr("Pako Light doesn't work on this site."));
   }
   return false;
 }
@@ -110,7 +189,7 @@ async function olderBackground(status) {
     () => false,
   );
   if (!noted) return false;
-  status.textContent = "Updating Pako's extension… open this again in a moment.";
+  show(status, () => tr("Updating Pako's extension… open this again in a moment."));
   status.className = "status";
   setTimeout(() => api.runtime.reload(), 800);
   return true;
@@ -118,11 +197,14 @@ async function olderBackground(status) {
 /* full-only:end */
 
 async function init() {
-  const { takeOver = true, lastError = "", lastDetail = "" } = await api.storage.local.get({
+  const { takeOver = true, lastError = "", lastDetail = "", pakoLang = "en" } = await api.storage.local.get({
     takeOver: true,
     lastError: "",
     lastDetail: "",
+    pakoLang: "en",
   });
+  // The language the extension last heard from Pako (this window may have shown another).
+  setLang(pakoLang);
   $("take").setAttribute("aria-checked", String(takeOver));
   /* full-only:start */
   const { playerButton = true } = await api.storage.local.get({ playerButton: true });
@@ -146,13 +228,13 @@ async function init() {
   if (await olderBackground(status)) return;
   /* full-only:end */
   if (reply?.ok) {
-    status.textContent = "Connected";
+    show(status, () => tr("Connected"));
     status.className = "status ok";
     /* full-only:start */
     showVideos();
     /* full-only:end */
   } else {
-    status.textContent = "Not connected";
+    show(status, () => tr("Not connected"));
     status.className = "status bad";
     if (/forbidden/i.test(reply?.detail || "")) {
       // An older Pako doesn't know this extension yet: "Open Pako" can't fix that, an update can.
@@ -160,14 +242,14 @@ async function init() {
       $("main").hidden = true;
       $("open").hidden = true;
       $("get").hidden = true; // Pako is on this PC: nothing to get
-      $("connect-title").textContent = "This Pako is too old for this extension";
-      $("connect-text").textContent = "Update Pako (Settings › Features & updates), then open this again.";
-      if ($("error").textContent === NOT_CONNECTED) showError("");
-    } else if (!reply?.error || reply.error === NOT_CONNECTED) {
+      show($("connect-title"), () => tr("This Pako is too old for this extension"));
+      show($("connect-text"), () => tr("Update Pako (Settings › Features & updates), then open this again."));
+      if (notConnected(errorNow)) showError("");
+    } else if (!reply?.error || notConnected(reply.error)) {
       // The line to Pako itself is missing: one button opens Pako and connects it.
       $("connect").hidden = false;
       $("main").hidden = true;
-      if ($("error").textContent === NOT_CONNECTED) showError("");
+      if (notConnected(errorNow)) showError("");
     } else {
       showError(reply.error);
     }
@@ -179,6 +261,7 @@ async function init() {
 // ---------- videos on this page ----------
 
 const KINDS = { hls: "HLS stream", dash: "DASH stream", file: "Video file" };
+const PROTECTED = "This video is protected, so it can't be downloaded.";
 /** The tab the list is for. */
 let videoTab = null;
 /** Pako couldn't take a video of this page: recording it is offered. */
@@ -215,14 +298,15 @@ function renderVideos(r) {
     for (const v of r.list) {
       const li = el("li", "caught-item");
       const what = el("div", "caught-what");
-      what.append(el("div", "t", v.height ? `${KINDS[v.kind]} · up to ${v.height}p` : KINDS[v.kind]), el("div", "muted", v.host));
-      const go = el("button", "secondary", "Download with Pako");
+      const kind = tr(KINDS[v.kind]);
+      what.append(el("div", "t", v.height ? `${kind} · ${tr("up to {height}p", { height: v.height })}` : kind), el("div", "muted", v.host));
+      const go = el("button", "secondary", tr("Download with Pako"));
       go.addEventListener("click", () => sendVideoStream(v.url, go));
       li.append(what, go);
       ul.append(li);
     }
   }
-  if (!r.list.length && r.playing && !r.protected) ul.append(el("li", "muted", "Pako didn't find this video's address."));
+  if (!r.list.length && r.playing && !r.protected) ul.append(el("li", "muted", tr("Pako didn't find this video's address.")));
   renderRecording(r, busy);
   // While recording, the window follows it.
   if (busy && !watching) watching = setInterval(showVideos, 1000);
@@ -243,14 +327,15 @@ function renderRecording(r, busy) {
   $("rec-cancel").hidden = !busy || s?.state === "saving";
   const mb = s ? Math.round((s.bytes / (1024 * 1024)) * 10) / 10 : 0;
   const text = {
-    waiting: "The page reloaded. Waiting for the video to play: press play if it doesn't start. It has to play to the end.",
-    recording: `Recording: ${mb} MB. Keep this tab open: the video has to play to the end (sped up and muted when the page allows).`,
-    saving: "Sending the recording to Pako…",
-    done: "Sent to Pako: it makes the video in Downloads.",
+    waiting: () => tr("The page reloaded. Waiting for the video to play: press play if it doesn't start. It has to play to the end."),
+    recording: () => tr("Recording: {mb} MB. Keep this tab open: the video has to play to the end (sped up and muted when the page allows).", { mb: WORDS ? WORDS.num(lang, mb) : mb }),
+    saving: () => tr("Sending the recording to Pako…"),
+    done: () => tr("Sent to Pako: it makes the video in Downloads."),
   };
-  if (s && text[s.state]) $("rec-text").textContent = text[s.state];
-  else if (s?.state === "failed" && !offer) $("rec-text").textContent = s.error;
-  else $("rec-text").textContent = `${s?.state === "failed" ? s.error + " " : ""}The last resort when Pako can't get it: Pako records the video while it plays. The page reloads, and the video has to play to the end.`;
+  const lastResort = () => tr("The last resort when Pako can't get it: Pako records the video while it plays. The page reloads, and the video has to play to the end.");
+  if (s && text[s.state]) show($("rec-text"), text[s.state]);
+  else if (s?.state === "failed" && !offer) show($("rec-text"), () => trMaybe(s.error));
+  else show($("rec-text"), () => `${s?.state === "failed" ? trMaybe(s.error) + " " : ""}${lastResort()}`);
 }
 
 async function sendVideoStream(url, button) {
@@ -262,13 +347,13 @@ async function sendVideoStream(url, button) {
     reply = { ok: false, error: "Couldn't send this video.", detail: e?.message || String(e) };
   }
   if (reply?.ok) {
-    button.textContent = "Sent to Pako ✓";
+    button.textContent = tr("Sent to Pako ✓");
     return;
   }
   button.disabled = false;
   showError(reply?.error || "Couldn't send this video.");
   showDetail(reply?.detail);
-  if (reply?.error !== "This video is protected, so it can't be downloaded.") sendFailed = true;
+  if (reply?.error !== PROTECTED && reply?.error !== tr(PROTECTED)) sendFailed = true;
   showVideos();
 }
 
@@ -312,8 +397,8 @@ $("open").addEventListener("click", async () => {
   $("open").disabled = true;
   try {
     await openPako();
-    $("open").textContent = "Opening Pako…";
-    $("connect-text").textContent = "When Pako says Connected, come back and open this popup again.";
+    show($("open"), () => tr("Opening Pako…"));
+    show($("connect-text"), () => tr("When Pako says Connected, come back and open this popup again."));
   } catch (e) {
     $("open").disabled = false;
     showError("Couldn't open Pako. Open it yourself: Settings › Browser extension › Connect Pako to your browsers.");
@@ -350,19 +435,21 @@ async function showPrivate() {
   const r = await api.runtime.sendMessage({ type: "private" }).catch(() => null);
   if (!r) return;
   const firefox = !!globalThis.browser?.runtime?.getBrowserInfo;
-  const edge = /Edg\//.test(navigator.userAgent);
-  $("private-state").textContent = r.allowed ? "on" : "off";
-  $("private-text").textContent = r.allowed
-    ? "Pako keeps no trace of those downloads beyond the file."
-    : firefox
-      ? "To use Pako there: Firefox menu › Add-ons and themes › Pako › Run in Private Windows › Allow."
-      : `To use Pako there, turn on "${edge ? "Allow in InPrivate" : "Allow in Incognito"}" on this extension's page.`;
+  const edge = /Edg\//.test(navigator.userAgent);
+  show($("private-state"), () => tr(r.allowed ? "on" : "off"));
+  show($("private-text"), () =>
+    r.allowed
+      ? tr("Pako keeps no trace of those downloads beyond the file.")
+      : firefox
+        ? tr("To use Pako there: Firefox menu › Add-ons and themes › Pako › Run in Private Windows › Allow.")
+        : tr('To use Pako there, turn on "{name}" on this extension\'s page.', { name: tr(edge ? "Allow in InPrivate" : "Allow in Incognito") }),
+  );
   // Firefox doesn't let an extension open its add-ons page.
   $("private-open").hidden = r.allowed || firefox;
   $("private-line").hidden = false;
 }
 $("private-open").addEventListener("click", () => {
-  const edge = /Edg\//.test(navigator.userAgent);
+  const edge = /Edg\//.test(navigator.userAgent);
   api.tabs.create({ url: `${edge ? "edge" : "chrome"}://extensions/?id=${api.runtime.id}` });
   window.close();
 });
@@ -385,7 +472,7 @@ $("send").addEventListener("click", async () => {
   }
   $("send").disabled = false;
   if (reply?.ok) {
-    $("send").textContent = "Sent to Pako ✓";
+    show($("send"), () => tr("Sent to Pako ✓"));
     setTimeout(() => window.close(), 700);
   } else {
     showError(reply?.error || "Couldn't send this page.");

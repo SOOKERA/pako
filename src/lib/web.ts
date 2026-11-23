@@ -3,6 +3,7 @@
 // Web pages opened in the user's browser (never inside Pako).
 import { inApp } from "./api";
 import { app } from "./state.svelte";
+import { t } from "./i18n.svelte";
 
 /** Sookera's pages about Pako. */
 export const SITE = {
@@ -25,7 +26,7 @@ const SUPPORT_MAIL = "mailto:support@sookera.com";
 export async function openLink(href: string) {
   if (href === SUPPORT_MAIL && inApp) {
     const { openUrl } = await import("@tauri-apps/plugin-opener");
-    openUrl(href).catch(() => app.toast("Couldn't open your email app. Write to support@sookera.com.", "error"));
+    openUrl(href).catch(() => app.toast(() => t("Couldn't open your email app. Write to support@sookera.com."), "error"));
   } else openWeb(href);
 }
 
@@ -33,6 +34,6 @@ export async function openWeb(url: string) {
   if (!/^https:\/\//.test(url)) return;
   if (inApp) {
     const { openUrl } = await import("@tauri-apps/plugin-opener");
-    openUrl(url).catch((e) => app.toast(`Couldn't open the page: ${e}`, "error"));
+    openUrl(url).catch((e) => app.toast(() => t("Couldn't open the page: {error}", { error: String(e) }), "error"));
   } else window.open(url, "_blank", "noopener");
 }

@@ -48,14 +48,14 @@
         r = await api.runtime.sendMessage({ type: "pill-menu" });
       } catch (e) {
         const t = kit.trouble(e);
-        return [{ head: "Download with Pako" }, { info: t.text, detail: t.detail }];
+        return [{ head: kit.tr("Download with Pako") }, { info: t.text, detail: t.detail }];
       }
       if (r?.ok && Array.isArray(r.items)) return r.items;
       // The extension answered with a problem: what it said (it did answer, so not "isn't
       // responding"). No answer at all: the plain words, kept for the toolbar window.
-      if (typeof r?.error === "string" && r.error) return [{ head: "Download with Pako" }, { info: r.error, detail: String(r.detail || "") }];
+      if (typeof r?.error === "string" && r.error) return [{ head: kit.tr("Download with Pako") }, { info: r.error, detail: String(r.detail || "") }];
       const t = kit.trouble(new Error("No menu in the answer"));
-      return [{ head: "Download with Pako" }, { info: t.text, detail: t.detail }];
+      return [{ head: kit.tr("Download with Pako") }, { info: t.text, detail: t.detail }];
     },
     pick: (item) => (item.send ? api.runtime.sendMessage(item.send) : null),
   });

@@ -25,11 +25,17 @@ use url::Url;
 use crate::extension::SiteCookie;
 
 /// What the row says for a stream that uses DRM.
-pub const PROTECTED: &str = "This video is protected, so it can't be downloaded.";
+pub fn protected() -> String {
+    tr!("This video is protected, so it can't be downloaded.", "Cette vidéo est protégée : elle ne peut donc pas être téléchargée.")
+}
 /// What the row says when nothing worked.
-pub const COULDNT: &str = "Pako couldn't get this video.";
+pub fn couldnt() -> String {
+    tr!("Pako couldn't get this video.", "Pako n’a pas pu récupérer cette vidéo.")
+}
 /// A live stream (the playlist never ends).
-pub const LIVE: &str = "This is a live stream: Pako can't save it.";
+pub fn live() -> String {
+    tr!("This is a live stream: Pako can't save it.", "C’est un direct : Pako ne peut pas l’enregistrer.")
+}
 
 /// Pieces fetched at the same time.
 const AT_ONCE: usize = 4;
@@ -61,10 +67,10 @@ impl Error {
     /// The row's words.
     pub fn message(&self) -> String {
         match self {
-            Error::Protected => PROTECTED.into(),
-            Error::Live => LIVE.into(),
-            Error::Disk(e) => format!("Couldn't save the video: {e}"),
-            _ => COULDNT.into(),
+            Error::Protected => protected(),
+            Error::Live => live(),
+            Error::Disk(e) => tr!("Couldn't save the video: {e}", "Impossible d’enregistrer la vidéo : {e}"),
+            _ => couldnt(),
         }
     }
 }
@@ -932,7 +938,7 @@ main.ts
         let master = "#EXTM3U\n#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\",KEYFORMAT=\"com.apple.streamingkeydelivery\"\n#EXT-X-STREAM-INF:BANDWIDTH=1\na.m3u8\n";
         let Playlist::Master(m) = parse(master, &base()).unwrap() else { panic!() };
         assert!(m.protected);
-        assert_eq!(Error::Protected.message(), PROTECTED);
+        assert_eq!(Error::Protected.message(), protected());
         // Plain AES-128 (the standard key file) is fine, its key format named or not.
         let ok = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\",KEYFORMAT=\"identity\"\n#EXTINF:6,\na.ts\n#EXT-X-ENDLIST\n";
         assert!(parse(ok, &base()).is_ok());
@@ -1204,7 +1210,7 @@ main.ts
         assert!(matches!(run("/drm.m3u8").await, Err(Error::Protected)));
         let gone = run("/gone.m3u8").await;
         assert!(matches!(gone, Err(Error::Refused(_))), "{gone:?}");
-        assert_eq!(gone.unwrap_err().message(), COULDNT);
+        assert_eq!(gone.unwrap_err().message(), couldnt());
         assert!(matches!(run("/nothing.m3u8").await, Err(Error::Refused(_))));
         let _ = std::fs::remove_dir_all(&work);
     }

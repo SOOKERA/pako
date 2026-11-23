@@ -51,8 +51,13 @@ async fn read_video(url: String, cookies: Vec<crate::extension::SiteCookie>) -> 
 }
 
 /// What the browser hears when the video tools aren't there yet.
-const NEEDS_VIDEO_TOOLS: &str =
-    "Pako needs its video tools first. In Pako: Settings › Features & updates › Download videos from YouTube and other sites.";
+fn needs_video_tools() -> String {
+    say(NEEDS_VIDEO_TOOLS)
+}
+pub(crate) const NEEDS_VIDEO_TOOLS: Said = [
+    "Pako needs its video tools first. In Pako: Settings › Features & updates › Download videos from YouTube and other sites.",
+    "Pako a d’abord besoin de ses outils vidéo. Dans Pako : Paramètres › Fonctions et mises à jour › Télécharger des vidéos depuis YouTube et d’autres sites.",
+];
 
 /// A video row in Links, still to be checked.
 fn video_item(link: &str, title: String, duration: Option<f64>) -> FoundItem {
@@ -60,18 +65,20 @@ fn video_item(link: &str, title: String, duration: Option<f64>) -> FoundItem {
     let t = new_download(link, src, crate::video::file_name(&title, None), PathBuf::new(), None);
     let ready = crate::video::ready();
     let (state, msg) = if ready {
-        (FoundState::Checking, crate::video::CHECKING)
+        (FoundState::Checking, crate::video::checking())
     } else {
-        (FoundState::NeedsTools, crate::video::NEEDS_TOOLS)
+        (FoundState::NeedsTools, crate::model::say(crate::video::NEEDS_TOOLS))
     };
-    FoundItem::new(t, state, Some(msg.into()), false)
+    FoundItem::new(t, state, Some(msg), false)
 }
 
-const FILE_NOT_PUBLIC: &str =
-    "Google only gives this file to people it's shared with. Open it in your browser and download it there: Pako catches the download.";
-const OPENING: &str = "Opening link…";
-/// Why a private window's link isn't sent to another of your PCs.
-pub const PRIVATE_HERE: &str = "Private downloads stay on this PC.";
+fn opening() -> String {
+    tr!("Opening link…", "Ouverture du lien…")
+}
+/// Why a private window's link isn't sent to another of your PCs (only ever said on this PC).
+pub(crate) fn private_here() -> String {
+    tr!("Private downloads stay on this PC.", "Les téléchargements privés restent sur ce PC.")
+}
 
 fn found_path() -> PathBuf {
     data_dir().join("found.json")
@@ -85,7 +92,7 @@ static FOUND_SAVER: LazyLock<crate::paths::Saver> = LazyLock::new(|| crate::path
 /// can't be read right now is never saved over this session.
 pub(super) fn load() -> (Vec<FoundItem>, bool, Option<(String, String)>) {
     let read = crate::paths::read_list_checked::<FoundItem>(&found_path());
-    let note = super::list_note("Links list", &found_path(), &read);
+    let note = super::list_note(&tr!("Links list", "liste des liens"), &found_path(), &read);
     let ok = read.is_ok();
     (read.map(|r| r.items).unwrap_or_default(), ok, note)
 }
@@ -222,7 +229,7 @@ impl Engine {
             let src = Source::GDrive { file_id: dl.id.clone(), resource_key: dl.resource_key.clone(), doc_type: dl.doc_type.clone() };
             // A folder Google won't list for Pako: open it in the browser (that download is caught).
             let not_public = |src: Source, why: &str| {
-                let t = new_download(link, src, "Google Drive folder".into(), none.clone(), None);
+                let t = new_download(link, src, tr!("Google Drive folder", "Dossier Google Drive"), none.clone(), None);
                 vec![FoundItem::new(t, FoundState::NeedsAccount, Some(why.into()), true)]
             };
             // A file Google won't describe: checked like any link (its first request says the rest).
@@ -231,7 +238,7 @@ impl Engine {
                 vec![FoundItem::new(t, FoundState::Checking, None, false)]
             };
             let Some(key) = drive::api_key() else {
-                return Ok(if dl.kind == LinkKind::Folder { not_public(src, drive::NO_KEY) } else { plain(src) });
+                return Ok(if dl.kind == LinkKind::Folder { not_public(src, drive::no_key()) } else { plain(src) });
             };
             let api = DriveApi { http: &self.http, key: &key };
             let meta = match api.meta(&dl.id, dl.resource_key.as_deref()).await {
@@ -255,7 +262,7 @@ impl Engine {
                     },
                 };
                 if files.is_empty() {
-                    bail!("the folder is empty");
+                    bail!(say(FOLDER_EMPTY));
                 }
                 return Ok(files
                     .into_iter()
@@ -269,23 +276,23 @@ impl Engine {
                     .collect());
             }
             let t = drive_download(link, &meta, none, None)
-                .ok_or_else(|| anyhow!("this kind of Google file (form, site...) can't be downloaded"))?;
+                .ok_or_else(|| anyhow!(say(GOOGLE_KIND)))?;
             return Ok(vec![FoundItem::new(t, FoundState::Ready, None, false)]);
         }
-        let url = url::Url::parse(link).map_err(|_| anyhow!("not a web link"))?;
+        let url = url::Url::parse(link).map_err(|_| anyhow!(say(NOT_WEB_LINK)))?;
         if !matches!(url.scheme(), "http" | "https") {
-            bail!("only http and https links are supported");
+            bail!(say(ONLY_HTTP));
         }
         if crate::video::is_video_site(link) {
             if no_video {
-                bail!("Pako Light doesn't send links to this site");
+                bail!(tr!("Pako Light doesn't send links to this site", "Pako Light n’envoie pas de liens vers ce site"));
             }
             return Ok(vec![video_item(link, "Video".into(), None)]);
         }
         let t = new_download(link, Source::Http { url: link.into() }, names::from_url(link), none, None);
         // A known link-gate site: Pako works through its pages to reach the real file.
         if crate::gates::is_known_gate(url.host_str().unwrap_or_default()) {
-            return Ok(vec![FoundItem::new(t, FoundState::Opening, Some(OPENING.into()), false)]);
+            return Ok(vec![FoundItem::new(t, FoundState::Opening, Some(opening()), false)]);
         }
         Ok(vec![FoundItem::new(t, FoundState::Checking, None, false)])
     }
@@ -327,10 +334,10 @@ impl Engine {
                     Ok(resp) if is_web && crate::fetch::is_html(&resp) => {
                         gate = Some(f.template.link.clone());
                         if videos {
-                            f.message = Some(crate::video::CHECKING.into());
+                            f.message = Some(crate::video::checking());
                         } else {
                             f.state = FoundState::Opening;
-                            f.message = Some(OPENING.into());
+                            f.message = Some(opening());
                         }
                     }
                     Ok(resp) => {
@@ -350,7 +357,7 @@ impl Engine {
                     }
                     Err(FetchError::Blocked(_)) => {
                         f.state = FoundState::NeedsAccount;
-                        f.message = Some(FILE_NOT_PUBLIC.into());
+                        f.message = Some(crate::model::say(crate::fetch::BLOCKED_MESSAGE));
                     }
                     // The file is there; today's limit is handled when it downloads.
                     Err(FetchError::Quota(m)) => {
@@ -402,7 +409,7 @@ impl Engine {
                     }
                     if let Some(f) = me.inner.lock().unwrap().found.iter_mut().find(|f| f.id == id) {
                         f.state = FoundState::Opening;
-                        f.message = Some(OPENING.into());
+                        f.message = Some(opening());
                     }
                     me.list_changed();
                 }
@@ -421,7 +428,7 @@ impl Engine {
         if !crate::video::ready() {
             if let Some(f) = self.inner.lock().unwrap().found.iter_mut().find(|f| f.id == id) {
                 f.state = FoundState::NeedsTools;
-                f.message = Some(crate::video::NEEDS_TOOLS.into());
+                f.message = Some(crate::model::say(crate::video::NEEDS_TOOLS));
             }
             self.save_found();
             self.list_changed();
@@ -485,10 +492,10 @@ impl Engine {
                     if items.is_empty() && had > 0 {
                         // Nothing new: the row says why nothing was added.
                         inner.found[pos].state = FoundState::Broken;
-                        inner.found[pos].message = Some("All videos of this playlist are already in Links or Downloads.".into());
+                        inner.found[pos].message = Some(tr!("All videos of this playlist are already in Links or Downloads.", "Toutes les vidéos de cette playlist sont déjà dans Liens ou Téléchargements."));
                     } else if items.is_empty() {
                         inner.found[pos].state = FoundState::Broken;
-                        inner.found[pos].message = Some("This playlist is empty (or private).".into());
+                        inner.found[pos].message = Some(tr!("This playlist is empty (or private).", "Cette playlist est vide (ou privée)."));
                     } else {
                         to_check = items.iter().map(|f| f.id.clone()).collect();
                         inner.found.splice(pos..=pos, items);
@@ -509,7 +516,7 @@ impl Engine {
                 }
                 Err((msg, _)) => {
                     let f = &mut inner.found[pos];
-                    if msg == crate::video::NEEDS_TOOLS {
+                    if crate::model::is_said(&msg, crate::video::NEEDS_TOOLS) {
                         f.state = FoundState::NeedsTools;
                     } else {
                         f.state = FoundState::Broken;
@@ -546,14 +553,14 @@ impl Engine {
     pub async fn video_from_browser(self: &Arc<Self>, url: String, quality: u32, cookies: Vec<crate::extension::SiteCookie>, private: bool) -> Result<(), String> {
         let cookies = if private { Vec::new() } else { cookies };
         if !crate::video::ready() {
-            return Err(NEEDS_VIDEO_TOOLS.into());
+            return Err(needs_video_tools());
         }
         if self.video_in_list(&url) {
-            return Err("This video is already in Pako.".into());
+            return Err(tr!("This video is already in Pako.", "Cette vidéo est déjà dans Pako."));
         }
         // Answered "Sent" already, and still being read (a second click, maybe another quality).
         if !VIDEO_READING.lock().unwrap().insert(url.clone()) {
-            return Err("Pako is already getting this video.".into());
+            return Err(tr!("Pako is already getting this video.", "Pako récupère déjà cette vidéo."));
         }
         let me = self.clone();
         let (answer, answered) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -566,7 +573,13 @@ impl Engine {
                 Ok(p) if p.is_playlist => {
                     let _ = answer.send(Ok(()));
                     me.found_add_browser(&url, false, private).await;
-                    me.notify_as(private, "browser", "Playlist sent to Pako", "Pick the videos in Links, then press Download.", crate::notices::Go::page("found"));
+                    me.notify_as(
+                        private,
+                        "browser",
+                        &tr!("Playlist sent to Pako", "Playlist envoyée à Pako"),
+                        &tr!("Pick the videos in Links, then press Download.", "Choisissez les vidéos dans Liens, puis cliquez sur Télécharger."),
+                        crate::notices::Go::page("found"),
+                    );
                 }
                 Ok(p) => {
                     let audio = (quality == 0).then(|| "m4a".to_string());
@@ -596,7 +609,7 @@ impl Engine {
                     }
                     // The button says it when it is still waiting; else a notification does.
                     if answer.send(Err(msg.clone())).is_err() {
-                        me.notify_as(private, "video-failed", "Pako couldn't get this video", &msg, crate::notices::Go::none());
+                        me.notify_as(private, "video-failed", &tr!("Pako couldn't get this video", "Pako n’a pas pu récupérer cette vidéo"), &msg, crate::notices::Go::none());
                     }
                 }
             }
@@ -646,7 +659,7 @@ impl Engine {
         tauri::async_runtime::spawn(async move {
             if !crate::video::ready() {
                 let r = me.found_add_from_device(&url).await;
-                let _ = answer.send(if r.added + r.skipped > 0 { Ok(DeviceVideo::ToLinks) } else { Err(r.errors.into_iter().next().unwrap_or_else(|| NEEDS_VIDEO_TOOLS.into())) });
+                let _ = answer.send(if r.added + r.skipped > 0 { Ok(DeviceVideo::ToLinks) } else { Err(r.errors.into_iter().next().unwrap_or_else(|| needs_video_tools())) });
                 return;
             }
             // Already downloading (or waiting to) here: taken (never a private window's).
@@ -687,7 +700,7 @@ impl Engine {
                     me.schedule();
                     if answer.send(Ok(DeviceVideo::Downloading(id.clone()))).is_err() {
                         // Nobody waited (a slow site): this PC says it.
-                        me.notify("devices", "Downloading in Pako", &name, crate::notices::Go::item("downloads", id));
+                        me.notify("devices", &tr!("Downloading in Pako", "Téléchargement dans Pako"), &name, crate::notices::Go::item("downloads", id));
                     }
                 }
                 Err((msg, newer)) => {
@@ -701,7 +714,7 @@ impl Engine {
                         me.push(device_video_failed(&url, quality, priority, dir, id.clone(), &msg));
                         me.save_now();
                         me.list_changed();
-                        me.notify("video-failed", "Pako couldn't get this video", &msg, crate::notices::Go::item("downloads", id));
+                        me.notify("video-failed", &tr!("Pako couldn't get this video", "Pako n’a pas pu récupérer cette vidéo"), &msg, crate::notices::Go::item("downloads", id));
                     }
                 }
             }
@@ -733,7 +746,7 @@ impl Engine {
         if held {
             crate::ask::enqueue(&id);
         } else {
-            self.notify_as(private, "browser", "Downloading in Pako", &name, crate::notices::Go::item("downloads", id.clone()));
+            self.notify_as(private, "browser", &tr!("Downloading in Pako", "Téléchargement dans Pako"), &name, crate::notices::Go::item("downloads", id.clone()));
             crate::ask::started(private);
         }
     }
@@ -761,10 +774,10 @@ impl Engine {
         /// Streams being looked at right now (a double click doesn't add one twice).
         static READING: LazyLock<std::sync::Mutex<HashSet<String>>> = LazyLock::new(Default::default);
         if !crate::video::ready() {
-            return Err(NEEDS_VIDEO_TOOLS.into());
+            return Err(needs_video_tools());
         }
         if self.video_in_list(&url) || !READING.lock().unwrap().insert(url.clone()) {
-            return Err("This video is already in Pako.".into());
+            return Err(tr!("This video is already in Pako.", "Cette vidéo est déjà dans Pako."));
         }
         // A private window's: a private download, never with cookies.
         let cookies = if private { Vec::new() } else { cookies };
@@ -790,8 +803,8 @@ impl Engine {
         };
         let (options, audio_size, duration) = match probe {
             Ok(Ok(p)) => (p.options, p.audio_size, p.duration),
-            Ok(Err((msg, _))) if msg == crate::video::DRM => return Err(crate::hls::PROTECTED.into()),
-            Ok(Err((msg, _))) if msg == crate::video::NEEDS_TOOLS => return Err(NEEDS_VIDEO_TOOLS.into()),
+            Ok(Err((msg, _))) if crate::model::is_said(&msg, crate::video::DRM) => return Err(crate::hls::protected()),
+            Ok(Err((msg, _))) if crate::model::is_said(&msg, crate::video::NEEDS_TOOLS) => return Err(needs_video_tools()),
             _ => (Vec::new(), None, None),
         };
         let size = crate::video::estimate(&options, audio_size, quality);
@@ -823,7 +836,7 @@ impl Engine {
         match r {
             Record::Start { session, page, title } => {
                 if !crate::video::ready() {
-                    return Err(NEEDS_VIDEO_TOOLS.into());
+                    return Err(needs_video_tools());
                 }
                 crate::stream::start_in(&crate::stream::recordings_dir(), &session, &page, &title)
             }
@@ -887,7 +900,7 @@ impl Engine {
             for f in inner.found.iter_mut().filter(|f| ids.contains(&f.id) || (ids.is_empty() && f.state == FoundState::NeedsTools)) {
                 if matches!(f.state, FoundState::NeedsTools | FoundState::Broken) {
                     f.state = FoundState::Checking;
-                    f.message = matches!(f.template.source, Source::Video { .. }).then(|| crate::video::CHECKING.into());
+                    f.message = matches!(f.template.source, Source::Video { .. }).then(crate::video::checking);
                     todo.push(f.id.clone());
                 }
             }
@@ -910,7 +923,7 @@ impl Engine {
     /// The row's note while a gate is worked through (None = back to "Opening link…").
     pub(crate) fn gate_status(&self, id: &str, msg: Option<&str>) {
         if let Some(f) = self.inner.lock().unwrap().found.iter_mut().find(|f| f.id == id) {
-            f.message = Some(msg.unwrap_or(OPENING).to_string());
+            f.message = Some(msg.map(str::to_string).unwrap_or_else(opening));
         }
         self.list_changed();
     }
@@ -963,7 +976,7 @@ impl Engine {
                     }
                     Err(e) => {
                         inner.found[pos].state = FoundState::Broken;
-                        inner.found[pos].message = Some(format!("Reached the file link, but: {e}"));
+                        inner.found[pos].message = Some(tr!("Reached the file link, but: {e}", "Lien du fichier atteint, mais : {e}"));
                         if !inner.found[pos].template.private {
                             crate::errorlog::note(crate::errorlog::Area::LinkCheck, &format!("Reached the file link, but: {e}"));
                         }
@@ -1172,7 +1185,7 @@ impl Engine {
         }
         if crate::video::is_video_site(&link) {
             if !crate::video::ready() {
-                return Err(NEEDS_VIDEO_TOOLS.into());
+                return Err(needs_video_tools());
             }
             let p = {
                 let _permit = VIDEO_CHECKS.acquire().await;
@@ -1187,7 +1200,7 @@ impl Engine {
                     .collect::<Vec<_>>();
                 let items = once_per_link(items);
                 if items.is_empty() {
-                    return Err("This playlist is empty (or private).".into());
+                    return Err(tr!("This playlist is empty (or private).", "Cette playlist est vide (ou privée)."));
                 }
                 return Ok((p.title, items));
             }
@@ -1195,7 +1208,7 @@ impl Engine {
         }
         let items = self.found_items(&link, false).await.map_err(|e| e.to_string())?;
         if let Some(f) = items.iter().find(|f| f.state == FoundState::NeedsAccount) {
-            return Err(f.message.clone().unwrap_or_else(|| FILE_NOT_PUBLIC.into()));
+            return Err(f.message.clone().unwrap_or_else(|| crate::model::say(crate::fetch::BLOCKED_MESSAGE)));
         }
         let title = items.first().and_then(|f| f.folder.clone()).unwrap_or_else(|| items.first().map(|f| f.template.name.clone()).unwrap_or_default());
         let out: Vec<PickItem> = items
@@ -1218,7 +1231,7 @@ impl Engine {
             .collect();
         let out = once_per_link(out);
         if out.is_empty() {
-            return Err("Nothing to download in this link.".into());
+            return Err(tr!("Nothing to download in this link.", "Rien à télécharger dans ce lien."));
         }
         Ok((title, out))
     }
@@ -1231,7 +1244,7 @@ impl Engine {
                 // A private window's link stays on this PC (its row says why).
                 if f.template.private {
                     f.device = None;
-                    f.device_note = device.is_some().then(|| PRIVATE_HERE.to_string());
+                    f.device_note = device.is_some().then(private_here);
                     continue;
                 }
                 f.device = device.clone();
@@ -1578,7 +1591,12 @@ pub struct DeviceSplit {
     pub stay: Vec<(String, String)>,
 }
 
-pub(crate) const DEVICE_GONE: &str = "The PC this link was set to download on is no longer paired, or no longer lets this PC control it. Back to This PC.";
+pub(crate) fn device_gone() -> String {
+    tr!(
+        "The PC this link was set to download on is no longer paired, or no longer lets this PC control it. Back to This PC.",
+        "Le PC choisi pour télécharger ce lien n’est plus associé, ou ne laisse plus ce PC le contrôler. Retour à Ce PC."
+    )
+}
 
 /// Rows set to a PC not in `allowed` go back to This PC, noted. Says whether any changed.
 pub(crate) fn fallback_devices(found: &mut [FoundItem], allowed: &[String]) -> bool {
@@ -1586,7 +1604,7 @@ pub(crate) fn fallback_devices(found: &mut [FoundItem], allowed: &[String]) -> b
     for f in found.iter_mut() {
         if f.device.as_ref().is_some_and(|d| !allowed.contains(d)) {
             f.device = None;
-            f.device_note = Some(DEVICE_GONE.into());
+            f.device_note = Some(device_gone());
             changed = true;
         }
     }
@@ -1604,11 +1622,11 @@ pub(crate) fn split_by_device(found: &[FoundItem], ids: &[String], devices: &[De
             continue;
         };
         if f.template.private {
-            out.stay.push((f.id.clone(), PRIVATE_HERE.into()));
+            out.stay.push((f.id.clone(), private_here()));
             continue;
         }
         let Some(d) = devices.iter().find(|d| &d.id == dev) else {
-            out.stay.push((f.id.clone(), DEVICE_GONE.into()));
+            out.stay.push((f.id.clone(), device_gone()));
             continue;
         };
         if let Some(why) = crate::direct::open_here_first(&f.template.link) {
@@ -1616,7 +1634,10 @@ pub(crate) fn split_by_device(found: &[FoundItem], ids: &[String], devices: &[De
             continue;
         }
         if !d.online {
-            out.stay.push((f.id.clone(), format!("{} is offline: not sent. Press Download again once it's on.", d.name)));
+            out.stay.push((
+                f.id.clone(),
+                tr!("{} is offline: not sent. Press Download again once it's on.", "{} est hors ligne : non envoyé. Cliquez à nouveau sur Télécharger quand il sera allumé.", d.name),
+            ));
             continue;
         }
         match out.send.iter_mut().find(|(id, _, _)| id == dev) {
@@ -1794,20 +1815,19 @@ pub(crate) fn host_gave_up(status: &Status, msg: &str) -> bool {
     match status {
         Status::QuotaExceeded | Status::NeedsAccount => true,
         Status::Failed => {
-            msg == super::WEB_PAGE
-                || msg == NO_ANSWER
+            crate::model::is_said(msg, super::WEB_PAGE)
+                || crate::model::is_said(msg, NO_ANSWER)
                 || [
-                    "File not found",
-                    "The server refused access",
-                    "The server answered",
-                    "Google flagged",
-                    "The owner turned off",
-                    "Google Drive error",
-                    "Google's download limit",
-                    "Google only gives",
+                    crate::fetch::NOT_FOUND,
+                    crate::fetch::REFUSED,
+                    crate::fetch::ANSWERED,
+                    crate::fetch::QUOTA_MESSAGE,
+                    crate::fetch::BLOCKED_MESSAGE,
                 ]
-                .iter()
-                .any(|p| msg.starts_with(p))
+                .into_iter()
+                .any(|p| crate::model::starts_said(msg, p))
+                // Google Drive's own answers (drive.rs): its 404, flagged, owner, error.
+                || crate::drive::is_api_refusal(msg)
         }
         _ => false,
     }
@@ -1852,13 +1872,16 @@ pub(crate) fn host_label(link: &str, source: &Source) -> String {
         Source::GDrive { .. } => "Google Drive".into(),
         _ => host_key(source)
             .or_else(|| url::Url::parse(link).ok().and_then(|u| u.host_str().map(str::to_string)))
-            .unwrap_or_else(|| "the link".into()),
+            .unwrap_or_else(|| tr!("the link", "le lien")),
     }
 }
 
 /// Why a run ended when its host gave no answer with data for `NO_ANSWER_AFTER` while the
 /// download had backups (see `AnswerClock`): a reason to change host, like a final error.
-pub(crate) const NO_ANSWER: &str = "The host didn't answer for 5 minutes.";
+pub(crate) const NO_ANSWER: crate::model::Said = [
+    "The host didn't answer for 5 minutes.",
+    "L’hébergeur n’a pas répondu pendant 5 minutes.",
+];
 
 /// How long a host may go without any answer with data before a download with backups moves on.
 pub(crate) const NO_ANSWER_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -1925,7 +1948,7 @@ pub(crate) fn switch_host(d: &mut Download, keep: bool, why: &str) -> String {
         why: Some(why.to_string()),
     };
     let from = host_label(&old.link, &old.source);
-    let silent = why == NO_ANSWER;
+    let silent = crate::model::is_said(why, NO_ANSWER);
     // The new host is tried (again): it is no longer among the hosts that failed.
     d.tried.retain(|m| m.link != next.link);
     if silent {
@@ -1937,9 +1960,9 @@ pub(crate) fn switch_host(d: &mut Download, keep: bool, why: &str) -> String {
     let refused = if !had || keep || check {
         None
     } else if d.size.is_some() && next.size.is_some() && d.size != next.size {
-        Some("has a different version of the file")
+        Some(different())
     } else {
-        Some("can't continue a download part-way")
+        Some(no_part_way())
     };
     d.link = next.link.clone();
     d.source = next.source.clone();
@@ -1966,12 +1989,16 @@ pub(crate) fn switch_host(d: &mut Download, keep: bool, why: &str) -> String {
     }
     d.status = Status::Queued;
     let to = host_label(&d.link, &d.source);
-    let reason = if silent { format!("{from} didn't answer for 5 minutes") } else { format!("{from} didn't work") };
+    let reason = if silent { tr!("{from} didn't answer for 5 minutes", "{from} n’a pas répondu pendant 5 minutes") } else { tr!("{from} didn't work", "{from} n’a pas marché") };
     let msg = match refused {
-        _ if keep && had => format!("{}: continuing from {to} where {from} stopped ({reason})", d.name),
-        _ if check => format!("{}: continuing from {to} ({reason}), once a few samples show {to} has the same file", d.name),
-        Some(r) => format!("{}: continuing from {to} ({reason}). {to} {r}: starting over", d.name),
-        None => format!("{}: continuing from {to} ({reason})", d.name),
+        _ if keep && had => tr!("{}: continuing from {to} where {from} stopped ({reason})", "{} : reprise depuis {to} là où {from} s’est arrêté ({reason})", d.name),
+        _ if check => tr!(
+            "{}: continuing from {to} ({reason}), once a few samples show {to} has the same file",
+            "{} : reprise depuis {to} ({reason}), une fois que quelques échantillons montrent que {to} a le même fichier",
+            d.name
+        ),
+        Some(r) => tr!("{}: continuing from {to} ({reason}). {to} {r}: starting over", "{} : reprise depuis {to} ({reason}). {to} {r} : on repart de zéro", d.name),
+        None => tr!("{}: continuing from {to} ({reason})", "{} : reprise depuis {to} ({reason})", d.name),
     };
     d.message = Some(msg.clone());
     msg
@@ -2040,28 +2067,40 @@ pub(crate) enum SpotFail {
 /// compared byte for byte with the parts already on disk (`part`, `size` bytes long). Ok = all
 /// identical. A sample that can't be had is never taken as "different" (`SpotFail`): a network
 /// hiccup never costs the bytes so far.
+/// A host's file isn't the same as the bytes so far ("{host} has a different version...").
+fn different() -> String {
+    tr!("has a different version of the file", "a une autre version du fichier")
+}
+
+/// A host that can't send part of a file ("{host} can't continue...").
+fn no_part_way() -> String {
+    tr!("can't continue a download part-way", "ne peut pas reprendre un téléchargement en cours de route")
+}
+
+/// The start of the spot check's reasons about the file on this PC (not about the host).
+const UNFINISHED: crate::model::Said = ["the unfinished file", "le fichier inachevé"];
+
 pub(crate) async fn spot_check(fetcher: &Fetcher, part: &std::path::Path, segments: &[Segment], size: u64) -> Result<(), SpotFail> {
     use std::io::{Read, Seek, SeekFrom};
-    const DIFFERENT: &str = "has a different version of the file";
-    let refused = |why: &str| SpotFail::Refused(why.into());
-    let again = |why: &str| SpotFail::Again(why.into(), 0);
+    let refused = |why: String| SpotFail::Refused(why);
+    let again = |why: String| SpotFail::Again(why, 0);
     let ranges = sample_ranges(segments);
     if ranges.is_empty() {
-        return Err(refused("the unfinished file has nothing to compare"));
+        return Err(refused(tr!("the unfinished file has nothing to compare", "le fichier inachevé n’a rien à comparer")));
     }
-    let mut file = std::fs::File::open(part).map_err(|_| refused("the unfinished file is missing"))?;
+    let mut file = std::fs::File::open(part).map_err(|_| refused(tr!("the unfinished file is missing", "le fichier inachevé est introuvable")))?;
     if file.metadata().map(|m| m.len()).ok() != Some(size) {
-        return Err(refused("the unfinished file isn't the right size"));
+        return Err(refused(tr!("the unfinished file isn't the right size", "le fichier inachevé n’a pas la bonne taille")));
     }
     for (a, b) in ranges {
         let want = (b - a) as usize;
         let ours = {
             let mut buf = vec![0u8; want];
-            file.seek(SeekFrom::Start(a)).and_then(|_| file.read_exact(&mut buf)).map_err(|_| refused("the unfinished file couldn't be read"))?;
+            file.seek(SeekFrom::Start(a)).and_then(|_| file.read_exact(&mut buf)).map_err(|_| refused(tr!("the unfinished file couldn't be read", "le fichier inachevé n’a pas pu être lu")))?;
             buf
         };
         let resp = match tokio::time::timeout(Duration::from_secs(30), fetcher.get(a, Some(b - 1))).await {
-            Err(_) => return Err(again("The server didn't answer in time")),
+            Err(_) => return Err(again(tr!("The server didn't answer in time", "Le serveur n’a pas répondu à temps"))),
             Ok(Err(FetchError::Retry(m))) => return Err(SpotFail::Again(m, 0)),
             Ok(Err(FetchError::Throttled(m, wait))) => return Err(SpotFail::Again(m, wait)),
             Ok(Err(e)) => return Err(SpotFail::Gone(e)),
@@ -2070,37 +2109,37 @@ pub(crate) async fn spot_check(fetcher: &Fetcher, part: &std::path::Path, segmen
         let range = crate::fetch::content_range(&resp);
         if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             if fetcher.is_drive() {
-                return Err(SpotFail::Odd("Google sent an unexpected answer".into()));
+                return Err(SpotFail::Odd(tr!("Google sent an unexpected answer", "Google a envoyé une réponse inattendue")));
             }
-            return Err(refused("can't continue a download part-way"));
+            return Err(refused(no_part_way()));
         }
         match range {
             Some((start, total)) if start == a && total.is_none_or(|t| t == size) => {}
-            Some((_, Some(t))) if t != size => return Err(refused(DIFFERENT)),
-            _ if fetcher.is_drive() => return Err(SpotFail::Odd("Google sent an unexpected answer".into())),
-            _ => return Err(refused("answered a sample oddly")),
+            Some((_, Some(t))) if t != size => return Err(refused(different())),
+            _ if fetcher.is_drive() => return Err(SpotFail::Odd(tr!("Google sent an unexpected answer", "Google a envoyé une réponse inattendue"))),
+            _ => return Err(refused(tr!("answered a sample oddly", "a répondu bizarrement à un échantillon"))),
         }
         let mut theirs: Vec<u8> = Vec::with_capacity(want);
         let mut stream = resp.bytes_stream();
         use futures_util::StreamExt;
         loop {
-            let next = tokio::time::timeout(Duration::from_secs(30), stream.next()).await.map_err(|_| again("The server stopped sending"))?;
+            let next = tokio::time::timeout(Duration::from_secs(30), stream.next()).await.map_err(|_| again(tr!("The server stopped sending", "Le serveur a cessé d’envoyer")))?;
             match next {
                 Some(Ok(chunk)) => {
                     theirs.extend_from_slice(&chunk);
                     if theirs.len() > want {
-                        return Err(refused("answered a sample oddly"));
+                        return Err(refused(tr!("answered a sample oddly", "a répondu bizarrement à un échantillon")));
                     }
                 }
-                Some(Err(e)) => return Err(again(&crate::fetch::network_message(&e))),
+                Some(Err(e)) => return Err(again(crate::fetch::network_message(&e))),
                 None => break,
             }
         }
         if theirs.len() != want {
-            return Err(again("The server closed the connection early"));
+            return Err(again(tr!("The server closed the connection early", "Le serveur a fermé la connexion trop tôt")));
         }
         if theirs != ours {
-            return Err(refused(DIFFERENT));
+            return Err(refused(different()));
         }
     }
     Ok(())
@@ -2110,22 +2149,29 @@ pub(crate) async fn spot_check(fetcher: &Fetcher, part: &std::path::Path, segmen
 /// before; `result` = `spot_check`'s answer.
 pub(crate) fn spot_note(name: &str, to: &str, from: &str, result: &Result<(), String>) -> String {
     match result {
-        Ok(()) => format!("{name}: continuing from {to} where {from} stopped"),
-        Err(r) if r.starts_with("the unfinished file") => {
-            format!("{name}: {r}: starting over from {to}")
+        Ok(()) => tr!("{name}: continuing from {to} where {from} stopped", "{name} : reprise depuis {to} là où {from} s’est arrêté"),
+        Err(r) if crate::model::starts_said(r, UNFINISHED) => {
+            tr!("{name}: {r}: starting over from {to}", "{name} : {r} : on repart de zéro depuis {to}")
         }
-        Err(r) => format!("{name}: {to} {r}: starting over"),
+        Err(r) => tr!("{name}: {to} {r}: starting over", "{name} : {to} {r} : on repart de zéro"),
     }
 }
 
 /// A run's end when the finished file, continued from another host's bytes, failed its
 /// checksum (`job_ended` starts it over from zero on the same host).
-pub(crate) const SPLICE_FAILED: &str = "The file didn't pass its final check after changing host.";
+pub(crate) const SPLICE_FAILED: crate::model::Said = [
+    "The file didn't pass its final check after changing host.",
+    "Le fichier n’a pas passé sa vérification finale après le changement d’hébergeur.",
+];
 
 /// What the row says then.
 pub(crate) fn splice_failed_note(d: &Download) -> String {
     let to = host_label(&d.link, &d.source);
-    format!("{}: the finished file didn't pass its check after continuing from {to}: starting over from zero on {to}", d.name)
+    tr!(
+        "{}: the finished file didn't pass its check after continuing from {to}: starting over from zero on {to}",
+        "{} : le fichier terminé n’a pas passé sa vérification après la reprise depuis {to} : on repart de zéro sur {to}",
+        d.name
+    )
 }
 
 /// Every host failed: the usual message, saying so. The hosts become backups again, so Try
@@ -2134,7 +2180,7 @@ pub(crate) fn splice_failed_note(d: &Download) -> String {
 pub(crate) fn all_hosts_failed(d: &mut Download, msg: &str) -> String {
     let mut hosts: Vec<String> = d.tried.iter().map(|m| host_label(&m.link, &m.source)).collect();
     hosts.push(host_label(&d.link, &d.source));
-    let text = format!("{msg} All {} hosts were tried: {}.", hosts.len(), hosts.join(", "));
+    let text = tr!("{msg} All {} hosts were tried: {}.", "{msg} Les {} hébergeurs ont tous été essayés : {}.", hosts.len(), hosts.join(", "));
     let mut again: Vec<Mirror> = d.tried.drain(..).collect();
     for m in again.iter_mut() {
         m.why = None;
@@ -2249,14 +2295,14 @@ mod tests {
         let stay: std::collections::HashMap<_, _> = s.stay.iter().cloned().collect();
         assert_eq!(stay.len(), 3, "{stay:?}");
         assert!(stay[&found[4].id].starts_with("Office PC is offline"));
-        assert_eq!(stay[&found[5].id], DEVICE_GONE);
+        assert_eq!(stay[&found[5].id], device_gone());
         assert!(stay[&found[6].id].contains("playlist"), "a playlist isn't sent before it's opened");
 
         // A PC unpaired (or no longer letting this PC control it): its rows go back to This PC.
         let mut list = found.clone();
         assert!(fallback_devices(&mut list, &["home".into(), "laptop".into(), "office".into()]));
         assert_eq!(list[5].device, None);
-        assert_eq!(list[5].device_note.as_deref(), Some(DEVICE_GONE));
+        assert_eq!(list[5].device_note.as_deref(), Some(device_gone().as_str()));
         assert_eq!(list[1].device.as_deref(), Some("home"));
         assert!(!fallback_devices(&mut list, &["home".into(), "laptop".into(), "office".into()]), "nothing more to change");
     }
@@ -2446,9 +2492,9 @@ mod tests {
         let d = with_backup(None, None, Some(100));
         let switch = NextHost::Switch { keep: false };
         assert_eq!(after_failure(&d, &Status::Failed, GONE), switch);
-        assert_eq!(after_failure(&d, &Status::QuotaExceeded, crate::fetch::QUOTA_MESSAGE), switch);
-        assert_eq!(after_failure(&d, &Status::NeedsAccount, crate::fetch::BLOCKED_MESSAGE), switch);
-        assert_eq!(after_failure(&d, &Status::Failed, super::super::WEB_PAGE), switch);
+        assert_eq!(after_failure(&d, &Status::QuotaExceeded, crate::fetch::QUOTA_MESSAGE[0]), switch);
+        assert_eq!(after_failure(&d, &Status::NeedsAccount, crate::fetch::BLOCKED_MESSAGE[0]), switch);
+        assert_eq!(after_failure(&d, &Status::Failed, super::super::WEB_PAGE[0]), switch);
         assert_eq!(after_failure(&d, &Status::Failed, "The server refused access (403). The link may have expired."), switch);
         assert_eq!(after_failure(&d, &Status::Failed, &crate::drive::friendly_api_error(404, None, None)), switch);
         // This PC's problems, or a file that changed on the server: no other host.
@@ -2457,7 +2503,7 @@ mod tests {
             "Can't create the file: denied",
             "Download stopped before the end. Click Retry.",
             "The file came out damaged (checksum doesn't match). Click Retry to download it again.",
-            super::super::FILE_CHANGED,
+            super::super::FILE_CHANGED[0],
         ] {
             assert_eq!(after_failure(&d, &Status::Failed, m), NextHost::Stay, "{m}");
         }
@@ -2573,12 +2619,12 @@ mod tests {
         let mut d = with_backup(None, None, Some(100));
         d.mirrors.push(Mirror { link: "https://c.example/H.zip".into(), source: Source::Http { url: "https://c.example/H.zip".into() }, size: Some(100), md5: None, validator: None, resumable: true, why: None });
         // Five minutes without an answer is a reason to change host, like a final error.
-        assert_eq!(after_failure(&d, &Status::Failed, NO_ANSWER), NextHost::Switch { keep: false });
-        let said = switch_host(&mut d, false, NO_ANSWER);
+        assert_eq!(after_failure(&d, &Status::Failed, NO_ANSWER[0]), NextHost::Switch { keep: false });
+        let said = switch_host(&mut d, false, NO_ANSWER[0]);
         assert_eq!(said, "H.zip: continuing from b.example (a.example didn't answer for 5 minutes)");
         let links = |d: &Download| d.mirrors.iter().map(|m| m.link.clone()).collect::<Vec<_>>();
         assert_eq!(links(&d), vec!["https://c.example/H.zip", "https://a.example/H.zip"], "tried again after the others");
-        assert_eq!(d.tried.last().and_then(|m| m.why.as_deref()), Some(NO_ANSWER), "the details say why");
+        assert_eq!(d.tried.last().and_then(|m| m.why.as_deref()), Some(NO_ANSWER[0]), "the details say why");
         // b.example is gone for good: c.example, then a.example again (no longer "tried").
         switch_host(&mut d, false, GONE);
         assert_eq!(d.link, "https://c.example/H.zip");
@@ -2593,7 +2639,7 @@ mod tests {
         // Without any backups at all: nothing changes.
         let mut lone = with_backup(None, None, Some(100));
         lone.mirrors.clear();
-        assert_eq!(after_failure(&lone, &Status::Failed, NO_ANSWER), NextHost::Stay);
+        assert_eq!(after_failure(&lone, &Status::Failed, NO_ANSWER[0]), NextHost::Stay);
     }
 
     #[test]
@@ -2813,11 +2859,11 @@ mod tests {
         // Pako itself, still limited. It keeps waiting there (not off to the dead host, then Failed).
         let mut d = with_backup(None, None, Some(100));
         switch_host(&mut d, false, GONE);
-        all_hosts_failed(&mut d, crate::fetch::QUOTA_MESSAGE);
+        all_hosts_failed(&mut d, crate::fetch::QUOTA_MESSAGE[0]);
         assert_eq!(d.mirrors.len(), 1);
-        assert_eq!(next_host(&d, &Status::QuotaExceeded, crate::fetch::QUOTA_MESSAGE, true), NextHost::Stay);
+        assert_eq!(next_host(&d, &Status::QuotaExceeded, crate::fetch::QUOTA_MESSAGE[0], true), NextHost::Stay);
         // Your own Try again goes round the hosts.
-        assert_eq!(next_host(&d, &Status::QuotaExceeded, crate::fetch::QUOTA_MESSAGE, false), NextHost::Switch { keep: false });
+        assert_eq!(next_host(&d, &Status::QuotaExceeded, crate::fetch::QUOTA_MESSAGE[0], false), NextHost::Switch { keep: false });
     }
 
     #[test]
@@ -2826,7 +2872,7 @@ mod tests {
             row("H.zip", "https://drive.google.com/file/d/X1", Some(9), Ready),
             row("H.zip", "https://b.example/H.zip", Some(9), Ready),
         ];
-        found[0].message = Some(crate::fetch::QUOTA_MESSAGE.into());
+        found[0].message = Some(crate::fetch::QUOTA_MESSAGE[0].into());
         let g = mirror_groups(&found).remove(0);
         assert_eq!(mirror_choice(&found, &g, &[]), (Some(1), false));
         assert_eq!(mirror_backups(&found, &g, 1, &[]).len(), 1, "still a backup");
@@ -2851,5 +2897,19 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(mirror_groups(&found), vec![vec![7, 5000]]);
         assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
+    }
+
+    /// The host change's words in French (typography written in), and its reasons known in
+    /// either language.
+    #[test]
+    fn host_words_in_french() {
+        crate::i18n::test_french(true);
+        let said = spot_note("H.zip", "b.example", "a.example", &Ok(()));
+        assert_eq!(said, "H.zip\u{a0}: reprise depuis b.example là où a.example s’est arrêté");
+        assert!(host_gave_up(&Status::Failed, &crate::model::say(NO_ANSWER)));
+        assert!(host_gave_up(&Status::Failed, "Fichier introuvable sur le serveur (404)."));
+        crate::i18n::test_french(false);
+        assert!(host_gave_up(&Status::Failed, NO_ANSWER[1]));
+        assert!(!host_gave_up(&Status::Failed, "Pas d’internet. En attente de son retour"));
     }
 }

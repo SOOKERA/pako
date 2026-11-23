@@ -18,14 +18,37 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::components::{self, Kind};
 use crate::model::VideoOption;
 
+// The words below are compared again later (to know what happened), in either language: see
+// `crate::model::Said`.
 /// Shown on a Links row when the tools aren't installed.
-pub const NEEDS_TOOLS: &str = "Video downloads need the video tools.";
+pub const NEEDS_TOOLS: crate::model::Said = [
+    "Video downloads need the video tools.",
+    "Les téléchargements de vidéos ont besoin des outils vidéo.",
+];
 /// Shown while yt-dlp looks at a link.
-pub const CHECKING: &str = "Checking video…";
+pub fn checking() -> String {
+    tr!("Checking video…", "Vérification de la vidéo…")
+}
 /// yt-dlp's errors that mean "the site changed": a newer yt-dlp usually fixes them.
-pub const SITE_CHANGED: &str = "The site changed something. Pako updates its video tool automatically: try again in a little while.";
+pub const SITE_CHANGED: crate::model::Said = [
+    "The site changed something. Pako updates its video tool automatically: try again in a little while.",
+    "Le site a changé quelque chose. Pako met à jour son outil vidéo tout seul : réessayez d’ici peu.",
+];
 /// The site locks its videos (DRM): nothing can download them, and Pako never tries to get around it.
-pub const DRM: &str = "This site protects its videos (DRM), so they can't be downloaded.";
+pub const DRM: crate::model::Said = [
+    "This site protects its videos (DRM), so they can't be downloaded.",
+    "Ce site protège ses vidéos (DRM) : elles ne peuvent donc pas être téléchargées.",
+];
+/// yt-dlp answered something Pako can't read (yt-dlp may still download it the usual way).
+pub const UNREADABLE: crate::model::Said = [
+    "The video tool gave an answer Pako couldn't read.",
+    "L’outil vidéo a donné une réponse que Pako n’a pas pu lire.",
+];
+/// No connection to the video's site: worth waiting and trying again.
+pub const NO_SITE: crate::model::Said = [
+    "No connection to the site.",
+    "Pas de connexion au site.",
+];
 /// Connections Pako asks yt-dlp to use for videos that come in small pieces (HLS / DASH).
 pub const FRAGMENTS_AT_ONCE: u32 = 16;
 
@@ -636,7 +659,7 @@ mod job {
         let resumed = child.id().is_some_and(resume);
         if !resumed {
             let _ = child.start_kill();
-            return Err(std::io::Error::other("Windows didn't let it start"));
+            return Err(std::io::Error::other(tr!("Windows didn't let it start", "Windows ne l’a pas laissé démarrer")));
         }
         Ok(child)
     }
@@ -706,8 +729,8 @@ pub async fn probe_from_page(
     cookies: &[crate::extension::SiteCookie],
     referrer: Option<&str>,
 ) -> Result<Probe, (String, bool)> {
-    let Some(t) = tools() else { return Err((NEEDS_TOOLS.into(), false)) };
-    let jar = cookie_file(cookies).map_err(|e| (format!("Couldn't prepare your browser login for the video tool: {e}"), false))?;
+    let Some(t) = tools() else { return Err((crate::model::say(NEEDS_TOOLS), false)) };
+    let jar = cookie_file(cookies).map_err(|e| (tr!("Couldn't prepare your browser login for the video tool: {e}", "Impossible de préparer la connexion de votre navigateur pour l’outil vidéo : {e}"), false))?;
     let mut cmd = base_command(&t);
     if let Some(j) = &jar {
         cmd.arg("--cookies").arg(j.path());
@@ -717,13 +740,13 @@ pub async fn probe_from_page(
     let json = run_json(cmd, limit).await;
     drop(jar);
     let json = json?;
-    parse_info(&json).map_err(|_| ("The video tool gave an answer Pako couldn't read.".into(), true))
+    parse_info(&json).map_err(|_| (crate::model::say(UNREADABLE), true))
 }
 
 /// Runs yt-dlp for a JSON answer (nothing is downloaded), within `limit`.
 async fn run_json(mut cmd: tokio::process::Command, limit: Duration) -> Result<String, (String, bool)> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = spawn(&mut cmd).map_err(|e| (format!("Couldn't start the video tool: {e}"), false))?;
+    let child = spawn(&mut cmd).map_err(|e| (tr!("Couldn't start the video tool: {e}", "Impossible de lancer l’outil vidéo : {e}"), false))?;
     let pid = child.id();
     // The wait stays alive past the time limit: the launcher must still be running when its
     // process tree is ended, or what it started (its Python part, Deno) is left behind.
@@ -738,7 +761,7 @@ async fn run_json(mut cmd: tokio::process::Command, limit: Duration) -> Result<S
             Ok(o) => o,
             Err(e) => {
                 unfinished.0 = None;
-                return Err((format!("The video tool stopped: {e}"), false));
+                return Err((tr!("The video tool stopped: {e}", "L’outil vidéo s’est arrêté : {e}"), false));
             }
         },
         _ = tokio::time::sleep(limit) => {
@@ -747,7 +770,7 @@ async fn run_json(mut cmd: tokio::process::Command, limit: Duration) -> Result<S
                 let _ = tokio::task::spawn_blocking(move || kill_tree(pid)).await;
             }
             drop(wait);
-            return Err(("The site took too long to answer.".into(), false));
+            return Err((tr!("The site took too long to answer.", "Le site a mis trop de temps à répondre."), false));
         }
     };
     unfinished.0 = None;
@@ -767,48 +790,54 @@ fn is_drm(lower: &str) -> bool {
 pub fn friendly_error(stderr: &str) -> (String, bool) {
     let last = stderr.lines().rev().find(|l| l.contains("ERROR")).unwrap_or(stderr.lines().last().unwrap_or("")).to_string();
     let l = last.to_lowercase();
-    let msg = |s: &str| (s.to_string(), false);
+    let msg = |s: String| (s, false);
     // "This video is DRM protected", "known to use DRM protection": never worked around.
     if is_drm(&l) {
-        return msg(DRM);
+        return msg(crate::model::say(DRM));
     }
     if l.contains("private video") || l.contains("this video is private") {
-        return msg("This video is private.");
+        return msg(tr!("This video is private.", "Cette vidéo est privée."));
     }
     if l.contains("confirm your age") || l.contains("age-restricted") || l.contains("age restricted") || l.contains("inappropriate for some users") {
-        return msg("Age-restricted: it needs a signed-in browser, which Pako doesn't support yet.");
+        return msg(tr!(
+            "Age-restricted: it needs a signed-in browser, which Pako doesn't support yet.",
+            "Limitée par l’âge : il faut un navigateur connecté, ce que Pako ne prend pas encore en charge."
+        ));
     }
     if l.contains("not a bot") {
-        return msg("YouTube asks to sign in to prove you're not a bot. Try again later.");
+        return msg(tr!(
+            "YouTube asks to sign in to prove you're not a bot. Try again later.",
+            "YouTube demande de se connecter pour prouver que vous n’êtes pas un robot. Réessayez plus tard."
+        ));
     }
     if l.contains("members-only") || l.contains("join this channel") {
-        return msg("Only the channel's members can watch this video.");
+        return msg(tr!("Only the channel's members can watch this video.", "Seuls les membres de la chaîne peuvent regarder cette vidéo."));
     }
     if l.contains("premiere") || l.contains("live event will begin") || l.contains("is upcoming") {
-        return msg("This video hasn't started yet (premiere or upcoming live).");
+        return msg(tr!("This video hasn't started yet (premiere or upcoming live).", "Cette vidéo n’a pas encore commencé (première ou direct à venir)."));
     }
     if l.contains("video unavailable") || l.contains("has been removed") || l.contains("no longer available") || l.contains("not available in your country") {
-        return msg("This video isn't available (removed, or blocked where you are).");
+        return msg(tr!("This video isn't available (removed, or blocked where you are).", "Cette vidéo n’est pas disponible (supprimée, ou bloquée là où vous êtes)."));
     }
     if l.contains("unsupported url") {
-        return msg("Not a video Pako can download.");
+        return msg(tr!("Not a video Pako can download.", "Ce n’est pas une vidéo que Pako peut télécharger."));
     }
     if l.contains("timed out") || l.contains("getaddrinfo") || l.contains("unable to download webpage") || l.contains("connection") || l.contains("network") {
-        return msg("No connection to the site.");
+        return msg(crate::model::say(NO_SITE));
     }
     if l.contains("requested format is not available") || l.contains("unable to extract") || l.contains("nsig") || l.contains("signature") || l.contains("http error 403") || l.contains("player") {
-        return (SITE_CHANGED.into(), true);
+        return (crate::model::say(SITE_CHANGED), true);
     }
     if last.trim().is_empty() {
-        return ("The video tool stopped without saying why.".into(), false);
+        return (tr!("The video tool stopped without saying why.", "L’outil vidéo s’est arrêté sans dire pourquoi."), false);
     }
     let text = last.trim().trim_start_matches("ERROR:").trim();
-    (format!("The video tool said: {}", text.chars().take(160).collect::<String>()), false)
+    (tr!("The video tool said: {}", "L’outil vidéo a dit : {}", text.chars().take(160).collect::<String>()), false)
 }
 
 /// A network-type failure: worth waiting and trying again (the download continues).
 pub fn is_network(msg: &str) -> bool {
-    msg == "No connection to the site."
+    crate::model::is_said(msg, NO_SITE)
 }
 
 /// Arguments for downloading one video into `dest` as `name` (the extension may change to
@@ -1185,7 +1214,7 @@ pub fn classify(json: &str) -> anyhow::Result<Result<Plan, String>> {
         _ => vec![info.top],
     };
     if formats.iter().any(|f| f.has_drm.as_ref().is_some_and(|v| v.as_bool() == Some(true))) {
-        return Ok(Err(DRM.into()));
+        return Ok(Err(crate::model::say(DRM)));
     }
     if info.is_live == Some(true) {
         return Ok(Ok(Plan::Plain));
@@ -1216,7 +1245,7 @@ pub async fn select(
     cookies: Option<&Path>,
     referrer: Option<&str>,
 ) -> Result<Plan, (String, bool)> {
-    let Some(t) = tools() else { return Err((NEEDS_TOOLS.into(), false)) };
+    let Some(t) = tools() else { return Err((crate::model::say(NEEDS_TOOLS), false)) };
     let mut cmd = base_command(&t);
     add_referrer(&mut cmd, referrer);
     if let Some(c) = cookies {
@@ -1227,7 +1256,7 @@ pub async fn select(
     match classify(&json) {
         Ok(Ok(plan)) => Ok(plan),
         Ok(Err(drm)) => Err((drm, false)),
-        Err(_) => Err(("The video tool gave an answer Pako couldn't read.".into(), true)),
+        Err(_) => Err((crate::model::say(UNREADABLE), true)),
     }
 }
 
@@ -1399,10 +1428,11 @@ fn audio_container(ext: &str) -> (&'static str, &'static str) {
 
 /// A download error that new stream addresses may fix (they expire, or the site moved them).
 pub fn worth_new_links(msg: &str) -> bool {
-    msg.starts_with("The server refused access")
-        || msg.starts_with("File not found on the server")
-        || msg.starts_with("The server stopped allowing resumed downloads")
+    crate::model::starts_said(msg, crate::fetch::REFUSED)
+        || crate::model::starts_said(msg, crate::fetch::NOT_FOUND)
+        || crate::model::is_said(msg, crate::engine::RESUME_STOPPED)
         || msg.contains("changed")
+        || msg.contains("changé")
 }
 
 #[cfg(test)]
@@ -1674,11 +1704,11 @@ mod tests {
     #[test]
     fn drm_is_said_plainly() {
         let json = r#"{"format_id":"1","url":"https://x/v","protocol":"https","has_drm":true}"#;
-        assert_eq!(classify(json).unwrap().unwrap_err(), DRM);
+        assert_eq!(classify(json).unwrap().unwrap_err(), DRM[0]);
         let maybe = r#"{"format_id":"1","url":"https://x/v","protocol":"https","has_drm":"maybe"}"#;
         assert!(classify(maybe).unwrap().is_ok());
-        assert_eq!(friendly_error("ERROR: [Netflix] 123: This video is DRM protected").0, DRM);
-        assert_eq!(friendly_error("ERROR: The requested site is known to use DRM protection. It will NOT be supported.").0, DRM);
+        assert_eq!(friendly_error("ERROR: [Netflix] 123: This video is DRM protected").0, DRM[0]);
+        assert_eq!(friendly_error("ERROR: The requested site is known to use DRM protection. It will NOT be supported.").0, DRM[0]);
         assert!(!friendly_error("ERROR: This video is DRM protected").1);
     }
 
@@ -1871,7 +1901,7 @@ mod tests {
         assert!(is_drm("error: [netflix] this site is known to use drm protection"));
         assert!(!is_drm("error: [generic] unable to download https://hdrmovies.example/v"));
         assert!(!is_drm("error: [youtube] xxdrmxx: video unavailable"));
-        assert_ne!(friendly_error("ERROR: [youtube] xxDrMxx: Video unavailable").0, DRM);
+        assert_ne!(friendly_error("ERROR: [youtube] xxDrMxx: Video unavailable").0, DRM[0]);
     }
 
     fn cookie(domain: &str, name: &str, value: &str) -> crate::extension::SiteCookie {

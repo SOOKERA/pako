@@ -25,7 +25,7 @@ function scriptVersion(source) {
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const out = join(root, "dist", "extension");
-const shared = ["background.js", "pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "popup.html", "popup.css", "popup.js", "pako-sent.html", "pako-sent.js", "download-links.js", "icons"];
+const shared = ["lang.js", "background.js", "pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "popup.html", "popup.css", "popup.js", "pako-sent.html", "pako-sent.js", "download-links.js", "icons"];
 /** Only the full extension has these: the Download pill on videos, "Record this video", and the
  *  catch in the browsers that ask before downloading. */
 const FULL_ONLY_FILES = ["pill.js", "player.js", "caught.js", "recorder.js", "recorder-bridge.js", "pako-sent.html", "pako-sent.js", "download-links.js"];
@@ -102,7 +102,7 @@ stage(store, "manifest.chromium.json");
 for (const f of FULL_ONLY_FILES) rmSync(join(store, f));
 rmSync(join(store, "icons"), { recursive: true, force: true });
 cpSync(join(here, "icons-light"), join(store, "icons"), { recursive: true });
-for (const f of ["background.js", "popup.js", "popup.html", "popup.css"]) {
+for (const f of ["lang.js", "background.js", "popup.js", "popup.html", "popup.css"]) {
   const file = join(store, f);
   writeFileSync(file, toLight(f, readFileSync(file, "utf8")));
 }

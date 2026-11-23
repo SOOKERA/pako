@@ -10,6 +10,7 @@
   import { onMount } from "svelte";
   import { listColumns } from "./columns.svelte";
   import { LISTS, draggedColumn, keyedColumn, roomFor, type ColDef } from "./columns";
+  import { t } from "./i18n.svelte";
 
   let {
     list,
@@ -106,13 +107,13 @@
   class:inert
   role="separator"
   aria-orientation="vertical"
-  aria-label="Resize {col.label} column"
+  aria-label={t("Resize {column} column", { column: col.label })}
   aria-valuemin={col.min}
   aria-valuemax={col.max}
   aria-valuenow={drawn}
   aria-disabled={inert || undefined}
   tabindex={inert ? -1 : 0}
-  title={inert ? undefined : "Drag to resize · double-click for the first width"}
+  title={inert ? undefined : t("Drag to resize · double-click for the first width")}
   onpointerdown={down}
   onpointermove={move}
   onpointerup={up}

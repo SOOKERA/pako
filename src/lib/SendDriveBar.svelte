@@ -11,6 +11,7 @@
   import Icon from "./Icon.svelte";
   import DriveRoom from "./DriveRoom.svelte";
   import { rowSlide } from "./motion";
+  import { around, t } from "./i18n.svelte";
 
   let st = $state<DriveSendStatus | null>(null);
   /** Accounts that Drive uploads on the list went into, other than the one connected now. */
@@ -46,7 +47,7 @@
     connecting = true;
     try {
       const email = await api.sendDriveSignIn();
-      app.toast(email ? `Google Drive connected (${email})` : "Google Drive connected");
+      app.toast(email ? t("Google Drive connected ({email})", { email }) : t("Google Drive connected"));
     } catch (e) {
       app.toast(String(e), "error");
     } finally {
@@ -66,38 +67,40 @@
   export function openRoom() {
     room = true;
   }
+  const connectLine = $derived(around(t("{connect} to upload to your own Drive"), "{connect}"));
+  const freeLine = $derived(around(t("{free} free in your Google Drive"), "{free}"));
 </script>
 
 <div class="dbar">
   <span class="ico"><Icon name="drive" size={15} /></span>
   {#if !st}
-    <span class="dim">Asking Google Drive…</span>
+    <span class="dim">{t("Asking Google Drive…")}</span>
   {:else if !st.configured}
-    <span class="dim">{st.missingNote ?? "Uploading to Google Drive isn't set up in this Pako."} Gofile still works.</span>
+    <span class="dim">{st.missingNote ?? t("Uploading to Google Drive isn't set up in this Pako.")} {t("Gofile still works.")}</span>
   {:else if !st.signedIn}
     <div class="room">
-      <span class="line"><b>Connect Google Drive</b> to upload to your own Drive</span>
-      <span class="dim small">Pako only sees the files it uploads, nothing else in your Drive.</span>
+      <span class="line">{connectLine[0]}<b>{t("Connect Google Drive")}</b>{connectLine[1]}</span>
+      <span class="dim small">{t("Pako only sees the files it uploads, nothing else in your Drive.")}</span>
     </div>
-    <button class="btn primary small" disabled={connecting} onclick={connect}>{connecting ? "Waiting for Google…" : "Connect Google Drive"}</button>
+    <button class="btn primary small" disabled={connecting} onclick={connect}>{connecting ? t("Waiting for Google…") : t("Connect Google Drive")}</button>
   {:else}
     <div class="room">
       {#if st.error}
         <span class="dim">{st.error}</span>
       {:else if free != null}
-        <span class="line"><b>{bytes(free)}</b> free in your Google Drive <span class="dim">· {bytes(st.used ?? 0)} of {bytes(st.limit ?? 0)} used</span></span>
+        <span class="line">{freeLine[0]}<b>{bytes(free)}</b>{freeLine[1]} <span class="dim">· {t("{used} of {limit} used", { used: bytes(st.used ?? 0), limit: bytes(st.limit ?? 0) })}</span></span>
         <span class="meter" class:full={pct > 90}><i style:width="{pct}%"></i></span>
       {:else}
-        <span class="line">Your Google Drive has no storage limit <span class="dim">· {bytes(st.used ?? 0)} used</span></span>
+        <span class="line">{t("Your Google Drive has no storage limit")} <span class="dim">· {t("{size} used", { size: bytes(st.used ?? 0) })}</span></span>
       {/if}
     </div>
-    <span class="who dim" title="Connected for uploads as {st.email || 'Google account'}">
-      {#if app.driveSends}Pako's uploads: {app.driveSends} · {bytes(app.driveUsed)}{:else}No uploads in your Drive yet{/if}
+    <span class="who dim" title={t("Connected for uploads as {who}", { who: st.email || t("Google account (in a sentence)") })}>
+      {#if app.driveSends}{t("Pako's uploads: {n} · {size}", { n: app.driveSends, size: bytes(app.driveUsed) })}{:else}{t("No uploads in your Drive yet")}{/if}
     </span>
-    <button class="btn ghost small" disabled={!sends.length} onclick={openRoom} title={sends.length ? "Delete older uploads from your Google Drive" : "Nothing uploaded to Google Drive yet"}>
-      <Icon name="trash" size={13} />Make room…
+    <button class="btn ghost small" disabled={!sends.length} onclick={openRoom} title={sends.length ? t("Delete older uploads from your Google Drive") : t("Nothing uploaded to Google Drive yet")}>
+      <Icon name="trash" size={13} />{t("Make room…")}
     </button>
-    <button class="btn ghost small icon" aria-label="Check again" title="Check again" disabled={asking} onclick={refresh}><Icon name="retry" size={13} /></button>
+    <button class="btn ghost small icon" aria-label={t("Check again")} title={t("Check again")} disabled={asking} onclick={refresh}><Icon name="retry" size={13} /></button>
   {/if}
 </div>
 
@@ -105,8 +108,7 @@
   <div class="acct" role="status" transition:rowSlide={{ duration: 240 }}>
     <Icon name="alert" size={13} />
     <span>
-      {others.length === 1 ? "Some uploads on your list are" : "Uploads on your list are"} in the Google Drive of {others.join(", ")}. Connect
-      {others.length === 1 ? "that account" : "the account they're in"} to delete them, or to let Pako delete them on their date.
+      {t("Some uploads on your list are in the Google Drive of {accounts}. Connect that account to delete them, or to let Pako delete them on their date.", { n: others.length, accounts: others.join(", ") })}
     </span>
   </div>
 {/if}

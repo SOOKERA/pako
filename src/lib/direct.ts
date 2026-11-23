@@ -3,10 +3,11 @@
 // Small helpers shared by the sidebar's contact list and the Direct tab.
 import type { DirectContact, DirectItem, DirectState } from "./api";
 import { shortDate } from "./format";
+import { num, t } from "./i18n.svelte";
 
 /** How a connection travels: "local" (the home network), "direct6", "direct" or "relay". */
 export function pathLabel(p: string | null | undefined) {
-  return p === "local" ? "Local network" : p === "direct6" ? "Direct (IPv6)" : p === "direct" ? "Direct" : p === "relay" ? "Via relay" : "";
+  return p === "local" ? t("Local network") : p === "direct6" ? t("Direct (IPv6)") : p === "direct" ? t("Direct") : p === "relay" ? t("Via relay") : "";
 }
 
 /** What Direct's state says beyond the contacts: the first start on this PC (Windows may ask
@@ -19,8 +20,8 @@ export type DirectExtra = { firstStart?: boolean; internet?: boolean; nearby?: "
 /** The line under "Be visible to Pakos on this network" when you aren't (nothing when you are,
  *  or when you chose Never: the choice already says it). */
 export function nearbyNote(n: DirectExtra["nearby"]) {
-  if (n === "public") return "Not visible on this network (Windows marks it, or another network this PC is on, as public).";
-  if (n === "unknown") return "Not visible on this network (Windows doesn't say it's a home network).";
+  if (n === "public") return t("Not visible on this network (Windows marks it, or another network this PC is on, as public).");
+  if (n === "unknown") return t("Not visible on this network (Windows doesn't say it's a home network).");
   return "";
 }
 export const directExtra = (d: DirectState | null | undefined): DirectExtra => (d ?? {}) as DirectExtra;
@@ -30,28 +31,28 @@ export const directExtra = (d: DirectState | null | undefined): DirectExtra => (
 export const isLocal = (c: DirectContact) => c.online && c.path === "local";
 
 export function ago(ms: number | null) {
-  if (!ms) return "not seen yet";
+  if (!ms) return t("not seen yet");
   const m = Math.round((Date.now() - ms) / 60000);
-  if (m < 2) return "seen just now";
-  if (m < 60) return `last seen ${m} min ago`;
+  if (m < 2) return t("seen just now");
+  if (m < 60) return t("last seen {m} min ago", { m });
   const h = Math.round(m / 60);
-  if (h < 24) return `last seen ${h} h ago`;
-  return `last seen ${shortDate(ms)}`;
+  if (h < 24) return t("last seen {h} h ago", { h });
+  return t("last seen {date}", { date: shortDate(ms) });
 }
 
 /** One line under a contact's name: online and how, waiting, or when last seen. `internet`:
  *  false while the internet is down (only contacts on the same network can be reached). */
 export function statusOf(c: DirectContact, internet = true) {
-  if (c.online) return `Online · ${pathLabel(c.path) || "connected"}`;
-  if (c.waiting) return "Waiting for them to accept";
-  if (c.declined) return c.note ?? "They declined. You can ask again after 7 days.";
-  if (!internet) return "Not reachable without internet";
-  if (!c.trusted) return c.note ?? "Not connected yet";
+  if (c.online) return t("Online · {how}", { how: pathLabel(c.path) || t("connected") });
+  if (c.waiting) return t("Waiting for them to accept");
+  if (c.declined) return c.note ?? t("They declined. You can ask again after 7 days.");
+  if (!internet) return t("Not reachable without internet");
+  if (!c.trusted) return c.note ?? t("Not connected yet");
   // Not called in the background (30 days with nothing, or only when you ask).
-  if (c.unchecked) return "Not checked lately";
+  if (c.unchecked) return t("Not checked lately");
   // Closed for being quiet: not offline, just not connected right now.
   if (c.idle) return ago(c.lastSeen).replace(/^./, (x) => x.toUpperCase());
-  return `Offline · ${ago(c.lastSeen)}`;
+  return t("Offline · {seen}", { seen: ago(c.lastSeen) });
 }
 
 export const initial = (name: string) => (name.trim()[0] ?? "?").toUpperCase();
@@ -81,19 +82,25 @@ export function matchesFilter(c: DirectContact, filter: DirectFilter, waitingIds
   return true;
 }
 
-/** Ready-made tags offered while you have none yet. */
+/** Ready-made tags offered while you have none yet, in the language shown (picked, one is
+ *  saved in those words: a tag is the user's own text from then on). */
+export const suggestedTags = () => [t("Friends"), t("Family"), t("Work")];
+/** The same, in English (the sidebar, until it shows `suggestedTags()`). */
 export const SUGGESTED_TAGS = ["Friends", "Family", "Work"];
 
-const count = (n: number, one: string) => `${n.toLocaleString()} ${n === 1 ? one : `${one}s`}`;
+const filesText = (n: number) => t("{n} files", { n: num(n) });
+const foldersText = (n: number) => t("{n} folders", { n: num(n) });
 
 /** A transfer card's count: "214 files" as before; with folders among several items, which
  *  ("2 folders · 211 files", "2 folders, 3 files · 214 files in all"). */
 export function itemsCount(files: number, items?: DirectItem[], more = 0): string {
-  if (!items?.length || items.length < 2 || more) return count(files, "file");
+  if (!items?.length || items.length < 2 || more) return filesText(files);
   const dirs = items.filter((i) => i.dir).length;
-  if (!dirs) return count(files, "file");
+  if (!dirs) return filesText(files);
   const loose = items.length - dirs;
-  return loose ? `${count(dirs, "folder")}, ${count(loose, "file")} · ${count(files, "file")} in all` : `${count(dirs, "folder")} · ${count(files, "file")}`;
+  return loose
+    ? t("{folders}, {files} · {all} in all", { folders: foldersText(dirs), files: filesText(loose), all: filesText(files) })
+    : `${foldersText(dirs)} · ${filesText(files)}`;
 }
 
 /** Worth unfolding on the card: more than one thing in it (one file or folder is its title). */

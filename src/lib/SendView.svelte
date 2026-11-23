@@ -23,6 +23,7 @@
   import ColumnsButton from "./ColumnsButton.svelte";
   import { listColumns } from "./columns.svelte";
   import { LISTS, gridTemplate, shownColumns, withPost } from "./columns";
+  import { num, t, tMaybe } from "./i18n.svelte";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
 
@@ -52,8 +53,8 @@
   /** "Deletes in 2 days" stays right while the window is open. */
   let now = $state(Date.now());
   $effect(() => {
-    const t = setInterval(() => (now = Date.now()), 60_000);
-    return () => clearInterval(t);
+    const tick = setInterval(() => (now = Date.now()), 60_000);
+    return () => clearInterval(tick);
   });
   /** Lots of rows: no row motion (each one would be measured). */
   const rowMotion = $derived(app.sent.length > 150 ? 0 : 220);
@@ -70,13 +71,13 @@
     }
   });
   async function refreshCounts() {
-    if (!(await app.checkSent(true))) app.toast("Downloads were checked less than a minute ago.");
+    if (!(await app.checkSent(true))) app.toast(t("Downloads were checked less than a minute ago."));
   }
   function checkedTitle() {
     const at = app.sentCheckedAt;
-    if (!at) return "Check downloads";
+    if (!at) return t("Check downloads");
     const min = Math.round((Date.now() - at) / 60_000);
-    return `Check downloads again (checked ${min < 1 ? "just now" : min === 1 ? "1 minute ago" : `${min} minutes ago`})`;
+    return t("Check downloads again (checked {when})", { when: min < 1 ? t("just now") : t("{n} minutes ago", { n: min }) });
   }
   /** Can be deleted from Gofile right now. */
   function deletable(s: SentItem) {
@@ -122,11 +123,11 @@
     try {
       const st = await api.sendDriveStatus();
       if (!st.configured) {
-        app.toast(`${st.missingNote ?? "Uploading to Google Drive isn't set up in this Pako."} Upload to Gofile instead.`, "error");
+        app.toast(`${st.missingNote ?? t("Uploading to Google Drive isn't set up in this Pako.")} ${t("Upload to Gofile instead.")}`, "error");
         return false;
       }
       if (!st.signedIn) {
-        app.toast("Connect Google Drive first (the button above the list), or upload to Gofile.", "error");
+        app.toast(t("Connect Google Drive first (the button above the list), or upload to Gofile."), "error");
         return false;
       }
       if (st.limit == null || st.used == null) return true;
@@ -136,7 +137,7 @@
         noRoom = { need, free, paths, mode: m, name, days, partMb, password };
         return false;
       }
-      app.toast(`This upload needs ${bytes(need)}, ${bytes(free)} free in your Google Drive`);
+      app.toast(t("This upload needs {need}, {free} free in your Google Drive", { need: bytes(need), free: bytes(free) }));
       return true;
     } catch (e) {
       app.toast(String(e), "error");
@@ -149,15 +150,22 @@
     await app.setSendHost("gofile");
     await startSend(paths, m, name, days, partMb, password);
   }
-  /** Where a sent item is, in words. */
-  const where = (s: SentItem) => (s.host === "drive" ? "your Google Drive" : "Gofile");
+  /** Only part of it is up: what its row says on hover. */
+  const partialTitle = (s: SentItem) =>
+    s.host === "drive"
+      ? s.parts
+        ? t("Only some parts are in your Google Drive. People need all of them to open it.")
+        : t("Only these files are in your Google Drive. The link works for them.")
+      : s.parts
+        ? t("Only some parts are in Gofile. People need all of them to open it.")
+        : t("Only these files are in Gofile. The link works for them.");
   /** The pickers add to the basket; nothing is sent until its Send. */
   async function chooseFiles() {
-    const r = await pick({ multiple: true, directory: false, title: "Add files to your upload" });
+    const r = await pick({ multiple: true, directory: false, title: t("Add files to your upload") });
     await app.addToBasket(Array.isArray(r) ? r : r ? [r] : []);
   }
   async function chooseFolder() {
-    const r = await pick({ multiple: true, directory: true, title: "Add a folder to your upload" });
+    const r = await pick({ multiple: true, directory: true, title: t("Add a folder to your upload") });
     await app.addToBasket(Array.isArray(r) ? r : r ? [r] : []);
   }
   /** Sends being tried again right now: a second click does nothing. */
@@ -209,10 +217,10 @@
     return of ? Math.min(100, (j.sent / of) * 100) : 0;
   }
   function what(n: number, size: number) {
-    return `${n === 1 ? "1 file" : `${n.toLocaleString()} files`} · ${bytes(size)}`;
+    return `${t("{n} files", { n: num(n) })} · ${bytes(size)}`;
   }
   /** " · ZIP in 7 parts" after an upload sent in parts. */
-  const inParts = (n: number | undefined) => (n ? ` · ZIP in ${n} parts` : "");
+  const inParts = (n: number | undefined) => (n ? ` · ${t("ZIP in {n} parts", { n })}` : "");
   /** How far making the parts is (before they upload). */
   function madePct(j: SendJob) {
     const of = j.total ?? j.size;
@@ -224,17 +232,17 @@
     e.stopPropagation();
     app.sentPicked = s.id;
     const items: MenuItem[] = [
-      { label: "Copy link", icon: "copy", action: () => app.copyLink(s.link) },
-      { label: "Open the download page", icon: "open", action: () => app.run(() => api.sentOpen(s.id)) },
-      { label: app.panelOpen ? "Hide details" : "Show details", icon: "list", action: () => app.togglePanel() },
+      { label: t("Copy link"), icon: "copy", action: () => app.copyLink(s.link) },
+      { label: t("Open the download page"), icon: "open", action: () => app.run(() => api.sentOpen(s.id)) },
+      { label: app.panelOpen ? t("Hide details") : t("Show details"), icon: "list", action: () => app.togglePanel() },
       { separator: true },
       {
-        label: "Remove from the list",
+        label: t("Remove from the list"),
         icon: "x",
         action: () =>
           app.run(async () => {
             await api.sentRemove(s.id, false);
-            app.toast(`Removed from the list. The file stays in ${where(s)}.`);
+            app.toast(s.host === "drive" ? t("Removed from the list. The file stays in your Google Drive.") : t("Removed from the list. The file stays in Gofile."));
           }),
       },
     ];
@@ -244,12 +252,12 @@
       const later: MenuItem[] =
         s.deleteAt != null
           ? [
-              { label: "Keep 7 more days", icon: "clock", disabled: busy, action: () => app.setSentExpiry(s, sevenMore(s, Date.now())) },
-              { label: "Keep (don't delete)", icon: "check", disabled: busy, action: () => app.setSentExpiry(s, null) },
+              { label: t("Keep 7 more days"), icon: "clock", disabled: busy, action: () => app.setSentExpiry(s, sevenMore(s, Date.now())) },
+              { label: t("Keep (don't delete)"), icon: "check", disabled: busy, action: () => app.setSentExpiry(s, null) },
             ]
-          : [{ label: "Delete in 7 days", icon: "clock", disabled: busy, action: () => app.setSentExpiry(s, sevenMore(s, Date.now())) }];
+          : [{ label: t("Delete in 7 days"), icon: "clock", disabled: busy, action: () => app.setSentExpiry(s, sevenMore(s, Date.now())) }];
       items.splice(items.length - 1, 0, ...later);
-      items.push({ label: s.host === "drive" ? "Delete now from Google Drive…" : "Delete now from Gofile…", icon: "trash", action: () => (app.sentDeleting = s) });
+      items.push({ label: s.host === "drive" ? t("Delete now from Google Drive…") : t("Delete now from Gofile…"), icon: "trash", action: () => (app.sentDeleting = s) });
     }
     onmenu(e.clientX, e.clientY, items);
   }
@@ -260,7 +268,7 @@
     if (!s) return;
     await app.run(async () => {
       await api.sentRemove(s.id, true);
-      app.toast(`Deleted "${s.name}" from ${where(s)}`);
+      app.toast(s.host === "drive" ? t('Deleted "{name}" from your Google Drive', { name: s.name }) : t('Deleted "{name}" from Gofile', { name: s.name }));
     });
   }
 
@@ -280,9 +288,8 @@
     }
     bulkBusy = false;
     bulk = null;
-    const what = (n: number) => (n === 1 ? "1 item" : `${n} items`);
-    if (!failed.length) app.toast(`Deleted ${what(done)} from Gofile`);
-    else app.toast(`Deleted ${what(done)}. ${what(failed.length)} couldn't be deleted: ${failed[0]}`, "error");
+    if (!failed.length) app.toast(t("Deleted {n} items from Gofile", { n: done }));
+    else app.toast(`${t("Deleted {n} items.", { n: done })} ${t("{n} items couldn't be deleted: {error}", { n: failed.length, error: failed[0] })}`, "error");
   }
 
   async function removeFromList(s: SentItem) {
@@ -323,7 +330,7 @@
     const dt = e.dataTransfer!;
     const webview = (window as { chrome?: { webview?: { postMessageWithAdditionalObjects?: (m: string, o: unknown[]) => void } } }).chrome?.webview;
     if (!webview?.postMessageWithAdditionalObjects) {
-      app.toast("Dropping files doesn't work here. Use Choose files or Choose folder.", "error");
+      app.toast(t("Dropping files doesn't work here. Use Choose files or Choose folder."), "error");
       return;
     }
     // Read everything now: the drop's contents are gone once this handler waits.
@@ -343,14 +350,14 @@
       try {
         webview.postMessageWithAdditionalObjects("pako-files", files);
       } catch (e) {
-        app.toast(`Pako couldn't read what was dropped (${String(e)}). Use Choose files or Choose folder.`, "error");
+        app.toast(t("Pako couldn't read what was dropped ({error}). Use Choose files or Choose folder.", { error: String(e) }), "error");
       }
     }
   }
   $effect(() => {
     const un = listen<{ paths: string[]; detail: string }>("files-dropped", (e) => {
       if (e.payload.paths.length) app.addToBasket(e.payload.paths);
-      else app.toast(`Pako couldn't read what was dropped (${e.payload.detail}). Use Choose files or Choose folder.`, "error");
+      else app.toast(t("Pako couldn't read what was dropped ({error}). Use Choose files or Choose folder.", { error: e.payload.detail }), "error");
     });
     return () => {
       un.then((f) => f());
@@ -361,18 +368,18 @@
 <div class="send" bind:clientWidth={pageW} role="presentation" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping}
     <div class="dropzone" aria-hidden="true">
-      <div class="dropcard"><Icon name="upload" size={22} />Drop files or folders to add them to your upload</div>
+      <div class="dropcard"><Icon name="upload" size={22} />{t("Drop files or folders to add them to your upload")}</div>
     </div>
   {/if}
   <div class="toolbar">
-    <h1>Upload</h1>
+    <h1>{t("Upload (page)")}</h1>
     <TutorialButton id="send" />
     {#if app.uploadingCount}
-      <span class="dim small live-text"><span class="live"></span><span class="lt">{app.uploadingCount} uploading · {speed(app.uploadSpeed)}</span></span>
+      <span class="dim small live-text"><span class="live"></span><span class="lt">{t("{n} uploading · {speed}", { n: app.uploadingCount, speed: speed(app.uploadSpeed) })}</span></span>
     {/if}
     <div class="spacer"></div>
-    <button class="btn" title="Add a folder to your upload" onclick={chooseFolder}><Icon name="folder" size={14} /><span class="lbl">Choose folder</span></button>
-    <button class="btn primary" data-tour="send-choose" title="Add files to your upload" onclick={chooseFiles}><Icon name="upload" size={14} stroke={2.2} /><span class="lbl">Choose files</span></button>
+    <button class="btn" title={t("Add a folder to your upload")} onclick={chooseFolder}><Icon name="folder" size={14} /><span class="lbl">{t("Choose folder")}</span></button>
+    <button class="btn primary" data-tour="send-choose" title={t("Add files to your upload")} onclick={chooseFiles}><Icon name="upload" size={14} stroke={2.2} /><span class="lbl">{t("Choose files")}</span></button>
   </div>
 
   {#if app.sendHost === "drive"}
@@ -383,7 +390,7 @@
       <div class="listnote" role="status" transition:rowSlide={{ duration: 240 }}>
         <Icon name="alert" size={14} />
         <span>{app.sentListNote}</span>
-        <button class="icon-btn" aria-label="Close" title="Close" onclick={() => (app.sentListNoteClosed = true)}><Icon name="x" size={12} /></button>
+        <button class="icon-btn" aria-label={t("Close")} title={t("Close")} onclick={() => (app.sentListNoteClosed = true)}><Icon name="x" size={12} /></button>
       </div>
     {/if}
     {#if app.basket.length}
@@ -394,21 +401,21 @@
     {#if !app.sends.length && !app.sent.length && !app.basket.length}
       <div class="empty">
         <div class="empty-icon"><Icon name="upload" size={26} /></div>
-        <h3>Share big files with a link</h3>
+        <h3>{t("Share big files with a link")}</h3>
         {#if app.sendHost === "drive"}
-          <p>Add files or folders (or drop them here), then press Upload. Pako uploads them to your Google Drive, shares them with anyone who has the link, and copies the link for you. Anyone can download it in their browser.</p>
+          <p>{t("Add files or folders (or drop them here), then press Upload. Pako uploads them to your Google Drive, shares them with anyone who has the link, and copies the link for you. Anyone can download it in their browser.")}</p>
         {:else}
-          <p>Add files or folders (or drop them here), then press Upload. Pako uploads them to Gofile (free, no account needed) and copies the link for you. Anyone can download it in their browser.</p>
+          <p>{t("Add files or folders (or drop them here), then press Upload. Pako uploads them to Gofile (free, no account needed) and copies the link for you. Anyone can download it in their browser.")}</p>
         {/if}
         <div class="empty-actions">
-          <button class="btn" onclick={chooseFolder}><Icon name="folder" size={14} />Choose folder</button>
-          <button class="btn primary" onclick={chooseFiles}><Icon name="plus" size={14} stroke={2.2} />Choose files</button>
+          <button class="btn" onclick={chooseFolder}><Icon name="folder" size={14} />{t("Choose folder")}</button>
+          <button class="btn primary" onclick={chooseFiles}><Icon name="plus" size={14} stroke={2.2} />{t("Choose files")}</button>
         </div>
-        <p class="hint">Several files or a folder go as they are, into one folder with one link.{#if app.sendHost === "gofile"} {app.sendKeepNote}{:else} They stay in your Drive until you delete them.{/if}</p>
+        <p class="hint">{t("Several files or a folder go as they are, into one folder with one link.")}{#if app.sendHost === "gofile"} {app.sendKeepNote}{:else} {t("They stay in your Drive until you delete them.")}{/if}</p>
       </div>
     {:else}
       {#if app.sends.length}
-        <div class="section">Uploading</div>
+        <div class="section">{t("Uploading (list)")}</div>
         <div class="cards">
           {#each app.sends as j (j.id)}
             {@const p = pct(j)}
@@ -424,25 +431,25 @@
                   <div class="bar"><div class="fill making" style="width: {m}%"></div></div>
                   <div class="sub mono">
                     {#if j.protected}
-                      <span>Locking it with your password (7-Zip)…</span>
+                      <span>{t("Locking it with your password (7-Zip)…")}</span>
                     {:else}
-                      <span>Making the parts · {Math.floor(m)}% · {bytes(j.made ?? 0)} of {bytes(j.total ?? j.size)}</span>
+                      <span>{t("Making the parts · {pct}% · {done} of {total}", { pct: Math.floor(m), done: bytes(j.made ?? 0), total: bytes(j.total ?? j.size) })}</span>
                     {/if}
                   </div>
                 {:else if j.status === "uploading"}
                   <div class="bar"><div class="fill" style="width: {p}%"></div></div>
                   <div class="sub mono">
                     {#if j.total}
-                      <span>{Math.floor(p)}% · {bytes(j.sent)} of {bytes(j.total)}</span>
+                      <span>{t("{pct}% · {done} of {total}", { pct: Math.floor(p), done: bytes(j.sent), total: bytes(j.total) })}</span>
                     {:else}
-                      <span>{bytes(j.sent)} packed and uploaded</span>
+                      <span>{t("{size} packed and uploaded", { size: bytes(j.sent) })}</span>
                     {/if}
-                    <span>{j.speed ? speed(j.speed) : "Starting…"}{j.total && j.speed ? ` · ${timeLeft(j.total - j.sent, j.speed)}` : ""}</span>
+                    <span>{j.speed ? speed(j.speed) : t("Starting…")}{j.total && j.speed ? ` · ${timeLeft(j.total - j.sent, j.speed)}` : ""}</span>
                   </div>
                   {#if j.asFiles}
-                    <div class="sub mono"><span>{j.filesDone.toLocaleString()} of {j.files.toLocaleString()} files</span></div>
+                    <div class="sub mono"><span>{t("{done} of {n} files", { done: num(j.filesDone), n: num(j.files) })}</span></div>
                   {:else if j.parts}
-                    <div class="sub mono"><span>{j.filesDone.toLocaleString()} of {j.parts.toLocaleString()} parts up</span></div>
+                    <div class="sub mono"><span>{t("{done} of {n} parts up", { done: num(j.filesDone), n: num(j.parts) })}</span></div>
                   {/if}
                 {:else}
                   <div class="err"><Icon name="alert" size={13} /><span>{j.message}</span></div>
@@ -450,15 +457,15 @@
               </div>
               <div class="actions">
                 {#if j.status === "uploading"}
-                  <button class="btn ghost small" onclick={() => app.run(() => api.sendCancel(j.id))}>Cancel</button>
+                  <button class="btn ghost small" onclick={() => app.run(() => api.sendCancel(j.id))}>{t("Cancel")}</button>
                 {:else}
                   {#if j.link}
-                    <button class="btn ghost small" title="The link already works for the files that are up" onclick={() => app.copyLink(j.link!)}><Icon name="copy" size={12} />Copy link</button>
+                    <button class="btn ghost small" title={t("The link already works for the files that are up")} onclick={() => app.copyLink(j.link!)}><Icon name="copy" size={12} />{t("Copy link")}</button>
                   {/if}
                   {#if j.canResume || j.paths.length}
-                    <button class="btn small" disabled={retrying.includes(j.id)} onclick={() => tryAgain(j)}><Icon name="retry" size={12} />Try again</button>
+                    <button class="btn small" disabled={retrying.includes(j.id)} onclick={() => tryAgain(j)}><Icon name="retry" size={12} />{t("Try again")}</button>
                   {/if}
-                  <button class="icon-btn" aria-label="Dismiss" title="Dismiss" onclick={() => app.run(() => api.sendDismiss(j.id))}><Icon name="x" size={13} /></button>
+                  <button class="icon-btn" aria-label={t("Dismiss")} title={t("Dismiss")} onclick={() => app.run(() => api.sendDismiss(j.id))}><Icon name="x" size={13} /></button>
                 {/if}
               </div>
             </div>
@@ -468,21 +475,21 @@
 
       {#if sentList.length}
         <div class="sent-head">
-          <div class="section">Uploaded</div>
+          <div class="section">{t("Uploaded (list)")}</div>
           <div class="spacer"></div>
-          {#if app.sentChecking}<span class="checking">Checking downloads…</span>{/if}
-          <button class="icon-btn refresh" class:spin={app.sentChecking} disabled={app.sentChecking} aria-label="Check downloads" title={checkedTitle()} onclick={refreshCounts}><Icon name="retry" size={13} /></button>
+          {#if app.sentChecking}<span class="checking">{t("Checking downloads…")}</span>{/if}
+          <button class="icon-btn refresh" class:spin={app.sentChecking} disabled={app.sentChecking} aria-label={t("Check downloads")} title={checkedTitle()} onclick={refreshCounts}><Icon name="retry" size={13} /></button>
           {#if downloaded.length}
-            <button class="btn ghost hbtn" title="Delete from Gofile everything that was downloaded at least once" onclick={() => (bulk = downloaded)}><Icon name="trash" size={12} />Delete downloaded ones</button>
+            <button class="btn ghost hbtn" title={t("Delete from Gofile everything that was downloaded at least once")} onclick={() => (bulk = downloaded)}><Icon name="trash" size={12} />{t("Delete downloaded ones")}</button>
           {/if}
         </div>
         {#if anyGofile}<p class="keep">{app.sendKeepNote}{#if app.sentCountsNote}<span class="note"> {app.sentCountsNote}</span>{/if}</p>{/if}
         <div class="sent {hideCls}" class:easing={listColumns.easing && sentList.length <= 60} style={colsStyle} data-tour="send-uploaded">
           <div class="shead" role="row" tabindex="-1" oncontextmenu={columnsMenu} bind:clientWidth={headW}>
             <span></span>
-            <span>Name</span>
+            <span>{t("Name")}</span>
             {#each LIST.cols as c (c.key)}
-              <span class="hc c-{c.key}" class:hlink={c.key === "link"}><ColumnGrip list="send" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />{c.label}</span>
+              <span class="hc c-{c.key}" class:hlink={c.key === "link"}><ColumnGrip list="send" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />{tMaybe(c.label)}</span>
             {/each}
             <span class="colcell"><ColumnsButton list="send" {onmenu} noRoom={() => colsNoRoom} /></span>
           </div>
@@ -508,27 +515,27 @@
               <div class="ficon"><FileIcon name={s.name} kind={s.asFiles ? "folder" : undefined} size={20} /></div>
               <div class="sname">
                 <MiddleText text={s.name} class="nm" />
-                <span class="meta">{#if s.soon && s.deleteAt == null}<span class="soon" title="10 days without a download and Gofile may remove it">May be removed by Gofile soon</span>{" · "}{/if}{#if s.incomplete}<span class="partial" title={s.parts ? `Only some parts are in ${where(s)}. People need all of them to open it.` : `Only these files are in ${where(s)}. The link works for them.`}>{busy(s) ? "Uploading" : "Not all uploaded"}</span>{" · "}{/if}{what(s.files, s.size)} · {shortDate(s.date)}{inParts(s.parts)}</span>
+                <span class="meta">{#if s.soon && s.deleteAt == null}<span class="soon" title={t("10 days without a download and Gofile may remove it")}>{t("May be removed by Gofile soon")}</span>{" · "}{/if}{#if s.incomplete}<span class="partial" title={partialTitle(s)}>{busy(s) ? t("Uploading") : t("Not all uploaded")}</span>{" · "}{/if}{what(s.files, s.size)} · {shortDate(s.date)}{inParts(s.parts)}</span>
               </div>
               <div class="hostcol c-host">
-                <div class="host" class:drive={s.host === "drive"} title={s.host === "drive" ? "In your Google Drive" : "On Gofile"}>
+                <div class="host" class:drive={s.host === "drive"} title={s.host === "drive" ? t("In your Google Drive") : t("On Gofile")}>
                   <Icon name={s.host === "drive" ? "drive" : "globe"} size={13} />{s.host === "drive" ? "Google Drive" : "Gofile"}
                   <!-- Gofile counts downloads (Drive doesn't): next to the host, not a column of its own,
                        so the link keeps its room in a narrow window (user, 2026-11-18). -->
-                  {#if look}<span class="dl" style:color={look.text} title={s.gone ? "Deleted or expired on Gofile: the link doesn't work any more" : `${look.label}. Gofile counts downloads, not who downloaded`}><span class="dot" style:background={look.dot}></span><span class="dltext">{look.label}</span></span>{/if}
+                  {#if look}<span class="dl" style:color={look.text} title={s.gone ? t("Deleted or expired on Gofile: the link doesn't work any more") : t("{label}. Gofile counts downloads, not who downloaded", { label: look.label })}><span class="dot" style:background={look.dot}></span><span class="dltext">{look.label}</span></span>{/if}
                 </div>
                 {#if exp}
                   {#key exp.label}<span class="exp {exp.tone}" title={exp.title} in:fadeIn={{ duration: 180 }}>{exp.label}</span>{/key}
                 {/if}
               </div>
-              <button class="slink mono c-link" title="Open the download page" onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
+              <button class="slink mono c-link" title={t("Open the download page")} onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
               <div class="sact">
                 {#if s.gone}
-                  <button class="btn small" title="Remove from list" onclick={() => removeFromList(s)}><Icon name="x" size={12} /><span class="lbl">Remove from list</span></button>
+                  <button class="btn small" title={t("Remove from list")} onclick={() => removeFromList(s)}><Icon name="x" size={12} /><span class="lbl">{t("Remove from list (button)")}</span></button>
                 {:else}
-                  <button class="btn small" title="Copy link" onclick={() => app.copyLink(s.link)}><Icon name="copy" size={12} /><span class="lbl">Copy link</span></button>
+                  <button class="btn small" title={t("Copy link")} onclick={() => app.copyLink(s.link)}><Icon name="copy" size={12} /><span class="lbl">{t("Copy link")}</span></button>
                 {/if}
-                <button class="icon-btn" aria-label="More for {s.name}" title="More" onclick={(e) => sentMenu(e, s)}><Icon name="chevron" size={13} stroke={2.4} /></button>
+                <button class="icon-btn" aria-label={t("More for {name}", { name: s.name })} title={t("More")} onclick={(e) => sentMenu(e, s)}><Icon name="chevron" size={13} stroke={2.4} /></button>
               </div>
             </div>
           {/each}
@@ -541,55 +548,55 @@
 {#if app.sentDeleting}
   {@const s = app.sentDeleting}
   {@const drive = s.host === "drive"}
-  <Modal title={`Delete "${s.name}" from ${drive ? "Google Drive" : "Gofile"}?`} width={460} onclose={() => (app.sentDeleting = null)}>
-    <p class="msg">The link stops working for everyone, and the file can't be brought back{drive ? " (it doesn't go to your Drive's bin)" : ""}. Your own copy on this PC isn't touched.</p>
+  <Modal title={t('Delete "{name}" from {host}?', { name: s.name, host: drive ? "Google Drive" : "Gofile" })} width={460} onclose={() => (app.sentDeleting = null)}>
+    <p class="msg">{drive ? t("The link stops working for everyone, and the file can't be brought back (it doesn't go to your Drive's bin). Your own copy on this PC isn't touched.") : t("The link stops working for everyone, and the file can't be brought back. Your own copy on this PC isn't touched.")}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (app.sentDeleting = null)}>Cancel</button>
-      <button class="btn danger-fill" onclick={deleteOnline}><Icon name="trash" size={13} />Delete from {drive ? "Google Drive" : "Gofile"}</button>
+      <button class="btn ghost" onclick={() => (app.sentDeleting = null)}>{t("Cancel")}</button>
+      <button class="btn danger-fill" onclick={deleteOnline}><Icon name="trash" size={13} />{t("Delete from {host}", { host: drive ? "Google Drive" : "Gofile" })}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if retryPw}
   {@const j = retryPw}
-  <Modal title="Type the password again" width={440} onclose={() => ((retryPw = null), (retryPass = ""))}>
-    <p class="msg">{j.name} was protected with a password. Pako never keeps it, so type it again to upload it once more.</p>
+  <Modal title={t("Type the password again")} width={440} onclose={() => ((retryPw = null), (retryPass = ""))}>
+    <p class="msg">{t("{name} was protected with a password. Pako never keeps it, so type it again to upload it once more.", { name: j.name })}</p>
     <div class="pwtwice">
-      <input class="input" type="password" autocomplete="new-password" aria-label="Password" placeholder="Password" bind:value={retryPass} />
+      <input class="input" type="password" autocomplete="new-password" aria-label={t("Password")} placeholder={t("Password")} bind:value={retryPass} />
       <input
         class="input"
         type="password"
         autocomplete="new-password"
-        aria-label="Type the password again"
-        placeholder="Type it again"
+        aria-label={t("Type the password again")}
+        placeholder={t("Type it again")}
         bind:value={retryPass2}
         onkeydown={(e) => e.key === "Enter" && retryProtected()}
       />
     </div>
-    {#if retryPass2 && retryPass !== retryPass2}<p class="msg bad">They don't match yet.</p>{/if}
+    {#if retryPass2 && retryPass !== retryPass2}<p class="msg bad">{t("They don't match yet.")}</p>{/if}
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => ((retryPw = null), (retryPass = ""), (retryPass2 = ""))}>Cancel</button>
-      <button class="btn primary" disabled={!retryOk} onclick={retryProtected}>Upload again</button>
+      <button class="btn ghost" onclick={() => ((retryPw = null), (retryPass = ""), (retryPass2 = ""))}>{t("Cancel")}</button>
+      <button class="btn primary" disabled={!retryOk} onclick={retryProtected}>{t("Upload again")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if noRoom}
   {@const r = noRoom}
-  <Modal title="This doesn't fit in your Google Drive" width={460} onclose={() => (noRoom = null)}>
-    <p class="msg">This upload needs {bytes(r.need)}, and your Google Drive has {bytes(r.free)} free. Make room by deleting older uploads, or upload it to Gofile.</p>
+  <Modal title={t("This doesn't fit in your Google Drive")} width={460} onclose={() => (noRoom = null)}>
+    <p class="msg">{t("This upload needs {need}, and your Google Drive has {free} free. Make room by deleting older uploads, or upload it to Gofile.", { need: bytes(r.need), free: bytes(r.free) })}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (noRoom = null)}>Cancel</button>
-      <button class="btn" onclick={() => sendWithGofile(r.paths, r.mode, r.name, r.days, r.partMb, r.password)}>Upload to Gofile instead</button>
-      <button class="btn primary" onclick={() => { noRoom = null; driveBar?.openRoom(); }}><Icon name="trash" size={13} />Make room…</button>
+      <button class="btn ghost" onclick={() => (noRoom = null)}>{t("Cancel")}</button>
+      <button class="btn" onclick={() => sendWithGofile(r.paths, r.mode, r.name, r.days, r.partMb, r.password)}>{t("Upload to Gofile instead")}</button>
+      <button class="btn primary" onclick={() => { noRoom = null; driveBar?.openRoom(); }}><Icon name="trash" size={13} />{t("Make room…")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if bulk}
   {@const list = bulk}
-  <Modal title={list.length === 1 ? "Delete 1 downloaded item from Gofile?" : `Delete ${list.length} downloaded items from Gofile?`} width={500} onclose={() => !bulkBusy && (bulk = null)}>
-    <p class="msg">These were downloaded at least once. Their links stop working for everyone, and they can't be brought back. Your own copies on this PC aren't touched.</p>
+  <Modal title={t("Delete {n} downloaded items from Gofile?", { n: list.length })} width={500} onclose={() => !bulkBusy && (bulk = null)}>
+    <p class="msg">{t("These were downloaded at least once. Their links stop working for everyone, and they can't be brought back. Your own copies on this PC aren't touched.")}</p>
     <ul class="blist">
       {#each list as s (s.id)}
         <li>
@@ -600,8 +607,8 @@
       {/each}
     </ul>
     {#snippet actions()}
-      <button class="btn ghost" disabled={bulkBusy} onclick={() => (bulk = null)}>Cancel</button>
-      <button class="btn danger-fill" disabled={bulkBusy} onclick={deleteDownloaded}><Icon name="trash" size={13} />{bulkBusy ? "Deleting…" : "Delete from Gofile"}</button>
+      <button class="btn ghost" disabled={bulkBusy} onclick={() => (bulk = null)}>{t("Cancel")}</button>
+      <button class="btn danger-fill" disabled={bulkBusy} onclick={deleteDownloaded}><Icon name="trash" size={13} />{bulkBusy ? t("Deleting…") : t("Delete from {host}", { host: "Gofile" })}</button>
     {/snippet}
   </Modal>
 {/if}

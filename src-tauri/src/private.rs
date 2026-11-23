@@ -152,8 +152,8 @@ pub async fn private_save_code(path: String) -> Result<(), String> {
 }
 
 fn save_code(path: String) -> Result<(), String> {
-    let code = vault::get().shown_code().ok_or("Make a recovery code first.")?;
-    let text = format!(
+    let code = vault::get().shown_code().ok_or_else(|| crate::tr!("Make a recovery code first.", "Créez d’abord un code de récupération."))?;
+    let text = crate::tr!(
         "Pako: your Private mode recovery code
 
     {}
@@ -161,9 +161,16 @@ fn save_code(path: String) -> Result<(), String> {
 It opens Private mode if you forget your PIN or password, and lets you choose a new one.
 Keep it somewhere safe, away from this PC. Anyone with it and this PC can open your private files.
 ",
+        "Pako : votre code de récupération du mode privé
+
+    {}
+
+Il ouvre le mode privé si vous oubliez votre code PIN ou votre mot de passe, et vous laisse en choisir un nouveau.
+Gardez-le en lieu sûr, loin de ce PC. Avec ce code et ce PC, n’importe qui peut ouvrir vos fichiers privés.
+",
         &*code
     );
-    std::fs::write(&path, text).map_err(|e| format!("Couldn't save it: {e}"))
+    std::fs::write(&path, text).map_err(|e| crate::tr!("Couldn't save it: {e}", "Impossible de l’enregistrer : {e}"))
 }
 
 #[tauri::command]
@@ -204,7 +211,7 @@ pub fn sweep_incoming() {
 #[tauri::command]
 pub async fn private_copy_code() -> Result<(), String> {
     slow(|| {
-        let code = vault::get().shown_code().ok_or("Make a recovery code first.")?;
+        let code = vault::get().shown_code().ok_or_else(|| crate::tr!("Make a recovery code first.", "Créez d’abord un code de récupération."))?;
         clipboard::put_private(&code)
     })
     .await
@@ -245,7 +252,7 @@ mod clipboard {
         // SAFETY: opened, filled and closed here.
         let seq = unsafe {
             if OpenClipboard(std::ptr::null_mut()) == 0 {
-                return Err("Couldn't copy it: another app is using the clipboard. Try again.".into());
+                return Err(crate::tr!("Couldn't copy it: another app is using the clipboard. Try again.", "Impossible de le copier : une autre appli utilise le presse-papiers. Réessayez."));
             }
             EmptyClipboard();
             put(13, &wide); // CF_UNICODETEXT
@@ -272,7 +279,7 @@ mod clipboard {
 #[cfg(not(windows))]
 mod clipboard {
     pub fn put_private(_text: &str) -> Result<(), String> {
-        Err("Copy the code by hand.".into())
+        Err(crate::tr!("Copy the code by hand.", "Copiez le code à la main."))
     }
 }
 

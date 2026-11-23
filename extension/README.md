@@ -17,6 +17,12 @@ PC through the browser's "native messaging": nothing listens on the network.
 - **Let Pako take over downloads** (in the toolbar popup, on by default): files over 2 MB you
   download in the browser go to Pako instead. If Pako can't take one, the browser keeps it.
 
+The extension speaks Pako's language (English or French, as chosen in Pako), not the
+browser's: its right-click items, toolbar popup and Download button follow Pako. It learns it
+from Pako each time it talks to it (and when the browser starts), so after switching the
+language in Pako, open the toolbar popup once to see the extension follow at once. With an
+older Pako it speaks English.
+
 The browser's cookies for a download go to Pako with it, so files behind a login work. Pako
 keeps them for that download only, encrypted by Windows for your Windows account (so the
 download still works after a restart), and deletes them once it is finished or removed.
@@ -107,7 +113,18 @@ Pako then says the Firefox version isn't included.
     Pako before submitting (see `docs/store/chrome-web-store.md`).
 - Firefox ID: `extension@pako.sookera.com` (`pako@sookera.com` was refused by Mozilla as taken). Signing (unlisted, on addons.mozilla.org), how Pako ships the
   signed file and how Firefox gets updates: `docs/firefox-extension.md`.
-- Messages to the native host: `ping`; `download` / `links` with `urls` (plus `referrer`,
+- Pako's language: `lang.js` holds the extension's French (the English is the key; French
+  typography is added by its `tr`), loaded before the scripts that speak (Chromium's service
+  worker imports it, Firefox's manifest lists it first, the popup, the sent page and the pill
+  load it). Pako's helper adds `lang` ("en" / "fr", from Pako's saved settings) to every answer,
+  and answers `{kind: "language"}` by itself (never starting Pako). The extension asks it when
+  the browser starts and now and then when its background page starts (at most every 10
+  minutes; Firefox also when a right-click menu shows), keeps it in `storage.local`
+  (`pakoLang`) for when Pako can't be reached, and remakes its right-click items when it
+  changes. It asks with `private: true`, so an older Pako (which answers "Unknown request.")
+  notes nothing; no `lang` in an answer = an older Pako = English. Pako can't tell the
+  extension by itself (native messaging only goes from the browser to Pako).
+- Messages to the native host: `ping`; `language`; `download` / `links` with `urls` (plus `referrer`,
   `cookies`, `filename`, `takeover`); `video` with one `urls` entry (a video site Pako knows) and
   `quality` 1080, 720, 480 or 0 (audio only); `stream` with one `urls` entry (the caught
   stream), `referrer` (the document that loaded it), `filename` (the page's title) and

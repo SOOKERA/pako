@@ -37,6 +37,91 @@
 ReserveFile "${PAKO_ART}\*.jpg"
 ReserveFile "${PAKO_ART}\*.png"
 
+; [Pako] French needs the art script's French pictures too (a slide's `fr` in
+; scripts/installer-art.mjs makes slideN-d-fr.jpg, the buttons' b-<name>-<state>-d-fr.png...).
+!if ! /FileExists "${PAKO_ART}\slide1-d-fr.jpg"
+  !error "Pako Setup speaks French but art\slide1-d-fr.jpg is missing: give every slide its fr: { title, desc } in scripts/installer-art.mjs and run it again."
+!endif
+!if ! /FileExists "${PAKO_ART}\b-install-n-d-fr.png"
+  !error "Pako Setup speaks French but art\b-install-n-d-fr.png is missing: run scripts/installer-art.mjs again (with fr in the slides)."
+!endif
+
+; ---------- the words, in English or French ----------
+; [Pako] English.nsh and French.nsh give each text twice: as Tauri's LangString (what $(name) reads,
+; always in the language Setup started in: NSIS fixes it once .onInit is over) and as a define,
+; PakoEn_<name> / PakoFr_<name>. Setup's own code reads the define for the language shown ($PakoLang)
+; through PakoT, so the window can switch languages while it is open. The uninstaller and silent or
+; passive runs know their language from the start, so both ways give the same words there.
+Var PakoLang          ; en or fr: the language Setup's window speaks
+Var PakoTx            ; PakoT's text, for the line that uses it next
+Var PakoTxExtract     ; NSIS's own "Copying " (^Extract) in the language shown (English.nsh)
+Var PakoArtSfx        ; "" or "-fr": the pictures with words in them, in the language shown
+!define PAKO_LANG_EN_NAME "English"
+!define PAKO_LANG_FR_NAME "Français"
+
+!macro PakoEn KEY TEXT
+  !define PakoEn_${KEY} "${TEXT}"
+  LangString ${KEY} ${LANG_ENGLISH} "${TEXT}"
+!macroend
+!macro PakoFr KEY TEXT
+  !define PakoFr_${KEY} "${TEXT}"
+  LangString ${KEY} ${LANG_FRENCH} "${TEXT}"
+!macroend
+
+; OUT = the text KEY in the language shown. Only after English.nsh and French.nsh (installer.nsi
+; includes them after the pages): code before that calls a function that uses it (PakoRunTexts).
+!macro PakoT OUT KEY
+  !ifndef PakoEn_${KEY}
+    !error "No English text ${KEY} (English.nsh), or PakoT is used before the language files are included."
+  !endif
+  !ifndef PakoFr_${KEY}
+    !error "No French text ${KEY} in French.nsh."
+  !endif
+  ${If} $PakoLang == "fr"
+    StrCpy ${OUT} "${PakoFr_${KEY}}"
+  ${Else}
+    StrCpy ${OUT} "${PakoEn_${KEY}}"
+  ${EndIf}
+!macroend
+
+; .onInit (installer.nsi): Setup speaks English until the window's choice says otherwise; it never
+; follows Windows' language. Over an installed Pako the window opens in the language saved for
+; it (PakoGuiInit). A silent or passive install (no window, no choice) keeps the language saved
+; before, so that the uninstaller keeps it too.
+!macro PAKO_LANG_INIT
+  StrCpy $PakoLang "en"
+  StrCpy $PakoArtSfx ""
+  !if "${DISPLAYLANGUAGESELECTOR}" == "true"
+    !error "Pako Setup's window asks the language itself: set displayLanguageSelector to false in tauri.conf.json."
+  !endif
+  StrCpy $LANGUAGE ${LANG_ENGLISH}
+  ${If} ${Silent}
+  ${OrIf} $PassiveMode = 1
+    ReadRegStr $PakoTx ${MUI_LANGDLL_REGISTRY_ROOT} "${MUI_LANGDLL_REGISTRY_KEY}" "${MUI_LANGDLL_REGISTRY_VALUENAME}"
+    ${If} $PakoTx == ${LANG_FRENCH}
+      StrCpy $PakoLang "fr"
+      StrCpy $LANGUAGE ${LANG_FRENCH}
+      StrCpy $PakoArtSfx "-fr"
+    ${EndIf}
+  ${EndIf}
+  Call PakoLangTexts
+!macroend
+
+; un.onInit (installer.nsi): the uninstaller speaks the language Setup ran in (saved by Setup as
+; the app's "Installer Language", 1033 or 1036). Missing (installed by an older Pako Setup) or
+; anything else: English. Never Windows' language dialog.
+!macro PAKO_UN_LANG_INIT
+  StrCpy $PakoLang "en"
+  StrCpy $PakoArtSfx ""
+  StrCpy $LANGUAGE ${LANG_ENGLISH}
+  ReadRegStr $PakoTx ${MUI_LANGDLL_REGISTRY_ROOT} "${MUI_LANGDLL_REGISTRY_KEY}" "${MUI_LANGDLL_REGISTRY_VALUENAME}"
+  ${If} $PakoTx == ${LANG_FRENCH}
+    StrCpy $PakoLang "fr"
+    StrCpy $LANGUAGE ${LANG_FRENCH}
+    StrCpy $PakoArtSfx "-fr"
+  ${EndIf}
+!macroend
+
 Var PakoDpi
 Var PakoLook          ; d(ark) or l(ight)
 Var PakoCBg
@@ -58,6 +143,20 @@ Var PakoS2
 Var PakoS3
 Var PakoS4
 Var PakoS5
+; [Pako] PakoS1..5 are the slides of the language shown: the English ones (PakoSE) are read before
+; the window shows, the French ones (PakoSF) one by one while the window is idle (PakoTick), or at
+; once when French is picked before that.
+Var PakoSE1
+Var PakoSE2
+Var PakoSE3
+Var PakoSE4
+Var PakoSE5
+Var PakoSF1
+Var PakoSF2
+Var PakoSF3
+Var PakoSF4
+Var PakoSF5
+Var PakoSFReady       ; how many French slides are read
 Var PakoSlide         ; 1..5
 Var PakoAuto          ; 1 = moves on by itself
 Var PakoIdleT0        ; when the slide last changed or the mouse was last on it (ms)
@@ -118,6 +217,7 @@ Var PakoHeld          ; 1 = Install can't be clicked (the folder won't do)
 Var PakoRunning       ; 1 = Pako is open (said in the window)
 Var PakoAgreedClose   ; 1 = Pako may be closed without asking again (it was said)
 Var PakoPassiveKeep
+Var PakoOwnCheck      ; 1 = PakoCheckRunning uses its own words (see there)
 Var PakoPassiveOrig
 Var PakoOpen          ; done page: 1 = start Pako on the way out
 Var PakoFolderMsg
@@ -132,6 +232,20 @@ Var PakoPxB2
 Var PakoPxDesk
 Var PakoPxStart
 Var PakoPxBrow
+Var PakoPxTerms
+Var PakoPxPrev        ; the slides' ‹ and ›, and the line beside them (they stay on a language switch)
+Var PakoPxNext
+Var PakoSepCtl
+; [Pako] The language choice (top right of the main page): its two words and their stand-ins
+; (radio buttons: Tab reaches the one chosen, the arrows move between them, Narrator reads
+; "English, radio button, selected").
+Var PakoLangEnCtl
+Var PakoLangFrCtl
+Var PakoPxEn
+Var PakoPxFr
+Var PakoLangNext      ; the language just clicked (applied a moment later: PakoLangApply)
+Var PakoLangFocus     ; which control had the keyboard when it was clicked
+Var PakoLangPicked    ; 1 = a language was picked in the window (even the one shown)
 ; [Pako] Uninstaller: 1 = "Also delete Private mode's files" (never in a silent or passive run).
 Var PakoDeletePrivate
 ; The focus ring (4 thin lines), shown around what the keyboard is on.
@@ -324,8 +438,9 @@ Var PakoRet
       StrCpy $PakoFailName "${NAME}"
       Pop $1
       Pop $0
-      !insertmacro PakoFail "$(pakoFailFile)"
-      Abort "$(pakoFailFile)"
+      !insertmacro PakoT $PakoTx pakoFailFile
+      !insertmacro PakoFail $PakoTx
+      Abort $PakoTx
     ${EndIf}
     Sleep 500
   ${Loop}
@@ -342,13 +457,21 @@ Var PakoRet
   ${If} $PakoAgreedClose = 1
     StrCpy $PassiveMode 1
   ${EndIf}
-  ${If} $PakoInFiles = 1
-    nsis_tauri_utils::StrReplace "$(appRunning)" "{{product_name}}" "${PRODUCTNAME}"
-    Pop $R1
-    nsis_tauri_utils::StrReplace "$(appRunningOkKill)" "{{product_name}}" "${PRODUCTNAME}"
-    Pop $R2
-    nsis_tauri_utils::StrReplace "$(failedToKillApp)" "{{product_name}}" "${PRODUCTNAME}"
-    Pop $R3
+  ; [Pako] With French on, also when the window's main page is left (PageLeaveReinstall), so that
+  ; its question is in the language shown (Tauri's check reads its LangStrings: the language
+  ; Setup started in). Silent and passive runs keep Tauri's.
+  StrCpy $PakoOwnCheck $PakoInFiles
+  ${IfNot} ${Silent}
+  ${AndIf} $PakoPassiveOrig <> 1
+    StrCpy $PakoOwnCheck 1
+  ${EndIf}
+  ${If} $PakoOwnCheck = 1
+    ; (A function: this macro is also used before the language files are included.)
+    !ifdef __UNINSTALL__
+      Call un.PakoRunTexts
+    !else
+      Call PakoRunTexts
+    !endif
     !insertmacro RestartManager_StartSession $R0
     ${If} $R0 != ""
       !insertmacro RestartManager_RegisterFile $R0 "${EXE}"
@@ -385,6 +508,19 @@ Var PakoRet
 
 ; ---------- the functions (installer and uninstaller each get their own copy) ----------
 !macro PAKO_UI_COMMON UN
+
+; [Pako] PakoCheckRunning's three messages, in the language shown -> $R1, $R2, $R3.
+Function ${UN}PakoRunTexts
+  !insertmacro PakoT $PakoTx appRunning
+  nsis_tauri_utils::StrReplace "$PakoTx" "{{product_name}}" "${PRODUCTNAME}"
+  Pop $R1
+  !insertmacro PakoT $PakoTx appRunningOkKill
+  nsis_tauri_utils::StrReplace "$PakoTx" "{{product_name}}" "${PRODUCTNAME}"
+  Pop $R2
+  !insertmacro PakoT $PakoTx failedToKillApp
+  nsis_tauri_utils::StrReplace "$PakoTx" "{{product_name}}" "${PRODUCTNAME}"
+  Pop $R3
+FunctionEnd
 
 ; Colours, fonts and the screen's scale; GDI+ for the pictures.
 Function ${UN}PakoLookInit
@@ -787,24 +923,25 @@ Function ${UN}PakoFocusTick
   Pop $0
 FunctionEnd
 
-; $PakoA1 = a button's name (art/b-<name>-<state>-<look>.png), $PakoA2 = its width at 100 %
-; -> its pictures in $PakoB1N/H/X (PakoLoadButton2: $PakoB2N/H).
+; $PakoA1 = a button's name (art/b-<name>-<state>-<look>[-fr].png: its words are in the picture,
+; in the language shown), $PakoA2 = its width at 100 % -> its pictures in $PakoB1N/H/X
+; (PakoLoadButton2: $PakoB2N/H).
 Function ${UN}PakoLoadButton1
   Push $0
   Push $1
   StrCpy $0 $PakoA1
   StrCpy $1 $PakoA2
   StrCpy $PakoA3 40
-  StrCpy $PakoA1 "b-$0-n-$PakoLook.png"
+  StrCpy $PakoA1 "b-$0-n-$PakoLook$PakoArtSfx.png"
   Call ${UN}PakoImage
   StrCpy $PakoB1N $PakoRet
-  StrCpy $PakoA1 "b-$0-h-$PakoLook.png"
+  StrCpy $PakoA1 "b-$0-h-$PakoLook$PakoArtSfx.png"
   StrCpy $PakoA2 $1
   Call ${UN}PakoImage
   StrCpy $PakoB1H $PakoRet
   StrCpy $PakoB1X 0
-  ${If} ${FileExists} "$PLUGINSDIR\art\b-$0-x-$PakoLook.png"
-    StrCpy $PakoA1 "b-$0-x-$PakoLook.png"
+  ${If} ${FileExists} "$PLUGINSDIR\art\b-$0-x-$PakoLook$PakoArtSfx.png"
+    StrCpy $PakoA1 "b-$0-x-$PakoLook$PakoArtSfx.png"
     StrCpy $PakoA2 $1
     Call ${UN}PakoImage
     StrCpy $PakoB1X $PakoRet
@@ -820,10 +957,10 @@ Function ${UN}PakoLoadButton2
   StrCpy $0 $PakoA1
   StrCpy $1 $PakoA2
   StrCpy $PakoA3 40
-  StrCpy $PakoA1 "b-$0-n-$PakoLook.png"
+  StrCpy $PakoA1 "b-$0-n-$PakoLook$PakoArtSfx.png"
   Call ${UN}PakoImage
   StrCpy $PakoB2N $PakoRet
-  StrCpy $PakoA1 "b-$0-h-$PakoLook.png"
+  StrCpy $PakoA1 "b-$0-h-$PakoLook$PakoArtSfx.png"
   StrCpy $PakoA2 $1
   Call ${UN}PakoImage
   StrCpy $PakoB2H $PakoRet
@@ -936,7 +1073,8 @@ Function ${UN}PakoFailClose
   System::Call "user32::GetWindowLongW(p $PakoFailBtn, i -16) i .r4"
   IntOp $4 $4 | 0x04000000
   System::Call "user32::SetWindowLongW(p $PakoFailBtn, i -16, i r4)"
-  SendMessage $PakoFailBtn ${WM_SETTEXT} 0 "STR:$(pakoClose)"
+  !insertmacro PakoT $PakoTx pakoClose
+  SendMessage $PakoFailBtn ${WM_SETTEXT} 0 "STR:$PakoTx"
   !insertmacro PakoScale $4 $1
   !insertmacro PakoScale $5 $2
   !insertmacro PakoScale $PakoW $3
@@ -972,10 +1110,82 @@ FunctionEnd
   ShowWindow $2 ${SW_HIDE}
 !macroend
 
+; One slide's picture: N (1..5), SFX ("" or "-fr") -> VAR.
+!macro PakoSlideRead N SFX VAR
+  StrCpy $PakoA1 "slide${N}-$PakoLook${SFX}.jpg"
+  StrCpy $PakoA2 530
+  StrCpy $PakoA3 540
+  Call PakoImage
+  StrCpy ${VAR} $PakoRet
+!macroend
+
 ; ---------- the installer's pages ----------
 !macro PAKO_UI_FUNCTIONS
+!ifndef PakoEn_pakoInstallIn
+  !error 'English.nsh is from template 1.0.x (plain LangStrings): write each line as !insertmacro PakoEn <name> "<text>" (see the installer template's CHANGELOG, Template 1.1.0: Updating an app from 1.0.x).'
+!endif
 !insertmacro PAKO_UI_COMMON ""
 !insertmacro PAKO_UI_COMMON "un."
+
+!ifndef PAKO_FRENCH_TEXTS
+  !error 'Pako Setup speaks French but French.nsh is not included: tauri.conf.json needs "languages": ["English", "French"] and "customLanguageFiles": { "English": "installer/English.nsh", "French": "installer/French.nsh" }.'
+!endif
+
+; [Pako] NSIS's own words that only read the language Setup started in (English.nsh: ^Extract),
+; in the language shown.
+Function PakoLangTexts
+  !insertmacro PakoT $PakoTxExtract pakoExtract
+FunctionEnd
+
+; [Pako] Reads the next French slide (PakoTick: one at a time while the window is idle, so the
+; first switch to French shows its slides at once).
+Function PakoReadFrSlide
+  ${If} $PakoSFReady == ""
+    StrCpy $PakoSFReady 0
+  ${EndIf}
+  ${If} $PakoSFReady >= 5
+    Return
+  ${EndIf}
+  IntOp $PakoSFReady $PakoSFReady + 1
+  ${If} $PakoSFReady = 1
+    !insertmacro PakoSlideRead 1 "-fr" $PakoSF1
+  ${ElseIf} $PakoSFReady = 2
+    !insertmacro PakoSlideRead 2 "-fr" $PakoSF2
+  ${ElseIf} $PakoSFReady = 3
+    !insertmacro PakoSlideRead 3 "-fr" $PakoSF3
+  ${ElseIf} $PakoSFReady = 4
+    !insertmacro PakoSlideRead 4 "-fr" $PakoSF4
+  ${Else}
+    !insertmacro PakoSlideRead 5 "-fr" $PakoSF5
+  ${EndIf}
+FunctionEnd
+
+; [Pako] installer.nsi (PageLeaveReinstall): the installed version's uninstaller failed.
+Function PakoUnableToUninstall
+  !insertmacro PakoT $PakoTx unableToUninstall
+  MessageBox MB_ICONEXCLAMATION $PakoTx
+FunctionEnd
+
+; [Pako] $PakoS1..5 = the slides of the language shown.
+Function PakoUseSlides
+  ${If} $PakoLang == "fr"
+    ${Do}
+      ${IfThen} $PakoSFReady >= 5 ${|} ${Break} ${|}
+      Call PakoReadFrSlide
+    ${Loop}
+    StrCpy $PakoS1 $PakoSF1
+    StrCpy $PakoS2 $PakoSF2
+    StrCpy $PakoS3 $PakoSF3
+    StrCpy $PakoS4 $PakoSF4
+    StrCpy $PakoS5 $PakoSF5
+    Return
+  ${EndIf}
+  StrCpy $PakoS1 $PakoSE1
+  StrCpy $PakoS2 $PakoSE2
+  StrCpy $PakoS3 $PakoSE3
+  StrCpy $PakoS4 $PakoSE4
+  StrCpy $PakoS5 $PakoSE5
+FunctionEnd
 
 ; MUI_CUSTOMFUNCTION_GUIINIT (hooks.nsh): the window, before it shows.
 Function PakoGuiInit
@@ -996,32 +1206,27 @@ Function PakoGuiInit
   StrCpy $PakoA2 540
   Call PakoWindow
   Call PakoDetect
-  ; The slides, once for every page.
-  StrCpy $PakoA1 "slide1-$PakoLook.jpg"
-  StrCpy $PakoA2 530
-  StrCpy $PakoA3 540
-  Call PakoImage
-  StrCpy $PakoS1 $PakoRet
-  StrCpy $PakoA1 "slide2-$PakoLook.jpg"
-  StrCpy $PakoA2 530
-  StrCpy $PakoA3 540
-  Call PakoImage
-  StrCpy $PakoS2 $PakoRet
-  StrCpy $PakoA1 "slide3-$PakoLook.jpg"
-  StrCpy $PakoA2 530
-  StrCpy $PakoA3 540
-  Call PakoImage
-  StrCpy $PakoS3 $PakoRet
-  StrCpy $PakoA1 "slide4-$PakoLook.jpg"
-  StrCpy $PakoA2 530
-  StrCpy $PakoA3 540
-  Call PakoImage
-  StrCpy $PakoS4 $PakoRet
-  StrCpy $PakoA1 "slide5-$PakoLook.jpg"
-  StrCpy $PakoA2 530
-  StrCpy $PakoA3 540
-  Call PakoImage
-  StrCpy $PakoS5 $PakoRet
+  ; [Pako] Over an installed Pako (update, reinstall, an older version): the window opens in the
+  ; language saved for it ("Installer Language": the one Setup last ran in, which the app
+  ; updates when its own language changes, app-side/i18n.rs tell_setup). A first install opens
+  ; in English. Either way the choice in the window still works, and a pick counts as a pick.
+  ${If} $PakoMode != "install"
+    ReadRegStr $PakoTx ${MUI_LANGDLL_REGISTRY_ROOT} "${MUI_LANGDLL_REGISTRY_KEY}" "${MUI_LANGDLL_REGISTRY_VALUENAME}"
+    ${If} $PakoTx == ${LANG_FRENCH}
+      StrCpy $PakoLang "fr"
+      StrCpy $LANGUAGE ${LANG_FRENCH}
+      StrCpy $PakoArtSfx "-fr"
+      Call PakoLangTexts
+    ${EndIf}
+  ${EndIf}
+  ; The slides, once for every page (English ones; the French ones are read while the window is
+  ; idle, PakoTick, or at once when it opens in French: PakoUseSlides).
+  !insertmacro PakoSlideRead 1 "" $PakoSE1
+  !insertmacro PakoSlideRead 2 "" $PakoSE2
+  !insertmacro PakoSlideRead 3 "" $PakoSE3
+  !insertmacro PakoSlideRead 4 "" $PakoSE4
+  !insertmacro PakoSlideRead 5 "" $PakoSE5
+  Call PakoUseSlides
   StrCpy $PakoA1 "logo-$PakoLook.png"
   StrCpy $PakoA2 160
   StrCpy $PakoA3 44
@@ -1051,20 +1256,25 @@ FunctionEnd
 ; The window's title on every page (Windows sets "Pako Setup" again on each one).
 Function PakoSetTitle
   ${If} $PakoMode == "update"
-    SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:$(pakoUpdateTitle)"
+    !insertmacro PakoT $PakoTx pakoUpdateTitle
+    SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:$PakoTx"
+  ${Else}
+    ; [Pako] NSIS's own title ("<App> Setup") is in the language Setup started in.
+    !insertmacro PakoT $PakoTx pakoSetupTitle
+    SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:$PakoTx"
   ${EndIf}
 FunctionEnd
 
 ; The line under the logo for what this Setup does -> $PakoRet.
 Function PakoModeTag
   ${If} $PakoMode == "update"
-    StrCpy $PakoRet "$(pakoTagUpdate)"
+    !insertmacro PakoT $PakoRet pakoTagUpdate
   ${ElseIf} $PakoMode == "same"
-    StrCpy $PakoRet "$(pakoTagSame)"
+    !insertmacro PakoT $PakoRet pakoTagSame
   ${ElseIf} $PakoMode == "older"
-    StrCpy $PakoRet "$(pakoTagOlder)"
+    !insertmacro PakoT $PakoRet pakoTagOlder
   ${Else}
-    StrCpy $PakoRet "$(pakoTag)"
+    !insertmacro PakoT $PakoRet pakoTag
   ${EndIf}
 FunctionEnd
 
@@ -1180,11 +1390,13 @@ Function PakoSlidePanel
   Call PakoSlideInit
   ${NSD_OnClick} $PakoSlideCtl PakoSlideClick
   ; ‹ and › for the keyboard (the mouse clicks them on the slide).
-  !insertmacro PakoProxy $0 ${PAKO_PUSH} 444 492 30 40 "$(pakoPrevSlide)"
-  ${NSD_OnClick} $0 PakoPrevSlide
-  !insertmacro PakoProxy $0 ${PAKO_PUSH} 474 492 34 40 "$(pakoNextSlide)"
-  ${NSD_OnClick} $0 PakoNextSlide
-  !insertmacro PakoLabel $0 530 0 1 540 ${PAKO_LABEL} $PakoFBody LN LN ""
+  !insertmacro PakoT $PakoTx pakoPrevSlide
+  !insertmacro PakoProxy $PakoPxPrev ${PAKO_PUSH} 444 492 30 40 $PakoTx
+  ${NSD_OnClick} $PakoPxPrev PakoPrevSlide
+  !insertmacro PakoT $PakoTx pakoNextSlide
+  !insertmacro PakoProxy $PakoPxNext ${PAKO_PUSH} 474 492 34 40 $PakoTx
+  ${NSD_OnClick} $PakoPxNext PakoNextSlide
+  !insertmacro PakoLabel $PakoSepCtl 530 0 1 540 ${PAKO_LABEL} $PakoFBody LN LN ""
   Pop $0
 FunctionEnd
 
@@ -1562,6 +1774,16 @@ Function PakoTick
     ${IfThen} $PakoSlide > 5 ${|} StrCpy $PakoSlide 1 ${|}
     Call PakoShowSlide
   ${EndIf}
+  ; [Pako] The French slides are read one per tick, never while a slide moves (a picture takes a
+  ; few hundredths of a second), so the first switch to French is instant.
+  ${If} $PakoSFReady < 5
+  ${AndIf} $PakoIntro <> 1
+    IntOp $1 $0 - $PakoFadeT0
+    ${If} $1 > 800
+    ${OrIf} $1 < 0
+      Call PakoReadFrSlide
+    ${EndIf}
+  ${EndIf}
   Call PakoButtonsTick
   Pop $2
   Pop $1
@@ -1575,7 +1797,8 @@ Function PakoHeader
   Push $1
   StrCpy $1 $PakoA1
   !insertmacro PakoPicture $0 615 34 160 44 $PakoBmpLogo
-  !insertmacro PakoLabel $0 554 80 282 16 0x50000081 $PakoFTiny MUT BG "$(pakoVersion)"
+  !insertmacro PakoT $PakoTx pakoVersion
+  !insertmacro PakoLabel $0 554 80 282 16 0x50000081 $PakoFTiny MUT BG $PakoTx
   !insertmacro PakoLabel $0 554 104 282 18 0x50000081 $PakoFSmall MUT BG $1
   Pop $1
   Pop $0
@@ -1598,6 +1821,19 @@ Function PakoMainPage
   StrCpy $PakoB1Ctl 0
   StrCpy $PakoB2Ctl 0
   Call PakoSlidePanel
+  StrCpy $PakoCanMove 0
+  Call PakoMainBuild
+  Call PakoCheckRunning
+  ${NSD_CreateTimer} PakoTick 100
+  ${NSD_SetFocus} $PakoPxB1
+  nsDialogs::Show
+FunctionEnd
+
+; [Pako] The right side of the main page, in the language shown (made again in the other one when
+; the language changes: PakoLangApply). Everything it shows comes from the state ($INSTDIR, the
+; switches, $PakoMode, $PakoRunning...), so nothing the user set is lost.
+Function PakoMainBuild
+  Call PakoLangChoice
   ; What this Setup does, under the logo.
   Call PakoModeTag
   StrCpy $PakoA1 $PakoRet
@@ -1605,53 +1841,67 @@ Function PakoMainPage
   !insertmacro PakoLabel $0 554 132 282 1 ${PAKO_LABEL} $PakoFBody LN LN ""
   ; Install in: the folder, and Change. Over an installed Pako it stays where it is (no Change),
   ; unless that folder won't do any more: then Change moves it (PakoCheckFolder).
-  !insertmacro PakoLabel $0 554 144 282 18 ${PAKO_LABEL} $PakoFBody TEXT BG "$(pakoInstallIn)"
+  !insertmacro PakoT $PakoTx pakoInstallIn
+  !insertmacro PakoLabel $0 554 144 282 18 ${PAKO_LABEL} $PakoFBody TEXT BG $PakoTx
   !insertmacro PakoPicture $0 554 168 282 32 $PakoBmpField
   !insertmacro PakoLabel $PakoPathCtl 584 176 190 16 0x50008080 $PakoFSmall TEXT RA $INSTDIR
-  !insertmacro PakoLabel $PakoChangeCtl 776 176 50 16 0x50000182 $PakoFSmall ACCENT RA "$(pakoChange)"
+  !insertmacro PakoT $PakoTx pakoChange
+  !insertmacro PakoLabel $PakoChangeCtl 776 176 50 16 0x50000182 $PakoFSmall ACCENT RA $PakoTx
   ${NSD_OnClick} $PakoChangeCtl PakoChangeFolder
-  !insertmacro PakoProxy $PakoPxChange ${PAKO_PUSH} 776 176 50 16 "$(pakoChangeName)"
+  !insertmacro PakoT $PakoTx pakoChangeName
+  !insertmacro PakoProxy $PakoPxChange ${PAKO_PUSH} 776 176 50 16 $PakoTx
   ${NSD_OnClick} $PakoPxChange PakoChangeFolder
+  ; [Pako] The language choice's radio buttons are a group of their own (the arrows move between
+  ; English and Français only): the next stand-in starts the next group (WS_GROUP).
+  System::Call "user32::GetWindowLongW(p $PakoPxChange, i -16) i .r1"
+  IntOp $1 $1 | 0x00020000
+  System::Call "user32::SetWindowLongW(p $PakoPxChange, i -16, i r1)"
   !insertmacro PakoLabel $0 554 214 282 1 ${PAKO_LABEL} $PakoFBody LN LN ""
   ; The switches (the words can be clicked too).
-  !insertmacro PakoLabel $0 554 225 240 18 0x50000180 $PakoFBody TEXT BG "$(pakoDesktop)"
+  !insertmacro PakoT $PakoTx pakoDesktop
+  !insertmacro PakoLabel $0 554 225 240 18 0x50000180 $PakoFBody TEXT BG $PakoTx
   ${NSD_OnClick} $0 PakoToggleDesk
   !insertmacro PakoPicture $PakoSwDesk 804 225 32 18 $PakoBmpOff
   ${NSD_OnClick} $PakoSwDesk PakoToggleDesk
-  !insertmacro PakoProxy $PakoPxDesk ${PAKO_CHECK} 804 225 32 18 "$(pakoDesktop)"
+  !insertmacro PakoProxy $PakoPxDesk ${PAKO_CHECK} 804 225 32 18 $PakoTx
   ${NSD_OnClick} $PakoPxDesk PakoToggleDesk
   !insertmacro PakoLabel $0 554 254 282 1 ${PAKO_LABEL} $PakoFBody LN LN ""
-  !insertmacro PakoLabel $0 554 265 240 18 0x50000180 $PakoFBody TEXT BG "$(pakoStartWithWindows)"
+  !insertmacro PakoT $PakoTx pakoStartWithWindows
+  !insertmacro PakoLabel $0 554 265 240 18 0x50000180 $PakoFBody TEXT BG $PakoTx
   ${NSD_OnClick} $0 PakoToggleStart
   !insertmacro PakoPicture $PakoSwStart 804 265 32 18 $PakoBmpOff
   ${NSD_OnClick} $PakoSwStart PakoToggleStart
-  !insertmacro PakoProxy $PakoPxStart ${PAKO_CHECK} 804 265 32 18 "$(pakoStartWithWindows)"
+  !insertmacro PakoProxy $PakoPxStart ${PAKO_CHECK} 804 265 32 18 $PakoTx
   ${NSD_OnClick} $PakoPxStart PakoToggleStart
   !insertmacro PakoLabel $0 554 294 282 1 ${PAKO_LABEL} $PakoFBody LN LN ""
-  !insertmacro PakoLabel $0 554 304 240 18 0x50000180 $PakoFBody TEXT BG "$(pakoBrowsers)"
+  !insertmacro PakoT $PakoTx pakoBrowsers
+  !insertmacro PakoLabel $0 554 304 240 18 0x50000180 $PakoFBody TEXT BG $PakoTx
   ${NSD_OnClick} $0 PakoToggleBrowsers
-  !insertmacro PakoLabel $0 554 323 240 16 0x50000180 $PakoFTiny MUT BG "$(pakoBrowsersSub)"
+  StrCpy $1 $PakoTx
+  !insertmacro PakoT $PakoTx pakoBrowsersSub
+  !insertmacro PakoLabel $0 554 323 240 16 0x50000180 $PakoFTiny MUT BG $PakoTx
   ${NSD_OnClick} $0 PakoToggleBrowsers
   !insertmacro PakoPicture $PakoSwBrow 804 313 32 18 $PakoBmpOff
   ${NSD_OnClick} $PakoSwBrow PakoToggleBrowsers
-  !insertmacro PakoProxy $PakoPxBrow ${PAKO_CHECK} 804 313 32 18 "$(pakoBrowsers)"
+  !insertmacro PakoProxy $PakoPxBrow ${PAKO_CHECK} 804 313 32 18 $1
   ${NSD_OnClick} $PakoPxBrow PakoToggleBrowsers
   Call PakoShowSwitches
   ; Said here when something stands in the way (the folder) or will happen (Pako is open).
-  !insertmacro PakoLabel $PakoNoteCtl 554 360 282 72 ${PAKO_LABEL} $PakoFSmall WARN BG ""
+  ; [Pako] 84 high (up to five lines, also at 150 %: French is longer), ending 4 px over Install.
+  !insertmacro PakoLabel $PakoNoteCtl 554 356 282 84 ${PAKO_LABEL} $PakoFSmall WARN BG ""
   ; Install (Update, Install again, Install this version).
   ${If} $PakoMode == "update"
     StrCpy $PakoA1 "update"
-    StrCpy $1 "Update"
+    !insertmacro PakoT $1 pakoBtnUpdate
   ${ElseIf} $PakoMode == "same"
     StrCpy $PakoA1 "again"
-    StrCpy $1 "Install again"
+    !insertmacro PakoT $1 pakoBtnAgain
   ${ElseIf} $PakoMode == "older"
     StrCpy $PakoA1 "older"
-    StrCpy $1 "Install this version"
+    !insertmacro PakoT $1 pakoBtnOlder
   ${Else}
     StrCpy $PakoA1 "install"
-    StrCpy $1 "Install"
+    !insertmacro PakoT $1 pakoBtnInstall
   ${EndIf}
   StrCpy $PakoA2 282
   Call PakoLoadButton1
@@ -1662,7 +1912,6 @@ Function PakoMainPage
   ; By installing, you accept the terms of use (a link). No admin rights needed.
   Call PakoTermsLine
   !insertmacro PakoRingMake
-  StrCpy $PakoCanMove 0
   Call PakoCheckFolder
   ; Over an installed Pako whose folder will do: it stays there (no Change).
   ${If} $PakoMode != "install"
@@ -1674,10 +1923,230 @@ Function PakoMainPage
     System::Call "user32::SetWindowPos(p $PakoPathCtl, p 0, i 0, i 0, i r1, i r2, i 0x16)"
     !insertmacro PakoColors $PakoPathCtl MUT RA
   ${EndIf}
-  Call PakoCheckRunning
-  ${NSD_CreateTimer} PakoTick 100
-  ${NSD_SetFocus} $PakoPxB1
-  nsDialogs::Show
+FunctionEnd
+
+; [Pako] The language choice, top right: "English | Français", right-aligned with the switches. The
+; one shown in the text colour, the other in the accent like the window's links (the mouse clicks
+; the word). Under each word its radio button for the keyboard and screen readers: Tab reaches the
+; one chosen, the arrows or Space pick, the focus ring shows around the word.
+Function PakoLangChoice
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  StrCpy $PakoA1 $PakoFTiny
+  StrCpy $PakoA2 "${PAKO_LANG_EN_NAME}"
+  Call PakoTextWidth
+  IntOp $1 $PakoRet + 1
+  StrCpy $PakoA2 "${PAKO_LANG_FR_NAME}"
+  Call PakoTextWidth
+  IntOp $2 $PakoRet + 1
+  ; Right to left: Français ends at 836, 8 px, a 1 px line, 8 px, English.
+  !insertmacro PakoScale $3 836
+  IntOp $3 $3 - $2            ; Français' left
+  !insertmacro PakoScale $4 9
+  IntOp $4 $3 - $4            ; the line's left
+  !insertmacro PakoScale $5 8
+  IntOp $5 $4 - $5
+  IntOp $5 $5 - $1            ; English's left
+  !insertmacro PakoScale $6 10 ; top
+  !insertmacro PakoScale $0 16 ; height
+  ; (pixels already: nsDialogs takes them as they are)
+  nsDialogs::CreateControl STATIC 0x50000180 0 $5 $6 $1 $0 "${PAKO_LANG_EN_NAME}"
+  Pop $PakoLangEnCtl
+  SendMessage $PakoLangEnCtl ${WM_SETFONT} $PakoFTiny 1
+  ${NSD_OnClick} $PakoLangEnCtl PakoLangClickEn
+  nsDialogs::CreateControl STATIC 0x50000180 0 $3 $6 $2 $0 "${PAKO_LANG_FR_NAME}"
+  Pop $PakoLangFrCtl
+  SendMessage $PakoLangFrCtl ${WM_SETFONT} $PakoFTiny 1
+  ${NSD_OnClick} $PakoLangFrCtl PakoLangClickFr
+  ${If} $PakoLang == "fr"
+    !insertmacro PakoColors $PakoLangEnCtl ACCENT BG
+    !insertmacro PakoColors $PakoLangFrCtl TEXT BG
+  ${Else}
+    !insertmacro PakoColors $PakoLangEnCtl TEXT BG
+    !insertmacro PakoColors $PakoLangFrCtl ACCENT BG
+  ${EndIf}
+  ; The stand-ins (BS_AUTORADIOBUTTON; the first starts the group; only the chosen one is a Tab
+  ; stop, as in Windows' own radio groups), under the words, the same size.
+  ${If} $PakoLang == "fr"
+    StrCpy $PakoA2 0x54020009    ; WS_GROUP
+    StrCpy $PakoA3 0x54010009    ; WS_TABSTOP
+  ${Else}
+    StrCpy $PakoA2 0x54030009    ; WS_GROUP | WS_TABSTOP
+    StrCpy $PakoA3 0x54000009
+  ${EndIf}
+  nsDialogs::CreateControl BUTTON $PakoA2 0 $5 $6 $1 $0 "${PAKO_LANG_EN_NAME}"
+  Pop $PakoPxEn
+  SendMessage $PakoPxEn ${WM_SETFONT} $PakoFSmall 1
+  System::Call "user32::SetWindowPos(p $PakoPxEn, p 1, i 0, i 0, i 0, i 0, i 0x13)"
+  ${NSD_OnClick} $PakoPxEn PakoLangClickEn
+  nsDialogs::CreateControl BUTTON $PakoA3 0 $3 $6 $2 $0 "${PAKO_LANG_FR_NAME}"
+  Pop $PakoPxFr
+  SendMessage $PakoPxFr ${WM_SETFONT} $PakoFSmall 1
+  System::Call "user32::SetWindowPos(p $PakoPxFr, p 1, i 0, i 0, i 0, i 0, i 0x13)"
+  ${NSD_OnClick} $PakoPxFr PakoLangClickFr
+  ${If} $PakoLang == "fr"
+    SendMessage $PakoPxFr ${BM_SETCHECK} ${BST_CHECKED} 0
+  ${Else}
+    SendMessage $PakoPxEn ${BM_SETCHECK} ${BST_CHECKED} 0
+  ${EndIf}
+  ; The line between the words, 10 px high, centred on them.
+  !insertmacro PakoScale $6 13
+  !insertmacro PakoScale $0 10
+  !insertmacro PakoScale $1 1
+  nsDialogs::CreateControl STATIC ${PAKO_LABEL} 0 $4 $6 $1 $0 ""
+  Pop $0
+  !insertmacro PakoColors $0 LN LN
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; A word or a radio button: the language changes a moment later, once Windows is done with the
+; click (the control it came from is made again).
+Function PakoLangClickEn
+  Pop $0
+  ; A pick, even of the language shown (English over a saved French): it is the user's choice.
+  StrCpy $PakoLangPicked 1
+  StrCpy $PakoLangNext "en"
+  ${NSD_CreateTimer} PakoLangApply 1
+FunctionEnd
+Function PakoLangClickFr
+  Pop $0
+  StrCpy $PakoLangPicked 1
+  StrCpy $PakoLangNext "fr"
+  ${NSD_CreateTimer} PakoLangApply 1
+FunctionEnd
+
+; The window in the other language, at once: every word of Setup's own, the pictures with words in
+; them (the slide shown, the button) and the window's title. The right side is made again by the
+; same builder (PakoMainBuild), hidden until it is whole (no flash, no jump); the slides, their
+; arrows and their timers go on, and the keyboard stays where it was.
+Function PakoLangApply
+  ${NSD_KillTimer} PakoLangApply
+  ${If} $PakoLangNext == $PakoLang
+    Return
+  ${EndIf}
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $PakoLang $PakoLangNext
+  ; $LANGUAGE is what Setup saves for the uninstaller once it is done (MUI_LANGDLL_SAVELANGUAGE).
+  ${If} $PakoLang == "fr"
+    StrCpy $LANGUAGE ${LANG_FRENCH}
+    StrCpy $PakoArtSfx "-fr"
+  ${Else}
+    StrCpy $LANGUAGE ${LANG_ENGLISH}
+    StrCpy $PakoArtSfx ""
+  ${EndIf}
+  Call PakoLangTexts
+  Call PakoUseSlides
+  ; Where the keyboard is (that control is made again).
+  ; (In a variable: PakoMainBuild uses $0 to $2.)
+  System::Call "user32::GetFocus() p .r0"
+  StrCpy $PakoLangFocus ""
+  ${If} $0 = $PakoPxEn
+  ${OrIf} $0 = $PakoPxFr
+    StrCpy $PakoLangFocus "lang"
+  ${ElseIf} $0 = $PakoPxChange
+    StrCpy $PakoLangFocus "change"
+  ${ElseIf} $0 = $PakoPxDesk
+    StrCpy $PakoLangFocus "desk"
+  ${ElseIf} $0 = $PakoPxStart
+    StrCpy $PakoLangFocus "start"
+  ${ElseIf} $0 = $PakoPxB1
+    StrCpy $PakoLangFocus "b1"
+  ${ElseIf} $0 = $PakoPxTerms
+    StrCpy $PakoLangFocus "terms"
+  ${ElseIf} $0 = $PakoPxBrow
+    StrCpy $PakoLangFocus "brow"
+  ${EndIf}
+  ; Kept on a control that stays while the others go (a destroyed control's focus is lost).
+  ${If} $PakoLangFocus != ""
+    System::Call "user32::SetFocus(p $PakoPxNext)"
+  ${EndIf}
+  SendMessage $PakoDialog ${WM_SETREDRAW} 0 0
+  ; Every control of the right side goes; the slide, its arrows and the line beside it stay.
+  System::Call "user32::GetWindow(p $PakoDialog, i 5) p .r2" ; GW_CHILD
+  ${DoWhile} $2 <> 0
+    System::Call "user32::GetWindow(p r2, i 2) p .r3"      ; GW_HWNDNEXT
+    ${If} $2 <> $PakoSlideCtl
+    ${AndIf} $2 <> $PakoPxPrev
+    ${AndIf} $2 <> $PakoPxNext
+    ${AndIf} $2 <> $PakoSepCtl
+      System::Call "user32::DestroyWindow(p r2)"
+    ${EndIf}
+    StrCpy $2 $3
+  ${Loop}
+  ; Whether the focus ring shows (Windows hides it again while controls are made).
+  SendMessage $PakoDialog 0x129 0 0 $3 ; WM_QUERYUISTATE
+  ; The big button's pictures (PakoMainBuild reads the new language's).
+  System::Call "gdi32::DeleteObject(p $PakoB1N)"
+  System::Call "gdi32::DeleteObject(p $PakoB1H)"
+  ${If} $PakoB1X <> 0
+    System::Call "gdi32::DeleteObject(p $PakoB1X)"
+  ${EndIf}
+  Call PakoMainBuild
+  !insertmacro PakoT $PakoTx pakoPrevSlide
+  SendMessage $PakoPxPrev ${WM_SETTEXT} 0 "STR:$PakoTx"
+  !insertmacro PakoT $PakoTx pakoNextSlide
+  SendMessage $PakoPxNext ${WM_SETTEXT} 0 "STR:$PakoTx"
+  Call PakoSetTitle
+  ; The slide shown, in the new language: one coming in goes on (and ends on it), one standing is
+  ; swapped at once. (The first one, still to come in, comes in in the new language.)
+  ${If} $PakoIntro <> 1
+    Call PakoSlideBmp
+    StrCpy $PakoA1 $PakoRet
+    StrCpy $PakoA2 $PakoDcTo
+    Call PakoCopyIn
+    System::Call "kernel32::GetTickCount() i .r0"
+    IntOp $0 $0 - $PakoFadeT0
+    ${If} $0 >= 650
+    ${OrIf} $0 < 0
+      StrCpy $PakoA1 1000
+      Call PakoSlideDraw
+    ${EndIf}
+  ${EndIf}
+  SendMessage $PakoDialog ${WM_SETREDRAW} 1 0
+  ; RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME
+  System::Call "user32::RedrawWindow(p $PakoDialog, p 0, p 0, i 0x585)"
+  ${If} $PakoLangFocus == "lang"
+    ${If} $PakoLang == "fr"
+      SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxFr 1
+    ${Else}
+      SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxEn 1
+    ${EndIf}
+  ${ElseIf} $PakoLangFocus == "change"
+    SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxChange 1
+  ${ElseIf} $PakoLangFocus == "desk"
+    SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxDesk 1
+  ${ElseIf} $PakoLangFocus == "start"
+    SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxStart 1
+  ${ElseIf} $PakoLangFocus == "b1"
+    SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxB1 1
+  ${ElseIf} $PakoLangFocus == "terms"
+    SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxTerms 1
+  ${ElseIf} $PakoLangFocus == "brow"
+    SendMessage $HWNDPARENT ${WM_NEXTDLGCTL} $PakoPxBrow 1
+  ${EndIf}
+  IntOp $3 $3 & 1 ; UISF_HIDEFOCUS
+  ${If} $3 = 0
+    SendMessage $HWNDPARENT 0x127 0x10002 0 ; WM_CHANGEUISTATE, UIS_CLEAR UISF_HIDEFOCUS
+  ${EndIf}
+  Call PakoButtonsTick
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
 FunctionEnd
 
 Function PakoShowSwitches
@@ -1729,18 +2198,20 @@ Function PakoTermsLine
   Push $5
   Push $6
   ${If} $PakoMode == "update"
-    StrCpy $4 "$(pakoTermsAUpdate)"
+    !insertmacro PakoT $4 pakoTermsAUpdate
   ${Else}
-    StrCpy $4 "$(pakoTermsA)"
+    !insertmacro PakoT $4 pakoTermsA
   ${EndIf}
   StrCpy $PakoA1 $PakoFTiny
   StrCpy $PakoA2 $4
   Call PakoTextWidth
   StrCpy $1 $PakoRet
-  StrCpy $PakoA2 "$(pakoTermsLink)"
+  !insertmacro PakoT $PakoTx pakoTermsLink
+  StrCpy $PakoA2 $PakoTx
   Call PakoTextWidth
   StrCpy $2 $PakoRet
-  StrCpy $PakoA2 "$(pakoTermsB)"
+  !insertmacro PakoT $PakoTx pakoTermsB
+  StrCpy $PakoA2 $PakoTx
   Call PakoTextWidth
   StrCpy $3 $PakoRet
   ; Left edge of the line: the middle of the right side, less half the line.
@@ -1760,25 +2231,28 @@ Function PakoTermsLine
   IntOp $5 $5 + $1
   IntOp $5 $5 - 1
   IntOp $2 $2 + 1
-  nsDialogs::CreateControl STATIC 0x50000180 0 $5 $6 $2 $0 "$(pakoTermsLink)"
+  !insertmacro PakoT $PakoTx pakoTermsLink
+  nsDialogs::CreateControl STATIC 0x50000180 0 $5 $6 $2 $0 $PakoTx
   Pop $4
   SendMessage $4 ${WM_SETFONT} $PakoFTiny 1
   !insertmacro PakoColors $4 ACCENT BG
   ${NSD_OnClick} $4 PakoOpenTerms
   ; Its stand-in for the keyboard (see PakoProxy).
-  nsDialogs::CreateControl BUTTON ${PAKO_PUSH} 0 $5 $6 $2 $0 "$(pakoTermsLink)"
-  Pop $4
-  System::Call "user32::SetWindowPos(p r4, p 1, i 0, i 0, i 0, i 0, i 0x13)"
-  ${NSD_OnClick} $4 PakoOpenTerms
+  nsDialogs::CreateControl BUTTON ${PAKO_PUSH} 0 $5 $6 $2 $0 $PakoTx
+  Pop $PakoPxTerms
+  System::Call "user32::SetWindowPos(p $PakoPxTerms, p 1, i 0, i 0, i 0, i 0, i 0x13)"
+  ${NSD_OnClick} $PakoPxTerms PakoOpenTerms
   IntOp $5 $5 + $2
   IntOp $5 $5 - 1
   IntOp $3 $3 + 1
-  nsDialogs::CreateControl STATIC ${PAKO_LABEL} 0 $5 $6 $3 $0 "$(pakoTermsB)"
+  !insertmacro PakoT $PakoTx pakoTermsB
+  nsDialogs::CreateControl STATIC ${PAKO_LABEL} 0 $5 $6 $3 $0 $PakoTx
   Pop $4
   SendMessage $4 ${WM_SETFONT} $PakoFTiny 1
   !insertmacro PakoColors $4 MUT BG
   ${If} $PakoMode == "install"
-    !insertmacro PakoLabel $4 554 512 282 16 0x50000081 $PakoFTiny MUT BG "$(pakoNoAdmin)"
+    !insertmacro PakoT $PakoTx pakoNoAdmin
+    !insertmacro PakoLabel $4 554 512 282 16 0x50000081 $PakoFTiny MUT BG $PakoTx
   ${EndIf}
   Pop $6
   Pop $5
@@ -1797,7 +2271,8 @@ FunctionEnd
 
 Function PakoChangeFolder
   Pop $0
-  nsDialogs::SelectFolderDialog "$(pakoPickFolder)" $INSTDIR
+  !insertmacro PakoT $PakoTx pakoPickFolder
+  nsDialogs::SelectFolderDialog $PakoTx $INSTDIR
   Pop $0
   ${If} $0 == error
   ${OrIf} $0 == ""
@@ -1825,13 +2300,13 @@ Function PakoCheckFolder
   StrCpy $PakoHeld 0
   StrCpy $PakoFolderMsg ""
   ${If} $INSTDIR == ""
-    StrCpy $PakoFolderMsg "$(pakoFolderPick)"
+    !insertmacro PakoT $PakoFolderMsg pakoFolderPick
   ${Else}
     ; Where the installed Pako keeps its settings and lists (unless it is installed there).
     ${If} $INSTDIR == "$LOCALAPPDATA\${PRODUCTNAME}"
       ReadRegStr $0 SHCTX "${MANUPRODUCTKEY}" ""
       ${If} $0 != $INSTDIR
-        StrCpy $PakoFolderMsg "$(pakoFolderData)"
+        !insertmacro PakoT $PakoFolderMsg pakoFolderData
       ${EndIf}
     ${EndIf}
     ; A portable Pako's folder: installing there would leave its lists behind.
@@ -1839,7 +2314,7 @@ Function PakoCheckFolder
     ${AndIfNot} ${FileExists} "$INSTDIR\.pako-installed"
       ${If} ${FileExists} "$INSTDIR\data\settings.json"
       ${OrIf} ${FileExists} "$INSTDIR\data\downloads.json"
-        StrCpy $PakoFolderMsg "$(pakoFolderPortable)"
+        !insertmacro PakoT $PakoFolderMsg pakoFolderPortable
       ${EndIf}
     ${EndIf}
     ; A folder this Windows user can't change (or only administrators can), a drive or network
@@ -1847,20 +2322,20 @@ Function PakoCheckFolder
     ${If} $PakoFolderMsg == ""
       Call PakoCheckDir
       ${If} $PakoDirProblem == "admin"
-        StrCpy $PakoFolderMsg "$(pakoFolderAdmin)"
+        !insertmacro PakoT $PakoFolderMsg pakoFolderAdmin
       ${ElseIf} $PakoDirProblem != ""
         ${If} $PakoDirWhy == "missing"
-          StrCpy $PakoFolderMsg "$(pakoFolderMissing)"
+          !insertmacro PakoT $PakoFolderMsg pakoFolderMissing
         ${ElseIf} $PakoDirWhy == "long"
-          StrCpy $PakoFolderMsg "$(pakoFolderLong)"
+          !insertmacro PakoT $PakoFolderMsg pakoFolderLong
         ${Else}
           Push $INSTDIR
           Call PakoIsAdminFolder
           Pop $0
           ${If} $0 = 1
-            StrCpy $PakoFolderMsg "$(pakoFolderAdmin)"
+            !insertmacro PakoT $PakoFolderMsg pakoFolderAdmin
           ${Else}
-            StrCpy $PakoFolderMsg "$(pakoFolderWrite)"
+            !insertmacro PakoT $PakoFolderMsg pakoFolderWrite
           ${EndIf}
         ${EndIf}
       ${EndIf}
@@ -1875,7 +2350,8 @@ Function PakoCheckFolder
       StrCpy $PakoMoved 1
     ${ElseIf} $PakoFolderMsg != ""
       StrCpy $PakoCanMove 1
-      StrCpy $PakoFolderMsg "$PakoFolderMsg $(pakoMoveHint)"
+      !insertmacro PakoT $PakoTx pakoMoveHint
+      StrCpy $PakoFolderMsg "$PakoFolderMsg $PakoTx"
     ${EndIf}
   ${EndIf}
   ${If} $PakoFolderMsg != ""
@@ -1925,14 +2401,16 @@ Function PakoShowNote
     SendMessage $PakoNoteCtl ${WM_SETTEXT} 0 "STR:$PakoFolderMsg"
   ${ElseIf} $PakoMoved = 1
     !insertmacro PakoColors $PakoNoteCtl MUT BG
+    !insertmacro PakoT $PakoTx pakoMoveNote
     ${If} $PakoRunning = 1
-      SendMessage $PakoNoteCtl ${WM_SETTEXT} 0 "STR:$(pakoMoveNote)$\r$\n$(pakoIsOpen)"
-    ${Else}
-      SendMessage $PakoNoteCtl ${WM_SETTEXT} 0 "STR:$(pakoMoveNote)"
+      !insertmacro PakoT $PakoRet pakoIsOpen
+      StrCpy $PakoTx "$PakoTx$\r$\n$PakoRet"
     ${EndIf}
+    SendMessage $PakoNoteCtl ${WM_SETTEXT} 0 "STR:$PakoTx"
   ${ElseIf} $PakoRunning = 1
     !insertmacro PakoColors $PakoNoteCtl MUT BG
-    SendMessage $PakoNoteCtl ${WM_SETTEXT} 0 "STR:$(pakoIsOpen)"
+    !insertmacro PakoT $PakoTx pakoIsOpen
+    SendMessage $PakoNoteCtl ${WM_SETTEXT} 0 "STR:$PakoTx"
   ${Else}
     SendMessage $PakoNoteCtl ${WM_SETTEXT} 0 "STR:"
   ${EndIf}
@@ -1954,6 +2432,16 @@ Function PakoMainLeave
   Call PakoCheckFolder
   ${If} $PakoHeld = 1
     Abort
+  ${EndIf}
+  ; [Pako] With the language untouched (the window starts in English on a first install, in
+  ; the saved language over an installed Pako: PakoGuiInit), a saved French stays, also after
+  ; an uninstall that kept it or over a portable copy: $LANGUAGE is what Setup saves once the
+  ; install is done (MUI_LANGDLL_SAVELANGUAGE), and the app gets no --lang (hooks.nsh).
+  ${If} $PakoLangPicked <> 1
+    ReadRegStr $PakoTx ${MUI_LANGDLL_REGISTRY_ROOT} "${MUI_LANGDLL_REGISTRY_KEY}" "${MUI_LANGDLL_REGISTRY_VALUENAME}"
+    ${If} $PakoTx == ${LANG_FRENCH}
+      StrCpy $LANGUAGE ${LANG_FRENCH}
+    ${EndIf}
   ${EndIf}
   ; Over an installed Pako: what Tauri's reinstall page did with its first (recommended)
   ; choice: the same version is installed again over itself; another one is replaced (its
@@ -2004,7 +2492,8 @@ Function PakoInstShow
   !insertmacro PakoColors $1 LN LN
   !insertmacro PakoRaw $1 $0 STATIC ${PAKO_PIC} 615 34 160 44 ""
   SendMessage $1 ${STM_SETIMAGE} 0 $PakoBmpLogo
-  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 554 80 282 16 "$(pakoVersion)"
+  !insertmacro PakoT $PakoTx pakoVersion
+  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 554 80 282 16 $PakoTx
   SendMessage $1 ${WM_SETFONT} $PakoFTiny 1
   !insertmacro PakoColors $1 MUT BG
   Call PakoModeTag
@@ -2012,13 +2501,13 @@ Function PakoInstShow
   SendMessage $1 ${WM_SETFONT} $PakoFSmall 1
   !insertmacro PakoColors $1 MUT BG
   ${If} $PakoMode == "update"
-    StrCpy $2 "$(pakoUpdating)"
+    !insertmacro PakoT $2 pakoUpdating
   ${ElseIf} $PakoMode == "same"
-    StrCpy $2 "$(pakoInstallingAgain)"
+    !insertmacro PakoT $2 pakoInstallingAgain
   ${ElseIf} $PakoMode == "older"
-    StrCpy $2 "$(pakoInstallingOlder)"
+    !insertmacro PakoT $2 pakoInstallingOlder
   ${Else}
-    StrCpy $2 "$(pakoInstalling)"
+    !insertmacro PakoT $2 pakoInstalling
   ${EndIf}
   !insertmacro PakoRaw $1 $0 STATIC 0x50000080 554 210 282 24 $2
   SendMessage $1 ${WM_SETFONT} $PakoFTitle 1
@@ -2028,7 +2517,7 @@ Function PakoInstShow
   StrCpy $3 282
   Call PakoStyleProgress
   ; Close, for when something goes wrong (PakoFail).
-  StrCpy $PakoA1 "b-done-n-$PakoLook.png"
+  StrCpy $PakoA1 "b-done-n-$PakoLook$PakoArtSfx.png"
   StrCpy $PakoA2 282
   StrCpy $PakoA3 40
   Call PakoImage
@@ -2064,29 +2553,30 @@ Function PakoDonePage
   StrCpy $PakoOpen 1
   StrCpy $PakoInFiles 0
   Call PakoSlidePanel
-  StrCpy $PakoA1 "$(pakoTag)"
+  !insertmacro PakoT $PakoA1 pakoTag
   Call PakoHeader
   ${If} $PakoMode == "update"
-    StrCpy $1 "$(pakoDoneUpdate)"
+    !insertmacro PakoT $1 pakoDoneUpdate
   ${ElseIf} $PakoMode == "same"
-    StrCpy $1 "$(pakoDoneAgain)"
+    !insertmacro PakoT $1 pakoDoneAgain
   ${ElseIf} $PakoMode == "older"
-    StrCpy $1 "$(pakoDoneOlder)"
+    !insertmacro PakoT $1 pakoDoneOlder
   ${Else}
-    StrCpy $1 "$(pakoDone)"
+    !insertmacro PakoT $1 pakoDone
   ${EndIf}
   !insertmacro PakoLabel $0 554 210 282 24 ${PAKO_LABEL} $PakoFTitle TEXT BG $1
   ${If} $PakoDesktop = 1
-    StrCpy $1 "$(pakoDoneWhereDesktop)"
+    !insertmacro PakoT $1 pakoDoneWhereDesktop
   ${Else}
-    StrCpy $1 "$(pakoDoneWhere)"
+    !insertmacro PakoT $1 pakoDoneWhere
   ${EndIf}
   !insertmacro PakoLabel $0 554 242 282 40 ${PAKO_LABEL} $PakoFBody MUT BG $1
   ; Pako.exe couldn't take the window's choices (start with Windows, the browser connection).
   ${If} $PakoChoicesOk == "0"
     ${If} $PakoStart = 1
     ${OrIf} $PakoBrowsers = 1
-      !insertmacro PakoLabel $0 554 292 282 54 ${PAKO_LABEL} $PakoFSmall WARN BG "$(pakoChoicesFailed)"
+      !insertmacro PakoT $PakoTx pakoChoicesFailed
+      !insertmacro PakoLabel $0 554 292 282 72 ${PAKO_LABEL} $PakoFSmall WARN BG $PakoTx
     ${EndIf}
   ${EndIf}
   StrCpy $PakoA1 "open"
@@ -2094,11 +2584,14 @@ Function PakoDonePage
   Call PakoLoadButton1
   !insertmacro PakoPicture $PakoB1Ctl 554 444 282 40 $PakoB1N
   ${NSD_OnClick} $PakoB1Ctl PakoOpenClick
-  !insertmacro PakoProxy $PakoPxB1 ${PAKO_PUSH} 554 444 282 40 "$(pakoOpenName)"
+  !insertmacro PakoT $PakoTx pakoOpenName
+  !insertmacro PakoProxy $PakoPxB1 ${PAKO_PUSH} 554 444 282 40 $PakoTx
   ${NSD_OnClick} $PakoPxB1 PakoOpenClick
-  !insertmacro PakoLabel $0 665 496 60 18 0x50000181 $PakoFSmall MUT BG "$(pakoClose)"
+  !insertmacro PakoT $PakoTx pakoClose
+  !insertmacro PakoLabel $0 665 496 60 18 0x50000181 $PakoFSmall MUT BG $PakoTx
   ${NSD_OnClick} $0 PakoCloseClick
-  !insertmacro PakoProxy $PakoPxB2 ${PAKO_PUSH} 665 496 60 18 "$(pakoClose)"
+  !insertmacro PakoT $PakoTx pakoClose
+  !insertmacro PakoProxy $PakoPxB2 ${PAKO_PUSH} 665 496 60 18 $PakoTx
   ${NSD_OnClick} $PakoPxB2 PakoCloseClick
   !insertmacro PakoRingMake
   ; The window's ✕ and Esc close without opening Pako: with Cancel off (as Windows leaves it
@@ -2169,7 +2662,8 @@ Function un.PakoGuiInit
 FunctionEnd
 
 Function un.PakoSetTitle
-  SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:$(pakoUnTitle)"
+  !insertmacro PakoT $PakoTx pakoUnTitle
+  SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:$PakoTx"
 FunctionEnd
 
 Function un.PakoTick
@@ -2193,41 +2687,52 @@ Function un.PakoUnPage
   StrCpy $DeleteAppDataCheckboxState 0
   StrCpy $PakoDeletePrivate 0
   !insertmacro PakoPicture $0 150 18 160 44 $PakoBmpLogo
-  !insertmacro PakoLabel $0 24 64 412 16 0x50000081 $PakoFTiny MUT BG "$(pakoVersion)"
-  !insertmacro PakoLabel $0 24 84 412 24 0x50000081 $PakoFTitle TEXT BG "$(pakoUnTitle)"
-  !insertmacro PakoLabel $0 24 112 412 36 0x50000081 $PakoFBody MUT BG "$(pakoUnText)"
+  !insertmacro PakoT $PakoTx pakoVersion
+  !insertmacro PakoLabel $0 24 64 412 16 0x50000081 $PakoFTiny MUT BG $PakoTx
+  !insertmacro PakoT $PakoTx pakoUnTitle
+  !insertmacro PakoLabel $0 24 84 412 24 0x50000081 $PakoFTitle TEXT BG $PakoTx
+  !insertmacro PakoT $PakoTx pakoUnText
+  !insertmacro PakoLabel $0 24 112 412 39 0x50000081 $PakoFBody MUT BG $PakoTx
   !insertmacro PakoLabel $0 24 152 412 1 ${PAKO_LABEL} $PakoFBody LN LN ""
   ; [Pako] Two switches: the settings and lists, and Private mode's files apart (they can't be
   ; downloaded again, and the first switch never deletes them).
-  !insertmacro PakoLabel $0 24 164 350 18 0x50000180 $PakoFBody TEXT BG "$(deleteAppData)"
+  !insertmacro PakoT $PakoTx deleteAppData
+  !insertmacro PakoLabel $0 24 164 350 18 0x50000180 $PakoFBody TEXT BG $PakoTx
   ${NSD_OnClick} $0 un.PakoToggleData
-  !insertmacro PakoLabel $0 24 183 350 16 0x50000180 $PakoFTiny MUT BG "$(pakoUnDataSub)"
+  !insertmacro PakoT $PakoTx pakoUnDataSub
+  !insertmacro PakoLabel $0 24 183 350 16 0x50000180 $PakoFTiny MUT BG $PakoTx
   ${NSD_OnClick} $0 un.PakoToggleData
   !insertmacro PakoPicture $PakoSwDesk 404 172 32 18 $PakoBmpOff
   ${NSD_OnClick} $PakoSwDesk un.PakoToggleData
-  !insertmacro PakoProxy $PakoPxDesk ${PAKO_CHECK} 404 172 32 18 "$(deleteAppData)"
+  !insertmacro PakoT $PakoTx deleteAppData
+  !insertmacro PakoProxy $PakoPxDesk ${PAKO_CHECK} 404 172 32 18 $PakoTx
   ${NSD_OnClick} $PakoPxDesk un.PakoToggleData
-  !insertmacro PakoLabel $0 24 208 350 18 0x50000180 $PakoFBody TEXT BG "$(pakoUnPrivate)"
+  !insertmacro PakoT $PakoTx pakoUnPrivate
+  !insertmacro PakoLabel $0 24 208 350 18 0x50000180 $PakoFBody TEXT BG $PakoTx
   ${NSD_OnClick} $0 un.PakoTogglePrivate
-  !insertmacro PakoLabel $0 24 227 350 16 0x50000180 $PakoFTiny MUT BG "$(pakoUnPrivateSub)"
+  !insertmacro PakoT $PakoTx pakoUnPrivateSub
+  !insertmacro PakoLabel $0 24 227 350 16 0x50000180 $PakoFTiny MUT BG $PakoTx
   ${NSD_OnClick} $0 un.PakoTogglePrivate
   !insertmacro PakoPicture $PakoSwStart 404 216 32 18 $PakoBmpOff
   ${NSD_OnClick} $PakoSwStart un.PakoTogglePrivate
-  !insertmacro PakoProxy $PakoPxStart ${PAKO_CHECK} 404 216 32 18 "$(pakoUnPrivate)"
+  !insertmacro PakoT $PakoTx pakoUnPrivate
+  !insertmacro PakoProxy $PakoPxStart ${PAKO_CHECK} 404 216 32 18 $PakoTx
   ${NSD_OnClick} $PakoPxStart un.PakoTogglePrivate
   StrCpy $PakoA1 "cancel"
   StrCpy $PakoA2 200
   Call un.PakoLoadButton2
   !insertmacro PakoPicture $PakoB2Ctl 24 262 200 40 $PakoB2N
   ${NSD_OnClick} $PakoB2Ctl un.PakoCancelClick
-  !insertmacro PakoProxy $PakoPxB2 ${PAKO_PUSH} 24 262 200 40 "Cancel"
+  !insertmacro PakoT $PakoTx pakoCancel
+  !insertmacro PakoProxy $PakoPxB2 ${PAKO_PUSH} 24 262 200 40 $PakoTx
   ${NSD_OnClick} $PakoPxB2 un.PakoCancelClick
   StrCpy $PakoA1 "uninstall"
   StrCpy $PakoA2 200
   Call un.PakoLoadButton1
   !insertmacro PakoPicture $PakoB1Ctl 236 262 200 40 $PakoB1N
   ${NSD_OnClick} $PakoB1Ctl un.PakoGoClick
-  !insertmacro PakoProxy $PakoPxB1 ${PAKO_PUSH} 236 262 200 40 "Uninstall"
+  !insertmacro PakoT $PakoTx pakoUninstall
+  !insertmacro PakoProxy $PakoPxB1 ${PAKO_PUSH} 236 262 200 40 $PakoTx
   ${NSD_OnClick} $PakoPxB1 un.PakoGoClick
   !insertmacro PakoRingMake
   ${NSD_CreateTimer} un.PakoTick 100
@@ -2290,10 +2795,12 @@ Function un.PakoInstShow
   Call un.PakoPageFill
   !insertmacro PakoRaw $1 $0 STATIC ${PAKO_PIC} 150 32 160 44 ""
   SendMessage $1 ${STM_SETIMAGE} 0 $PakoBmpLogo
-  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 24 78 412 16 "$(pakoVersion)"
+  !insertmacro PakoT $PakoTx pakoVersion
+  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 24 78 412 16 $PakoTx
   SendMessage $1 ${WM_SETFONT} $PakoFTiny 1
   !insertmacro PakoColors $1 MUT BG
-  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 24 120 412 24 "$(pakoRemoving)"
+  !insertmacro PakoT $PakoTx pakoRemoving
+  !insertmacro PakoRaw $1 $0 STATIC 0x50000081 24 120 412 24 $PakoTx
   SendMessage $1 ${WM_SETFONT} $PakoFTitle 1
   !insertmacro PakoColors $1 TEXT BG
   StrCpy $1 24
@@ -2301,7 +2808,7 @@ Function un.PakoInstShow
   StrCpy $3 412
   Call un.PakoStyleProgress
   ; Close, for when something goes wrong (PakoFail).
-  StrCpy $PakoA1 "b-close-n-$PakoLook.png"
+  StrCpy $PakoA1 "b-close-n-$PakoLook$PakoArtSfx.png"
   StrCpy $PakoA2 412
   StrCpy $PakoA3 40
   Call un.PakoImage
@@ -2333,15 +2840,19 @@ Function un.PakoDonePage
   !insertmacro PakoColors $PakoDialog TEXT BG
   StrCpy $PakoB2Ctl 0
   !insertmacro PakoPicture $0 150 32 160 44 $PakoBmpLogo
-  !insertmacro PakoLabel $0 24 78 412 16 0x50000081 $PakoFTiny MUT BG "$(pakoVersion)"
-  !insertmacro PakoLabel $0 24 100 412 24 0x50000081 $PakoFTitle TEXT BG "$(pakoUnDone)"
-  !insertmacro PakoLabel $0 24 130 412 36 0x50000081 $PakoFBody MUT BG "$(pakoUnDoneText)"
+  !insertmacro PakoT $PakoTx pakoVersion
+  !insertmacro PakoLabel $0 24 78 412 16 0x50000081 $PakoFTiny MUT BG $PakoTx
+  !insertmacro PakoT $PakoTx pakoUnDone
+  !insertmacro PakoLabel $0 24 100 412 24 0x50000081 $PakoFTitle TEXT BG $PakoTx
+  !insertmacro PakoT $PakoTx pakoUnDoneText
+  !insertmacro PakoLabel $0 24 130 412 39 0x50000081 $PakoFBody MUT BG $PakoTx
   StrCpy $PakoA1 "close"
   StrCpy $PakoA2 412
   Call un.PakoLoadButton1
   !insertmacro PakoPicture $PakoB1Ctl 24 256 412 40 $PakoB1N
   ${NSD_OnClick} $PakoB1Ctl un.PakoGoClick
-  !insertmacro PakoProxy $PakoPxB1 ${PAKO_PUSH} 24 256 412 40 "$(pakoClose)"
+  !insertmacro PakoT $PakoTx pakoClose
+  !insertmacro PakoProxy $PakoPxB1 ${PAKO_PUSH} 24 256 412 40 $PakoTx
   ${NSD_OnClick} $PakoPxB1 un.PakoGoClick
   !insertmacro PakoRingMake
   StrCpy $PakoInFiles 0

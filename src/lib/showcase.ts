@@ -6,6 +6,8 @@
 import type { DirectFrom, DirectHistory, DirectState, Download, FoundItem, Part, Progress, RemoteBook, RemoteTalk, SendState, Snapshot } from "./api";
 import type { Notice, PopupCard } from "./notices";
 import { version as pakoVersion } from "../../package.json";
+import { bytes } from "./format";
+import { t } from "./i18n.svelte";
 
 export const showcase = typeof location !== "undefined" && new URLSearchParams(location.search).has("showcase");
 /** A scene for one picture, from "?showcase=<scene>": "sets" (Links with split archives),
@@ -331,15 +333,25 @@ export const showcaseSend: SendState = {
 
 // ---------- Bell and pop-ups ----------
 
+// The words as Pako would write them, in the language shown (getters: read when shown, never
+// while the modules load).
+const ninaOffer = () => t("{name} wants to send you {what} ({size}).", { name: "Nina", what: "Recipes", size: bytes(420 * MB) });
+
 export const showcaseNotices: Notice[] = [
-  { id: "n2", kind: "direct-offer", title: "Files for you", body: "Nina wants to send you Recipes (420 MB).", at: now - 12 * MIN, read: false, go: { page: "direct", id: NINA }, answered: "Accepted" },
-  { id: "n1", kind: "direct-request", title: "Someone wants to connect", body: "Leo wants to connect with you in Pako.", at: now - 26 * HOUR, read: true, go: { page: "direct", peer: LEO }, answered: "Accepted" },
+  {
+    id: "n2", kind: "direct-offer", at: now - 12 * MIN, read: false, go: { page: "direct", id: NINA },
+    get title() { return t("Files for you"); }, get body() { return ninaOffer(); }, get answered() { return t("Accepted"); },
+  },
+  {
+    id: "n1", kind: "direct-request", at: now - 26 * HOUR, read: true, go: { page: "direct", peer: LEO },
+    get title() { return t("Someone wants to connect"); }, get body() { return t("{name} wants to connect with you in Pako.", { name: "Leo" }); }, get answered() { return t("Accepted"); },
+  },
 ];
 
 export const showcaseCards: PopupCard[] = [
-  { id: "p1", kind: "browser", title: "Downloading in Pako", body: "Wallpapers 4K.zip", go: { page: "downloads" }, stays: false },
-  { id: "p2", kind: "download-done", title: "Download finished", body: "Course materials.zip", go: { page: "downloads", id: "s8" }, stays: false },
-  { id: "p3", kind: "direct-offer", title: "Files for you", body: "Nina wants to send you Recipes (420 MB).", go: { page: "direct", offer: "o-nina" }, stays: true },
+  { id: "p1", kind: "browser", get title() { return t("Downloading in Pako"); }, body: "Wallpapers 4K.zip", go: { page: "downloads" }, stays: false },
+  { id: "p2", kind: "download-done", get title() { return t("Download finished"); }, body: "Course materials.zip", go: { page: "downloads", id: "s8" }, stays: false },
+  { id: "p3", kind: "direct-offer", get title() { return t("Files for you"); }, get body() { return ninaOffer(); }, go: { page: "direct", offer: "o-nina" }, stays: true },
 ];
 
 // ---------- Direct ----------
@@ -354,7 +366,7 @@ const ALEX_PATH = LOCAL ? "local" : "direct";
 
 export function showcaseDirect(): DirectState {
   const t = Date.now();
-  const into = (name: string) => `${HOME}\\From ${name}`;
+  const into = (name: string) => `${HOME}\\${typeof document !== "undefined" && document.documentElement.lang === "fr" ? "De" : "From"} ${name}`;
   const contact = (id: string, name: string, over: Partial<NonNullable<DirectState["contacts"]>[number]>) => ({
     id, name, trusted: true, autoAccept: false, saveFolder: null, lastSeen: t, added: t - 40 * DAY, online: false, path: null, waiting: false,
     code: "4821 0937 5512", note: null, folder: into(name), tags: [], favourite: false, theirName: null, ...over,

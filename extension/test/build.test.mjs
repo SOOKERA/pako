@@ -82,7 +82,11 @@ test("node extension/build.mjs: both zips are right", () => {
     assert.ok(firefox.some((e) => e.name === f), f);
     assert.ok(!light.some((e) => e.name === f), f);
   }
-  for (const m of [folder, chromium]) assert.deepEqual(m.content_scripts[0].js, ["pill.js", "player.js"]);
+  // (The extension's words, lang.js, before them: the pill speaks Pako's language.)
+  for (const m of [folder, chromium]) assert.deepEqual(m.content_scripts[0].js, ["lang.js", "pill.js", "player.js"]);
+  // Firefox loads lang.js before its background script; Chromium's service worker imports it.
+  assert.deepEqual(folder.background.scripts, ["lang.js", "background.js"]);
+  for (const zip of [light, firefox]) assert.ok(zip.some((e) => e.name === "lang.js"), "lang.js is in every edition");
   // "Videos on this page" and "Record this video": the full extension only.
   for (const f of ["recorder.js", "recorder-bridge.js"]) {
     assert.ok(firefox.some((e) => e.name === f), f);

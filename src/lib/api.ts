@@ -438,6 +438,8 @@ export interface Settings {
   toursDone: string[];
   /** Light or dark (changed only with `api.themeSet`). */
   theme?: ThemeChoice;
+  /** "en" or "fr" (changed only with `api.languageSet`; shown through i18n.svelte.ts). */
+  language?: string;
   /** Direct › "Be visible to Pakos on this network" (missing = "home"). */
   directVisible?: DirectVisible;
   /** Hosts picked for files on several hosts, most recent first (kept by Links). */
@@ -1364,6 +1366,10 @@ export const api = {
   themeSet: (theme: ThemeChoice) => invoke<void>("theme_set", { theme }),
   /** What shows now: the windows' own background follows (no flash when resizing). */
   themeShown: (light: boolean) => invoke<void>("theme_shown", { light }),
+  /** English or French: the saved choice (each window shows it, see i18n.svelte.ts). */
+  languageGet: () => invoke<string>("language_get"),
+  /** Saves the choice and tells every window ("language-changed"); the tray follows. */
+  languageSet: (lang: "en" | "fr") => invoke<void>("language_set", { lang }),
   /** First-start setup: saves only its answers (works with the download folder unavailable). */
   saveSetup: (choices: SetupChoices) => invoke<void>("save_setup", { choices }),
   /** Agree and continue: saves the terms' date, and everything that waited for it starts. */

@@ -13,6 +13,7 @@
   import Icon from "./Icon.svelte";
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
+  import { i18n, num, t } from "./i18n.svelte";
 
   const s = $derived<SentItem | null>(app.sent.find((x) => x.id === app.sentPicked) ?? null);
   const drive = $derived(s?.host === "drive");
@@ -34,8 +35,8 @@
 
   let now = $state(Date.now());
   $effect(() => {
-    const t = setInterval(() => (now = Date.now()), 60_000);
-    return () => clearInterval(t);
+    const tick = setInterval(() => (now = Date.now()), 60_000);
+    return () => clearInterval(tick);
   });
 
   // The link as a QR code, made on this PC (nothing is sent anywhere).
@@ -89,7 +90,7 @@
   const look = $derived(s ? sentLook(s) : null);
   const exp = $derived(s ? expiryLook(s, now) : null);
   const avg = $derived(s?.secs && s.secs > 0 ? s.size / s.secs : null);
-  const packing = $derived(!s ? "" : s.parts ? `ZIP in ${s.parts} parts` : s.asFiles ? "As they are" : s.compressed ? "Compressed ZIP" : s.files > 1 ? "One ZIP" : "As it is");
+  const packing = $derived(!s ? "" : s.parts ? t("ZIP in {n} parts", { n: s.parts }) : s.asFiles ? t("As they are") : s.compressed ? t("Compressed ZIP") : s.files > 1 ? t("One ZIP") : t("As it is"));
   const listed = $derived(s?.contents ?? []);
   const more = $derived(s ? Math.max(0, s.files - listed.length) : 0);
 
@@ -105,7 +106,7 @@
     const x = (t: number) => ((t - from) / (to - from)) * W;
     const y = (n: number) => H - 3 - (n / top) * (H - 8);
     let d = `M0 ${y(0)}`;
-    for (const [t, n] of pts) d += ` H${x(t).toFixed(1)} V${y(n).toFixed(1)}`;
+    for (const [at, n] of pts) d += ` H${x(at).toFixed(1)} V${y(n).toFixed(1)}`;
     d += ` H${W}`;
     return { line: d, area: `${d} V${H} H0 Z`, top };
   });
@@ -117,62 +118,62 @@
       <div class="inner" in:fadeIn={{ duration: 160 }}>
         <section class="top">
           <div class="headline">
-            <span class="st" class:gone={s.gone} class:partial={s.incomplete}>{s.gone ? "Gone" : s.incomplete ? (uploading ? "Uploading" : "Not all uploaded") : "Uploaded"}</span>
+            <span class="st" class:gone={s.gone} class:partial={s.incomplete}>{s.gone ? t("Gone") : s.incomplete ? (uploading ? t("Uploading") : t("Not all uploaded")) : t("Uploaded")}</span>
             <span class="src"><Icon name={drive ? "drive" : "globe"} size={12} />{drive ? "Google Drive" : "Gofile"}</span>
-            <button class="icon-btn" aria-label="Close details panel (Ctrl+I)" title="Close (Ctrl+I)" onclick={() => app.togglePanel()}>
+            <button class="icon-btn" aria-label={t("Close details panel (Ctrl+I)")} title={t("Close (Ctrl+I)")} onclick={() => app.togglePanel()}>
               <Icon name="chevronsRight" size={14} stroke={2} />
             </button>
           </div>
           <div class="name">{s.name}</div>
           <div class="stats">
-            <div><span class="k">Size</span><span class="v mono">{bytes(s.size)}</span></div>
-            <div><span class="k">Files</span><span class="v mono">{s.files.toLocaleString()}</span></div>
+            <div><span class="k">{t("Size")}</span><span class="v mono">{bytes(s.size)}</span></div>
+            <div><span class="k">{t("Files")}</span><span class="v mono">{num(s.files)}</span></div>
             <div>
-              <span class="k">Downloads</span>
-              <span class="v mono" class:dim={s.downloads == null}>{s.downloads == null ? "—" : s.downloads.toLocaleString()}</span>
+              <span class="k">{t("Downloads")}</span>
+              <span class="v mono" class:dim={s.downloads == null}>{s.downloads == null ? "—" : num(s.downloads)}</span>
             </div>
           </div>
         </section>
 
         {#if !s.gone}
           <section class="linksec">
-            <div class="label">Link</div>
+            <div class="label">{t("Link")}</div>
             <div class="qrrow">
-              <div class="qr" aria-label="QR code of the link" role="img">
+              <div class="qr" aria-label={t("QR code of the link")} role="img">
                 {#if qr?.id === s.id}
                   <div class="qrimg" in:fadeIn={{ duration: 200 }}>{@html qr.svg}</div>
                 {/if}
               </div>
               <div class="qrside">
-                <button class="linkish mono" title="Open the download page" onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
-                <p class="hint">Point a phone's camera at the code to open the link.</p>
+                <button class="linkish mono" title={t("Open the download page")} onclick={() => app.run(() => api.sentOpen(s.id))}>{s.link.replace(/^https?:\/\//, "")}</button>
+                <p class="hint">{t("Point a phone's camera at the code to open the link.")}</p>
               </div>
             </div>
           </section>
 
           <section>
-            <div class="label">Delete after</div>
+            <div class="label">{t("Delete after")}</div>
             {#if exp}
               {#key exp.label}
                 <div class="when {exp.tone}" in:fadeIn={{ duration: 180 }}>
                   <Icon name={s.deleteAt == null ? "check" : s.deleteError ? "alert" : "clock"} size={14} />
                   <div>
-                    <div class="wt">{s.deleteAt == null ? "Kept until you delete it" : exp.label}</div>
+                    <div class="wt">{s.deleteAt == null ? t("Kept until you delete it") : exp.label}</div>
                     {#if s.deleteAt != null}<div class="wn">{longDate(s.deleteAt)}. {whoDeletes(s)}</div>{/if}
                   </div>
                 </div>
               {/key}
             {/if}
             {#if s.deleteError}
-              <div class="callout err" transition:rowSlide><Icon name="alert" size={14} /><span>{s.deleteError} Pako tries again every hour.</span></div>
+              <div class="callout err" transition:rowSlide><Icon name="alert" size={14} /><span>{t("{error} Pako tries again every hour.", { error: s.deleteError })}</span></div>
             {/if}
             {#if canDelete}
               <div class="acts">
                 {#if s.deleteAt != null}
-                  <button class="btn small" disabled={changing} onclick={() => app.setSentExpiry(s, sevenMore(s, Date.now()))}><Icon name="clock" size={12} />Keep 7 more days</button>
-                  <button class="btn small" disabled={changing} onclick={() => app.setSentExpiry(s, null)}><Icon name="check" size={12} />Keep</button>
+                  <button class="btn small" disabled={changing} onclick={() => app.setSentExpiry(s, sevenMore(s, Date.now()))}><Icon name="clock" size={12} />{t("Keep 7 more days")}</button>
+                  <button class="btn small" disabled={changing} onclick={() => app.setSentExpiry(s, null)}><Icon name="check" size={12} />{t("Keep")}</button>
                 {:else}
-                  <button class="btn small" disabled={changing} onclick={() => app.setSentExpiry(s, sevenMore(s, Date.now()))}><Icon name="clock" size={12} />Delete in 7 days</button>
+                  <button class="btn small" disabled={changing} onclick={() => app.setSentExpiry(s, sevenMore(s, Date.now()))}><Icon name="clock" size={12} />{t("Delete in 7 days")}</button>
                 {/if}
               </div>
             {/if}
@@ -180,7 +181,7 @@
         {/if}
 
         <section>
-          <div class="label">Files inside<span class="muted">{s.files.toLocaleString()} · {bytes(s.size)}</span></div>
+          <div class="label">{t("Files inside")}<span class="muted">{num(s.files)} · {bytes(s.size)}</span></div>
           {#if listed.length}
             <ul class="files">
               {#each listed as f, i (i)}
@@ -191,56 +192,56 @@
                 </li>
               {/each}
             </ul>
-            {#if more}<p class="none">And {more.toLocaleString()} more.</p>{/if}
+            {#if more}<p class="none">{t("And {n} more.", { n: num(more) })}</p>{/if}
           {:else}
-            <p class="none">Pako didn't keep the list of files for this older upload.</p>
+            <p class="none">{t("Pako didn't keep the list of files for this older upload.")}</p>
           {/if}
         </section>
 
         <section>
-          <div class="label">How it went</div>
+          <div class="label">{t("How it went")}</div>
           <dl>
-            <dt>Uploaded</dt>
-            <dd title={new Date(s.date).toLocaleString([], { dateStyle: "full", timeStyle: "short" })}>{shortDate(s.date)}</dd>
-            {#if s.secs}<dt>Took</dt><dd>{took(s.secs)}</dd>{/if}
-            {#if avg}<dt>Average speed</dt><dd class="mono">{speed(avg)}</dd>{/if}
-            {#if s.peak}<dt>Top speed</dt><dd class="mono">{speed(s.peak)}</dd>{/if}
-            <dt>Uploaded as</dt>
+            <dt>{t("Uploaded")}</dt>
+            <dd title={new Date(s.date).toLocaleString(i18n.dates, { dateStyle: "full", timeStyle: "short" })}>{shortDate(s.date)}</dd>
+            {#if s.secs}<dt>{t("Took")}</dt><dd>{took(s.secs)}</dd>{/if}
+            {#if avg}<dt>{t("Average speed")}</dt><dd class="mono">{speed(avg)}</dd>{/if}
+            {#if s.peak}<dt>{t("Top speed")}</dt><dd class="mono">{speed(s.peak)}</dd>{/if}
+            <dt>{t("Uploaded as")}</dt>
             <dd>{packing}</dd>
-            <dt>Uploaded to</dt>
-            <dd>{drive ? "Your Google Drive" : "Gofile"}</dd>
+            <dt>{t("Uploaded to")}</dt>
+            <dd>{drive ? t("Your Google Drive") : "Gofile"}</dd>
           </dl>
         </section>
 
         {#if chart}
           <section>
-            <div class="label">Downloads by others<span class="muted">{look?.label ?? ""}</span></div>
-            <svg class="chart" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="Downloads over time: {s.downloads ?? 0} so far">
+            <div class="label">{t("Downloads by others")}<span class="muted">{look?.label ?? ""}</span></div>
+            <svg class="chart" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label={t("Downloads over time: {n} so far", { n: s.downloads ?? 0 })}>
               <path class="area" d={chart.area} />
               <path class="line" d={chart.line} />
             </svg>
-            <div class="axis"><span>{shortDate(s.date)}</span><span>Now</span></div>
-            {#if s.downloadedAt}<p class="none">Last downloaded around {shortDate(s.downloadedAt)}. Gofile counts downloads, not who downloaded.</p>{/if}
+            <div class="axis"><span>{shortDate(s.date)}</span><span>{t("Now")}</span></div>
+            {#if s.downloadedAt}<p class="none">{t("Last downloaded around {date}. Gofile counts downloads, not who downloaded.", { date: shortDate(s.downloadedAt) })}</p>{/if}
           </section>
         {/if}
 
         <section class="notesec">
           <div class="label">
-            Note
-            {#if saved}<span class="muted ok" transition:fadeIn={{ duration: 160 }}>Saved</span>{/if}
+            {t("Note")}
+            {#if saved}<span class="muted ok" transition:fadeIn={{ duration: 160 }}>{t("Saved")}</span>{/if}
           </div>
-          <textarea class="input" rows="3" maxlength="500" placeholder="Who it's for, what's inside… (only on this PC)" bind:value={note} oninput={typed} onblur={saveNote}></textarea>
+          <textarea class="input" rows="3" maxlength="500" placeholder={t("Who it's for, what's inside… (only on this PC)")} bind:value={note} oninput={typed} onblur={saveNote}></textarea>
         </section>
 
         <!-- The buttons, at the bottom as in every details panel: the main one first. -->
         {#if !s.gone || canDelete}
           <div class="panel-actions">
             {#if !s.gone}
-              <button class="btn primary" title="Copy the link" onclick={() => app.copyLink(s.link)}><Icon name="copy" size={13} /><span class="l">Copy link</span></button>
-              <button class="btn" title="Open the download page in your browser" onclick={() => app.run(() => api.sentOpen(s.id))}><Icon name="globe" size={13} /><span class="l">Open page</span></button>
+              <button class="btn primary" title={t("Copy the link")} onclick={() => app.copyLink(s.link)}><Icon name="copy" size={13} /><span class="l">{t("Copy link")}</span></button>
+              <button class="btn" title={t("Open the download page in your browser")} onclick={() => app.run(() => api.sentOpen(s.id))}><Icon name="globe" size={13} /><span class="l">{t("Open page")}</span></button>
             {/if}
             {#if canDelete}
-              <button class="btn danger" title="Delete it now from where it was uploaded" onclick={() => (app.sentDeleting = s)}><Icon name="trash" size={13} /><span class="l">Delete now…</span></button>
+              <button class="btn danger" title={t("Delete it now from where it was uploaded")} onclick={() => (app.sentDeleting = s)}><Icon name="trash" size={13} /><span class="l">{t("Delete now…")}</span></button>
             {/if}
           </div>
         {/if}
@@ -249,11 +250,11 @@
   {:else}
     <div class="nothing">
       <div class="headline end">
-        <button class="icon-btn" aria-label="Close details panel" onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
+        <button class="icon-btn" aria-label={t("Close details panel")} onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
       </div>
       <div class="nothing-body">
         <Icon name="upload" size={22} />
-        <p>Select an upload to see its details.</p>
+        <p>{t("Select an upload to see its details.")}</p>
       </div>
     </div>
   {/if}

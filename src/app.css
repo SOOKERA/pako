@@ -14,6 +14,22 @@
   initial-value: transparent;
 }
 
+/* Switching language (lib/i18n.svelte.ts): only the words fade out and back in; backgrounds,
+   icons and the layout stay as they are, and the old and new words never show together. */
+@property --lang-a {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+.lang-swap,
+.lang-swap * {
+  -webkit-text-fill-color: color-mix(in srgb, currentColor calc(var(--lang-a) * 100%), transparent);
+}
+.lang-swap input::placeholder,
+.lang-swap textarea::placeholder {
+  opacity: var(--lang-a);
+}
+
 :root {
   /* Surfaces */
   --bg: #0f1114;
@@ -678,6 +694,12 @@ select.input {
   }
   .panel-actions > :last-child:nth-child(odd) {
     grid-column: 1 / -1;
+  }
+  /* French labels are longer ("Mettre en ligne…"): a little less room around them, so they
+     fit whole at the panel's first width. */
+  :root[lang="fr"] .panel-actions > .btn {
+    padding: 0 6px;
+    gap: 5px;
   }
 }
 kbd {

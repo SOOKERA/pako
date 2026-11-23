@@ -18,6 +18,7 @@
   import { ALERTS, type Alert } from "#lib/alert.ts";
   import type { MenuItem } from "#lib/menu.ts";
   import { devicesApi, downloadOnMenu, targets, type DownloadTarget } from "#lib/devices.svelte.ts";
+  import { t, tMaybe } from "#lib/i18n.svelte.ts";
 
   let view = $state<AskView | null>(null);
   /** "Download on" another PC: offered while one is online, never for a video caught on a page
@@ -35,11 +36,12 @@
   let error = $state("");
   let nameEl: HTMLInputElement | undefined = $state();
 
-  const QUALITIES: [number, string][] = [
-    [1080, "Up to 1080p"],
-    [720, "Up to 720p"],
-    [480, "Up to 480p"],
-    [0, "Audio only"],
+  // Words given when shown, so they follow a language switch.
+  const QUALITIES: [number, () => string][] = [
+    [1080, () => t("Up to {q}p", { q: 1080 })],
+    [720, () => t("Up to {q}p", { q: 720 })],
+    [480, () => t("Up to {q}p", { q: 480 })],
+    [0, () => t("Audio only")],
   ];
 
   /** A video's kind of file follows its quality; anything else keeps its own. */
@@ -78,23 +80,23 @@
   const more = $derived(sendable || privOn);
   function openOn(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const items: MenuItem[] = sendable ? downloadOnMenu(targets.list, () => answer("now"), sendTo, true) : [{ label: "Download on this PC", icon: "download", action: () => answer("now") }];
+    const items: MenuItem[] = sendable ? downloadOnMenu(targets.list, () => answer("now"), sendTo, true) : [{ label: t("Download on this PC"), icon: "download", action: () => answer("now") }];
     if (privOn) {
       // Right under "Download on this PC": into Private mode, encrypted from its first byte.
-      items.splice(1, 0, { label: "Download privately", icon: "lock", hint: "Private mode", action: () => answer("now", true) });
+      items.splice(1, 0, { label: t("Download privately"), icon: "lock", hint: t("Private mode"), action: () => answer("now", true) });
     }
     onMenu = { x: r.right, y: r.top - 6, items };
   }
   /** That device downloads it instead, and it leaves this PC (the window moves on). */
-  async function sendTo(t: DownloadTarget) {
+  async function sendTo(target: DownloadTarget) {
     if (!view || busy) return;
     busy = true;
     error = "";
     try {
-      await devicesApi.sendAsk(view.id, t.id, view.video ? quality : null);
+      await devicesApi.sendAsk(view.id, target.id, view.video ? quality : null);
       if (!inApp) busy = false;
     } catch (e) {
-      error = `Not sent to ${t.name}: ${String(e)}`;
+      error = t("Not sent to {name}: {why}", { name: target.name, why: String(e) });
       busy = false;
     }
   }
@@ -129,7 +131,7 @@
   }
 
   async function changeFolder() {
-    const picked = await pickFolder({ directory: true, defaultPath: dir || undefined, title: "Save to" });
+    const picked = await pickFolder({ directory: true, defaultPath: dir || undefined, title: t("Save to") });
     if (typeof picked === "string") dir = picked;
   }
 
@@ -149,10 +151,10 @@
 <div class="ask">
   <div class="titlebar" data-tauri-drag-region>
     <span class="brand" data-tauri-drag-region><Logo size={14} word={false} /></span>
-    <span class="title" data-tauri-drag-region>Download with Pako</span>
-    {#if view && view.total > 1}{#key view.position}<span class="count" data-tauri-drag-region in:fadeIn={{ duration: 160 }}>{view.position} of {view.total}</span>{/key}{/if}
+    <span class="title" data-tauri-drag-region>{t("Download with Pako")}</span>
+    {#if view && view.total > 1}{#key view.position}<span class="count" data-tauri-drag-region in:fadeIn={{ duration: 160 }}>{t("{n} of {total}", { n: view.position, total: view.total })}</span>{/key}{/if}
     <span class="grow" data-tauri-drag-region></span>
-    <WinButton kind="close" small label="Cancel this download" title="Cancel (Esc)" onclick={() => answer("cancel")} />
+    <WinButton kind="close" small label={t("Cancel this download")} title={t("Cancel (Esc)")} onclick={() => answer("cancel")} />
   </div>
 
   {#if view}
@@ -163,11 +165,11 @@
         <FileIcon name={`${stem}.${ext}`} size={32} />
         <div class="what">
           <div class="nm" title={`${stem}.${ext}`}>{stem}{ext ? `.${ext}` : ""}</div>
-          <div class="sub">{view.site}{size != null ? ` · ${view.video ? "about " : ""}${bytes(size)}` : ""}</div>
+          <div class="sub">{view.site}{size != null ? ` · ${view.video ? t("about {size}", { size: bytes(size) }) : bytes(size)}` : ""}</div>
         </div>
       </div>
 
-      <label class="lbl" for="ask-name">Name</label>
+      <label class="lbl" for="ask-name">{t("Name")}</label>
       <div class="name">
         <input id="ask-name" class="input" bind:this={nameEl} bind:value={stem} spellcheck="false" autocomplete="off" />
         {#if ext}<span class="ext mono">.{ext}</span>{/if}
@@ -175,18 +177,18 @@
 
       <div class="row" class:two={view.video}>
         <div>
-          <span class="lbl">Save to</span>
+          <span class="lbl">{t("Save to")}</span>
           <div class="folder">
             <MiddleText text={dir} class="path" />
-            <button class="link" onclick={changeFolder}>Change</button>
+            <button class="link" onclick={changeFolder}>{t("Change")}</button>
           </div>
         </div>
         {#if view.video}
           <div>
-            <label class="lbl" for="ask-quality">Quality</label>
+            <label class="lbl" for="ask-quality">{t("Quality")}</label>
             <select id="ask-quality" class="input" bind:value={quality}>
               {#each QUALITIES as [q, label] (q)}
-                <option value={q}>{label}</option>
+                <option value={q}>{label()}</option>
               {/each}
             </select>
           </div>
@@ -194,15 +196,15 @@
       </div>
 
       <div class="opts">
-        <div class="notify" title="Notify when done">
+        <div class="notify" title={t("Notify when done")}>
           <Icon name={alert === "off" ? "bell-off" : "bell"} size={14} />
-          <SegPick small label="Notify when done" options={ALERTS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={alert} onpick={(a) => (alert = a)} />
+          <SegPick small label={t("Notify when done")} options={ALERTS.map((a) => ({ value: a.id, label: tMaybe(a.label), hint: tMaybe(a.hint) }))} value={alert} onpick={(a) => (alert = a)} />
         </div>
-        <label class="dont" title="You can turn it back on in Settings › Browser extension">
-          <button class="check" class:on={dontAsk} role="checkbox" aria-checked={dontAsk} aria-label="Don't ask again" onclick={() => (dontAsk = !dontAsk)}>
+        <label class="dont" title={t("You can turn it back on in {place}", { place: `${t("Settings")} › ${t("Browser extension")}` })}>
+          <button class="check" class:on={dontAsk} role="checkbox" aria-checked={dontAsk} aria-label={t("Don't ask again")} onclick={() => (dontAsk = !dontAsk)}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
           </button>
-          <span>Don't ask again</span>
+          <span>{t("Don't ask again")}</span>
         </label>
       </div>
     </div>
@@ -210,20 +212,20 @@
 
     <div class="foot">
       {#if error}<span class="err" role="alert" in:fadeIn={{ duration: 160 }}>{error}</span>{/if}
-      <button class="btn ghost" disabled={busy} onclick={() => answer("cancel")}>Cancel</button>
+      <button class="btn ghost" disabled={busy} onclick={() => answer("cancel")}>{t("Cancel")}</button>
       {#if busyElse}
-        <button class="btn" disabled={busy} onclick={() => answer("queue")}>Add to queue</button>
-        <button class="btn primary" class:joined={more} disabled={busy} onclick={() => answer("now")}>Download now</button>
+        <button class="btn" disabled={busy} onclick={() => answer("queue")}>{t("Add to queue")}</button>
+        <button class="btn primary" class:joined={more} disabled={busy} onclick={() => answer("now")}>{t("Download now (ask window)")}</button>
       {:else}
-        <button class="btn primary" class:joined={more} disabled={busy} onclick={() => answer("now")}>Download</button>
+        <button class="btn primary" class:joined={more} disabled={busy} onclick={() => answer("now")}>{t("Download")}</button>
       {/if}
       {#if more}
         <button
           class="btn primary more"
           disabled={busy}
-          aria-label={sendable && privOn ? "Download on another PC, or privately" : sendable ? "Download on another PC" : "Download privately"}
+          aria-label={sendable && privOn ? t("Download on another PC, or privately") : sendable ? t("Download on another PC") : t("Download privately")}
           aria-haspopup="menu"
-          title={sendable && privOn ? "Download on this PC, privately, or on one of your devices" : sendable ? "Download on this PC or on one of your devices" : "Download, or Download privately"}
+          title={sendable && privOn ? t("Download on this PC, privately, or on one of your devices") : sendable ? t("Download on this PC or on one of your devices") : t("Download, or Download privately")}
           onclick={openOn}
         >
           <Icon name="chevron" size={12} stroke={2.6} />

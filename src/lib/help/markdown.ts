@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // A small, safe Markdown reader for Pako's guides (docs/help/*.md): headings, paragraphs,
-// lists, **bold**, *italic*, `code` and [links](…). No raw HTML: everything becomes text.
+// lists, **bold**, *italic*, `code` and [links](…), and a heading's own anchor written after it
+// (`## Titre {#english-title}`, see docs/help/fr/TRADUCTION.md). No raw HTML: everything becomes text.
 
 export type Inline =
   | { kind: "text"; text: string }
@@ -23,6 +24,17 @@ export function slug(text: string): string {
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
     .trim()
     .replace(/\s/g, "-");
+}
+
+/** A heading's own anchor, after its words: `## Limite de Google {#google-limit}`. A translated
+ *  guide keeps the English heading's anchor this way, so links from the window still land. */
+const HEADING_ID = /\s*\{#([A-Za-z0-9_-]+)\}$/;
+
+/** A heading line's words and anchor: its own one (`{#…}`, not shown) or one made from its words. */
+export function headingOf(src: string): { text: string; id: string } {
+  const own = HEADING_ID.exec(src);
+  const text = plain(own ? src.slice(0, own.index) : src);
+  return { text, id: own ? own[1] : slug(text) };
 }
 
 /** The text of a line without its Markdown marks (for search and titles). */
@@ -95,9 +107,9 @@ export function parse(md: string): Block[] {
     } else if ((m = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/))) {
       endPara();
       endList();
-      const text = plain(m[2]);
+      const { text, id: base } = headingOf(m[2]);
       // Repeated headings get -1, -2… like GitHub.
-      let id = slug(text);
+      let id = base;
       const n = used.get(id) ?? 0;
       used.set(id, n + 1);
       if (n) id = `${id}-${n}`;

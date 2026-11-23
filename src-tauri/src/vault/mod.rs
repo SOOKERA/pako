@@ -151,10 +151,10 @@ pub fn valid_password(pw: &str) -> bool {
 fn check_secret(secret: &str, kind: &str) -> Result<(), String> {
     match kind {
         "pin" if valid_pin(secret) => Ok(()),
-        "pin" => Err("The PIN is 4 digits.".into()),
+        "pin" => Err(crate::tr!("The PIN is 4 digits.", "Le code PIN fait 4 chiffres.")),
         "password" if valid_password(secret) => Ok(()),
-        "password" => Err("The password needs at least 10 characters.".into()),
-        _ => Err("Pick a PIN or a password.".into()),
+        "password" => Err(crate::tr!("The password needs at least 10 characters.", "Le mot de passe doit faire au moins 10 caractères.")),
+        _ => Err(crate::tr!("Pick a PIN or a password.", "Choisissez un code PIN ou un mot de passe.")),
     }
 }
 
@@ -219,7 +219,7 @@ impl Vault {
 
     fn write_meta(&self, m: &Meta) -> Result<(), String> {
         let wraps = Zeroizing::new(serde_json::to_vec(&m.wraps).map_err(|e| e.to_string())?);
-        let sealed = crate::secure::protect(&wraps).map_err(|e| format!("Couldn't save Private mode: {e}"))?;
+        let sealed = crate::secure::protect(&wraps).map_err(|e| crate::tr!("Couldn't save Private mode: {e}", "Impossible d’enregistrer le mode privé : {e}"))?;
         let f = MetaFile { v: 2, pk: m.pk.clone(), lock: m.lock.clone(), has_recovery: m.wraps.iter().any(|w| w.kind == "recovery"), sealed: B64.encode(sealed) };
         let bytes = serde_json::to_vec_pretty(&f).map_err(|e| e.to_string())?;
         // Written whole, then put in place, with NO copy of the one before: an old copy would
@@ -238,7 +238,7 @@ impl Vault {
         })();
         if let Err(e) = written {
             wipe_file(&tmp);
-            return Err(format!("Couldn't save Private mode: {e}"));
+            return Err(crate::tr!("Couldn't save Private mode: {e}", "Impossible d’enregistrer le mode privé : {e}"));
         }
         // One kept by an older Pako's saves (they made a copy each time): gone too.
         wipe_file(&self.meta_bak_path());
@@ -308,7 +308,7 @@ impl Vault {
 
     fn wrap(kind: &str, secret: &[u8], sk: &StaticSecret) -> Result<Wrap, String> {
         let salt = crypto::random::<16>();
-        let kek = crypto::stretch(secret, &salt, crypto::COST).ok_or("Couldn't make the key")?;
+        let kek = crypto::stretch(secret, &salt, crypto::COST).ok_or_else(|| crate::tr!("Couldn't make the key", "Impossible de créer la clé"))?;
         let blob = crypto::encrypt(&kek, kind.as_bytes(), sk.as_bytes());
         Ok(Wrap { kind: kind.into(), salt: B64.encode(salt), cost: crypto::COST, blob: B64.encode(blob) })
     }
@@ -328,10 +328,10 @@ impl Vault {
     pub fn setup(&self, secret: &str, kind: &str) -> Result<(), String> {
         check_secret(secret, kind)?;
         if self.is_on() {
-            return Err("Private mode is already on.".into());
+            return Err(crate::tr!("Private mode is already on.", "Le mode privé est déjà activé."));
         }
         for d in [self.dir.clone(), self.list_dir(), self.files_dir()] {
-            std::fs::create_dir_all(&d).map_err(|e| format!("Couldn't make Private mode's folder: {e}"))?;
+            std::fs::create_dir_all(&d).map_err(|e| crate::tr!("Couldn't make Private mode's folder: {e}", "Impossible de créer le dossier du mode privé : {e}"))?;
         }
         let (sk, pk) = crypto::new_pair();
         let wrap = Self::wrap("secret", secret.as_bytes(), &sk)?;
@@ -347,11 +347,11 @@ impl Vault {
     fn refuse(&self, wrong: bool) -> Refused {
         let wait = self.wait_now();
         let message = if !wrong {
-            format!("Wait {} before trying again.", plain_wait(wait))
+            crate::tr!("Wait {} before trying again.", "Attendez {} avant de réessayer.", plain_wait(wait))
         } else if wait > 0 {
-            format!("That's not it. Wait {} before trying again.", plain_wait(wait))
+            crate::tr!("That's not it. Wait {} before trying again.", "Ce n’est pas ça. Attendez {} avant de réessayer.", plain_wait(wait))
         } else {
-            "That's not it. Try again.".into()
+            crate::tr!("That's not it. Try again.", "Ce n’est pas ça. Réessayez.")
         };
         Refused { wrong, wait, message }
     }
@@ -359,7 +359,7 @@ impl Vault {
     fn try_unlock(&self, kind: &str, secret: &[u8]) -> Result<(), Refused> {
         let _one = self.op.lock().unwrap();
         let Some(m) = self.meta() else {
-            return Err(Refused { wrong: false, wait: 0, message: "Private mode can't be read on this PC or Windows account.".into() });
+            return Err(Refused { wrong: false, wait: 0, message: crate::tr!("Private mode can't be read on this PC or Windows account.", "Le mode privé ne peut pas être lu sur ce PC ou ce compte Windows.") });
         };
         if self.wait_now() > 0 {
             return Err(self.refuse(false));
@@ -387,7 +387,7 @@ impl Vault {
 
     pub fn unlock_with_code(&self, code: &str) -> Result<(), Refused> {
         let Some(secret) = recovery::secret_of(code) else {
-            return Err(Refused { wrong: false, wait: self.wait_now(), message: "That code has a typo: check each group.".into() });
+            return Err(Refused { wrong: false, wait: self.wait_now(), message: crate::tr!("That code has a typo: check each group.", "Ce code contient une faute de frappe : vérifiez chaque groupe.") });
         };
         self.try_unlock("recovery", &secret)
     }
@@ -411,12 +411,12 @@ impl Vault {
     pub fn change_secret(&self, current: Option<&str>, new: &str, kind: &str) -> Result<(), String> {
         check_secret(new, kind)?;
         let _one = self.op.lock().unwrap();
-        let mut m = self.meta().ok_or("Private mode isn't on.")?;
+        let mut m = self.meta().ok_or_else(not_on)?;
         let recovered = self.recovered();
         let sk = if recovered {
-            self.st.lock().unwrap().sk.clone().ok_or("Open Private mode first.")?
+            self.st.lock().unwrap().sk.clone().ok_or_else(|| crate::tr!("Open Private mode first.", "Ouvrez d’abord le mode privé."))?
         } else {
-            let cur = current.ok_or("Type your current PIN or password.")?;
+            let cur = current.ok_or_else(|| crate::tr!("Type your current PIN or password.", "Saisissez votre code PIN ou mot de passe actuel."))?;
             if self.wait_now() > 0 {
                 return Err(self.refuse(false).message);
             }
@@ -424,7 +424,7 @@ impl Vault {
                 Some(sk) => sk,
                 None => {
                     self.note_wrong();
-                    return Err("Your current PIN or password isn't right.".into());
+                    return Err(crate::tr!("Your current PIN or password isn't right.", "Votre code PIN ou mot de passe actuel n’est pas le bon."));
                 }
             }
         };
@@ -458,16 +458,16 @@ impl Vault {
             st.code_sk = None;
             return Ok(shown);
         }
-        let cur = current.filter(|c| !c.is_empty()).ok_or("Type your PIN or password.")?;
+        let cur = current.filter(|c| !c.is_empty()).ok_or_else(|| crate::tr!("Type your PIN or password.", "Saisissez votre code PIN ou mot de passe."))?;
         if self.wait_now() > 0 {
             return Err(self.refuse(false).message);
         }
-        let m = self.meta().ok_or("Private mode isn't on.")?;
+        let m = self.meta().ok_or_else(not_on)?;
         let sk = match m.wraps.iter().filter(|w| w.kind == "secret").find_map(|w| Self::unwrap(w, cur.as_bytes())) {
             Some(sk) if B64.encode(PublicKey::from(&sk).as_bytes()) == m.pk => sk,
             _ => {
                 self.note_wrong();
-                return Err("That PIN or password isn't right.".into());
+                return Err(crate::tr!("That PIN or password isn't right.", "Ce code PIN ou ce mot de passe n’est pas le bon."));
             }
         };
         self.set_tries(Tries::default());
@@ -507,14 +507,14 @@ impl Vault {
         let _one = self.op.lock().unwrap();
         let (code, sk) = {
             let st = self.st.lock().unwrap();
-            (st.new_code.clone().ok_or("Make a recovery code first.")?, st.sk.clone().or_else(|| st.code_sk.clone()).ok_or("Open Private mode first.")?)
+            (st.new_code.clone().ok_or_else(|| crate::tr!("Make a recovery code first.", "Créez d’abord un code de récupération."))?, st.sk.clone().or_else(|| st.code_sk.clone()).ok_or_else(|| crate::tr!("Open Private mode first.", "Ouvrez d’abord le mode privé."))?)
         };
         if !last_group.trim().eq_ignore_ascii_case(&recovery::last_group(&code)) {
-            return Err("That's not the last group of your code.".into());
+            return Err(crate::tr!("That's not the last group of your code.", "Ce n’est pas le dernier groupe de votre code."));
         }
-        let secret = recovery::secret_of(&code).ok_or("Couldn't read the code")?;
+        let secret = recovery::secret_of(&code).ok_or_else(|| crate::tr!("Couldn't read the code", "Impossible de lire le code"))?;
         let wrap = Self::wrap("recovery", &secret, &sk)?;
-        let mut m = self.meta().ok_or("Private mode isn't on.")?;
+        let mut m = self.meta().ok_or_else(not_on)?;
         m.wraps.retain(|w| w.kind != "recovery");
         m.wraps.push(wrap);
         self.write_meta(&m)?;
@@ -527,7 +527,7 @@ impl Vault {
         self.lock();
         self.st.lock().unwrap().hot.clear();
         if self.dir.exists() {
-            std::fs::remove_dir_all(&self.dir).map_err(|e| format!("Couldn't delete everything in Private mode: {e}"))?;
+            std::fs::remove_dir_all(&self.dir).map_err(|e| crate::tr!("Couldn't delete everything in Private mode: {e}", "Impossible de tout supprimer dans le mode privé : {e}"))?;
         }
         Ok(())
     }
@@ -546,7 +546,7 @@ impl Vault {
 
     /// Saves one private list entry (works while locked).
     pub fn put_record(&self, id: &str, bytes: &[u8]) -> Result<(), String> {
-        let pk = self.public_key().ok_or("Private mode isn't on.")?;
+        let pk = self.public_key().ok_or_else(not_on)?;
         let blob = crypto::seal(&pk, &Self::rec_aad(id), bytes);
         let _ = std::fs::create_dir_all(self.list_dir());
         crate::paths::write_atomic(&self.rec_path(id), &blob).map_err(|e| e.to_string())
@@ -561,7 +561,7 @@ impl Vault {
 
     /// Every private list entry (only while unlocked). Damaged ones are skipped.
     pub fn records(&self) -> Result<Vec<(String, Zeroizing<Vec<u8>>)>, String> {
-        let sk = self.st.lock().unwrap().sk.clone().ok_or("Private mode is locked.")?;
+        let sk = self.st.lock().unwrap().sk.clone().ok_or_else(|| crate::tr!("Private mode is locked.", "Le mode privé est verrouillé."))?;
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(self.list_dir()) else { return Ok(out) };
         for e in entries.flatten() {
@@ -604,7 +604,7 @@ impl Vault {
 
     /// A new private file (works while locked); its key is kept in memory until it's done.
     pub fn create_file(&self, path: &Path, size: Option<u64>) -> std::io::Result<blocks::Writer> {
-        let pk = self.public_key().ok_or_else(|| std::io::Error::other("Private mode isn't on"))?;
+        let pk = self.public_key().ok_or_else(|| std::io::Error::other(crate::tr!("Private mode isn't on", "Le mode privé n’est pas activé")))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -620,8 +620,8 @@ impl Vault {
         if let Some(k) = st.hot.get(&h.id) {
             return Ok(k.clone());
         }
-        let sk = st.sk.as_ref().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Private mode is locked"))?;
-        blocks::file_key(sk, &h, &blocks::owner_of(path)).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "This private file's key doesn't open"))
+        let sk = st.sk.as_ref().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::tr!("Private mode is locked", "Le mode privé est verrouillé")))?;
+        blocks::file_key(sk, &h, &blocks::owner_of(path)).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, crate::tr!("This private file's key doesn't open", "La clé de ce fichier privé ne s’ouvre pas")))
     }
 
     /// Opens an unfinished private file again (resume).
@@ -644,8 +644,8 @@ impl Vault {
         let h = blocks::read_header_at(path)?;
         let key = {
             let st = self.st.lock().unwrap();
-            let sk = st.sk.as_ref().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Private mode is locked"))?;
-            blocks::file_key(sk, &h, &blocks::owner_of(path)).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "This private file's key doesn't open"))?
+            let sk = st.sk.as_ref().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::tr!("Private mode is locked", "Le mode privé est verrouillé")))?;
+            blocks::file_key(sk, &h, &blocks::owner_of(path)).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, crate::tr!("This private file's key doesn't open", "La clé de ce fichier privé ne s’ouvre pas")))?
         };
         blocks::Reader::open(path, key)
     }
@@ -658,15 +658,20 @@ impl Vault {
     }
 }
 
+/// For the window's commands: Private mode isn't set up.
+fn not_on() -> String {
+    crate::tr!("Private mode isn't on.", "Le mode privé n’est pas activé.")
+}
+
 /// "5 seconds", "2 minutes".
 pub fn plain_wait(secs: u64) -> String {
     if secs >= 90 {
         let m = secs.div_ceil(60);
-        format!("{m} minutes")
+        crate::tr!("{m} minutes", "{m} minutes")
     } else if secs == 1 {
-        "1 second".into()
+        crate::tr!("1 second", "1 seconde")
     } else {
-        format!("{secs} seconds")
+        crate::tr!("{secs} seconds", "{secs} secondes")
     }
 }
 

@@ -7,13 +7,14 @@
   import { tick, untrack } from "svelte";
   import SegPick from "./SegPick.svelte";
   import { rowSlide } from "./motion";
-  import { PART_CHOICES, PART_DEFAULT_MB, PART_RANGE_NOTE, partOk } from "./uploads";
+  import { PART_CHOICES, PART_DEFAULT_MB, PART_RANGE_NOTE, partLabel, partOk } from "./uploads";
+  import { t } from "./i18n.svelte";
 
   let {
     mb = $bindable(),
     custom = $bindable(),
     valid = $bindable(true),
-    label = "Size of each part",
+    label,
   }: {
     mb: number;
     custom: boolean;
@@ -35,7 +36,7 @@
     if (picked === "custom" && partOk(typed) && typed !== mb) mb = typed;
   });
 
-  const options = [...PART_CHOICES.map((c) => ({ value: String(c.value), label: c.label })), { value: "custom", label: "Custom" }];
+  const options = $derived([...PART_CHOICES.map((c) => ({ value: String(c.value), label: partLabel(c.value) })), { value: "custom", label: t("Custom") }]);
 
   async function pick(v: string) {
     if (v === "custom") {
@@ -52,7 +53,7 @@
 
 <div class="parts">
   <div class="row">
-    <SegPick {label} {options} value={picked} onpick={pick} />
+    <SegPick label={label ?? t("Size of each part")} {options} value={picked} onpick={pick} />
     {#if picked === "custom"}
       <label class="custom" class:bad={!valid}>
         <input
@@ -62,15 +63,15 @@
           inputmode="numeric"
           maxlength="5"
           spellcheck="false"
-          aria-label="Part size in MB"
+          aria-label={t("Part size in MB")}
           aria-invalid={!valid}
         />
-        <span class="unit">MB</span>
+        <span class="unit">{t("MB")}</span>
       </label>
     {/if}
   </div>
   {#if !valid}
-    <span class="range" role="alert" transition:rowSlide={{ duration: 180 }}>{PART_RANGE_NOTE}</span>
+    <span class="range" role="alert" transition:rowSlide={{ duration: 180 }}>{t(PART_RANGE_NOTE)}</span>
   {/if}
 </div>
 

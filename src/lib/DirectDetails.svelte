@@ -27,6 +27,7 @@
   import PanelResizer from "./PanelResizer.svelte";
   import { fadeIn, rowSlide } from "./motion";
   import { isLocal, itemsCount, pathLabel } from "./direct";
+  import { i18n, num, t } from "./i18n.svelte";
   import { quintOut } from "svelte/easing";
   import type { TransitionConfig } from "svelte/transition";
 
@@ -48,7 +49,7 @@
     contact: DirectContact;
     /** Their transfers moving right now. */
     moving: DirectTransfer[];
-    speedOf: (t: DirectTransfer) => number;
+    speedOf: (x: DirectTransfer) => number;
     /** Changes when a transfer with them ends (the numbers are read again). */
     historyCount: number;
     /** The card picked in the conversation: what was in it (`openId`: received, opens). */
@@ -81,24 +82,24 @@
       .catch(() => {});
   });
 
-  const up = $derived(moving.filter((t) => t.outgoing).reduce((s, t) => s + speedOf(t), 0));
-  const down = $derived(moving.filter((t) => !t.outgoing).reduce((s, t) => s + speedOf(t), 0));
-  const plural = (k: number, one: string, many = `${one}s`) => `${k.toLocaleString()} ${k === 1 ? one : many}`;
-  const routeTip: Record<string, string> = {
-    local: "Over your home network, PC to PC: nothing goes through the internet. Usually the fastest.",
-    direct6: "Straight between the two PCs, over IPv6: usually the fastest.",
-    direct: "Straight between the two PCs.",
-    relay: "Through a relay server: still encrypted end to end, often slower.",
-  };
+  const up = $derived(moving.filter((x) => x.outgoing).reduce((s, x) => s + speedOf(x), 0));
+  const down = $derived(moving.filter((x) => !x.outgoing).reduce((s, x) => s + speedOf(x), 0));
+  const transfers = (k: number) => t("{n} transfers", { n: num(k) });
+  const routeTip = $derived<Record<string, string>>({
+    local: t("Over your home network, PC to PC: nothing goes through the internet. Usually the fastest."),
+    direct6: t("Straight between the two PCs, over IPv6: usually the fastest."),
+    direct: t("Straight between the two PCs."),
+    relay: t("Through a relay server: still encrypted end to end, often slower."),
+  });
   /** How what went between you travelled: over the home network, straight between the PCs
    *  over the internet, through a relay. Rounded so the three add up to 100. */
   const share = $derived.by(() => {
     if (!n) return null;
     const local = Math.min(n.localBytes ?? 0, n.directBytes);
     const parts = [
-      { key: "local", label: "Local network", bytes: local, tip: "Over your home network" },
-      { key: "direct", label: "Direct", bytes: n.directBytes - local, tip: "Straight between your PCs" },
-      { key: "relay", label: "Via relay", bytes: n.relayBytes, tip: "Through a relay" },
+      { key: "local", label: t("Local network"), bytes: local, tip: t("Over your home network") },
+      { key: "direct", label: t("Direct"), bytes: n.directBytes - local, tip: t("Straight between your PCs") },
+      { key: "relay", label: t("Via relay"), bytes: n.relayBytes, tip: t("Through a relay") },
     ];
     const total = parts.reduce((a, p) => a + p.bytes, 0);
     if (!total) return null;
@@ -111,16 +112,16 @@
   });
   // "Check this contact": how Pako calls them in the background. Often lasts a while, then
   // it's back to the choice it had before by itself (When I ask, else Automatic).
-  const CHECKS: { value: DirectCheck; label: string }[] = [
-    { value: "auto", label: "Automatic" },
-    { value: "often", label: "Often for…" },
-    { value: "ask", label: "When I ask" },
-  ];
-  const SPANS: { value: OftenFor; label: string }[] = [
-    { value: "hour", label: "1 hour" },
-    { value: "today", label: "Today" },
-    { value: "week", label: "1 week" },
-  ];
+  const CHECKS = $derived<{ value: DirectCheck; label: string }[]>([
+    { value: "auto", label: t("Automatic") },
+    { value: "often", label: t("Often for…") },
+    { value: "ask", label: t("When I ask") },
+  ]);
+  const SPANS = $derived<{ value: OftenFor; label: string }[]>([
+    { value: "hour", label: t("1 hour") },
+    { value: "today", label: t("Today") },
+    { value: "week", label: t("1 week") },
+  ]);
   const check = $derived<DirectCheck>(c.check === "often" && !c.checkUntil ? "auto" : (c.check ?? "auto"));
   const isMidnight = (d: Date) => d.getHours() + d.getMinutes() + d.getSeconds() + d.getMilliseconds() === 0;
   /** Which "Often for…" runs: as picked here (if that's still the one running: not one picked
@@ -133,27 +134,32 @@
     if (isMidnight(new Date(until))) return "today";
     return until - Date.now() > 3_660_000 ? "week" : "hour";
   });
-  /** "18:40", "midnight", or the day for a week. */
-  function untilText(until: number): string {
+  /** Until when "Often for…" runs: "18:40", "midnight", or the day for a week (a day has its
+   *  own words: « jusqu'au 12 novembre » in French). */
+  function oftenNote(until: number, thenAsk: boolean): string {
     const d = new Date(until);
     const left = until - Date.now();
-    if (isMidnight(d) && left <= 86_400_000) return "midnight";
-    if (left < 86_400_000) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    return d.toLocaleDateString([], { day: "numeric", month: "long" });
+    const midnight = isMidnight(d) && left <= 86_400_000;
+    if (!midnight && left >= 86_400_000) {
+      const day = d.toLocaleDateString(i18n.dates, { day: "numeric", month: "long" });
+      return thenAsk ? t("Checked often until {day}, then back to When I ask.", { day }) : t("Checked often until {day}.", { day });
+    }
+    const when = midnight ? t("midnight") : d.toLocaleTimeString(i18n.dates, { hour: "2-digit", minute: "2-digit" });
+    return thenAsk ? t("Checked often until {when}, then back to When I ask.", { when }) : t("Checked often until {when}.", { when });
   }
   /** One line under the picker: what the choice does for this contact. */
   const checkNote = $derived(
     check === "often"
-      ? `Checked often until ${untilText(c.checkUntil ?? 0)}${c.checkBefore === "ask" ? ", then back to When I ask" : ""}.`
+      ? oftenNote(c.checkUntil ?? 0, c.checkBefore === "ask")
       : check === "ask"
-        ? "Only when you open, send or check."
+        ? t("Only when you open, send or check.")
         : c.checkAs === "often"
-          ? "Always connected: they say this PC is theirs."
+          ? t("Always connected: they say this PC is theirs.")
           : c.favourite
-            ? "Less when away. Favourites never stop."
+            ? t("Less when away. Favourites never stop.")
             : c.autoAccept
-              ? "Less when away. Never stops: they send without asking."
-              : "Pauses after 30 days with nothing new.",
+              ? t("Less when away. Never stops: they send without asking.")
+              : t("Pauses after 30 days with nothing new."),
   );
   function pickCheck(v: DirectCheck) {
     // "Often for…" starts with an hour; the row under it changes how long.
@@ -168,9 +174,9 @@
     picked.set(c.id, { span: s, until: endOf(s, Date.now()) });
     app.run(() => api.directSetCheck(c.id, "often", s));
   }
-  const added = $derived(new Date(c.added).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }));
+  const added = $derived(new Date(c.added).toLocaleDateString(i18n.dates, { day: "numeric", month: "long", year: "numeric" }));
   function copyId() {
-    app.run(() => api.copyText(c.id)).then(() => app.toast(`${c.name}'s Pako ID is copied.`));
+    app.run(() => api.copyText(c.id)).then(() => app.toast(t("{name}'s Pako ID is copied.", { name: c.name })));
   }
   /** The drawer (a narrow window) slides in from the right and back out; the column version is
    *  animated by its container instead. */
@@ -179,21 +185,21 @@
     return {
       duration: 260,
       easing: quintOut,
-      css: (t) => `opacity:${t};transform:translateX(${(1 - t) * 24}px)`,
+      css: (k) => `opacity:${k};transform:translateX(${(1 - k) * 24}px)`,
     };
   }
 </script>
 
-<aside class="details" data-tour="direct-details" class:drawer aria-label="About {c.name}" transition:drawerSlide|global>
+<aside class="details" data-tour="direct-details" class:drawer aria-label={t("About {name}", { name: c.name })} transition:drawerSlide|global>
   {#if drawer && resize}
     <PanelResizer page="direct" width={resize.width} avail={resize.avail} listMin={resize.listMin} />
   {/if}
   {#if transfer}
     {@const x = transfer}
-    <section class="picked" aria-label="What was in {x.name}" in:fadeIn={{ duration: 160 }}>
+    <section class="picked" aria-label={t("What was in {name}", { name: x.name })} in:fadeIn={{ duration: 160 }}>
       <div class="phead">
-        <div class="label">{x.outgoing ? `Sent to ${c.name}` : `Received from ${c.name}`}</div>
-        <button class="icon-btn sm" aria-label="Back to {c.name}'s details (Esc)" title="Back to {c.name}'s details (Esc)" onclick={() => onletgo?.()}><Icon name="x" size={12} /></button>
+        <div class="label">{x.outgoing ? t("Sent to {name}", { name: c.name }) : t("Received from {name}", { name: c.name })}</div>
+        <button class="icon-btn sm" aria-label={t("Back to {name}'s details (Esc)", { name: c.name })} title={t("Back to {name}'s details (Esc)", { name: c.name })} onclick={() => onletgo?.()}><Icon name="x" size={12} /></button>
       </div>
       <div class="pname" title={x.name}>{x.name}</div>
       <div class="psub">{itemsCount(x.files, x.items, x.more)} · {bytes(x.size)}</div>
@@ -204,43 +210,43 @@
   {:else}
     <div class="about" in:fadeIn={{ duration: 160 }}>
       <section>
-        <div class="label">Connection</div>
+        <div class="label">{t("Connection")}</div>
         <dl>
-          <dt>Status</dt>
+          <dt>{t("Status")}</dt>
           <dd>
-            <span class="sdot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span>{c.online ? "Online" : c.waiting ? "Waiting for them" : c.unchecked ? "Not checked lately" : c.idle ? "Seen lately" : "Offline"}
+            <span class="sdot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span>{c.online ? t("Online") : c.waiting ? t("Waiting for them") : c.unchecked ? t("Not checked lately") : c.idle ? t("Seen lately") : t("Offline")}
           </dd>
           {#if c.online}
-            <dt>Route</dt>
-            <dd title={routeTip[c.path ?? ""] ?? ""}>{pathLabel(c.path) || "Connected"}</dd>
+            <dt>{t("Route")}</dt>
+            <dd title={routeTip[c.path ?? ""] ?? ""}>{pathLabel(c.path) || t("Connected")}</dd>
           {:else}
-            <dt>Last seen</dt>
-            <dd>{c.lastSeen ? shortDate(c.lastSeen) : "Not yet"}</dd>
+            <dt>{t("Last seen")}</dt>
+            <dd>{c.lastSeen ? shortDate(c.lastSeen) : t("Not yet")}</dd>
           {/if}
-          <dt>Speed now</dt>
+          <dt>{t("Speed now")}</dt>
           <dd class="mono">
             {#if moving.length}
-              {#if moving.some((t) => t.outgoing)}<span title="Sending to {c.name}: {speed(up)}">↑ {speed(up)}</span>{/if}
-              {#if moving.some((t) => t.outgoing) && moving.some((t) => !t.outgoing)}<span class="sep">·</span>{/if}
-              {#if moving.some((t) => !t.outgoing)}<span title="Receiving from {c.name}: {speed(down)}">↓ {speed(down)}</span>{/if}
+              {#if moving.some((x) => x.outgoing)}<span title={t("Sending to {name}: {speed}", { name: c.name, speed: speed(up) })}>↑ {speed(up)}</span>{/if}
+              {#if moving.some((x) => x.outgoing) && moving.some((x) => !x.outgoing)}<span class="sep">·</span>{/if}
+              {#if moving.some((x) => !x.outgoing)}<span title={t("Receiving from {name}: {speed}", { name: c.name, speed: speed(down) })}>↓ {speed(down)}</span>{/if}
             {:else}
-              <span class="dim">Nothing moving</span>
+              <span class="dim">{t("Nothing moving")}</span>
             {/if}
           </dd>
         </dl>
         {#if c.unchecked}
           <div class="xrow" transition:rowSlide={{ duration: 200 }}>
-            <span class="xt dim">Not called by itself.</span>
-            <button class="btn small" onclick={() => app.run(() => api.directConnect(c.id))}><Icon name="retry" size={12} />Check now</button>
+            <span class="xt dim">{t("Not called by itself.")}</span>
+            <button class="btn small" onclick={() => app.run(() => api.directConnect(c.id))}><Icon name="retry" size={12} />{t("Check now")}</button>
           </div>
         {/if}
         <div class="checkpick">
-          <span class="k">Check this contact</span>
+          <span class="k">{t("Check this contact")}</span>
           <div class="picks">
-            <SegPick small options={CHECKS} value={check} label="Check this contact" onpick={pickCheck} />
+            <SegPick small options={CHECKS} value={check} label={t("Check this contact")} onpick={pickCheck} />
             {#if check === "often"}
               <div transition:rowSlide={{ duration: 200 }}>
-                <div class="spans"><SegPick small options={SPANS} value={span} label="Check often for" onpick={setOften} /></div>
+                <div class="spans"><SegPick small options={SPANS} value={span} label={t("Check often for")} onpick={setOften} /></div>
               </div>
             {/if}
           </div>
@@ -249,93 +255,93 @@
       </section>
 
       <section>
-        <div class="label">Between you</div>
+        <div class="label">{t("Between you")}</div>
         <div class="totals">
-          <div title="Sent to {c.name}: {bytes(n?.sent ?? 0)} in {plural(n?.sentCount ?? 0, 'transfer')}">
-            <span class="k"><b class="up">↑</b> Sent</span>
+          <div title={t("Sent to {name}: {size} in {count}", { name: c.name, size: bytes(n?.sent ?? 0), count: transfers(n?.sentCount ?? 0) })}>
+            <span class="k"><b class="up">↑</b> {t("Sent")}</span>
             <span class="v mono">{bytes(n?.sent ?? 0)}</span>
           </div>
-          <div title="Received from {c.name}: {bytes(n?.received ?? 0)} in {plural(n?.receivedCount ?? 0, 'transfer')}">
-            <span class="k"><b class="down">↓</b> Received</span>
+          <div title={t("Received from {name}: {size} in {count}", { name: c.name, size: bytes(n?.received ?? 0), count: transfers(n?.receivedCount ?? 0) })}>
+            <span class="k"><b class="down">↓</b> {t("Received")}</span>
             <span class="v mono">{bytes(n?.received ?? 0)}</span>
           </div>
         </div>
         <dl>
-          <dt>Transfers</dt>
-          <dd>{(n?.sentCount ?? 0) + (n?.receivedCount ?? 0)}</dd>
-          <dt>Last exchange</dt>
-          <dd>{n?.last ? shortDate(n.last) : "None yet"}</dd>
+          <dt>{t("Transfers")}</dt>
+          <dd>{num((n?.sentCount ?? 0) + (n?.receivedCount ?? 0))}</dd>
+          <dt>{t("Last exchange")}</dt>
+          <dd>{n?.last ? shortDate(n.last) : t("None yet")}</dd>
         </dl>
       </section>
 
       <section>
-        <div class="label">Speed with {c.name}</div>
+        <div class="label">{t("Speed with {name}", { name: c.name })}</div>
         {#if n && (n.peakSent || n.peakReceived)}
           <dl>
-            <dt>Fastest</dt>
+            <dt>{t("Fastest")}</dt>
             <dd class="mono">
-              <span title="Fastest send to {c.name}">↑ {n.peakSent ? speed(n.peakSent) : "—"}</span><span class="sep">·</span><span title="Fastest from {c.name}">↓ {n.peakReceived ? speed(n.peakReceived) : "—"}</span>
+              <span title={t("Fastest send to {name}", { name: c.name })}>↑ {n.peakSent ? speed(n.peakSent) : "—"}</span><span class="sep">·</span><span title={t("Fastest from {name}", { name: c.name })}>↓ {n.peakReceived ? speed(n.peakReceived) : "—"}</span>
             </dd>
-            <dt>Average</dt>
+            <dt>{t("Average")}</dt>
             <dd class="mono">
-              <span title="Average while sending to {c.name}">↑ {n.avgSent ? speed(n.avgSent) : "—"}</span><span class="sep">·</span><span title="Average while receiving from {c.name}">↓ {n.avgReceived ? speed(n.avgReceived) : "—"}</span>
+              <span title={t("Average while sending to {name}", { name: c.name })}>↑ {n.avgSent ? speed(n.avgSent) : "—"}</span><span class="sep">·</span><span title={t("Average while receiving from {name}", { name: c.name })}>↓ {n.avgReceived ? speed(n.avgReceived) : "—"}</span>
             </dd>
           </dl>
         {:else}
-          <p class="none">Speeds show up after your first transfer together.</p>
+          <p class="none">{t("Speeds show up after your first transfer together.")}</p>
         {/if}
         {#if share}
-          <div class="share" role="img" aria-label={share.map((p) => `${p.label} ${p.pct}%`).join(", ")}>
+          <div class="share" role="img" aria-label={share.map((p) => t("{label} {pct}%", { label: p.label, pct: p.pct })).join(", ")}>
             {#each share as p (p.key)}
-              {#if p.bytes > 0}<i class={p.key} style="flex: {p.bytes}" title="{p.tip}: {bytes(p.bytes)}"></i>{/if}
+              {#if p.bytes > 0}<i class={p.key} style="flex: {p.bytes}" title={t("{tip}: {size}", { tip: p.tip, size: bytes(p.bytes) })}></i>{/if}
             {/each}
           </div>
-          <div class="sharetext" class:three={share.length > 2}>{#each share as p (p.key)}<span><i class={p.key}></i>{p.label} {p.pct}%</span>{/each}</div>
+          <div class="sharetext" class:three={share.length > 2}>{#each share as p (p.key)}<span><i class={p.key}></i>{t("{label} {pct}%", { label: p.label, pct: p.pct })}</span>{/each}</div>
         {/if}
       </section>
 
       <section>
-        <div class="label">About them</div>
+        <div class="label">{t("About them")}</div>
         <dl>
-          <dt>Pako ID</dt>
+          <dt>{t("Pako ID")}</dt>
           <dd class="idline">
             <span class="mono" title={c.id}>{c.id.slice(0, 6)}…{c.id.slice(-6)}</span>
-            <button class="icon-btn sm" aria-label="Copy {c.name}'s Pako ID" title="Copy" onclick={copyId}><Icon name="copy" size={12} /></button>
+            <button class="icon-btn sm" aria-label={t("Copy {name}'s Pako ID", { name: c.name })} title={t("Copy")} onclick={copyId}><Icon name="copy" size={12} /></button>
           </dd>
-          <dt>Their name</dt>
-          <dd title="The name they chose for themselves">{c.theirName ?? "Not shared"}</dd>
-          <dt>Tags</dt>
+          <dt>{t("Their name")}</dt>
+          <dd title={t("The name they chose for themselves")}>{c.theirName ?? t("Not shared")}</dd>
+          <dt>{t("Tags")}</dt>
           <dd>
             <button class="linkish" onclick={ontags}>
               {#if c.tags?.length}
-                {#each c.tags as t, i (i)}<span class="chip">{t}</span>{/each}
+                {#each c.tags as tag, i (i)}<span class="chip">{tag}</span>{/each}
               {:else}
-                Add tags
+                {t("Add tags")}
               {/if}
             </button>
           </dd>
-          <dt>Favourite</dt>
+          <dt>{t("Favourite")}</dt>
           <dd>
-            <button class="icon-btn sm star" class:on={c.favourite} role="switch" aria-checked={c.favourite} aria-label="Favourite" title={c.favourite ? "Remove from favourites" : "Add to favourites"} onclick={() => app.run(() => api.directSetFavourite(c.id, !c.favourite))}>
+            <button class="icon-btn sm star" class:on={c.favourite} role="switch" aria-checked={c.favourite} aria-label={t("Favourite")} title={c.favourite ? t("Remove from favourites") : t("Add to favourites")} onclick={() => app.run(() => api.directSetFavourite(c.id, !c.favourite))}>
               <Icon name="star" size={14} />
             </button>
           </dd>
-          <dt>Added</dt>
+          <dt>{t("Added")}</dt>
           <dd>{added}</dd>
         </dl>
         <div class="xrow">
-          <span class="xt">Mute<span class="xsub">No pop-ups or sounds from them</span></span>
-          <button class="switch" class:on={c.muted} role="switch" aria-checked={!!c.muted} aria-label="Mute" onclick={() => app.run(() => api.directSetMuted(c.id, !c.muted))}></button>
+          <span class="xt">{t("Mute")}<span class="xsub">{t("No pop-ups or sounds from them")}</span></span>
+          <button class="switch" class:on={c.muted} role="switch" aria-checked={!!c.muted} aria-label={t("Mute")} onclick={() => app.run(() => api.directSetMuted(c.id, !c.muted))}></button>
         </div>
         <div class="xrow" data-tour="direct-trust">
-          <span class="xt">Can send to me without asking</span>
-          <button class="switch" class:on={c.autoAccept} role="switch" aria-checked={c.autoAccept} aria-label="Can send to me without asking" onclick={() => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept }))}></button>
+          <span class="xt">{t("Can send to me without asking")}</span>
+          <button class="switch" class:on={c.autoAccept} role="switch" aria-checked={c.autoAccept} aria-label={t("Can send to me without asking")} onclick={() => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept }))}></button>
         </div>
         <div class="folder">
-          <span class="k">Their files go to</span>
+          <span class="k">{t("Their files go to")}</span>
           <div class="fline">
             <span class="path" title={c.folder}>{c.folder}</span>
-            <button class="btn small" onclick={onfolder}>Change…</button>
+            <button class="btn small" onclick={onfolder}>{t("Change…")}</button>
           </div>
         </div>
       </section>

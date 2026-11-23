@@ -57,6 +57,8 @@
   $effect(() => {
     void value;
     void options.length;
+    // New words (a language switch) give the buttons new widths: the highlight follows them.
+    void options.map((o) => o.label).join("|");
     // Only the picked value and the options re-measure: reading `thumb` here as well would loop.
     untrack(() => {
       measure();

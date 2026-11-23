@@ -82,7 +82,9 @@ const FILE_EXTS: &[&str] = &[
 ];
 
 /// Shown on the Found row while the captcha waits for the user.
-pub const WAITING_FOR_YOU: &str = "Waiting for you: solve the check in the Pako window";
+fn waiting_for_you() -> String {
+    tr!("Waiting for you: solve the check in the Pako window", "En attente de vous : résolvez la vérification dans la fenêtre de Pako")
+}
 
 pub fn init(app: &AppHandle) {
     let _ = APP.set(app.clone());
@@ -137,13 +139,17 @@ enum Msg {
 }
 
 /// Shown on the Found row once the whole page is handed to the user.
-pub const WAITING_PAGE: &str = "Waiting for you: finish opening the link in the Pako window";
+fn waiting_page() -> String {
+    tr!("Waiting for you: finish opening the link in the Pako window", "En attente de vous : finissez d’ouvrir le lien dans la fenêtre de Pako")
+}
 
 /// The gate being worked on (one at a time): its Found row, for "Show page".
 static CURRENT: std::sync::Mutex<Option<(String, mpsc::UnboundedSender<Msg>)>> = std::sync::Mutex::new(None);
 
 /// Shown on a link waiting while another one is being opened.
-const WAITING_TURN: &str = "Waiting for the link before it";
+fn waiting_turn() -> String {
+    tr!("Waiting for the link before it", "En attente du lien précédent")
+}
 
 /// Without visible progress for this long, Pako stops pressing buttons and shows you the page.
 const NO_PROGRESS: Duration = Duration::from_secs(40);
@@ -157,20 +163,20 @@ const YOUR_TURN: Duration = Duration::from_secs(15 * 60);
 /// Pako has no window yet.
 #[cfg(test)]
 pub fn open(engine: Arc<Engine>, id: String, _link: String) {
-    engine.gate_failed(&id, "Link pages can't be opened here.");
+    engine.gate_failed(&id, &tr!("Link pages can't be opened here.", "Les pages de liens ne peuvent pas être ouvertes ici."));
 }
 
 #[cfg(not(test))]
 pub fn open(engine: Arc<Engine>, id: String, link: String) {
     let Some(app) = APP.get().cloned() else {
-        engine.gate_failed(&id, "Link pages can't be opened here.");
+        engine.gate_failed(&id, &tr!("Link pages can't be opened here.", "Les pages de liens ne peuvent pas être ouvertes ici."));
         return;
     };
     tauri::async_runtime::spawn(async move {
         let _turn = match ONE_AT_A_TIME.try_acquire() {
             Ok(t) => t,
             Err(_) => {
-                engine.gate_status(&id, Some(WAITING_TURN));
+                engine.gate_status(&id, Some(&waiting_turn()));
                 let Ok(t) = ONE_AT_A_TIME.acquire().await else { return };
                 engine.gate_status(&id, None);
                 t
@@ -183,7 +189,7 @@ pub fn open(engine: Arc<Engine>, id: String, link: String) {
         let result = run(&app, &engine, &id, &link).await;
         *CURRENT.lock().unwrap() = None;
         // Its "Pako needs you" (if it asked) is settled: the pop-up leaves, the bell says how it ended.
-        crate::notices::resolve(&app, "needs-you", &id, if result.is_ok() { "Done" } else { "Not finished" });
+        crate::notices::resolve(&app, "needs-you", &id, &if result.is_ok() { tr!("Done", "Terminé") } else { tr!("Not finished", "Pas terminé") });
         match result {
             Ok(file) => engine.gate_done(&id, file),
             Err(msg) => engine.gate_failed(&id, &msg),
@@ -194,12 +200,12 @@ pub fn open(engine: Arc<Engine>, id: String, link: String) {
 /// Works through a gate link for My devices › Links (no Links row): the real file's link, or
 /// why not. Waits its turn like the others; a page that needs you shows the same way.
 pub async fn resolve(engine: Arc<Engine>, link: String) -> Result<String, String> {
-    let app = APP.get().cloned().ok_or("Link pages can't be opened here.")?;
-    let _turn = ONE_AT_A_TIME.acquire().await.map_err(|_| "Pako is closing.".to_string())?;
+    let app = APP.get().cloned().ok_or_else(|| tr!("Link pages can't be opened here.", "Les pages de liens ne peuvent pas être ouvertes ici."))?;
+    let _turn = ONE_AT_A_TIME.acquire().await.map_err(|_| tr!("Pako is closing.", "Pako se ferme."))?;
     let id = format!("pick-{}", uuid::Uuid::new_v4().simple());
     let result = run(&app, &engine, &id, &link).await;
     *CURRENT.lock().unwrap() = None;
-    crate::notices::resolve(&app, "needs-you", &id, if result.is_ok() { "Done" } else { "Not finished" });
+    crate::notices::resolve(&app, "needs-you", &id, &if result.is_ok() { tr!("Done", "Terminé") } else { tr!("Not finished", "Pas terminé") });
     result
 }
 
@@ -247,7 +253,7 @@ fn to_middle(win: &tauri::WebviewWindow) {
 }
 
 async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Result<String, String> {
-    let url: tauri::Url = link.parse().map_err(|_| "Not a web link.".to_string())?;
+    let url: tauri::Url = link.parse().map_err(|_| tr!("Not a web link.", "Ce n’est pas un lien web."))?;
     let gate_host = url.host_str().unwrap_or_default().to_string();
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     *CURRENT.lock().unwrap() = Some((id.to_string(), tx.clone()));
@@ -283,7 +289,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
     let load_manual = manual.clone();
     let dl_tx = tx.clone();
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
-        .title("Pako · Opening link")
+        .title(tr!("Pako · Opening link", "Pako · Ouverture du lien"))
         .inner_size(520.0, 640.0)
         .min_inner_size(360.0, 420.0)
         // No maximize button: with it, a window manager (PowerToys FancyZones) snaps even a popup
@@ -367,7 +373,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
             false
         })
         .build()
-        .map_err(|e| format!("Couldn't open the link page: {e}"))?;
+        .map_err(|e| tr!("Couldn't open the link page: {e}", "Impossible d’ouvrir la page du lien : {e}"))?;
     // Like Download with Pako: FancyZones never snaps it into a zone (see to_middle too).
     crate::tray::keep_dialog_out_of_zones(&win);
     let close_tx = tx.clone();
@@ -380,14 +386,23 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
     let mut mode = Mode::Auto;
     // Time Pako has spent pressing buttons by itself (restarts after each check and on each new gate).
     let mut started = tokio::time::Instant::now();
-    let page_title = format!("Pako · Finish opening this link · {gate_host}");
+    let page_title = tr!("Pako · Finish opening this link · {gate_host}", "Pako · Finissez d’ouvrir ce lien · {gate_host}");
     // A site only a person can click through: yours from the start.
     if is_hand_over(&gate_host) {
         mode = Mode::Manual;
         manual.store(true, Ordering::Relaxed);
         show_page(&win, &page_title);
-        engine.gate_status(id, Some(WAITING_PAGE));
-        engine.notify_row(id, "needs-you", "Pako needs you", &format!("{gate_host} only lets a person click through: finish it in the Pako window."), crate::notices::Go::item("found", id));
+        engine.gate_status(id, Some(&waiting_page()));
+        engine.notify_row(
+            id,
+            "needs-you",
+            &tr!("Pako needs you", "Pako a besoin de vous"),
+            &tr!(
+                "{gate_host} only lets a person click through: finish it in the Pako window.",
+                "{gate_host} ne laisse passer qu’une personne : terminez dans la fenêtre de Pako."
+            ),
+            crate::notices::Go::item("found", id),
+        );
     }
 
     let result = loop {
@@ -401,15 +416,27 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                 mode = Mode::Manual;
                     manual.store(true, Ordering::Relaxed);
                 show_page(&win, &page_title);
-                engine.gate_status(id, Some(WAITING_PAGE));
-                engine.notify_row(id, "needs-you", "Pako needs you", &format!("Finish opening a link from {gate_host} in the Pako window."), crate::notices::Go::item("found", id));
+                engine.gate_status(id, Some(&waiting_page()));
+                engine.notify_row(
+                    id,
+                    "needs-you",
+                    &tr!("Pako needs you", "Pako a besoin de vous"),
+                    &tr!("Finish opening a link from {gate_host} in the Pako window.", "Finissez d’ouvrir un lien de {gate_host} dans la fenêtre de Pako."),
+                    crate::notices::Go::item("found", id),
+                );
             }
             Err(_) => {
                 let at = last_host.lock().unwrap().clone();
-                break Err(format!("The link page wasn't finished (stopped at {at}). Paste the link again to retry."));
+                break Err(tr!(
+                    "The link page wasn't finished (stopped at {at}). Paste the link again to retry.",
+                    "La page du lien n’a pas été terminée (arrêtée sur {at}). Collez à nouveau le lien pour réessayer."
+                ));
             }
             Ok(None) | Ok(Some(Msg::Closed)) => {
-                break Err("The link page was closed before the file link was found. Paste it again to retry.".into());
+                break Err(tr!(
+                    "The link page was closed before the file link was found. Paste it again to retry.",
+                    "La page du lien a été fermée avant que le lien du fichier soit trouvé. Collez-le à nouveau pour réessayer."
+                ));
             }
             Ok(Some(Msg::Final(file))) => break Ok(file),
             Ok(Some(Msg::Step)) => {
@@ -417,8 +444,14 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     mode = Mode::Manual;
                     manual.store(true, Ordering::Relaxed);
                     show_page(&win, &page_title);
-                    engine.gate_status(id, Some(WAITING_PAGE));
-                    engine.notify_row(id, "needs-you", "Pako needs you", &format!("Finish opening a link from {gate_host} in the Pako window."), crate::notices::Go::item("found", id));
+                    engine.gate_status(id, Some(&waiting_page()));
+                    engine.notify_row(
+                    id,
+                    "needs-you",
+                    &tr!("Pako needs you", "Pako a besoin de vous"),
+                    &tr!("Finish opening a link from {gate_host} in the Pako window.", "Finissez d’ouvrir un lien de {gate_host} dans la fenêtre de Pako."),
+                    crate::notices::Go::item("found", id),
+                );
                 }
             }
             Ok(Some(Msg::Show)) => match mode {
@@ -431,7 +464,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     if mode == Mode::Auto {
                         mode = Mode::Manual;
                         manual.store(true, Ordering::Relaxed);
-                        engine.gate_status(id, Some(WAITING_PAGE));
+                        engine.gate_status(id, Some(&waiting_page()));
                     }
                     show_page(&win, &page_title);
                 }
@@ -443,8 +476,14 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     mode = Mode::Manual;
                     manual.store(true, Ordering::Relaxed);
                     show_page(&win, &page_title);
-                    engine.gate_status(id, Some(WAITING_PAGE));
-                    engine.notify_row(id, "needs-you", "Pako needs you", &format!("{host} only lets a person click through: finish it in the Pako window."), crate::notices::Go::item("found", id));
+                    engine.gate_status(id, Some(&waiting_page()));
+                    engine.notify_row(
+                        id,
+                        "needs-you",
+                        &tr!("Pako needs you", "Pako a besoin de vous"),
+                        &tr!("{host} only lets a person click through: finish it in the Pako window.", "{host} ne laisse passer qu’une personne : terminez dans la fenêtre de Pako."),
+                        crate::notices::Go::item("found", id),
+                    );
                 }
             }
             Ok(Some(Msg::Solved)) => {
@@ -453,7 +492,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     mode = Mode::Auto;
                     let _ = win.hide();
                     engine.gate_status(id, None);
-                    crate::notices::resolve(app, "needs-you", id, "Solved");
+                    crate::notices::resolve(app, "needs-you", id, &tr!("Solved", "Résolu"));
                 }
             }
             Ok(Some(Msg::Captcha)) => {
@@ -470,7 +509,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                             let _ = win.destroy();
                             return Ok(file);
                         }
-                        Msg::Closed => return Err("The link page was closed.".into()),
+                        Msg::Closed => return Err(tr!("The link page was closed.", "La page du lien a été fermée.")),
                         _ => {}
                     }
                 }
@@ -478,12 +517,18 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                     continue;
                 }
                 mode = Mode::Captcha;
-                let _ = win.set_title(&format!("Pako · Solve this to continue · {gate_host}"));
+                let _ = win.set_title(&tr!("Pako · Solve this to continue · {gate_host}", "Pako · Résolvez ceci pour continuer · {gate_host}"));
                 to_middle(&win);
                 let _ = win.show();
                 let _ = win.set_focus();
-                engine.gate_status(id, Some(WAITING_FOR_YOU));
-                engine.notify_row(id, "needs-you", "Pako needs you", &format!("Solve a quick check to open a link from {gate_host}."), crate::notices::Go::item("found", id));
+                engine.gate_status(id, Some(&waiting_for_you()));
+                engine.notify_row(
+                    id,
+                    "needs-you",
+                    &tr!("Pako needs you", "Pako a besoin de vous"),
+                    &tr!("Solve a quick check to open a link from {gate_host}.", "Résolvez une petite vérification pour ouvrir un lien de {gate_host}."),
+                    crate::notices::Go::item("found", id),
+                );
             }
         }
     };

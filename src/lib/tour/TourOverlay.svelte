@@ -11,6 +11,7 @@
   import { app, type View } from "../state.svelte";
   import { fadeIn, pop, reduced } from "../motion";
   import { tour, findTarget, targetsOf, type Step } from "./tour.svelte";
+  import { t } from "../i18n.svelte";
 
   let {
     settingsOpen,
@@ -528,7 +529,7 @@
         class:wait={seeking}
         role="dialog"
         aria-modal="true"
-        aria-label="Tutorial: {s.title}"
+        aria-label={t("Tutorial: {title}", { title: t(s.title) })}
         bind:this={bubble}
         bind:offsetWidth={bw}
         bind:offsetHeight={bh}
@@ -537,18 +538,18 @@
         <div class="inner" in:pop={{ duration: 260, from: 0.97, y: 6 }}>
           {#key s}
             <div class="content" in:fadeIn={{ duration: 180 }}>
-              <div class="count mono">{shown.n} of {shown.total}</div>
-              <h3>{s.title}</h3>
-              <p>{s.text}</p>
+              <div class="count mono">{t("{n} of {total}", { n: shown.n, total: shown.total })}</div>
+              <h3>{t(s.title)}</h3>
+              <p>{t(s.text)}</p>
             </div>
           {/key}
           <div class="bar">
-            <button class="btn ghost small skip" onclick={() => tour.stop()} title="Stop the tutorial (Esc)">{last ? "Close" : "Skip"}</button>
+            <button class="btn ghost small skip" onclick={() => tour.stop()} title={t("Stop the tutorial (Esc)")}>{last ? t("Close") : t("Skip")}</button>
             <span class="grow"></span>
             {#if shown.n > 1}
-              <button class="btn small" onclick={back} title="Back (←)">Back</button>
+              <button class="btn small" onclick={back} title={t("Back (←)")}>{t("Back")}</button>
             {/if}
-            <button class="btn primary small next" onclick={next} title={last ? "Finish (Enter)" : "Next (→)"}>{last ? "Done" : "Next"}</button>
+            <button class="btn primary small next" onclick={next} title={last ? t("Finish (Enter)") : t("Next (→)")}>{last ? t("Done") : t("Next")}</button>
           </div>
         </div>
       </div>

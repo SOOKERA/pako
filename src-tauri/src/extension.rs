@@ -72,8 +72,9 @@ pub struct Request {
     /// (that button's quality menu opened: Pako starts reading the video, no quality),
     /// "videoPrepareCancel" (that menu closed without a pick: the read stops), "stream" (a video
     /// caught playing on the page: see `crate::stream`), "record" (Record this video: `record`)
-    /// or "ping". "videoPrepare", "videoPrepareCancel", "stream" and "record" never come from
-    /// Pako Light.
+    /// "ping", or "language" (Pako's language: answered by the native host alone, like "ping",
+    /// with `Reply::lang`). "videoPrepare", "videoPrepareCancel", "stream" and "record" never
+    /// come from Pako Light.
     pub kind: String,
     pub urls: Vec<String>,
     pub referrer: String,
@@ -267,6 +268,11 @@ pub struct Reply {
     /// never asks (they would only answer "Unknown request.").
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub prepares: bool,
+    /// Pako's language ("en" or "fr", as saved in its settings), added by the native host to
+    /// every answer: the extension speaks it too (its menus, its toolbar window, the pill).
+    /// Older Pakos don't say it: the extension then speaks English.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
 }
 
 /// Browsers that ask before their extensions see a download (by `seen::browser_id`).
@@ -286,7 +292,7 @@ impl Reply {
         Reply::default()
     }
     pub fn not_ready() -> Self {
-        Reply { ok: false, error: Some("Pako is still starting. Try again in a moment.".into()), retry: true, ..Default::default() }
+        Reply { ok: false, error: Some(crate::tr!("Pako is still starting. Try again in a moment.", "Pako démarre encore. Réessayez dans un instant.")), retry: true, ..Default::default() }
     }
     /// Taken, still being checked: the result comes with a "held" request (see `HELD`).
     pub fn held(token: &str) -> Self {
@@ -331,7 +337,7 @@ fn light_skips(link: &str) -> bool {
 /// (`light`). Links to those sites are left out.
 pub fn light_rules(mut r: Request) -> Result<Request, String> {
     match r.kind.as_str() {
-        "ping" => return Ok(r),
+        "ping" | "language" => return Ok(r),
         "held" => {
             r.light = true;
             return Ok(r);
@@ -371,6 +377,9 @@ fn web_link(u: &str) -> Option<String> {
 pub fn validate(mut r: Request) -> Result<Request, String> {
     match r.kind.as_str() {
         "ping" => return Ok(Request { kind: "ping".into(), ..Default::default() }),
+        // (`private`: the extension asks it so, so that an older Pako, which doesn't know it,
+        // notes nothing about it.)
+        "language" => return Ok(Request { kind: "language".into(), private: r.private, ..Default::default() }),
         "held" => return validate_held(r),
         "follow" => return validate_follow(r),
         "video" => return validate_video(r),
@@ -379,7 +388,7 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
         "stream" => return crate::stream::validate_stream(r),
         "record" => return validate_record(r),
         "download" | "links" => {}
-        _ => return Err("Unknown request.".into()),
+        _ => return Err(unknown_request()),
     }
     r.quality = None;
     // Pako works with the link as the URL parser read it, not the raw text it came in.
@@ -387,7 +396,7 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
     r.urls.dedup();
     r.urls.truncate(MAX_URLS);
     if r.urls.is_empty() {
-        return Err("Pako only takes http and https links.".into());
+        return Err(only_web_links());
     }
     r.referrer = if r.referrer.len() <= MAX_URL_LEN { web_link(&r.referrer).unwrap_or_default() } else { String::new() };
     r.referrer = referrer_for(&r.referrer, &r.urls);
@@ -415,6 +424,15 @@ pub fn validate(mut r: Request) -> Result<Request, String> {
     // Only a plain media type ("type/subtype", nothing after it).
     r.mime = if r.takeover { clean_mime(&r.mime) } else { String::new() };
     Ok(r)
+}
+
+/// "Unknown request." in Pako's language (the extension shows Pako's words as they come).
+pub(crate) fn unknown_request() -> String {
+    crate::tr!("Unknown request.", "Demande inconnue.")
+}
+
+fn only_web_links() -> String {
+    crate::tr!("Pako only takes http and https links.", "Pako ne prend que les liens http et https.")
 }
 
 /// The page a download came from, as a browser sends it to the file's server (its default rule,
@@ -468,28 +486,30 @@ fn is_html_mime(m: &str) -> bool {
 pub fn same_as_browser(r: &Request, size: Option<u64>, html: Option<bool>) -> Result<(), String> {
     if let Some(size) = size.filter(|_| r.total_bytes > 0) {
         if size != r.total_bytes {
-            return Err(format!(
+            return Err(crate::tr!(
                 "the server gave Pako a different file ({} bytes, the browser's has {})",
-                size, r.total_bytes
+                "le serveur a donné un autre fichier à Pako ({} octets, celui du navigateur en a {})",
+                size,
+                r.total_bytes
             ));
         }
     }
     if html == Some(true) && !is_html_mime(&r.mime) {
-        return Err("the server gave Pako a web page instead of the file".into());
+        return Err(crate::tr!("the server gave Pako a web page instead of the file", "le serveur a donné une page web à Pako au lieu du fichier"));
     }
     Ok(())
 }
 
 /// "follow": one web link (the file's), and the browser's report in sensible bounds.
 fn validate_follow(r: Request) -> Result<Request, String> {
-    let Some(mut f) = r.follow else { return Err("Unknown request.".into()) };
-    let url = r.urls.first().and_then(|u| web_link(u)).ok_or("Pako only takes http and https links.")?;
+    let Some(mut f) = r.follow else { return Err(unknown_request()) };
+    let url = r.urls.first().and_then(|u| web_link(u)).ok_or_else(only_web_links)?;
     if !matches!(f.state.as_str(), "in_progress" | "paused" | "complete" | "interrupted") {
-        return Err("Unknown request.".into());
+        return Err(unknown_request());
     }
     let token_ok = f.pako.len() <= 64 && f.pako.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     if !token_ok {
-        return Err("Unknown request.".into());
+        return Err(unknown_request());
     }
     if f.path.len() > 4096 || f.path.chars().any(|c| c.is_control()) {
         f.path.clear();
@@ -503,7 +523,7 @@ fn validate_follow(r: Request) -> Result<Request, String> {
 fn validate_held(r: Request) -> Result<Request, String> {
     let ok = !r.held.is_empty() && r.held.len() <= 64 && r.held.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     if !ok {
-        return Err("Unknown request.".into());
+        return Err(unknown_request());
     }
     Ok(Request { kind: "held".into(), held: r.held, private: r.private, ..Default::default() })
 }
@@ -513,7 +533,7 @@ fn validate_held(r: Request) -> Result<Request, String> {
 fn validate_video(r: Request) -> Result<Request, String> {
     let quality = r.quality;
     let (url, site_cookies, private) = one_video(r)?;
-    let quality = quality.filter(|q| VIDEO_QUALITIES.contains(q)).ok_or("Unknown video quality.")?;
+    let quality = quality.filter(|q| VIDEO_QUALITIES.contains(q)).ok_or_else(|| crate::tr!("Unknown video quality.", "Qualité vidéo inconnue."))?;
     Ok(Request { kind: "video".into(), urls: vec![url], quality: Some(quality), site_cookies, private, ..Default::default() })
 }
 
@@ -539,10 +559,10 @@ fn read_ahead(kind: &str) -> bool {
 /// Exactly one link to a video site Pako knows, with only that site's cookies (none at all from
 /// a private window: no cookie file for yt-dlp, no trace in Pako).
 fn one_video(r: Request) -> Result<(String, Vec<SiteCookie>, bool), String> {
-    let [url] = r.urls.as_slice() else { return Err("Send one video at a time.".into()) };
-    let url = (url.len() <= MAX_URL_LEN).then(|| web_link(url)).flatten().ok_or("Pako only takes http and https links.")?;
+    let [url] = r.urls.as_slice() else { return Err(crate::tr!("Send one video at a time.", "Envoyez une vidéo à la fois.")) };
+    let url = (url.len() <= MAX_URL_LEN).then(|| web_link(url)).flatten().ok_or_else(only_web_links)?;
     if !crate::video::is_video_site(&url) {
-        return Err("Pako can't download videos from this page.".into());
+        return Err(crate::tr!("Pako can't download videos from this page.", "Pako ne peut pas télécharger les vidéos de cette page."));
     }
     let site_cookies = if r.private { Vec::new() } else { clean_site_cookies(&url, r.site_cookies, unix_now()) };
     Ok((url, site_cookies, r.private))
@@ -555,7 +575,7 @@ fn validate_record(r: Request) -> Result<Request, String> {
     if r.private {
         return Err(NO_PRIVATE_RECORDING.into());
     }
-    let rec = r.record.ok_or("Unknown request.")?;
+    let rec = r.record.ok_or_else(unknown_request)?;
     crate::stream::validate_record(rec.clone(), r.light)?;
     Ok(Request { kind: "record".into(), record: Some(rec), ..Default::default() })
 }
@@ -627,21 +647,45 @@ fn pipe_message(r: &Request) -> Vec<u8> {
 
 /// Reads and checks a request that came through the pipe (checked again on Pako's side).
 fn parse_pipe_message(bytes: &[u8]) -> Result<Request, String> {
-    let m: PipeMessage = serde_json::from_slice(bytes).map_err(|_| "Unreadable request.".to_string())?;
+    let m: PipeMessage = serde_json::from_slice(bytes).map_err(|_| unreadable_request())?;
     if m.pako != PIPE_VERSION {
-        return Err("This Pako and its browser helper don't match. Restart Pako.".into());
+        return Err(crate::tr!(
+            "This Pako and its browser helper don't match. Restart Pako.",
+            "Ce Pako et son assistant de navigateur ne vont pas ensemble. Redémarrez Pako."
+        ));
     }
     let r = validate(m.request)?;
     if m.light { light_rules(r) } else { Ok(r) }
 }
 
+fn unreadable_request() -> String {
+    crate::tr!("Unreadable request.", "Demande illisible.")
+}
+
 // ---------- the native host (runs in the short-lived Pako.exe the browser starts) ----------
+
+/// Pako's language as its settings say ("en" or "fr"), for the native host: a separate,
+/// short-lived Pako.exe with no engine, so it reads the saved settings itself (only that one
+/// value). No settings, or unreadable ones: English.
+fn saved_language() -> &'static str {
+    language_in(&std::fs::read(crate::paths::data_dir().join("settings.json")).unwrap_or_default())
+}
+
+fn language_in(settings: &[u8]) -> &'static str {
+    let v: Option<serde_json::Value> = serde_json::from_slice(settings).ok();
+    crate::i18n::choice(v.as_ref().and_then(|v| v.get("language")).and_then(|l| l.as_str()).unwrap_or("en"))
+}
 
 /// The native host: answers the browser until it closes the line. `args`: the browser's launch
 /// arguments (they say which extension asked).
 pub fn run_host(args: &[String]) -> i32 {
     let started = Instant::now();
     let light = is_light_launch(args);
+    // Pako's language: its words to the browser are in it, and every answer says it (the
+    // extension speaks it too). Read once: the browser starts a helper for each message (or one
+    // line for a recording).
+    let lang = saved_language();
+    crate::i18n::apply(lang);
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     // Which browser this is, for "Connected" in Settings (noted after each answer is sent).
@@ -654,13 +698,16 @@ pub fn run_host(args: &[String]) -> i32 {
         let msg = match read_host_message(&mut input) {
             Ok(HostMessage::Request(m)) => Ok(m),
             // Too big to take: said to the browser, and the line stays open.
-            Ok(HostMessage::TooBig) => Err("Too many links at once. Pako takes up to about 1 MB of links per request.".to_string()),
+            Ok(HostMessage::TooBig) => Err(crate::tr!(
+                "Too many links at once. Pako takes up to about 1 MB of links per request.",
+                "Trop de liens à la fois. Pako prend environ 1 Mo de liens au plus par demande."
+            )),
             Ok(HostMessage::Closed) => return 0,
             Err(_) => return 1,
         };
         let read = Instant::now();
         let version = msg.as_deref().ok().and_then(crate::seen::version_in);
-        let parsed = msg.and_then(|m| serde_json::from_slice::<Request>(&m).map_err(|_| "Unreadable request.".to_string()));
+        let parsed = msg.and_then(|m| serde_json::from_slice::<Request>(&m).map_err(|_| unreadable_request()));
         // A private window's: none of its problems in the problem list. Nor a read ahead's or
         // its cancel's (they say nothing; the send that follows says what went wrong), also
         // when its checks fail.
@@ -668,8 +715,9 @@ pub fn run_host(args: &[String]) -> i32 {
         let checked = parsed.and_then(validate);
         let private = checked.as_ref().is_ok_and(|r| r.private);
         let mut reply = match checked.and_then(|r| if light { light_rules(r) } else { Ok(r) }) {
-            // "Connected": the browser reached this helper (Pako itself starts when needed).
-            Ok(r) if r.kind == "ping" => Reply::ok(),
+            // "Connected": the browser reached this helper (Pako itself starts when needed). Its
+            // language: said below, as in every answer.
+            Ok(r) if r.kind == "ping" || r.kind == "language" => Reply::ok(),
             Ok(r) => hand_over(&r),
             Err(e) => Reply::error(e),
         };
@@ -678,6 +726,7 @@ pub fn run_host(args: &[String]) -> i32 {
         }
         // This Pako answers takeovers at once (see `Request::hold`).
         reply.holds = true;
+        reply.lang = Some(lang.into());
         if !light {
             reply.asks_first = asks_first(seen.browser());
             reply.prepares = true;
@@ -768,22 +817,25 @@ fn hand_over(r: &Request) -> Reply {
                         return reply;
                     }
 
-                    Err(e) => return Reply::error(format!("Pako didn't answer ({e}). The browser keeps the download.")),
+                    Err(e) => return Reply::error(crate::tr!("Pako didn't answer ({e}). The browser keeps the download.", "Pako n’a pas répondu ({e}). Le navigateur garde le téléchargement.")),
                 }
             }
             // The result of a takeover only the running Pako knows: a Pako started now can't
             // tell it (the browser gets its download back).
             Err(Connect::NotRunning) if r.kind == "held" => {
-                return Reply::error("Pako closed before it finished checking this download.");
+                return Reply::error(crate::tr!(
+                    "Pako closed before it finished checking this download.",
+                    "Pako s’est fermé avant d’avoir fini de vérifier ce téléchargement."
+                ));
             }
             // A browser download's progress never starts Pako (you may have closed it on
             // purpose): the extension keeps it and reports again once Pako runs.
             Err(Connect::NotRunning) if r.kind == "follow" => {
-                return Reply::error("Pako isn't running.");
+                return Reply::error(not_running());
             }
             // Nor does a quality menu opening or closing (the pick starts Pako, as before).
             Err(Connect::NotRunning) if read_ahead(&r.kind) => {
-                return Reply::error("Pako isn't running.");
+                return Reply::error(not_running());
             }
             Err(Connect::NotRunning) if !started => {
                 if let Err(e) = start_pako() {
@@ -792,14 +844,23 @@ fn hand_over(r: &Request) -> Reply {
                 started = true;
             }
             Err(Connect::NotRunning | Connect::Busy) => {}
-            Err(Connect::Stranger) => return Reply::error("Something other than your Pako answered, so nothing was sent."),
-            Err(Connect::Failed(e)) => return Reply::error(format!("Couldn't reach Pako: {e}")),
+            Err(Connect::Stranger) => {
+                return Reply::error(crate::tr!(
+                    "Something other than your Pako answered, so nothing was sent.",
+                    "Autre chose que votre Pako a répondu, donc rien n’a été envoyé."
+                ));
+            }
+            Err(Connect::Failed(e)) => return Reply::error(crate::tr!("Couldn't reach Pako: {e}", "Impossible de joindre Pako  : {e}")),
         }
         if Instant::now() >= deadline {
-            return Reply::error("Pako didn't start in time. Open Pako, then try again.");
+            return Reply::error(crate::tr!("Pako didn't start in time. Open Pako, then try again.", "Pako n’a pas démarré à temps. Ouvrez Pako, puis réessayez."));
         }
         std::thread::sleep(poll_wait(begun.elapsed()));
     }
+}
+
+fn not_running() -> String {
+    crate::tr!("Pako isn't running.", "Pako n’est pas lancé.")
 }
 
 /// How long the host waits before looking for Pako's pipe again: often in the first second
@@ -823,7 +884,7 @@ pub fn timing(line: &str) {
 
 fn connect() -> Result<std::fs::File, Connect> {
     const ERROR_PIPE_BUSY: i32 = 231;
-    let name = pipe_name().ok_or_else(|| Connect::Failed("can't tell who is signed in to Windows".into()))?;
+    let name = pipe_name().ok_or_else(|| Connect::Failed(crate::tr!("can't tell who is signed in to Windows", "impossible de savoir qui est connecté à Windows")))?;
     let pipe = match std::fs::OpenOptions::new().read(true).write(true).open(&name) {
         Ok(p) => p,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Connect::NotRunning),
@@ -856,7 +917,7 @@ fn exchange(mut pipe: std::fs::File, r: &Request) -> Result<Reply, String> {
 fn start_pako() -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
-    let exe = std::env::current_exe().map_err(|e| format!("Couldn't find Pako: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| crate::tr!("Couldn't find Pako: {e}", "Impossible de trouver Pako  : {e}"))?;
     let spawn = |flags: u32| {
         std::process::Command::new(&exe)
             .arg(FROM_BROWSER)
@@ -866,7 +927,7 @@ fn start_pako() -> Result<(), String> {
             .creation_flags(flags)
             .spawn()
     };
-    spawn(CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(0)).map(|_| ()).map_err(|e| format!("Couldn't start Pako: {e}"))
+    spawn(CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(0)).map(|_| ()).map_err(|e| crate::tr!("Couldn't start Pako: {e}", "Impossible de démarrer Pako  : {e}"))
 }
 
 // ---------- the pipe ----------
@@ -1237,7 +1298,10 @@ impl HeldChecks {
             h.tx.subscribe()
         });
         let Some(mut rx) = rx else {
-            return Reply::error("Pako lost track of this download (was it restarted?), so your browser downloads it.");
+            return Reply::error(crate::tr!(
+                "Pako lost track of this download (was it restarted?), so your browser downloads it.",
+                "Pako a perdu la trace de ce téléchargement (a-t-il redémarré ?), alors votre navigateur le télécharge."
+            ));
         };
         let got = match tokio::time::timeout(limit, rx.wait_for(|v| v.is_some())).await {
             Ok(Ok(v)) => v.clone(),
@@ -1523,7 +1587,7 @@ fn reg_set_default(key: &str, value: &str) -> Result<(), String> {
     let r = unsafe {
         RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), std::ptr::null(), REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32)
     };
-    if r == 0 { Ok(()) } else { Err(format!("Windows refused to connect Pako to the browsers (error {r}).")) }
+    if r == 0 { Ok(()) } else { Err(crate::tr!("Windows refused to connect Pako to the browsers (error {r}).", "Windows a refusé de connecter Pako aux navigateurs (erreur {r}).")) }
 }
 
 fn reg_delete(key: &str) {
@@ -1536,6 +1600,7 @@ fn reg_delete(key: &str) {
 // ---------- the extension's files, for loading into a browser ----------
 
 const FILES: &[(&str, &[u8])] = &[
+    ("lang.js", include_bytes!("../../extension/lang.js")),
     ("background.js", include_bytes!("../../extension/background.js")),
     // The licence and its additional terms travel with every copy.
     ("LICENSE", include_bytes!("../../LICENSE")),
@@ -2511,5 +2576,42 @@ mod tests {
         }
         let rec = r#"{"kind":"record","record":{"action":"cancel","session":"0b4e1a2c-1111-4222-8333-944455556666"},"private":true}"#;
         assert_eq!(validate(serde_json::from_str(rec).unwrap()).unwrap_err(), NO_PRIVATE_RECORDING);
+    }
+
+    /// The extension asks Pako's language ("language", answered by the native host alone, also
+    /// for Pako Light); every answer says it; the host reads it from the saved settings.
+    #[test]
+    fn the_extension_learns_pakos_language() {
+        let asked: Request = serde_json::from_str(r#"{"kind":"language","private":true,"urls":["https://e.org/"]}"#).unwrap();
+        let ok = validate(asked).unwrap();
+        assert_eq!((ok.kind.as_str(), ok.private, ok.urls.len()), ("language", true, 0));
+        assert_eq!(light_rules(ok).unwrap().kind, "language");
+        // Only "en" or "fr", from the settings file as Pako writes it (anything else: English).
+        assert_eq!(language_in(br#"{"theme":"dark","language":"fr"}"#), "fr");
+        for other in [&br#"{"language":"en"}"#[..], br#"{"language":"de"}"#, br#"{"language":3}"#, br#"{}"#, b"not json", b""] {
+            assert_eq!(language_in(other), "en", "{}", String::from_utf8_lossy(other));
+        }
+        // Said in the answer only when known (an older Pako never says it: the extension speaks
+        // English then).
+        let mut r = Reply::ok();
+        assert!(!serde_json::to_string(&r).unwrap().contains("lang"));
+        r.lang = Some("fr".into());
+        assert!(serde_json::to_string(&r).unwrap().contains(r#""lang":"fr""#));
+    }
+
+    /// Pako's words to the browser follow its language (the extension shows them as they come).
+    #[test]
+    fn errors_for_the_browser_in_pakos_language() {
+        let bad = || validate(Request { kind: "download".into(), urls: vec!["ftp://x".into()], ..Default::default() }).unwrap_err();
+        crate::i18n::test_french(false);
+        assert_eq!(bad(), "Pako only takes http and https links.");
+        assert_eq!(validate(Request { kind: "rm -rf".into(), ..Default::default() }).unwrap_err(), "Unknown request.");
+        crate::i18n::test_french(true);
+        assert_eq!(bad(), "Pako ne prend que les liens http et https.");
+        assert_eq!(validate(Request { kind: "rm -rf".into(), ..Default::default() }).unwrap_err(), "Demande inconnue.");
+        assert_eq!(Reply::not_ready().error.as_deref(), Some("Pako démarre encore. Réessayez dans un instant."));
+        // Pako Light's own words stay as they are (compared, and said by the extension itself).
+        assert_eq!(light_rules(Request { kind: "video".into(), ..Default::default() }).unwrap_err(), LIGHT_REFUSED);
+        crate::i18n::test_french(false);
     }
 }

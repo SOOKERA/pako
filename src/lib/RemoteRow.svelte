@@ -14,6 +14,7 @@
   import ContextMenu from "./ContextMenu.svelte";
   import type { MenuItem } from "./menu";
   import { rowSlide } from "./motion";
+  import { t, type Key } from "./i18n.svelte";
 
   let { device: x, item: it, ongot, compact = false }: { device: Device; item: RemoteItem; ongot?: () => void; compact?: boolean } = $props();
 
@@ -26,7 +27,7 @@
   const line = $derived.by(() => {
     if (it.status === "completed") return `${look.label} · ${bytes(it.size)}`;
     if (it.status === "failed") return it.message ?? look.label;
-    const of = it.size ? `${bytes(it.done)} of ${bytes(it.size)}` : bytes(it.done);
+    const of = it.size ? t("{done} of {total}", { done: bytes(it.done), total: bytes(it.size) }) : bytes(it.done);
     return `${look.label} · ${of}${it.speed > 0 && it.status === "downloading" ? " · " + speed(it.speed) : ""}`;
   });
   const prio = $derived<Priority>(it.priority ?? "normal");
@@ -36,7 +37,7 @@
     try {
       const text = await devicesApi.item(x.id, it.id, action);
       if (action === "get") {
-        app.toast(`${x.name} is sending ${it.name}. It lands in ${x.folder}.`);
+        app.toast(t("{device} is sending {name}. It lands in {folder}.", { device: x.name, name: it.name, folder: x.folder }));
         ongot?.();
       } else if (action === "remove") app.toast(text);
     } catch (e) {
@@ -48,7 +49,7 @@
 
   function priorityMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const one = (p: Priority, label: string, icon: string): MenuItem => ({ label, icon, hint: prio === p ? "✓" : "", action: () => prio !== p && act(p) });
+    const one = (p: Priority, label: Key, icon: string): MenuItem => ({ label: t(label), icon, hint: prio === p ? "✓" : "", action: () => prio !== p && act(p) });
     menu = { x: r.right - 200, y: r.bottom + 4, items: [one("first", "Priority: First", "up"), one("normal", "Priority: Normal", "minus"), one("later", "Priority: Later", "down")] };
   }
 </script>
@@ -59,7 +60,7 @@
     <MiddleText text={it.name} class="rname" />
     <span class="rline">
       <span class="sdot" style:background={look.color}></span>{line}
-      {#if it.priority && it.status !== "completed"}<span class="pchip" class:first={it.priority === "first"}>{it.priority === "first" ? "First" : "Later"}</span>{/if}
+      {#if it.priority && it.status !== "completed"}<span class="pchip" class:first={it.priority === "first"}>{it.priority === "first" ? t("First") : t("Later")}</span>{/if}
     </span>
     {#if ACTIVE.has(it.status) || it.status === "paused"}
       <span class="rbar"><i style:transform="scaleX({it.size ? Math.min(1, it.done / it.size) : 0})"></i></span>
@@ -67,18 +68,18 @@
   </div>
   <div class="racts">
     {#if it.status === "completed"}
-      <button class="btn small" disabled={acting} onclick={() => act("get")} title="Send it to this PC, into {x.folder}"><Icon name="down" size={12} />Get this file</button>
+      <button class="btn small" disabled={acting} onclick={() => act("get")} title={t("Send it to this PC, into {folder}", { folder: x.folder })}><Icon name="down" size={12} />{t("Get this file")}</button>
     {:else}
       {#if ACTIVE.has(it.status)}
-        <button class="icon-btn" disabled={acting} aria-label="Pause {it.name}" title="Pause" onclick={() => act("pause")}><Icon name="pause" size={13} /></button>
+        <button class="icon-btn" disabled={acting} aria-label={t("Pause {name}", { name: it.name })} title={t("Pause")} onclick={() => act("pause")}><Icon name="pause" size={13} /></button>
       {:else if RESUMABLE.has(it.status)}
-        <button class="icon-btn" disabled={acting} aria-label="Resume {it.name}" title="Resume" onclick={() => act("resume")}><Icon name="play" size={13} /></button>
+        <button class="icon-btn" disabled={acting} aria-label={t("Resume {name}", { name: it.name })} title={t("Resume")} onclick={() => act("resume")}><Icon name="play" size={13} /></button>
       {/if}
-      <button class="icon-btn" disabled={acting} aria-label="Priority of {it.name}" aria-haspopup="menu" title="Priority: {prio === 'first' ? 'First' : prio === 'later' ? 'Later' : 'Normal'}" onclick={priorityMenu}>
+      <button class="icon-btn" disabled={acting} aria-label={t("Priority of {name}", { name: it.name })} aria-haspopup="menu" title={prio === "first" ? t("Priority: First") : prio === "later" ? t("Priority: Later") : t("Priority: Normal")} onclick={priorityMenu}>
         <Icon name={prio === "first" ? "up" : prio === "later" ? "down" : "minus"} size={13} />
       </button>
     {/if}
-    <button class="icon-btn" disabled={acting} aria-label="Remove {it.name} from the list" title="Remove from the list (a finished file stays on {x.name})" onclick={() => act("remove")}><Icon name="x" size={13} /></button>
+    <button class="icon-btn" disabled={acting} aria-label={t("Remove {name} from the list", { name: it.name })} title={t("Remove from the list (a finished file stays on {device})", { device: x.name })} onclick={() => act("remove")}><Icon name="x" size={13} /></button>
   </div>
 </div>
 

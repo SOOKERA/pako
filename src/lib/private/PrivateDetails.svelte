@@ -13,6 +13,7 @@
   import Icon from "../Icon.svelte";
   import SegPick from "../SegPick.svelte";
   import MiddleText from "../MiddleText.svelte";
+  import { i18n, num, said, t, tMaybe } from "../i18n.svelte";
 
   let {
     d,
@@ -37,12 +38,12 @@
 
   const done = (x: Download) => x.status === "completed";
   const canPause = (x: Download) => isActive(x.status) || x.status === "queued";
-  const levels: { value: Priority; label: string; icon?: string }[] = [
-    { value: "first", label: "First", icon: "up" },
-    { value: "normal", label: "Normal" },
-    { value: "later", label: "Later", icon: "down" },
-  ];
-  const alerts = ALERTS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }));
+  const levels: { value: Priority; label: string; icon?: string }[] = $derived([
+    { value: "first", label: t("First"), icon: "up" },
+    { value: "normal", label: t("Normal") },
+    { value: "later", label: t("Later"), icon: "down" },
+  ]);
+  const alerts = $derived(ALERTS.map((a) => ({ value: a.id, label: tMaybe(a.label), hint: tMaybe(a.hint) })));
 
   function pct(x: Download) {
     return done(x) ? 100 : x.size ? Math.min(100, (x.downloaded / x.size) * 100) : 0;
@@ -51,10 +52,10 @@
   function when(ms: number | null | undefined) {
     if (!ms) return "—";
     const date = new Date(ms > 1e12 ? ms : ms * 1000);
-    const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    const time = date.toLocaleTimeString(i18n.dates, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     return new Date().toDateString() === date.toDateString()
-      ? `Today, ${time}`
-      : `${date.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}, ${time}`;
+      ? t("Today, {time}", { time })
+      : `${date.toLocaleDateString(i18n.dates, { day: "numeric", month: "short", year: "numeric" })}, ${time}`;
   }
   function host(x: Download) {
     try {
@@ -95,7 +96,7 @@
   }
 </script>
 
-<aside class="panel details-panel" aria-label="Details" data-tour="private-details">
+<aside class="panel details-panel" aria-label={t("Details")} data-tour="private-details">
   {#if d}
     {@const look = downloadLook({ ...d, private: false })}
     {@const sp = priv.speeds[d.id] ?? 0}
@@ -104,24 +105,24 @@
         <div class="headline">
           <span class="st" style="color: {wordColor(look)}">{look.label}</span>
           <span class="src">{sourceOf(d).label}</span>
-          <button class="icon-btn" aria-label="Close details panel (Ctrl+I)" title="Close (Ctrl+I)" onclick={onclose}><Icon name="chevronsRight" size={14} stroke={2} /></button>
+          <button class="icon-btn" aria-label={t("Close details panel (Ctrl+I)")} title={t("Close (Ctrl+I)")} onclick={onclose}><Icon name="chevronsRight" size={14} stroke={2} /></button>
         </div>
         <div class="name">{d.name}</div>
         <div class="stats">
-          <div><span class="k">Done</span><span class="v mono">{(Math.floor(pct(d) * 10) / 10).toFixed(1)}<small>%</small></span></div>
+          <div><span class="k">{t("Done (how far)")}</span><span class="v mono">{num(Math.floor(pct(d) * 10) / 10, 1)}{i18n.lang === "fr" ? " " : ""}<small>%</small></span></div>
           <div>
-            <span class="k">Speed</span>
+            <span class="k">{t("Speed")}</span>
             {#if sp > 0}<span class="v mono">{speed(sp).split(" ")[0]}<small> {speed(sp).split(" ")[1]}</small></span>{:else}<span class="v mono dim">—</span>{/if}
           </div>
           <div>
-            <span class="k">Left</span>
-            {#if sp > 0 && d.size}<span class="v mono sm">{timeLeft(d.size - d.downloaded, sp).replace(" left", "")}</span>{:else}<span class="v mono dim">—</span>{/if}
+            <span class="k">{t("Left (time)")}</span>
+            {#if sp > 0 && d.size}<span class="v mono sm">{timeLeft(d.size - d.downloaded, sp, { bare: true })}</span>{:else}<span class="v mono dim">—</span>{/if}
           </div>
         </div>
         <div class="bar"><div class="fill" style="width: {pct(d)}%; background: {done(d) ? 'var(--priv)' : look.color}"></div></div>
         <div class="sizes mono">
           <span>{d.size ? bytesOf(d.downloaded, d.size) : bytes(d.downloaded)}</span>
-          {#if done(d)}<span class="ok">Complete</span>{/if}
+          {#if done(d)}<span class="ok">{t("Complete")}</span>{/if}
         </div>
         {#if d.message && !done(d)}
           <div class="callout" class:err={d.status === "failed"}><Icon name="alert" size={14} /><span>{d.message}</span></div>
@@ -132,33 +133,33 @@
     {#key folder.name}
       <section class="top" in:fadeIn={{ duration: 160 }}>
         <div class="headline">
-          <span class="st">{folder.several ? "Selected" : "Folder"}</span>
-          <span class="src">{folder.files.length} files</span>
-          <button class="icon-btn" aria-label="Close details panel (Ctrl+I)" title="Close (Ctrl+I)" onclick={onclose}><Icon name="chevronsRight" size={14} stroke={2} /></button>
+          <span class="st">{folder.several ? t("Selected") : t("Folder")}</span>
+          <span class="src">{t("{n} files", { n: folder.files.length })}</span>
+          <button class="icon-btn" aria-label={t("Close details panel (Ctrl+I)")} title={t("Close (Ctrl+I)")} onclick={onclose}><Icon name="chevronsRight" size={14} stroke={2} /></button>
         </div>
         <div class="name">{folder.name}</div>
         <div class="stats two">
-          <div><span class="k">Finished</span><span class="v mono">{folderDone}<small> of {folder.files.length}</small></span></div>
-          <div><span class="k">Size</span><span class="v mono sm">{bytes(folderSize)}</span></div>
+          <div><span class="k">{t("Finished")}</span><span class="v mono">{folderDone}<small> {t("of {total}", { total: folder.files.length })}</small></span></div>
+          <div><span class="k">{t("Size")}</span><span class="v mono sm">{bytes(folderSize)}</span></div>
         </div>
       </section>
     {/key}
   {:else}
     <div class="none">
       <Icon name="list" size={18} />
-      <span>Select a private download to see its details.</span>
+      <span>{t("Select a private download to see its details.")}</span>
     </div>
   {/if}
 
   {#if busy.length}
     <section class="work" transition:rowSlide={{ duration: 200 }}>
-      <div class="label">In progress</div>
+      <div class="label">{t("In progress")}</div>
       {#each busy as w (w.key)}
         {@const p = priv.progress(w)}
         <div class="wk">
-          <div class="wl"><span class="wt" class:bad={p.failed}>{p.label}</span>{#if p.frac !== null}<span class="mono wp">{Math.floor(p.frac * 100)}%</span>{/if}</div>
+          <div class="wl"><span class="wt" class:bad={p.failed}>{p.label}</span>{#if p.frac !== null}<span class="mono wp">{t("{pct}%", { pct: Math.floor(p.frac * 100) })}</span>{/if}</div>
           {#if !p.failed}<div class="bar"><div class="fill" class:wait={p.frac === null} style="width: {p.frac === null ? 100 : p.frac * 100}%; background: var(--priv)"></div></div>{/if}
-          <div class="wn">{w.what}{#if w.kind !== "decrypt"}: leaving Private mode stops it{/if}</div>
+          <div class="wn">{w.kind !== "decrypt" ? t("{what}: leaving Private mode stops it", { what: said(w.what) }) : said(w.what)}</div>
         </div>
       {/each}
     </section>
@@ -166,24 +167,24 @@
 
   {#if files.length && unfinished.length}
     <section class="settings">
-      <div class="label">Settings{#if unfinished.length > 1}<span class="muted">{` · for ${unfinished.length} files`}</span>{/if}</div>
-      <div class="row-l">Priority</div>
-      <SegPick options={levels} value={prio} label="Priority" onpick={setPriority} />
-      <div class="row-l">Notify when done</div>
-      <SegPick options={alerts} value={level} label="Notify when done" onpick={setAlert} />
+      <div class="label">{t("Settings")}{#if unfinished.length > 1}<span class="muted">{` · ${t("for {n} files", { n: unfinished.length })}`}</span>{/if}</div>
+      <div class="row-l">{t("Priority")}</div>
+      <SegPick options={levels} value={prio} label={t("Priority")} onpick={setPriority} />
+      <div class="row-l">{t("Notify when done")}</div>
+      <SegPick options={alerts} value={level} label={t("Notify when done")} onpick={setAlert} />
     </section>
   {/if}
 
   {#if d}
     <section class="facts">
-      <div class="label">Details</div>
+      <div class="label">{t("Details")}</div>
       <dl>
-        <dt>Source</dt><dd><MiddleText text={`${sourceOf(d).label}${host(d) && host(d) !== sourceOf(d).label ? ` · ${host(d)}` : ""}`} /></dd>
-        <dt>Saved as</dt><dd><MiddleText text={d.name} /></dd>
-        {#if d.vaultFolder}<dt>In folder</dt><dd><MiddleText text={d.vaultFolder} /></dd>{/if}
-        <dt>Kept</dt><dd>Encrypted in Private mode</dd>
-        <dt>Added</dt><dd>{when(d.addedAt)}</dd>
-        {#if done(d)}<dt>Downloaded</dt><dd>{when(d.finishedAt)}</dd>{/if}
+        <dt>{t("Source")}</dt><dd><MiddleText text={`${sourceOf(d).label}${host(d) && host(d) !== sourceOf(d).label ? ` · ${host(d)}` : ""}`} /></dd>
+        <dt>{t("Saved as")}</dt><dd><MiddleText text={d.name} /></dd>
+        {#if d.vaultFolder}<dt>{t("In folder")}</dt><dd><MiddleText text={d.vaultFolder} /></dd>{/if}
+        <dt>{t("Kept")}</dt><dd>{t("Encrypted in Private mode")}</dd>
+        <dt>{t("Added")}</dt><dd>{when(d.addedAt)}</dd>
+        {#if done(d)}<dt>{t("Downloaded")}</dt><dd>{when(d.finishedAt)}</dd>{/if}
       </dl>
     </section>
   {/if}
@@ -192,29 +193,29 @@
   {#if d}
     <div class="panel-actions">
       {#if done(d)}
-        <button class="btn primary" onclick={() => onuse(d)}><Icon name={isVideo(d.name) ? "play" : "open"} size={13} /><span class="l">{isVideo(d.name) ? "Play" : "Open"}</span></button>
-        <button class="btn" title="Decrypt…: a readable copy where you pick" onclick={() => ondecrypt([d], null)}><Icon name="unlock" size={13} /><span class="l">Decrypt…</span></button>
-        <button class="btn" title="Send with Direct…" onclick={() => onsend([d], null)}><Icon name="send" size={13} /><span class="l">Send…</span></button>
-        <button class="btn" title="Upload…: share it with a link" onclick={() => onupload([d])}><Icon name="upload" size={13} /><span class="l">Upload…</span></button>
+        <button class="btn primary" onclick={() => onuse(d)}><Icon name={isVideo(d.name) ? "play" : "open"} size={13} /><span class="l">{isVideo(d.name) ? t("Play") : t("Open")}</span></button>
+        <button class="btn" title={t("Decrypt…: a readable copy where you pick")} onclick={() => ondecrypt([d], null)}><Icon name="unlock" size={13} /><span class="l">{t("Decrypt…")}</span></button>
+        <button class="btn" title={t("Send with Direct…")} onclick={() => onsend([d], null)}><Icon name="send" size={13} /><span class="l">{t("Send…")}</span></button>
+        <button class="btn" title={t("Upload…: share it with a link")} onclick={() => onupload([d])}><Icon name="upload" size={13} /><span class="l">{t("Upload…")}</span></button>
       {:else}
         <button class="btn primary" onclick={() => pauseOrResume([d])}>
-          <Icon name={canPause(d) ? "pause" : d.status === "paused" ? "play" : "retry"} size={13} /><span class="l">{canPause(d) ? "Pause" : d.status === "paused" ? "Resume" : "Try again"}</span>
+          <Icon name={canPause(d) ? "pause" : d.status === "paused" ? "play" : "retry"} size={13} /><span class="l">{canPause(d) ? t("Pause") : d.status === "paused" ? t("Resume") : t("Try again")}</span>
         </button>
       {/if}
-      <button class="btn danger" title="Delete…: the file and its place in Private mode" onclick={() => ondelete([d])}><Icon name="trash" size={13} /><span class="l">Delete…</span></button>
+      <button class="btn danger" title={t("Delete…: the file and its place in Private mode")} onclick={() => ondelete([d])}><Icon name="trash" size={13} /><span class="l">{t("Delete…")}</span></button>
     </div>
   {:else if folder}
     <div class="panel-actions">
       {#if folderDone === folder.files.length}
-        <button class="btn primary" title={folder.several ? "Decrypt…: readable copies where you pick" : "Decrypt the whole folder…: a readable copy where you pick"} onclick={() => ondecrypt(folder.files, folder.several ? null : folder.name)}><Icon name="unlock" size={13} /><span class="l">Decrypt…</span></button>
-        <button class="btn" title="Send with Direct…" onclick={() => onsend(folder.files, folder.several ? null : folder.name)}><Icon name="send" size={13} /><span class="l">Send…</span></button>
-        <button class="btn" title="Upload…: share them with a link" onclick={() => onupload(folder.files)}><Icon name="upload" size={13} /><span class="l">Upload…</span></button>
+        <button class="btn primary" title={folder.several ? t("Decrypt…: readable copies where you pick") : t("Decrypt the whole folder…: a readable copy where you pick")} onclick={() => ondecrypt(folder.files, folder.several ? null : folder.name)}><Icon name="unlock" size={13} /><span class="l">{t("Decrypt…")}</span></button>
+        <button class="btn" title={t("Send with Direct…")} onclick={() => onsend(folder.files, folder.several ? null : folder.name)}><Icon name="send" size={13} /><span class="l">{t("Send…")}</span></button>
+        <button class="btn" title={t("Upload…: share them with a link")} onclick={() => onupload(folder.files)}><Icon name="upload" size={13} /><span class="l">{t("Upload…")}</span></button>
       {:else}
         <button class="btn primary" onclick={() => pauseOrResume(folder.files)}>
-          <Icon name={folder.files.some(canPause) ? "pause" : "play"} size={13} /><span class="l">{folder.files.some(canPause) ? "Pause" : "Resume"}</span>
+          <Icon name={folder.files.some(canPause) ? "pause" : "play"} size={13} /><span class="l">{folder.files.some(canPause) ? t("Pause") : t("Resume")}</span>
         </button>
       {/if}
-      <button class="btn danger" title="Delete…: the files and their place in Private mode" onclick={() => ondelete(folder.files)}><Icon name="trash" size={13} /><span class="l">Delete…</span></button>
+      <button class="btn danger" title={t("Delete…: the files and their place in Private mode")} onclick={() => ondelete(folder.files)}><Icon name="trash" size={13} /><span class="l">{t("Delete…")}</span></button>
     </div>
   {/if}
 </aside>

@@ -8,17 +8,18 @@
   // other way off these two lists locks it (see privateLeave.ts).
   import { priv } from "../private.svelte";
   import Icon from "../Icon.svelte";
+  import { t } from "../i18n.svelte";
 
   let { on }: { /** Which list shows: "private" or "normal". */ on: "private" | "normal" } = $props();
 </script>
 
-<div class="pswitch" role="group" aria-label="Private mode is open">
+<div class="pswitch" role="group" aria-label={t("Private mode is open")}>
   {#if on === "private"}
-    <button class="btn pv" data-tour="private-normal" aria-label="Normal list" title="Normal list: your other downloads. Private mode stays open." onclick={() => priv.leave()}><Icon name="list" size={13} /><span class="lbl">Normal list</span></button>
+    <button class="btn pv" data-tour="private-normal" aria-label={t("Normal list")} title={t("Normal list: your other downloads. Private mode stays open.")} onclick={() => priv.leave()}><Icon name="list" size={13} /><span class="lbl">{t("Normal list")}</span></button>
   {:else}
-    <button class="btn pv" data-tour="private-back" aria-label="Private downloads" title="Private downloads: back to your private list" onclick={() => priv.enter()}><Icon name="shield" size={13} /><span class="lbl">Private downloads</span></button>
+    <button class="btn pv" data-tour="private-back" aria-label={t("Private downloads")} title={t("Private downloads: back to your private list")} onclick={() => priv.enter()}><Icon name="shield" size={13} /><span class="lbl">{t("Private downloads")}</span></button>
   {/if}
-  <button class="btn pv" data-tour="private-lock" aria-label="Lock" title="Lock Private mode (Ctrl+Shift+P)" onclick={() => priv.lockByHand()}><Icon name="lock" size={13} /><span class="lbl">Lock</span></button>
+  <button class="btn pv" data-tour="private-lock" aria-label={t("Lock")} title={t("Lock Private mode (Ctrl+Shift+P)")} onclick={() => priv.lockByHand()}><Icon name="lock" size={13} /><span class="lbl">{t("Lock")}</span></button>
 </div>
 
 <style>

@@ -10,6 +10,26 @@
   import { api, type AddedToBrowser, type Browser, type BrowserSeen } from "./api";
   import Icon from "./Icon.svelte";
   import { rowSlide } from "./motion";
+  import { t } from "./i18n.svelte";
+
+  /** A sentence with styled parts: each `{mark}` becomes its words in bold (`b`) or in the
+   *  code font (`mono`), the rest stays plain. */
+  type Bit = { text: string; k?: "b" | "mono" };
+  function bits(s: string, marks: Record<string, Bit>): Bit[] {
+    const out: Bit[] = [];
+    const re = /\{(\w+)\}/g;
+    let at = 0;
+    for (const m of s.matchAll(re)) {
+      const mark = marks[m[1]];
+      const i = m.index ?? 0;
+      if (!mark) continue;
+      if (i > at) out.push({ text: s.slice(at, i) });
+      out.push(mark);
+      at = i + m[0].length;
+    }
+    if (at < s.length) out.push({ text: s.slice(at) });
+    return out;
+  }
 
   /** `flat`: no box around it (inside another box, as in the first-start setup). */
   let { flat = false }: { flat?: boolean } = $props();
@@ -58,16 +78,17 @@
     return best;
   }
 
-  /** "today", "yesterday", "3 days ago", "2 weeks ago", "4 months ago" (by calendar day). */
-  function ago(unix: number): string {
+  /** "last used today", "… yesterday", "… 3 days ago", "… 2 weeks ago", "… 4 months ago" (by
+   *  calendar day). */
+  function lastUsed(unix: number): string {
     const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
     const days = Math.max(0, Math.round((day(new Date()) - day(new Date(unix * 1000))) / (DAY * 1000)));
-    if (days === 0) return "today";
-    if (days === 1) return "yesterday";
-    if (days < 14) return `${days} days ago`;
-    if (days < 60) return `${Math.floor(days / 7)} weeks ago`;
+    if (days === 0) return t("last used today");
+    if (days === 1) return t("last used yesterday");
+    if (days < 14) return t("last used {n} days ago", { n: days });
+    if (days < 60) return t("last used {n} weeks ago", { n: Math.floor(days / 7) });
     const months = Math.floor(days / 30);
-    return months < 24 ? `${months} months ago` : `${Math.floor(days / 365)} years ago`;
+    return months < 24 ? t("last used {n} months ago", { n: months }) : t("last used {n} years ago", { n: Math.floor(days / 365) });
   }
 
   const SHORT: Record<Browser["id"], string> = {
@@ -124,13 +145,15 @@
   }
 </script>
 
+{#snippet said(parts: Bit[])}{#each parts as p, i (i)}{#if p.k === "b"}<b>{p.text}</b>{:else if p.k === "mono"}<span class="mono">{p.text}</span>{:else}{p.text}{/if}{/each}{/snippet}
+
 <div class="browsers" class:flat>
   {#if browsers === null}
-    <div class="empty">Looking for your browsers…</div>
+    <div class="empty">{t("Looking for your browsers…")}</div>
   {:else if browsers.length === 0}
     <div class="empty">
-      No browser found that Pako's extension works in (Chrome, Edge, Brave, Vivaldi, Opera, Firefox, Zen, LibreWolf, Waterfox, Floorp).
-      <button class="link" onclick={openFolder}>Open the extension folder</button>
+      {t("No browser found that Pako's extension works in (Chrome, Edge, Brave, Vivaldi, Opera, Firefox, Zen, LibreWolf, Waterfox, Floorp).")}
+      <button class="link" onclick={openFolder}>{t("Open the extension folder")}</button>
     </div>
   {:else}
     {#each browsers as b (b.id)}
@@ -145,45 +168,61 @@
             {#if s}
               <div class="status" class:connected in:rowSlide>
                 <span class="dot"></span>
-                <span class="state">{connected ? "Connected" : "Not used lately"}</span>
+                <span class="state">{connected ? t("Connected") : t("Not used lately")}</span>
                 {#if s.edition === "light"}<span class="sep">·</span><span>Pako Light</span>{/if}
-                <span class="sep">·</span><span>last used {ago(s.lastSeen)}</span>
+                <span class="sep">·</span><span>{lastUsed(s.lastSeen)}</span>
               </div>
             {/if}
           </div>
           {#if connected && !again && busy !== b.id}
             <!-- Installed and talking to Pako: nothing to do here (Open the extension folder above
                  is there for a reinstall). -->
-            <span class="installed"><Icon name="check" size={14} />Installed</span>
+            <span class="installed"><Icon name="check" size={14} />{t("Installed")}</span>
           {:else}
             <button class="btn" disabled={busy === b.id} onclick={() => add(b)}>
-              {busy === b.id ? "Opening…" : again ? "Open again" : `Add to ${SHORT[b.id]}`}
+              {busy === b.id ? t("Opening…") : again ? t("Open again") : t("Add to {browser}", { browser: SHORT[b.id] })}
             </button>
           {/if}
         </div>
 
         {#if r && b.family === "chromium"}
           {#if r.opened === "folder"}
-            <p class="note">{SHORT[b.id]} didn't open its extensions page, so the folder opened instead. Type <span class="mono">{PAGE[b.id]}</span> in {SHORT[b.id]}'s address bar.</p>
+            <p class="note">{@render said(bits(t("{browser} didn't open its extensions page, so the folder opened instead. Type {page} in {browser}'s address bar.", { browser: SHORT[b.id] }), { page: { text: PAGE[b.id], k: "mono" } }))}</p>
           {/if}
           <ol class="steps">
-            <li>On the extensions page, turn on <b>Developer mode</b>.</li>
-            <li>Click <b>Load unpacked</b>.</li>
-            <li>Click the address box at the top of the window that opens, press <b>Ctrl+V</b>{r.copied ? " (the folder is already copied)" : ""} and <b>Enter</b>, then <b>Select Folder</b>.</li>
+            <li>{@render said(bits(t("On the extensions page, turn on {button}."), { button: { text: t("Developer mode"), k: "b" } }))}</li>
+            <li>{@render said(bits(t("Click {button}."), { button: { text: t("Load unpacked"), k: "b" } }))}</li>
+            <li>
+              {@render said(
+                bits(
+                  r.copied
+                    ? t("Click the address box at the top of the window that opens, press {paste} (the folder is already copied) and {enter}, then {button}.")
+                    : t("Click the address box at the top of the window that opens, press {paste} and {enter}, then {button}."),
+                  { paste: { text: t("Ctrl+V"), k: "b" }, enter: { text: t("Enter (key)"), k: "b" }, button: { text: t("Select Folder"), k: "b" } },
+                ),
+              )}
+            </li>
           </ol>
           <div class="path">
             <span class="mono">{r.folder}</span>
-            <button class="link" onclick={() => copyAgain(r.folder)}>{copied ? "Copied" : r.copied ? "Copy again" : "Copy"}</button>
+            <button class="link" onclick={() => copyAgain(r.folder)}>{copied ? t("Copied") : r.copied ? t("Copy again") : t("Copy")}</button>
           </div>
         {:else if r && r.opened === "unavailable"}
-          <p class="note">This copy of Pako doesn't include the Firefox version. Pako from <span class="mono">pako.sookera.com</span> has it.</p>
+          <p class="note">{@render said(bits(t("This copy of Pako doesn't include the Firefox version. Pako from {site} has it."), { site: { text: "pako.sookera.com", k: "mono" } }))}</p>
         {:else if r}
           {#if r.opened === "firefoxFolder"}
-            <p class="note">{SHORT[b.id]} didn't open, so the folder opened instead: drag <span class="mono">pako-firefox.xpi</span> into a {SHORT[b.id]} window.</p>
+            <p class="note">{@render said(bits(t("{browser} didn't open, so the folder opened instead: drag {file} into a {browser} window.", { browser: SHORT[b.id] }), { file: { text: "pako-firefox.xpi", k: "mono" } }))}</p>
           {/if}
           <ol class="steps">
-            <li>{SHORT[b.id]} asks to add Pako: click <b>Add</b>.</li>
-            <li>So downloads behind a login work and the Download button shows on videos, check it may use all websites: in {SHORT[b.id]}, open <span class="mono">{PAGE[b.id]}</span> › Pako › <b>Permissions</b> and turn on <b>Access your data for all websites</b> if it is off.</li>
+            <li>{@render said(bits(t("{browser} asks to add Pako: click {button}.", { browser: SHORT[b.id] }), { button: { text: t("Add (Firefox button)"), k: "b" } }))}</li>
+            <li>
+              {@render said(
+                bits(
+                  t("So downloads behind a login work and the Download button shows on videos, check it may use all websites: in {browser}, open {page} › Pako › {permissions} and turn on {access} if it is off.", { browser: SHORT[b.id] }),
+                  { page: { text: PAGE[b.id], k: "mono" }, permissions: { text: t("Permissions"), k: "b" }, access: { text: t("Access your data for all websites"), k: "b" } },
+                ),
+              )}
+            </li>
           </ol>
         {/if}
       </div>

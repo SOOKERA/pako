@@ -9,6 +9,7 @@
   import { niceMax } from "./chart";
   import SegPick from "./SegPick.svelte";
   import { fadeIn } from "./motion";
+  import { i18n, t } from "./i18n.svelte";
 
   let stats = $state<StatsView | null>(null);
   let window_ = $state<"hour" | "day">("hour");
@@ -22,15 +23,15 @@
       }
     };
     load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
   });
 
-  const SERIES = [
+  const SERIES = $derived([
     { key: 1, label: "Pako", color: "var(--c-down)" },
-    { key: 2, label: "Whole PC · download", color: "var(--c-pc-down)" },
-    { key: 3, label: "Whole PC · upload", color: "var(--c-pc-up)" },
-  ] as const;
+    { key: 2, label: t("Whole PC · download"), color: "var(--c-pc-down)" },
+    { key: 3, label: t("Whole PC · upload"), color: "var(--c-pc-up)" },
+  ] as const);
   const points = $derived(window_ === "hour" ? (stats?.recent ?? []) : (stats?.minutes ?? []));
   const step = $derived(window_ === "hour" ? 5 : 60);
   const spanSecs = $derived(window_ === "hour" ? 3600 : 86400);
@@ -41,7 +42,7 @@
   const t1 = $derived(points.length ? points[points.length - 1][0] : Math.floor(Date.now() / 1000));
   const t0 = $derived(t1 - spanSecs);
   const maxY = $derived(niceMax(Math.max(1024, ...points.map((p) => Math.max(p[1], p[2], p[3])))));
-  const x = (t: number) => pad.l + ((t - t0) / (t1 - t0)) * (lw - pad.l - pad.r);
+  const x = (at: number) => pad.l + ((at - t0) / (t1 - t0)) * (lw - pad.l - pad.r);
   const y = (v: number) => pad.t + (1 - v / maxY) * (LH - pad.t - pad.b);
 
   /** One path per series; a gap where Pako wasn't running breaks the line. */
@@ -55,13 +56,13 @@
     }
     return d;
   }
-  function clock(t: number) {
-    return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  function clock(at: number) {
+    return new Date(at * 1000).toLocaleTimeString(i18n.dates, { hour: "2-digit", minute: "2-digit" });
   }
   const xTicks = $derived.by(() => {
     const every = window_ === "hour" ? 15 * 60 : 6 * 3600;
     const out: number[] = [];
-    for (let t = Math.ceil(t0 / every) * every; t <= t1; t += every) out.push(t);
+    for (let at = Math.ceil(t0 / every) * every; at <= t1; at += every) out.push(at);
     return out;
   });
 
@@ -70,11 +71,11 @@
   const hoverPoint = $derived(hover === null ? null : (points.find((p) => p[0] === hover && p[0] >= t0) ?? null));
   function onMove(e: PointerEvent) {
     const r = (e.currentTarget as SVGElement).getBoundingClientRect();
-    const t = t0 + ((e.clientX - r.left - pad.l) / (lw - pad.l - pad.r)) * (t1 - t0);
+    const at = t0 + ((e.clientX - r.left - pad.l) / (lw - pad.l - pad.r)) * (t1 - t0);
     let best = -1;
     let dist = Infinity;
     points.forEach((p, i) => {
-      const dd = Math.abs(p[0] - t);
+      const dd = Math.abs(p[0] - at);
       if (dd < dist) {
         dist = dd;
         best = i;
@@ -87,15 +88,15 @@
 <section class="card">
   <div class="head">
     <div>
-      <h2>Right now</h2>
-      <div class="sub">How fast Pako downloads, next to everything your PC receives and sends.</div>
+      <h2>{t("Right now")}</h2>
+      <div class="sub">{t("How fast Pako downloads, next to everything your PC receives and sends.")}</div>
     </div>
     <SegPick
       small
-      label="Time window"
+      label={t("Time window")}
       options={[
-        { value: "hour", label: "Last hour" },
-        { value: "day", label: "Last 24 hours" },
+        { value: "hour", label: t("Last hour") },
+        { value: "day", label: t("Last 24 hours") },
       ]}
       value={window_}
       onpick={(w) => (window_ = w as "hour" | "day")}
@@ -108,16 +109,16 @@
   </div>
   <div class="chart" bind:clientWidth={lw}>
     {#if points.length < 2}
-      <div class="nodata" in:fadeIn={{ duration: 160 }}>This fills in while Pako is open. Come back in a minute.</div>
+      <div class="nodata" in:fadeIn={{ duration: 160 }}>{t("This fills in while Pako is open. Come back in a minute.")}</div>
     {:else}
       {#key window_}
-      <svg width={lw} height={LH} role="img" aria-label="Speed over the {window_ === 'hour' ? 'last hour' : 'last 24 hours'}" onpointermove={onMove} onpointerleave={() => (hover = null)} in:fadeIn={{ duration: 160 }}>
+      <svg width={lw} height={LH} role="img" aria-label={window_ === "hour" ? t("Speed over the last hour") : t("Speed over the last 24 hours")} onpointermove={onMove} onpointerleave={() => (hover = null)} in:fadeIn={{ duration: 160 }}>
         {#each [0, 0.5, 1] as f (f)}
           <line x1={pad.l} x2={lw - pad.r} y1={y(maxY * f)} y2={y(maxY * f)} class="grid" />
           <text x={pad.l - 10} y={y(maxY * f) + 4} class="ax" text-anchor="end">{speed(maxY * f)}</text>
         {/each}
-        {#each xTicks as t (t)}
-          <text x={x(t)} y={LH - 6} class="ax" text-anchor="middle">{clock(t)}</text>
+        {#each xTicks as at (at)}
+          <text x={x(at)} y={LH - 6} class="ax" text-anchor="middle">{clock(at)}</text>
         {/each}
         {#if stats?.hasPc}
           <path d={linePath(3)} class="ln draw" pathLength="1" style="stroke: var(--c-pc-up)" />

@@ -27,6 +27,24 @@ pub const CANT_LIST_NOW: &str =
 pub const NO_KEY: &str =
     "This copy of Pako can't list Drive folders. Open the folder in your browser and download from there: Pako catches the download.";
 
+// The same three in French (`folder_browser_message`, `no_key` pick the language of the moment).
+pub(crate) const FOLDER_NOT_PUBLIC_FR: &str =
+    "Ce dossier n’est pas partagé avec «\u{a0}tous les utilisateurs disposant du lien\u{a0}». Ouvrez-le dans votre navigateur et téléchargez depuis là-bas\u{a0}: Pako récupère le téléchargement.";
+pub(crate) const CANT_LIST_NOW_FR: &str =
+    "Pako ne peut pas lister les dossiers Drive pour le moment. Ouvrez le dossier dans votre navigateur et téléchargez depuis là-bas\u{a0}: Pako récupère le téléchargement.";
+pub(crate) const NO_KEY_FR: &str =
+    "Cette copie de Pako ne peut pas lister les dossiers Drive. Ouvrez le dossier dans votre navigateur et téléchargez depuis là-bas\u{a0}: Pako récupère le téléchargement.";
+
+fn in_lang(en: &'static str, fr: &'static str) -> &'static str {
+    if crate::i18n::is_fr() { fr } else { en }
+}
+
+/// `NO_KEY` in the language of the moment (for engine.rs and found.rs, which still say `NO_KEY`).
+#[allow(dead_code)]
+pub fn no_key() -> &'static str {
+    in_lang(NO_KEY, NO_KEY_FR)
+}
+
 /// Pako's Drive-only app key: built into Pako (from the gitignored signing/drive_api_key.txt,
 /// see build.rs), else data\drive_api_key.txt (for builds made without it). Never shown.
 pub fn api_key() -> Option<String> {
@@ -204,7 +222,7 @@ pub struct NotPublic;
 
 impl std::fmt::Display for NotPublic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("This isn't shared with \"anyone with the link\".")
+        f.write_str(in_lang("This isn't shared with \"anyone with the link\".", "Ce n’est pas partagé avec «\u{a0}tous les utilisateurs disposant du lien\u{a0}»."))
     }
 }
 
@@ -217,7 +235,7 @@ pub struct KeyRefused;
 
 impl std::fmt::Display for KeyRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Google refused Pako's Drive key.")
+        f.write_str(in_lang("Google refused Pako's Drive key.", "Google a refusé la clé Drive de Pako."))
     }
 }
 
@@ -227,9 +245,9 @@ impl std::error::Error for KeyRefused {}
 /// out (not shared publicly, or Pako's key refused); None for other errors.
 pub fn folder_browser_message(e: &anyhow::Error) -> Option<&'static str> {
     if e.downcast_ref::<NotPublic>().is_some() {
-        Some(FOLDER_NOT_PUBLIC)
+        Some(in_lang(FOLDER_NOT_PUBLIC, FOLDER_NOT_PUBLIC_FR))
     } else if e.downcast_ref::<KeyRefused>().is_some() {
-        Some(CANT_LIST_NOW)
+        Some(in_lang(CANT_LIST_NOW, CANT_LIST_NOW_FR))
     } else {
         None
     }
@@ -298,12 +316,12 @@ impl<'a> DriveApi<'a> {
             }
             // (error, seconds Google asked us to wait) for answers worth trying again.
             let failure: (anyhow::Error, Option<u64>) = match req.send().await {
-                Err(e) => (anyhow!("Could not reach Google Drive: {}", crate::fetch::network_message(&e)), None),
+                Err(e) => (anyhow!(crate::tr!("Could not reach Google Drive: {}", "Impossible de joindre Google Drive : {}", crate::fetch::network_message(&e))), None),
                 // An answer cut off on the way (a network blip): tried again like the rest, so
                 // page 40 of a big folder doesn't fail the whole folder.
                 Ok(resp) if resp.status().is_success() => match resp.json::<T>().await {
                     Ok(v) => return Ok(v),
-                    Err(_) => (anyhow!("Google Drive's answer didn't arrive in full. Try again."), None),
+                    Err(_) => (anyhow!(crate::tr!("Google Drive's answer didn't arrive in full. Try again.", "La réponse de Google Drive n’est pas arrivée en entier. Réessayez.")), None),
                 },
                 Ok(resp) => {
                     let status = resp.status();
@@ -412,21 +430,45 @@ impl<'a> DriveApi<'a> {
 pub fn friendly_api_error(status: u16, reason: Option<&str>, message: Option<&str>) -> String {
     match (status, reason) {
         (_, Some("downloadQuotaExceeded")) => {
-            "Google's download limit for this shared file is reached for today.".into()
+            crate::tr!("Google's download limit for this shared file is reached for today.", "La limite de téléchargement de Google pour ce fichier partagé est atteinte pour aujourd’hui.")
         }
         (_, Some("cannotDownloadAbusiveFile")) => {
-            "Google flagged this file as possibly harmful and blocks downloading it.".into()
+            crate::tr!("Google flagged this file as possibly harmful and blocks downloading it.", "Google a signalé ce fichier comme peut-être dangereux et bloque son téléchargement.")
         }
         (_, Some("rateLimitExceeded" | "userRateLimitExceeded" | "sharingRateLimitExceeded")) => {
-            "Google asked us to slow down.".into()
+            crate::tr!("Google asked us to slow down.", "Google nous a demandé de ralentir.")
         }
-        (404, _) => "File not found, or it isn't shared with \"anyone with the link\".".into(),
-        (403, Some("cannotDownloadFile")) => "The owner turned off downloading for this file.".into(),
+        (404, _) => crate::tr!(
+            "File not found, or it isn't shared with \"anyone with the link\".",
+            "Fichier introuvable, ou il n’est pas partagé avec « tous les utilisateurs disposant du lien »."
+        ),
+        (403, Some("cannotDownloadFile")) => crate::tr!("The owner turned off downloading for this file.", "Le propriétaire a désactivé le téléchargement de ce fichier."),
         _ => match message {
-            Some(m) => format!("Google Drive error {status}: {m}"),
-            None => format!("Google Drive error {status}"),
+            Some(m) => crate::tr!("Google Drive error {status}: {m}", "Erreur Google Drive {status} : {m}"),
+            None => crate::tr!("Google Drive error {status}", "Erreur Google Drive {status}"),
         },
     }
+}
+
+/// A `friendly_api_error` that says Google won't give this file (not found, flagged, turned
+/// off by its owner, its daily limit, an error), in either language: another host is tried.
+/// (For found.rs's `host_gave_up`, which still reads the English words.)
+#[allow(dead_code)]
+pub fn is_api_refusal(msg: &str) -> bool {
+    [
+        "File not found",
+        "Google flagged",
+        "The owner turned off",
+        "Google Drive error",
+        "Google's download limit",
+        "Fichier introuvable",
+        "Google a signalé",
+        "Le propriétaire a désactivé",
+        "Erreur Google Drive",
+        "La limite de téléchargement de Google",
+    ]
+    .iter()
+    .any(|p| msg.starts_with(p))
 }
 
 #[cfg(test)]

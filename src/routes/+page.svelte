@@ -50,6 +50,7 @@
   import { shownWidth } from "#lib/panelSize.ts";
   import PrivateSetup from "#lib/private/PrivateSetup.svelte";
   import SaveAsk from "#lib/private/SaveAsk.svelte";
+  import { around, t } from "#lib/i18n.svelte.ts";
 
   let titleBar: ReturnType<typeof TitleBar> | undefined = $state();
   // Private mode: its list, pad and questions.
@@ -158,8 +159,8 @@
     if (!r) return;
     await app.refresh();
     if (trayAsk) {
-      if (r.ok) app.toast("Connected. Go back to your browser and open Pako's popup again.");
-      else app.toast(`Couldn't connect: ${r.error ?? "unknown problem"}`, "error");
+      if (r.ok) app.toast(() => t("Connected. Go back to your browser and open Pako's popup again."));
+      else app.toast(() => t("Couldn't connect: {error}", { error: r.error ?? t("unknown problem") }), "error");
       return;
     }
     // Opened fresh, so it shows the switch now on (not an older copy of the settings).
@@ -174,8 +175,8 @@
   let clock = $state(Date.now());
   $effect(() => {
     if (!app.whenDoneCountdown) return;
-    const t = setInterval(() => (clock = Date.now()), 250);
-    return () => clearInterval(t);
+    const timer = setInterval(() => (clock = Date.now()), 250);
+    return () => clearInterval(timer);
   });
 
   // Pako's pop-ups go by the page shown: Direct's and My devices' news doesn't pop up over the
@@ -223,8 +224,8 @@
   let dropping = $state(false);
   const OWN_DRAG = "application/x-pako-ids";
   function isOutsideDrop(e: DragEvent) {
-    const t = e.dataTransfer?.types ?? [];
-    return !t.includes(OWN_DRAG) && (t.includes("Files") || t.includes("text/uri-list") || t.includes("text/plain"));
+    const types = e.dataTransfer?.types ?? [];
+    return !types.includes(OWN_DRAG) && (types.includes("Files") || types.includes("text/uri-list") || types.includes("text/plain"));
   }
   /** Upload and Direct take dropped files in their own page area (they stop the event there).
    *  A file or link dragged anywhere else on those pages (the sidebar, the top bar, the details
@@ -275,13 +276,13 @@
       if (f.size < 5_000_000 && /\.(txt|url|htm|html|csv|md|json|log)$/i.test(f.name)) text += "\n" + (await f.text());
     }
     if (findLinks(text).length) app.addToFound(text);
-    else app.toast("No links found in what was dropped", "error");
+    else app.toast(() => t("No links found in what was dropped"), "error");
   }
 
   // ---------- toolbar ----------
   const title = $derived.by(() => {
-    if (app.sourceFilter) return app.sources.find((s) => s.key === app.sourceFilter)?.label ?? "Downloads";
-    return { all: "All downloads", active: "Downloading", waiting: "Waiting", done: "Finished", problems: "Problems" }[app.library];
+    if (app.sourceFilter) return app.sources.find((s) => s.key === app.sourceFilter)?.label ?? t("Downloads");
+    return { all: t("All downloads (title)"), active: t("Downloading (filter)"), waiting: t("Waiting"), done: t("Finished"), problems: t("Problems") }[app.library];
   });
   const sel = $derived(app.selectedDownloads);
   const selSize = $derived(sel.reduce((s, d) => s + (d.size ?? 0), 0));
@@ -295,7 +296,11 @@
   const resumeTargets = $derived((sel.length ? sel : app.visible).filter(canResume));
   const pauseTargets = $derived((sel.length ? sel : app.visible).filter(canPause));
   const filtered = $derived(app.visible.length !== app.downloads.length);
-  const n = (list: unknown[]) => (!list.length ? "" : sel.length || filtered ? ` ${list.length}` : " all");
+  /** "Resume", "Resume 3" (the selection, or what the filter shows) or "Resume all". */
+  const resumeWords = (list: unknown[]) => (!list.length ? t("Resume") : sel.length || filtered ? t("Resume {n}", { n: list.length }) : t("Resume all"));
+  const pauseWords = (list: unknown[]) => (!list.length ? t("Pause") : sel.length || filtered ? t("Pause {n}", { n: list.length }) : t("Pause all"));
+  /** "3 selected", with the number apart (bold) from its word (hidden in a narrow window). */
+  const selWords = $derived(around(t("{n} selected", { n: sel.length }), String(sel.length)));
 
   // ---------- actions ----------
   function askRemove(ids: string[]) {
@@ -319,7 +324,7 @@
     await app.refresh();
     // Finished files only taken off the list (nothing deleted): that can be undone.
     if (!deleteFiles && list.every((d) => d.status === "completed")) {
-      app.offerUndo(list.length === 1 ? "Removed from the list" : `${list.length} removed from the list`, () => api.restoreDownloads(list));
+      app.offerUndo(() => (list.length === 1 ? t("Removed from the list") : t("{n} removed from the list", { n: list.length })), () => api.restoreDownloads(list));
     }
   }
   function askStartOver(ds: Download[]) {
@@ -334,9 +339,9 @@
   async function copyLinks(ds: Download[]) {
     try {
       await navigator.clipboard.writeText(ds.map((d) => d.link).join("\n"));
-      app.toast(ds.length === 1 ? "Link copied" : `${ds.length} links copied`);
+      app.toast(() => (ds.length === 1 ? t("Link copied") : t("{n} links copied", { n: ds.length })));
     } catch {
-      app.toast("Couldn't copy to the clipboard", "error");
+      app.toast(() => t("Couldn't copy to the clipboard"), "error");
     }
   }
 
@@ -346,35 +351,36 @@
     const ds = app.downloads.filter((d) => want.has(d.id));
     if (!ds.length) return;
     const one = ds.length === 1 ? ds[0] : null;
-    const count = ds.length > 1 ? ` ${ds.length}` : "";
+    const many = ds.length > 1;
+    const n = ds.length;
     const idsOf = (pred: (d: Download) => boolean) => ds.filter(pred).map((d) => d.id);
     const startable = idsOf((d) => d.status !== "completed" && !isActive(d.status) && !d.viaBrowser);
     // Downloads the browser makes for Pako ("Via browser"): Pako's queue and parts don't apply.
     const browserOnly = ds.every((d) => d.viaBrowser);
-    const NOT_HERE = "browser";
+    const NOT_HERE = t("browser");
     const pausable = idsOf(canPause);
     const resumable = idsOf(canResume);
     const anyFailed = ds.some((d) => d.status === "failed" || d.status === "quotaExceeded" || d.status === "needsAccount");
     const anyDone = ds.some((d) => d.status === "completed");
 
     const items: MenuItem[] = [];
-    if (startable.length) items.push({ label: "Download first", icon: "up", action: () =>
+    if (startable.length) items.push({ label: t("Download first"), icon: "up", action: () =>
           app.run(() => api.downloadFirst(startable)).then(() => {
-            if (!scheduleOpen(app.settings)) app.toast("Starting now, outside the scheduled download hours");
+            if (!scheduleOpen(app.settings)) app.toast(() => t("Starting now, outside the scheduled download hours"));
           }) });
-    else if (browserOnly && ds.some((d) => d.status !== "completed")) items.push({ label: "Download first", icon: "up", hint: NOT_HERE, disabled: true });
-    if (pausable.length) items.push({ label: `Pause${count}`, icon: "pause", action: () => app.run(() => api.pause(pausable)) });
+    else if (browserOnly && ds.some((d) => d.status !== "completed")) items.push({ label: t("Download first"), icon: "up", hint: NOT_HERE, disabled: true });
+    if (pausable.length) items.push({ label: many ? t("Pause {n}", { n }) : t("Pause"), icon: "pause", action: () => app.run(() => api.pause(pausable)) });
     if (resumable.length)
-      items.push({ label: anyFailed ? `Try again${count}` : `Resume${count}`, icon: anyFailed ? "retry" : "play", action: () => app.run(() => api.resume(resumable)) });
-    if (browserOnly) items.push({ label: "Start over", icon: "restart", hint: NOT_HERE, disabled: true });
-    else items.push({ label: "Start over", icon: "restart", action: () => askStartOver(ds.filter((d) => !d.viaBrowser)) });
+      items.push({ label: anyFailed ? (many ? t("Try again {n}", { n }) : t("Try again")) : many ? t("Resume {n}", { n }) : t("Resume"), icon: anyFailed ? "retry" : "play", action: () => app.run(() => api.resume(resumable)) });
+    if (browserOnly) items.push({ label: t("Start over"), icon: "restart", hint: NOT_HERE, disabled: true });
+    else items.push({ label: t("Start over"), icon: "restart", action: () => askStartOver(ds.filter((d) => !d.viaBrowser)) });
     items.push({ separator: true });
-    if (one?.status === "completed") items.push({ label: "Open file", icon: "open", hint: "Enter", action: () => app.run(() => api.openItem(one.id, false)) });
-    items.push({ label: "Show in folder", icon: "folder", disabled: !one, action: () => one && app.run(() => api.openItem(one.id, true)) });
+    if (one?.status === "completed") items.push({ label: t("Open file"), icon: "open", hint: t("Enter (key)"), action: () => app.run(() => api.openItem(one.id, false)) });
+    items.push({ label: t("Show in folder"), icon: "folder", disabled: !one, action: () => one && app.run(() => api.openItem(one.id, true)) });
     // Private mode on: a finished file can go into it (encrypted, off this list).
     if (one?.status === "completed" && !one.group && priv.status.on)
       items.push({
-        label: "Move to Private",
+        label: t("Move to Private"),
         icon: "lock",
         action: () =>
           app.run(async () => {
@@ -382,19 +388,19 @@
             await app.refresh();
             await priv.refreshList();
             if (warn) app.toast(warn, "error");
-            else app.toast(`${one.name} is in Private mode now.`);
+            else app.toast(() => t("{name} is in Private mode now.", { name: one.name }));
           }),
       });
     // A finished archive: extracted with 7-Zip (its password asked when it has one).
-    if (one && canExtract(one)) items.push({ label: one.message === NEEDS_PASSWORD ? "Type the password…" : "Extract…", icon: "unlock", action: () => extractNow(one) });
-    if (one) items.push({ label: "Open link in browser", icon: "globe", action: () => app.run(() => api.openLink(one.id)) });
-    items.push({ label: ds.length > 1 ? `Copy ${ds.length} links` : "Copy link", icon: "link", action: () => copyLinks(ds) });
-    if (one) items.push({ label: "Rename…", icon: "pencil", hint: "F2", disabled: isActive(one.status) && !one.viaBrowser, action: () => (renaming = one) });
+    if (one && canExtract(one)) items.push({ label: one.message === NEEDS_PASSWORD ? t("Type the password…") : t("Extract…"), icon: "unlock", action: () => extractNow(one) });
+    if (one) items.push({ label: t("Open link in browser"), icon: "globe", action: () => app.run(() => api.openLink(one.id)) });
+    items.push({ label: many ? t("Copy {n} links", { n }) : t("Copy link"), icon: "link", action: () => copyLinks(ds) });
+    if (one) items.push({ label: t("Rename…"), icon: "pencil", hint: "F2", disabled: isActive(one.status) && !one.viaBrowser, action: () => (renaming = one) });
     // Google only gives it in the browser, or today's limit is reached: its page in Drive
     // (download there, or make a copy in your Drive: Pako catches that download).
     if (one?.status === "needsAccount" || one?.status === "quotaExceeded") {
       items.push({ separator: true });
-      items.push({ label: one.status === "quotaExceeded" ? "Open in Drive (make a copy)" : "Open in browser to download", icon: "globe", action: () => app.run(() => api.openInDrive(one.id)) });
+      items.push({ label: one.status === "quotaExceeded" ? t("Open in Drive (make a copy)") : t("Open in browser to download"), icon: "globe", action: () => app.run(() => api.openInDrive(one.id)) });
     }
     items.push({ separator: true });
     const unfinished = ds.filter((d) => d.status !== "completed");
@@ -404,18 +410,19 @@
       items.push(...alertMenu(level, (a) => app.run(() => api.setAlert(ids, a))));
       const all = (p: Priority) => unfinished.every((d) => d.priority === p);
       const off = browserOnly ? { hint: NOT_HERE, disabled: true } : {};
-      items.push({ label: "Priority: First", icon: "up", hint: all("first") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "first")), ...off });
-      items.push({ label: "Priority: Normal", icon: "minus", hint: all("normal") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "normal")), ...off });
-      items.push({ label: "Priority: Later", icon: "down", hint: all("later") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "later")), ...off });
+      items.push({ label: t("Priority: First"), icon: "up", hint: all("first") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "first")), ...off });
+      items.push({ label: t("Priority: Normal"), icon: "minus", hint: all("normal") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "normal")), ...off });
+      items.push({ label: t("Priority: Later"), icon: "down", hint: all("later") ? "✓" : "", action: () => app.run(() => api.setPriority(ids, "later")), ...off });
       items.push({ separator: true });
     }
-    items.push({ label: "Move to top of queue", icon: "top", action: () => app.run(() => api.moveInQueue(ds.map((d) => d.id), true)).then(() => app.queueHint()) });
-    items.push({ label: "Move to bottom of queue", icon: "bottom", action: () => app.run(() => api.moveInQueue(ds.map((d) => d.id), false)).then(() => app.queueHint()) });
+    items.push({ label: t("Move to top of queue"), icon: "top", action: () => app.run(() => api.moveInQueue(ds.map((d) => d.id), true)).then(() => app.queueHint()) });
+    items.push({ label: t("Move to bottom of queue"), icon: "bottom", action: () => app.run(() => api.moveInQueue(ds.map((d) => d.id), false)).then(() => app.queueHint()) });
     items.push({ separator: true });
     // Right-clicked inside a multi-selection: also offer to remove just the row under the mouse.
     const under = clicked && ds.length > 1 ? ds.find((d) => d.id === clicked) : undefined;
-    if (under) items.push({ label: "Remove only this one", icon: "trash", danger: true, action: () => askRemove([under.id]) });
-    items.push({ label: anyDone ? `Remove${count}…` : `Remove${count}`, icon: "trash", hint: ds.length > 1 ? "" : "Del", danger: true, action: () => askRemove(ds.map((d) => d.id)) });
+    if (under) items.push({ label: t("Remove only this one"), icon: "trash", danger: true, action: () => askRemove([under.id]) });
+    const remove = many ? (anyDone ? t("Remove {n}…", { n }) : t("Remove {n}", { n })) : anyDone ? t("Remove…") : t("Remove");
+    items.push({ label: remove, icon: "trash", hint: many ? "" : t("Del (key)"), danger: true, action: () => askRemove(ds.map((d) => d.id)) });
     menu = { x: e.clientX, y: e.clientY, items };
   }
 
@@ -445,7 +452,7 @@
     await app.run(() => api.setSettings({ ...app.settings!, videoAsked: true }));
     await app.refresh();
     if (install) {
-      app.toast("Getting the video tools ready in the background…");
+      app.toast(() => t("Getting the video tools ready in the background…"));
       app.installVideoTools();
     }
   }
@@ -613,7 +620,7 @@
     e.preventDefault();
     const items: MenuItem[] = [
       {
-        label: "Paste links",
+        label: t("Paste links"),
         icon: "link",
         hint: "Ctrl+V",
         action: async () => {
@@ -626,10 +633,10 @@
           }
         },
       },
-      { label: "Add links…", icon: "plus", action: () => (addText = "") },
+      { label: t("Add links…"), icon: "plus", action: () => (addText = "") },
       { separator: true },
-      { label: "Select all", icon: "check", hint: "Ctrl+A", disabled: !app.visible.length, action: () => app.selectAll() },
-      { label: "Clear finished", icon: "trash", disabled: !app.counts.done, action: () => app.run(() => api.clearCompleted()) },
+      { label: t("Select all"), icon: "check", hint: "Ctrl+A", disabled: !app.visible.length, action: () => app.selectAll() },
+      { label: t("Clear finished"), icon: "trash", disabled: !app.counts.done, action: () => app.run(() => api.clearCompleted()) },
     ];
     menu = { x: e.clientX, y: e.clientY, items };
   }
@@ -648,12 +655,12 @@
 
 {#if dropping}
   <div class="dropzone" aria-hidden="true">
-    <div class="dropcard"><Icon name="link" size={22} />Drop links or a text file to add them to Links</div>
+    <div class="dropcard"><Icon name="link" size={22} />{t("Drop links or a text file to add them to Links")}</div>
   </div>
 {/if}
 
 <div class="app">
-  <TitleBar bind:this={titleBar} onpastelinks={(t) => app.addToFound(t)} onnoticesettings={() => (settingsOpen = "notices")} />
+  <TitleBar bind:this={titleBar} onpastelinks={(text) => app.addToFound(text)} onnoticesettings={() => (settingsOpen = "notices")} />
   <div class="main" bind:clientWidth={mainW}>
     <Sidebar onsettings={(s) => (settingsOpen = s ?? "general")} onmenu={(x, y, items) => (menu = { x, y, items })} />
 
@@ -681,26 +688,26 @@
         <TutorialButton id="downloads" />
         {#if sel.length}
           <div class="selchip">
-            <span title="{sel.length} selected{selSize ? ` · ${bytes(selSize)}` : ''}"><b>{sel.length}<span class="sw">&nbsp;selected</span></b>{#if selSize}<span class="dim">{` · ${bytes(selSize)}`}</span>{/if}</span>
-            <button aria-label="Clear selection" onclick={() => app.clearSelection()}><Icon name="x" size={10} stroke={2.4} /></button>
+            <span title={t("{n} selected", { n: sel.length }) + (selSize ? ` · ${bytes(selSize)}` : "")}><b>{selWords[0]}{sel.length}<span class="sw">{selWords[1].replace(/^ /, "\u00a0")}</span></b>{#if selSize}<span class="dim">{` · ${bytes(selSize)}`}</span>{/if}</span>
+            <button aria-label={t("Clear selection")} onclick={() => app.clearSelection()}><Icon name="x" size={10} stroke={2.4} /></button>
           </div>
         {:else}
-          <span class="dim small count-text">{app.downloads.length} {app.downloads.length === 1 ? "item" : "items"}</span>
+          <span class="dim small count-text">{t("{n} items", { n: app.downloads.length })}</span>
         {/if}
         <div class="spacer"></div>
         {#if priv.status.unlocked}<PrivateSwitch on="normal" />{/if}
         <div class="seg" data-tour="dl-actions">
-          <button title="Resume{n(resumeTargets)}" disabled={!resumeTargets.length} onclick={() => app.run(() => api.resume(resumeTargets.map((d) => d.id)))}>
-            <Icon name="play" size={12} /><span class="lbl">Resume{n(resumeTargets)}</span>
+          <button title={resumeWords(resumeTargets)} disabled={!resumeTargets.length} onclick={() => app.run(() => api.resume(resumeTargets.map((d) => d.id)))}>
+            <Icon name="play" size={12} /><span class="lbl">{resumeWords(resumeTargets)}</span>
           </button>
-          <button title="Pause{n(pauseTargets)}" disabled={!pauseTargets.length} onclick={() => app.run(() => api.pause(pauseTargets.map((d) => d.id)))}>
-            <Icon name="pause" size={12} /><span class="lbl">Pause{n(pauseTargets)}</span>
+          <button title={pauseWords(pauseTargets)} disabled={!pauseTargets.length} onclick={() => app.run(() => api.pause(pauseTargets.map((d) => d.id)))}>
+            <Icon name="pause" size={12} /><span class="lbl">{pauseWords(pauseTargets)}</span>
           </button>
-          <button title="Remove selected" class="danger" disabled={!sel.length} onclick={() => askRemove(sel.map((d) => d.id))}>
-            <Icon name="trash" size={12} /><span class="lbl">Remove{sel.length ? ` ${sel.length}` : ""}</span>
+          <button title={t("Remove selected")} class="danger" disabled={!sel.length} onclick={() => askRemove(sel.map((d) => d.id))}>
+            <Icon name="trash" size={12} /><span class="lbl">{sel.length ? t("Remove {n}", { n: sel.length }) : t("Remove")}</span>
           </button>
         </div>
-        <button class="btn primary add" data-tour="dl-add" title="Add links" onclick={() => (addText = "")}><Icon name="plus" size={14} stroke={2.4} /><span class="lbl">Add links</span></button>
+        <button class="btn primary add" data-tour="dl-add" title={t("Add links")} onclick={() => (addText = "")}><Icon name="plus" size={14} stroke={2.4} /><span class="lbl">{t("Add links")}</span></button>
       </div>
 
       <Table oncontext={openMenu} onadd={() => (addText = "")} onempty={emptyMenu} onmenu={(x, y, items) => (menu = { x, y, items })} />
@@ -773,11 +780,11 @@
 {/if}
 <SaveAsk />
 {#if priv.leaveAsk}
-  <Modal title="Leave Private mode?" width={420} onclose={() => (priv.leaveAsk = null)}>
+  <Modal title={t("Leave Private mode?")} width={420} onclose={() => (priv.leaveAsk = null)}>
     <p class="msg">{leaveQuestion(priv.leaveAsk.words)}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (priv.leaveAsk = null)}>Stay</button>
-      <button class="btn primary" onclick={() => priv.leaveAnyway()}><Icon name="lock" size={13} />Leave and lock</button>
+      <button class="btn ghost" onclick={() => (priv.leaveAsk = null)}>{t("Stay")}</button>
+      <button class="btn primary" onclick={() => priv.leaveAnyway()}><Icon name="lock" size={13} />{t("Leave and lock")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -785,10 +792,10 @@
 {#if app.whenDoneCountdown}
   {@const cd = app.whenDoneCountdown}
   {@const left = Math.max(0, Math.ceil((cd.endsAt - clock) / 1000))}
-  <Modal title={cd.action === "sleep" ? `Going to sleep in ${left} s` : `Shutting down in ${left} s`} width={440} onclose={() => app.cancelWhenDone()}>
-    <p class="msg">All downloads are done. {cd.action === "sleep" ? "The PC goes to sleep" : "The PC shuts down"} unless you cancel.</p>
+  <Modal title={cd.action === "sleep" ? t("Going to sleep in {n} s", { n: left }) : t("Shutting down in {n} s", { n: left })} width={440} onclose={() => app.cancelWhenDone()}>
+    <p class="msg">{cd.action === "sleep" ? t("All downloads are done. The PC goes to sleep unless you cancel.") : t("All downloads are done. The PC shuts down unless you cancel.")}</p>
     {#snippet actions()}
-      <button class="btn primary" onclick={() => app.cancelWhenDone()}>Cancel</button>
+      <button class="btn primary" onclick={() => app.cancelWhenDone()}>{t("Cancel")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -796,72 +803,80 @@
 {#if quitAsk !== null}
   {@const dn = quitAsk.running}
   {@const up = quitAsk.uploading}
-  {@const downs = dn === 1 ? "1 download" : `${dn} downloads`}
-  {@const ups = up === 1 ? "1 upload" : `${up} uploads`}
   {@const dt = quitAsk.direct}
   <Modal
-    title={dt && (dn || up) ? "Pako is still busy" : dt ? "Files are on their way in Direct" : dn && up ? `${downs} and ${ups} are running` : up ? (up === 1 ? "An upload is running" : `${ups} are running`) : dn === 1 ? "A download is running" : `${downs} are running`}
+    title={dt && (dn || up)
+      ? t("Pako is still busy")
+      : dt
+        ? t("Files are on their way in Direct")
+        : dn && up
+          ? t("{downloads} and {uploads} are running", { downloads: t("{n} downloads", { n: dn }), uploads: t("{n} uploads", { n: up }) })
+          : up
+            ? t("{n} uploads are running", { n: up })
+            : t("{n} downloads are running", { n: dn })}
     width={460}
     onclose={() => (quitAsk = null)}
   >
     {#if dn}
-      <p class="msg">If you quit, {dn === 1 ? "the download stops" : "the downloads stop"} and {dn === 1 ? "continues" : "continue"} where {dn === 1 ? "it" : "they"} left off next time you open Pako.</p>
+      <p class="msg">{t("If you quit, the downloads stop and continue where they left off next time you open Pako.", { n: dn })}</p>
     {/if}
     {#if up}
       <p class="msg">
-        {dn ? "The" : "If you quit, the"} {up === 1 ? "upload stops" : "uploads stop"} and {up === 1 ? "doesn't" : "don't"} continue next time: upload {up === 1 ? "it" : "them"} again from Upload.
-        One file or a ZIP starts over from the beginning; of several files, the ones already up stay on Gofile.
+        {dn
+          ? t("The uploads stop and don't continue next time: upload them again from Upload.", { n: up })
+          : t("If you quit, the uploads stop and don't continue next time: upload them again from Upload.", { n: up })}
+        {t("One file or a ZIP starts over from the beginning; of several files, the ones already up stay on Gofile.")}
       </p>
     {/if}
     {#if dt}
-      <p class="msg">{dn || up ? "Files going to or from your contacts in Direct stop too" : "If you quit, files going to or from your contacts in Direct stop"}: they have to be sent again.</p>
+      <p class="msg">{dn || up ? t("Files going to or from your contacts in Direct stop too: they have to be sent again.") : t("If you quit, files going to or from your contacts in Direct stop: they have to be sent again.")}</p>
     {/if}
     <button class="dont-ask" role="checkbox" aria-checked={quitDontAsk} onclick={() => (quitDontAsk = !quitDontAsk)}>
       <span class="check" class:on={quitDontAsk} aria-hidden="true">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
       </span>
-      Don't ask again
+      {t("Don't ask again")}
     </button>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (quitAsk = null)}>{dt || (dn && up) ? "Don't quit" : up ? "Keep uploading" : "Keep downloading"}</button>
-      <button class="btn danger-fill" onclick={quitAnyway}>Quit</button>
+      <button class="btn ghost" onclick={() => (quitAsk = null)}>{dt || (dn && up) ? t("Don't quit") : up ? t("Keep uploading") : t("Keep downloading")}</button>
+      <button class="btn danger-fill" onclick={quitAnyway}>{t("Quit")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if removing}
   {@const done = removing.filter((d) => d.status === "completed").length}
-  <Modal title={removing.length === 1 ? `Remove "${removing[0].name}"?` : `Remove ${removing.length} downloads?`} width={460} onclose={() => (removing = null)}>
+  <Modal title={removing.length === 1 ? t('Remove "{name}"?', { name: removing[0].name }) : t("Remove {n} downloads?", { n: removing.length })} width={460} onclose={() => (removing = null)}>
     <p class="msg">
       {#if done && done === removing.length}
-        The {done === 1 ? "file stays" : "files stay"} in {done === 1 ? "its folder" : "their folders"} unless you delete {done === 1 ? "it" : "them"} too (to the Recycle Bin).
+        {t("The files stay in their folders unless you delete them too (to the Recycle Bin).", { n: done })}
       {:else if done}
-        Unfinished parts are deleted. The {done} finished {done === 1 ? "file stays" : "files stay"} unless you delete them too (to the Recycle Bin).
+        {t("Unfinished parts are deleted. The {n} finished files stay unless you delete them too (to the Recycle Bin).", { n: done })}
       {:else}
-        What was downloaded so far will be deleted.
+        {t("What was downloaded so far will be deleted.")}
       {/if}
     </p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (removing = null)}>Cancel</button>
+      <button class="btn ghost" onclick={() => (removing = null)}>{t("Cancel")}</button>
       {#if done}
-        <button class="btn danger" onclick={() => doRemove(true)}><Icon name="trash" size={13} />Delete {done === 1 ? "file" : "files"} too</button>
-        <button class="btn primary" onclick={() => doRemove(false)}>Remove from list</button>
+        <button class="btn danger" onclick={() => doRemove(true)}><Icon name="trash" size={13} />{t("Delete files too", { n: done })}</button>
+        <button class="btn primary" onclick={() => doRemove(false)}>{t("Remove from list")}</button>
       {:else}
-        <button class="btn danger-fill" onclick={() => doRemove(false)}>Remove</button>
+        <button class="btn danger-fill" onclick={() => doRemove(false)}>{t("Remove")}</button>
       {/if}
     {/snippet}
   </Modal>
 {/if}
 
 {#if restarting}
-  <Modal title="Start over?" width={440} onclose={() => (restarting = null)}>
+  <Modal title={t("Start over?")} width={440} onclose={() => (restarting = null)}>
     <p class="msg">
-      {restarting.length === 1 ? "This download starts" : `These ${restarting.length} downloads start`} again from zero.
-      {#if restarting.some((d) => d.status === "completed")}Finished files go to the Recycle Bin first.{/if}
+      {t("These {n} downloads start again from zero.", { n: restarting.length })}
+      {#if restarting.some((d) => d.status === "completed")}{t("Finished files go to the Recycle Bin first.")}{/if}
     </p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (restarting = null)}>Cancel</button>
-      <button class="btn primary" onclick={doStartOver}>Start over</button>
+      <button class="btn ghost" onclick={() => (restarting = null)}>{t("Cancel")}</button>
+      <button class="btn primary" onclick={doStartOver}>{t("Start over")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -871,12 +886,12 @@
 {:else if trayAsk}
   <SetupDialog />
 {:else if videoAsk}
-  <Modal title="Pako can download videos now" width={460} onclose={() => answerVideo(false)}>
-    <p class="msg">Paste a YouTube (or other video site) link or playlist, pick the quality or audio only, and Pako does the rest.</p>
-    <p class="msg small-note">It uses three free tools, yt-dlp, Deno and ffmpeg (about 600 MB on disk), downloaded from their official sources. You can also turn this on later in Settings › Features &amp; updates.</p>
+  <Modal title={t("Pako can download videos now")} width={460} onclose={() => answerVideo(false)}>
+    <p class="msg">{t("Paste a YouTube (or other video site) link or playlist, pick the quality or audio only, and Pako does the rest.")}</p>
+    <p class="msg small-note">{t("It uses three free tools, yt-dlp, Deno and ffmpeg (about 600 MB on disk), downloaded from their official sources. You can also turn this on later in Settings › Features & updates.")}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => answerVideo(false)}>Not now</button>
-      <button class="btn primary" onclick={() => answerVideo(true)}>Install video tools</button>
+      <button class="btn ghost" onclick={() => answerVideo(false)}>{t("Not now")}</button>
+      <button class="btn primary" onclick={() => answerVideo(true)}>{t("Install video tools")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -886,12 +901,12 @@
 {:else if whatsNewShow}
   <WhatsNewDialog entries={whatsNewEntries} seen={app.settings?.whatsNewSeen ?? null} version={app.version} onclose={closeWhatsNew} />
 {:else if tourAsk}
-  <Modal title="Take a quick tour?" width={440} onclose={() => answerTour(false)}>
-    <p class="msg">A spotlight shows what each page of Pako is for. It takes about a minute.</p>
-    <p class="msg small-note">Each page also has a Tutorial button that shows its details, and Help has them all.</p>
+  <Modal title={t("Take a quick tour?")} width={440} onclose={() => answerTour(false)}>
+    <p class="msg">{t("A spotlight shows what each page of Pako is for. It takes about a minute.")}</p>
+    <p class="msg small-note">{t("Each page also has a Tutorial button that shows its details, and Help has them all.")}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => answerTour(false)}>Not now</button>
-      <button class="btn primary" onclick={() => answerTour(true)}>Take the tour</button>
+      <button class="btn ghost" onclick={() => answerTour(false)}>{t("Not now")}</button>
+      <button class="btn primary" onclick={() => answerTour(true)}>{t("Take the tour")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -1001,6 +1016,12 @@
     }
     .seg button {
       padding: 0 10px;
+    }
+  }
+  /* French words are longer: the count steps aside a little sooner, so the title isn't cut. */
+  @container (max-width: 1000px) {
+    :global(html[lang="fr"]) .toolbar .count-text {
+      display: none;
     }
   }
   /* Smallest window with the details panel open: Add links keeps its icon and stays in view. */

@@ -91,6 +91,7 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// A size in English ("1.5 GB"), as Direct keeps its lines (`words.rs` puts it in French).
 fn human(n: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = n as f64;
@@ -100,6 +101,11 @@ fn human(n: u64) -> String {
         i += 1;
     }
     if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", U[i]) }
+}
+
+/// A size as this PC shows it ("1,5 Go" in French).
+fn shown_size(n: u64) -> String {
+    super::words::local(&human(n))
 }
 
 /// How a connection travels right now: "local" (the home network), "direct6", "direct" or
@@ -759,7 +765,7 @@ impl Node {
     fn folder_for(&self, c: &Contact) -> PathBuf {
         match &c.save_folder {
             Some(f) if !f.is_empty() => PathBuf::from(f),
-            _ => (self.downloads)().join(format!("From {}", proto::safe_part(&c.name).unwrap_or_else(|| "a contact".into()))),
+            _ => from_folder(&(self.downloads)(), &c.name),
         }
     }
 
@@ -925,16 +931,16 @@ impl Node {
 
     pub fn add_contact(self: &Arc<Self>, id: &str, name: &str) -> Result<(), String> {
         let id = id.trim();
-        let parsed: EndpointId = id.parse().map_err(|_| "That isn't a Pako ID. Ask your contact to copy theirs again.".to_string())?;
+        let parsed: EndpointId = id.parse().map_err(|_| crate::tr!("That isn't a Pako ID. Ask your contact to copy theirs again.", "Ce n’est pas un ID Pako. Demandez à votre contact de copier le sien à nouveau."))?;
         let id = parsed.to_string();
         if id == self.my_id() {
-            return Err("That's your own Pako ID.".into());
+            return Err(crate::tr!("That's your own Pako ID.", "C’est votre propre ID Pako."));
         }
-        let name = clean_name(name).ok_or("Give this contact a name.")?;
+        let name = clean_name(name).ok_or_else(|| crate::tr!("Give this contact a name.", "Donnez un nom à ce contact."))?;
         {
             let mut inner = self.inner.lock().unwrap();
             if inner.contacts.iter().any(|c| c.id == id) {
-                return Err("This contact is already in your list.".into());
+                return Err(crate::tr!("This contact is already in your list.", "Ce contact est déjà dans votre liste."));
             }
             // You added them yourself: they may connect again.
             self.unblock(&mut inner, &id);
@@ -962,9 +968,9 @@ impl Node {
 
     pub fn edit_contact(&self, id: &str, name: Option<String>, auto_accept: Option<bool>, folder: Option<Option<String>>) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or("Contact not found.")?;
+        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or_else(not_found)?;
         if let Some(n) = name {
-            c.name = clean_name(&n).ok_or("Give this contact a name.")?;
+            c.name = clean_name(&n).ok_or_else(|| crate::tr!("Give this contact a name.", "Donnez un nom à ce contact."))?;
         }
         if let Some(a) = auto_accept {
             c.auto_accept = a;
@@ -986,7 +992,7 @@ impl Node {
 
     pub fn set_favourite(&self, id: &str, on: bool) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or("Contact not found.")?;
+        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or_else(not_found)?;
         c.favourite = on;
         self.save_contacts(&inner);
         drop(inner);
@@ -998,9 +1004,9 @@ impl Node {
     /// their conversation). Not for My devices.
     pub fn set_muted(&self, id: &str, on: bool) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or("Contact not found.")?;
+        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or_else(not_found)?;
         if on && c.device {
-            return Err("Your own devices can't be muted.".into());
+            return Err(crate::tr!("Your own devices can't be muted.", "Vos propres appareils ne peuvent pas être mis en sourdine."));
         }
         c.muted = on;
         self.save_contacts(&inner);
@@ -1017,11 +1023,11 @@ impl Node {
         let now = now_ms();
         let until = match (check, span) {
             (pace::Check::Often, Some(span)) => Some(pace::often_until(span, now, &chrono::Local)),
-            (pace::Check::Often, None) => return Err("Pick how long.".into()),
+            (pace::Check::Often, None) => return Err(crate::tr!("Pick how long.", "Choisissez pour combien de temps.")),
             _ => None,
         };
         let mut inner = self.inner.lock().unwrap();
-        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or("Contact not found.")?;
+        let c = inner.contacts.iter_mut().find(|c| c.id == id).ok_or_else(not_found)?;
         c.check_before = match check {
             // The choice to go back to: the one before Often (Often picked again while it runs
             // keeps it). Automatic is the default, so it isn't kept.
@@ -1062,7 +1068,7 @@ impl Node {
     pub fn set_tags(&self, id: &str, wanted: Vec<String>) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
         let Inner { tags, contacts, .. } = &mut *inner;
-        let c = contacts.iter_mut().find(|c| c.id == id).ok_or("Contact not found.")?;
+        let c = contacts.iter_mut().find(|c| c.id == id).ok_or_else(not_found)?;
         store::set_contact_tags(tags, c, &wanted)?;
         self.save_tags(&inner);
         self.save_contacts(&inner);
@@ -1838,18 +1844,19 @@ impl Node {
         }
         let _ = tx.send(Msg::Wait);
         self.changed();
+        let who = super::words::who(&shown);
         if device {
             (self.notify)(
                 "direct-request",
-                "Pair a device",
-                &format!("{shown} wants to pair with this PC as one of your devices."),
+                &crate::tr!("Pair a device", "Associer un appareil"),
+                &crate::tr!("{who} wants to pair with this PC as one of your devices.", "{who} veut s’associer à ce PC comme l’un de vos appareils."),
                 Go { page: "devices".into(), peer: Some(peer.to_string()), ..Go::none() },
             );
         } else {
             (self.notify)(
                 "direct-request",
-                "Someone wants to connect",
-                &format!("{shown} wants to connect with you in Pako."),
+                &crate::tr!("Someone wants to connect", "Quelqu’un veut se connecter"),
+                &crate::tr!("{who} wants to connect with you in Pako.", "{who} veut se connecter avec vous dans Pako."),
                 Go { page: "direct".into(), peer: Some(peer.to_string()), ..Go::none() },
             );
         }
@@ -1865,11 +1872,11 @@ impl Node {
         self.inner.lock().unwrap().requests.remove(peer);
         // Its pop-up and bell line say how it ended (answered here, in Pako's window, or not at all).
         let how = match answer {
-            Answer::Yes => "Accepted",
-            Answer::No => "Declined",
-            Answer::Silent => "No longer waiting",
+            Answer::Yes => crate::tr!("Accepted", "Accepté"),
+            Answer::No => crate::tr!("Declined", "Refusé"),
+            Answer::Silent => crate::tr!("No longer waiting", "N’attend plus"),
         };
-        (self.settle)("direct-request", peer, how);
+        (self.settle)("direct-request", peer, &how);
         match answer {
             Answer::Yes => {}
             Answer::No => {
@@ -2065,8 +2072,9 @@ impl Node {
     // ---------- sending ----------
 
     /// Sends files and folders to a connected contact. `compress`: one compressed ZIP.
+    /// (Its reason, if it can't, in this PC's language: the window's Send asks here.)
     pub async fn send(self: &Arc<Self>, contact: &str, paths: Vec<PathBuf>, compress: bool, name: Option<String>) -> Result<String, String> {
-        self.send_as(contact, paths, compress, name, None).await
+        self.send_as(contact, paths, compress, name, None).await.map_err(super::words::say)
     }
 
     /// Like `send`; `relay`: to one of your devices, for it to pass on to one of its contacts
@@ -2791,7 +2799,13 @@ impl Node {
         if !ask {
             // (A relay is quiet here: the send to the contact shows in Direct.)
             if relay_dir.is_none() {
-                self.tell(peer, "direct-incoming", "Files coming in", &format!("{} is sending you {} ({}).", contact.name, name, human(total)), Go::item(page, peer));
+                self.tell(
+                    peer,
+                    "direct-incoming",
+                    &crate::tr!("Files coming in", "Fichiers en arrivée"),
+                    &crate::tr!("{} is sending you {} ({}).", "{} vous envoie {} ({}).", crate::direct::words::who(&contact.name), name, shown_size(total)),
+                    Go::item(page, peer),
+                );
             }
             // Making the files takes a moment: off the connection's task.
             let me = self.clone();
@@ -2803,8 +2817,8 @@ impl Node {
             self.tell(
                 peer,
                 "direct-offer",
-                "Files for you",
-                &format!("{} wants to send you {} ({}).", contact.name, name, human(total)),
+                &crate::tr!("Files for you", "Des fichiers pour vous"),
+                &crate::tr!("{} wants to send you {} ({}).", "{} veut vous envoyer {} ({}).", crate::direct::words::who(&contact.name), name, shown_size(total)),
                 Go { page: page.into(), id: Some(peer.to_string()), offer: Some(id.clone()), ..Go::none() },
             );
             self.changed();
@@ -2812,8 +2826,13 @@ impl Node {
     }
 
     /// Accept (into `folder`, or the contact's folder) or decline an offer. Makes the files on
-    /// the disk: call it off the window's thread.
+    /// the disk: call it off the window's thread. (Why not, in this PC's language: the window
+    /// asks here.)
     pub fn answer_offer(self: &Arc<Self>, id: &str, accept: bool, folder: Option<String>) -> Result<(), String> {
+        self.answer_offer_now(id, accept, folder).map_err(super::words::say)
+    }
+
+    fn answer_offer_now(self: &Arc<Self>, id: &str, accept: bool, folder: Option<String>) -> Result<(), String> {
         let (peer, files, total, name, tx) = {
             let mut inner = self.inner.lock().unwrap();
             let tx = inner.incoming.get(id).and_then(|t| inner.live.get(&t.contact)).map(|l| l.tx.clone());
@@ -2897,7 +2916,7 @@ impl Node {
         }
         self.watch(id, false, received, cancel);
         let _ = tx.send(Msg::Accept { id: id.to_string(), resume });
-        (self.settle)("direct-offer", id, "Accepted");
+        (self.settle)("direct-offer", id, &crate::tr!("Accepted", "Accepté"));
         self.changed();
         Ok(())
     }
@@ -3500,12 +3519,18 @@ impl Node {
             return;
         }
         if result == "done" {
-            self.tell(&t.contact, "direct-received", "Files received", &format!("{} from {} is saved.", t.name, contact_name), Go::item(page, t.contact.clone()));
+            self.tell(
+                &t.contact,
+                "direct-received",
+                &crate::tr!("Files received", "Fichiers reçus"),
+                &crate::tr!("{} from {} is saved.", "{} de {} est enregistré.", t.name, crate::direct::words::who(&contact_name)),
+                Go::item(page, t.contact.clone()),
+            );
         }
         // An offer still waiting for your answer (or one whose accepting failed) ends: its
         // pop-up leaves and its bell line says so. (Accepted ones were settled when accepted.)
         if asked_only || t.state == "preparing" {
-            (self.settle)("direct-offer", id, if result == "declined" { "Declined" } else { "No longer waiting" });
+            (self.settle)("direct-offer", id, &if result == "declined" { crate::tr!("Declined", "Refusé") } else { crate::tr!("No longer waiting", "N’attend plus") });
         }
         self.changed();
     }
@@ -3524,8 +3549,9 @@ impl Node {
             .find(|c| c.id == contact)
             .map(|c| (c.name.clone(), if c.device { "devices" } else { "direct" }))
             .unwrap_or_default();
-        let body = if who.is_empty() { format!("Delivered: {name}.") } else { format!("{who} has received {name}.") };
-        self.tell(contact, "direct-sent", "Files delivered", &body, Go::item(if page.is_empty() { "direct" } else { page }, contact));
+        let who = super::words::who(&who);
+        let body = if who.is_empty() { crate::tr!("Delivered: {name}.", "Livré : {name}.") } else { crate::tr!("{who} has received {name}.", "{who} a reçu {name}.") };
+        self.tell(contact, "direct-sent", &crate::tr!("Files delivered", "Fichiers livrés"), &body, Go::item(if page.is_empty() { "direct" } else { page }, contact));
     }
 
     /// The sent sound (counted, for tests).
@@ -3852,7 +3878,8 @@ fn default_title(list: &[(PathBuf, OfferFile)]) -> String {
     if tops.len() == 1 {
         tops.into_iter().next().unwrap_or("files").to_string()
     } else {
-        format!("{} files", list.len())
+        // (A name, like one typed for the send: in the sender's language.)
+        crate::tr!("{} files", "{} fichiers", list.len())
     }
 }
 
@@ -3884,8 +3911,40 @@ fn updated_pc_name(name: &str, their_name: Option<&str>, their_pc: Option<&str>,
     Some((if follows { pc.clone() } else { name.to_string() }, pc))
 }
 
+/// The folder a contact's files go into by default, in the download folder: "From Rado", or
+/// « De Rado » in French. One already there under either name is kept, so switching the
+/// language never makes a second folder (and an older Pako's "From Rado" goes on being used):
+/// with both there, the one with something in it (the English one if both have, or neither).
+/// A new one is named in the language of the moment.
+fn from_folder(downloads: &Path, name: &str) -> PathBuf {
+    let safe = proto::safe_part(name);
+    let en = downloads.join(match &safe {
+        Some(n) => format!("From {n}"),
+        None => "From a contact".into(),
+    });
+    let fr = downloads.join(match &safe {
+        // One who gave no name: « De Quelqu’un », as the list shows them (words::who).
+        Some(_) if name == PLACEHOLDER => "De Quelqu’un".into(),
+        Some(n) => format!("De {n}"),
+        None => "D’un contact".into(),
+    });
+    let holds = |d: &Path| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some());
+    match (en.is_dir(), fr.is_dir()) {
+        (true, true) if holds(&fr) && !holds(&en) => fr,
+        (true, _) => en,
+        (false, true) => fr,
+        (false, false) if crate::i18n::is_fr() => fr,
+        (false, false) => en,
+    }
+}
+
 /// What a contact who gave no name is called until they do.
-const PLACEHOLDER: &str = "Someone";
+pub(super) const PLACEHOLDER: &str = "Someone";
+
+/// For the window's commands about one contact (only ever shown on this PC).
+fn not_found() -> String {
+    crate::tr!("Contact not found.", "Contact introuvable.")
+}
 
 fn clean_name(name: &str) -> Option<String> {
     let n: String = name.chars().filter(|c| !c.is_control() && !proto::is_hidden(*c)).collect::<String>().trim().chars().take(60).collect();
@@ -4275,6 +4334,37 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("timed out");
+    }
+
+    #[test]
+    fn a_contacts_folder_is_kept_whatever_the_language() {
+        let base = std::env::temp_dir().join(format!("pako-direct-from-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // Neither there: named in the language of the moment.
+        crate::i18n::test_french(false);
+        assert_eq!(from_folder(&base, "Rado"), base.join("From Rado"));
+        crate::i18n::test_french(true);
+        assert_eq!(from_folder(&base, "Rado"), base.join("De Rado"));
+        assert_eq!(from_folder(&base, "\u{202e}"), base.join("D’un contact"));
+        assert_eq!(from_folder(&base, PLACEHOLDER), base.join("De Quelqu’un"));
+        // The English one there (an older Pako's, or made before the switch): kept in French.
+        std::fs::create_dir_all(base.join("From Rado")).unwrap();
+        assert_eq!(from_folder(&base, "Rado"), base.join("From Rado"));
+        // The French one there: kept in English.
+        std::fs::create_dir_all(base.join("De Mia")).unwrap();
+        crate::i18n::test_french(false);
+        assert_eq!(from_folder(&base, "Mia"), base.join("De Mia"));
+        // Both there: the one with files in it, else the English one.
+        std::fs::create_dir_all(base.join("De Rado")).unwrap();
+        assert_eq!(from_folder(&base, "Rado"), base.join("From Rado"), "both empty");
+        std::fs::write(base.join("De Rado/a.txt"), b"a").unwrap();
+        assert_eq!(from_folder(&base, "Rado"), base.join("De Rado"), "only the French one has files");
+        std::fs::write(base.join("From Rado/b.txt"), b"b").unwrap();
+        crate::i18n::test_french(true);
+        assert_eq!(from_folder(&base, "Rado"), base.join("From Rado"), "both have files");
+        crate::i18n::test_french(false);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

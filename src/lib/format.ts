@@ -1,8 +1,39 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 import type { Download, Status } from "./api";
+import type { Key } from "./i18n.svelte.ts";
+import { words, type Lang, type Params } from "./i18n/core.ts";
+import { en } from "./i18n/en.ts";
+
+// ---------- words ----------
+
+// What this file (and alert.ts) says follows Pako's language, but the file stays loadable
+// without a window (Node tests): the window's own t() and language come in through useWords()
+// (i18n.svelte.ts, when it loads, in every window); until then, and in tests, English.
+let tr: (key: Key, params?: Params) => string = (key, params) => words(en[key] ?? key, "en", params);
+let langNow: () => Lang = () => "en";
+
+/** Hands in the window's t() and language (both reactive: what is shown follows a switch). */
+export function useWords(t: (key: Key, params?: Params) => string, lang: () => Lang) {
+  tr = t;
+  langNow = lang;
+}
+/** Pako's words for `key` in the language shown (t() for the modules that can't import it). */
+export const say = (key: Key, params?: Params): string => tr(key, params);
+/** The language shown, and its locale for Intl (numbers). */
+export const sayLang = (): Lang => langNow();
+export const sayLocale = (): string => (langNow() === "fr" ? "fr-FR" : "en-GB");
+/** Dates and times: English keeps Windows' own way (as before), French its own (24-hour). */
+const dateLocale = (): string[] => (langNow() === "fr" ? ["fr-FR"] : []);
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"];
+const UNITS_FR = ["o", "Ko", "Mo", "Go", "To"];
+const unit = (i: number) => (langNow() === "fr" ? UNITS_FR : UNITS)[i];
+/** A size's number: "1.5" in English, "1,5" in French. */
+function fixed(v: number, digits: number): string {
+  if (langNow() !== "fr") return v.toFixed(digits);
+  return new Intl.NumberFormat("fr-FR", { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: false }).format(v);
+}
 
 export function bytes(n: number | null | undefined): string {
   if (n == null) return "?";
@@ -14,37 +45,43 @@ export function bytes(n: number | null | undefined): string {
     i++;
   }
   const digits = i === 0 ? 0 : v >= 99.95 ? 0 : 1;
-  return `${v.toFixed(digits)} ${UNITS[i]}`;
+  return `${fixed(v, digits)} ${unit(i)}`;
 }
 
 /** "20.0 of 44.7 GB" — both numbers in the size's unit. */
 export function bytesOf(done: number, total: number): string {
   let i = 0;
-  let t = total;
+  let tot = total;
   // The same step up as bytes(): 1023.96 KB reads "1.0 MB", never "1024 KB".
-  while (Math.round(t) >= 1024 && i < UNITS.length - 1) {
-    t /= 1024;
+  while (Math.round(tot) >= 1024 && i < UNITS.length - 1) {
+    tot /= 1024;
     i++;
   }
   const d = done / 1024 ** i;
-  const digits = i === 0 ? 0 : t >= 99.95 ? 0 : 1;
-  return `${d.toFixed(digits)} of ${t.toFixed(digits)} ${UNITS[i]}`;
+  const digits = i === 0 ? 0 : tot >= 99.95 ? 0 : 1;
+  return say("{done} of {total} {unit}", { done: fixed(d, digits), total: fixed(tot, digits), unit: unit(i) });
 }
 
 export function speed(n: number): string {
   return `${bytes(n)}/s`;
 }
 
-export function timeLeft(remaining: number, bytesPerSec: number): string {
+/** "3 min left" (or, with `bare`, just "3 min": a duration shown under its own label). */
+export function timeLeft(remaining: number, bytesPerSec: number, opts: { bare?: boolean } = {}): string {
   if (bytesPerSec <= 0 || remaining <= 0) return "";
+  const b = !!opts.bare;
   const s = Math.round(remaining / bytesPerSec);
-  if (s < 60) return `${s} s left`;
+  if (s < 60) return b ? say("{n} s", { n: s }) : say("{n} s left", { n: s });
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} min left`;
+  if (m < 60) return b ? say("{n} min", { n: m }) : say("{n} min left", { n: m });
   const h = Math.floor(m / 60);
   const mm = m % 60;
-  if (h < 48) return mm ? `${h} h ${mm} min left` : `${h} h left`;
-  return `${Math.round(h / 24)} days left`;
+  if (h < 48) {
+    if (mm) return b ? say("{h} h {m} min", { h, m: mm }) : say("{h} h {m} min left", { h, m: mm });
+    return b ? say("{n} h", { n: h }) : say("{n} h left", { n: h });
+  }
+  const days = Math.round(h / 24);
+  return b ? say("{n} days", { n: days }) : say("{n} days left", { n: days });
 }
 
 export function extension(name: string): string {
@@ -59,10 +96,10 @@ export function findLinks(text: string): string[] {
   for (const m of text.matchAll(/https?:\/\/[^\s<>"'`[\]{}|\\^]+/gi)) {
     let link = m[0];
     for (;;) {
-      let t = link.replace(/[.,;:!?*]+$/, "");
-      if (t.endsWith(")") && !t.includes("(")) t = t.slice(0, -1);
-      if (t === link) break;
-      link = t;
+      let cut = link.replace(/[.,;:!?*]+$/, "");
+      if (cut.endsWith(")") && !cut.includes("(")) cut = cut.slice(0, -1);
+      if (cut === link) break;
+      link = cut;
     }
     if (link.length > 8 && !out.includes(link)) out.push(link);
   }
@@ -87,7 +124,7 @@ export function sourceOf(d: Download): SourceInfo {
       h = "";
     }
     const named: Record<string, string> = { "youtube.com": "YouTube", "youtu.be": "YouTube", "vimeo.com": "Vimeo", "dailymotion.com": "Dailymotion", "twitch.tv": "Twitch", "tiktok.com": "TikTok", "x.com": "X", "twitter.com": "X", "instagram.com": "Instagram", "facebook.com": "Facebook", "reddit.com": "Reddit" };
-    return { label: named[h] ?? (h || "Video"), color: "var(--src-video)", key: "video" };
+    return { label: named[h] ?? (h || say("Video")), color: "var(--src-video)", key: "video" };
   }
   let host = "";
   try {
@@ -177,38 +214,41 @@ export interface StatusLook {
   tint: boolean;
 }
 
+/** A retry message saying the internet is gone (Rust writes it in the language of the moment). */
+export const NO_NET = /^(No internet|Pas d’internet)/;
+
 export function statusLook(s: Status, message?: string | null): StatusLook {
   switch (s) {
     case "downloading":
-      return { label: "Downloading", color: "var(--st-run)", text: "var(--text)", tint: false };
+      return { label: say("Downloading"), color: "var(--st-run)", text: "var(--text)", tint: false };
     case "starting":
-      return { label: "Starting", color: "var(--st-run)", text: "var(--text-2)", tint: false };
+      return { label: say("Starting"), color: "var(--st-run)", text: "var(--text-2)", tint: false };
     case "verifying":
-      return { label: "Checking file", color: "var(--st-check)", text: "var(--st-check-text)", tint: false };
+      return { label: say("Checking file"), color: "var(--st-check)", text: "var(--st-check-text)", tint: false };
     case "retrying":
       return {
-        label: message?.startsWith("No internet") ? "No internet" : "Reconnecting",
+        label: message && NO_NET.test(message) ? say("No internet") : say("Reconnecting"),
         color: "var(--st-retry)",
         text: "var(--st-retry-text)",
         tint: false,
       };
     case "queued": {
       // From the browser, waiting for the Download with Pako window's answer.
-      if (message === "Waiting for you") return { label: "Waiting for you", color: "var(--st-wait)", text: "var(--st-wait-text)", tint: false };
+      if (message === "Waiting for you") return { label: say("Waiting for you"), color: "var(--st-wait)", text: "var(--st-wait-text)", tint: false };
       // Outside the download hours (Settings): "Scheduled · 22:00".
       const at = message?.startsWith("Waiting for the scheduled hours") ? message.match(/\((\d\d:\d\d)\)/)?.[1] : undefined;
-      return { label: at ? `Scheduled · ${at}` : "Waiting its turn", color: "var(--st-wait)", text: "var(--st-wait-text)", tint: false };
+      return { label: at ? say("Scheduled · {time}", { time: at }) : say("Waiting its turn"), color: "var(--st-wait)", text: "var(--st-wait-text)", tint: false };
     }
     case "paused":
-      return { label: "Paused", color: "var(--st-pause)", text: "var(--text-3)", tint: false };
+      return { label: say("Paused"), color: "var(--st-pause)", text: "var(--text-3)", tint: false };
     case "completed":
-      return { label: "Done", color: "var(--st-done)", text: "var(--st-done-text)", tint: false };
+      return { label: say("Done"), color: "var(--st-done)", text: "var(--st-done-text)", tint: false };
     case "failed":
-      return { label: "Failed", color: "var(--st-fail)", text: "var(--st-fail-text)", tint: true };
+      return { label: say("Failed"), color: "var(--st-fail)", text: "var(--st-fail-text)", tint: true };
     case "quotaExceeded":
-      return { label: "Google limit", color: "var(--st-limit)", text: "var(--st-limit-text)", tint: true };
+      return { label: say("Google limit"), color: "var(--st-limit)", text: "var(--st-limit-text)", tint: true };
     case "needsAccount":
-      return { label: "Only in the browser", color: "var(--st-limit)", text: "var(--st-limit-text)", tint: true };
+      return { label: say("Only in the browser"), color: "var(--st-limit)", text: "var(--st-limit-text)", tint: true };
   }
 }
 
@@ -217,11 +257,11 @@ export function statusLook(s: Status, message?: string | null): StatusLook {
  *  and "Done · private" for a private window's finished download (it leaves the list soon). */
 export function downloadLook(d: Pick<Download, "status" | "message" | "viaBrowser" | "private">): StatusLook {
   const look = statusLook(d.status, d.message);
-  if (d.status === "completed" && d.private) return { ...look, label: "Done · private" };
+  if (d.status === "completed" && d.private) return { ...look, label: say("Done · private") };
   if (!d.viaBrowser) return look;
-  if (d.message === "Waiting for your browser") return { ...look, label: "Waiting for your browser", text: "var(--text-3)" };
-  if (d.status === "downloading") return { ...look, label: "Via browser" };
-  if (d.status === "paused") return { ...look, label: "Paused · via browser" };
+  if (d.message === "Waiting for your browser") return { ...look, label: say("Waiting for your browser"), text: "var(--text-3)" };
+  if (d.status === "downloading") return { ...look, label: say("Via browser") };
+  if (d.status === "paused") return { ...look, label: say("Paused · via browser") };
   return look;
 }
 
@@ -255,10 +295,10 @@ export function mostUrgent(statuses: Status[]): Status {
 /** What a Sent item's downloads look like: "Not downloaded yet", "Downloaded 3 times", or
  *  "Gone from Gofile". Null when Pako doesn't know yet. */
 export function sentLook(s: { downloads?: number | null; gone?: boolean }): { label: string; text: string; dot: string } | null {
-  if (s.gone) return { label: "Gone from Gofile", text: "var(--st-fail-text)", dot: "var(--st-fail)" };
+  if (s.gone) return { label: say("Gone from Gofile"), text: "var(--st-fail-text)", dot: "var(--st-fail)" };
   if (s.downloads == null) return null;
-  if (s.downloads === 0) return { label: "Not downloaded yet", text: "var(--text-3)", dot: "var(--st-pause)" };
-  const label = s.downloads === 1 ? "Downloaded once" : `Downloaded ${s.downloads.toLocaleString()} times`;
+  if (s.downloads === 0) return { label: say("Not downloaded yet"), text: "var(--text-3)", dot: "var(--st-pause)" };
+  const label = s.downloads === 1 ? say("Downloaded once") : say("Downloaded {count} times", { count: s.downloads.toLocaleString(sayLang() === "fr" ? "fr-FR" : undefined) });
   return { label, text: "var(--st-done-text)", dot: "var(--st-done)" };
 }
 
@@ -317,26 +357,27 @@ export function shortDate(ms: number): string {
   if (!ms) return "—";
   const d = new Date(ms);
   const now = new Date();
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const loc = dateLocale();
+  const time = d.toLocaleTimeString(loc, { hour: "2-digit", minute: "2-digit" });
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  if (d.toDateString() === now.toDateString()) return `Today ${time}`;
-  if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
-  if (d.getFullYear() === now.getFullYear()) return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
-  return d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+  if (d.toDateString() === now.toDateString()) return say("Today {time}", { time });
+  if (d.toDateString() === yesterday.toDateString()) return say("Yesterday {time}", { time });
+  if (d.getFullYear() === now.getFullYear()) return `${d.toLocaleDateString(loc, { day: "numeric", month: "short" })} ${time}`;
+  return d.toLocaleDateString(loc, { day: "numeric", month: "short", year: "numeric" });
 }
 
 /** Hover text for a date: "Added Sunday, 15 November 2026 at 14:32" (+ finished). */
 export function dateTitle(added: number, finished: number | null = null): string {
-  const full = (ms: number) => new Date(ms).toLocaleString([], { dateStyle: "full", timeStyle: "short" });
-  return `Added ${full(added)}` + (finished ? `\nFinished ${full(finished)}` : "");
+  const full = (ms: number) => new Date(ms).toLocaleString(dateLocale(), { dateStyle: "full", timeStyle: "short" });
+  return say("Added {date}", { date: full(added) }) + (finished ? "\n" + say("Finished {date}", { date: full(finished) }) : "");
 }
 
 /** "22:00" from minutes after midnight, and back. */
 export function hhmm(m: number): string {
   return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
-export function minutesOf(t: string): number {
-  const [h, m] = t.split(":").map((x) => parseInt(x, 10) || 0);
+export function minutesOf(text: string): number {
+  const [h, m] = text.split(":").map((x) => parseInt(x, 10) || 0);
   return (h % 24) * 60 + (m % 60);
 }
 

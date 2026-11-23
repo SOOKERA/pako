@@ -1,127 +1,60 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
-// The guides in docs/help/, bundled into Pako when it's built (one source of truth with the website).
-import { parse, plain, type Block } from "./markdown";
+// The guides in docs/help/, bundled into Pako when it's built (one source of truth with the website),
+// in the language Pako shows: docs/help/fr/ in French, the English guide where there's no French one.
+import { i18n, type Lang } from "../i18n.svelte";
+import { parse, type Block } from "./markdown";
+import { buildGuides, buildWhatsNew, searchGuides, type Files, type Guide, type Hit, type WhatsNew } from "./guides";
 import { sinceSeen } from "./versions";
 import licenceText from "../../../LICENSE?raw";
 import noticeText from "../../../NOTICE.md?raw";
 import termsText from "../../../TERMS.md?raw";
 
-const files = import.meta.glob("../../../docs/help/*.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-const byName = new Map(Object.entries(files).map(([path, text]) => [path.split("/").pop()!, text]));
+export type { Guide, Hit, Section, WhatsNew } from "./guides";
 
-export interface Section {
-  id: string;
-  title: string;
-  level: number;
-  /** The section's words, for search. */
-  text: string;
+// docs/help/fr/TRADUCTION.md is the translators' note, not a guide.
+const files = import.meta.glob(["../../../docs/help/*.md", "../../../docs/help/fr/*.md", "!../../../docs/help/fr/TRADUCTION.md"], {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+const byLang: Record<Lang, Files> = { en: new Map(), fr: new Map() };
+for (const [path, text] of Object.entries(files)) {
+  const parts = path.split("/");
+  const name = parts.pop()!;
+  byLang[parts.pop() === "fr" ? "fr" : "en"].set(name, text);
 }
 
-export interface Guide {
-  /** File name, e.g. "downloading.md". */
-  file: string;
-  title: string;
-  /** One line from the Help index. */
-  about: string;
-  blocks: Block[];
-  sections: Section[];
-}
-
-function sectionsOf(blocks: Block[]): Section[] {
-  const out: Section[] = [];
-  let cur: Section | null = null;
-  for (const b of blocks) {
-    if (b.kind === "heading" && b.level >= 2) {
-      cur = { id: b.id, title: b.text, level: b.level, text: b.text };
-      out.push(cur);
-    } else if (cur && b.kind === "para") cur.text += " " + b.inline.map((t) => t.text).join("");
-    else if (cur && b.kind === "list") cur.text += " " + b.items.map((it) => it.map((t) => t.text).join("")).join(" ");
+// Each language is read once, the first time it shows.
+const made = new Map<Lang, { guides: Guide[]; whatsNew: WhatsNew[] }>();
+function shown() {
+  const lang = i18n.lang;
+  let m = made.get(lang);
+  if (!m) {
+    const local = lang === "en" ? undefined : byLang[lang];
+    m = {
+      guides: buildGuides(byLang.en, local),
+      whatsNew: buildWhatsNew(byLang.en.get("whats-new.md") ?? "", local?.get("whats-new.md")),
+    };
+    made.set(lang, m);
   }
-  return out;
+  return m;
 }
 
-/** The guides in the order of the Help index (docs/help/README.md). */
-export const guides: Guide[] = (() => {
-  const index = byName.get("README.md") ?? "";
-  const out: Guide[] = [];
-  for (const m of index.matchAll(/^\s*\d+\.\s+\[([^\]]+)\]\(([^)]+\.md)\):?\s*(.*)$/gm)) {
-    const text = byName.get(m[2]);
-    if (!text) continue;
-    const blocks = parse(text);
-    const h1 = blocks.find((b) => b.kind === "heading" && b.level === 1);
-    out.push({
-      file: m[2],
-      title: h1 && h1.kind === "heading" ? h1.text : m[1],
-      about: plain(m[3])
-        .replace(/\.$/, "")
-        .replace(/^./, (c) => c.toUpperCase()),
-      // The title is shown by the Help panel itself.
-      blocks: blocks.filter((b) => b !== h1),
-      sections: sectionsOf(blocks),
-    });
-  }
-  return out;
-})();
+/** The guides in the order of the Help index (docs/help/README.md), in the language shown. */
+export const guides = (): Guide[] => shown().guides;
 
-export const guideByFile = (file: string) => guides.find((g) => g.file === file);
+export const guideByFile = (file: string) => guides().find((g) => g.file === file);
 
-export interface WhatsNew {
-  /** The section's heading: a version ("0.2.0") or "Next version" before the release. */
-  version: string;
-  blocks: Block[];
-}
-
-/** whats-new.md, one entry per "## <version>" section, newest first. */
-export const whatsNew: WhatsNew[] = (() => {
-  const blocks = parse(byName.get("whats-new.md") ?? "");
-  const out: WhatsNew[] = [];
-  for (const b of blocks) {
-    if (b.kind === "heading" && b.level === 1) continue;
-    if (b.kind === "heading" && b.level === 2) out.push({ version: b.text, blocks: [] });
-    else out[out.length - 1]?.blocks.push(b);
-  }
-  return out;
-})();
+/** whats-new.md, one entry per "## <version>" section, newest first, in the language shown. */
+export const whatsNew = (): WhatsNew[] => shown().whatsNew;
 
 /** What's new to show once after an update: every version since `seen` (the one you had),
  *  newest first; just `version`'s own without a known `seen`. Empty when there's nothing. */
-export const whatsNewSince = (seen: string | null | undefined, version: string) => sinceSeen(whatsNew, seen, version);
+export const whatsNewSince = (seen: string | null | undefined, version: string) => sinceSeen(whatsNew(), seen, version);
 
-export interface Hit {
-  guide: Guide;
-  section: Section | null;
-  /** A few words around the match. */
-  snippet: string;
-}
-
-/** Search every guide: sections whose title or words have all the words typed. Titles first. */
-export function search(query: string): Hit[] {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return [];
-  const has = (s: string) => {
-    const l = s.toLowerCase();
-    return words.every((w) => l.includes(w));
-  };
-  const hits: (Hit & { score: number })[] = [];
-  for (const g of guides) {
-    if (has(g.title + " " + g.about)) hits.push({ guide: g, section: null, snippet: g.about, score: 3 });
-    for (const s of g.sections) {
-      if (!has(s.text)) continue;
-      const inTitle = has(s.title);
-      hits.push({ guide: g, section: s, snippet: snippet(s.text.slice(s.title.length).trim(), words[0]), score: inTitle ? 2 : 1 });
-    }
-  }
-  return hits.sort((a, b) => b.score - a.score).slice(0, 30);
-}
-
-function snippet(text: string, word: string): string {
-  const at = text.toLowerCase().indexOf(word);
-  if (at < 0) return text.slice(0, 110) + (text.length > 110 ? "…" : "");
-  const from = Math.max(0, text.lastIndexOf(" ", Math.max(0, at - 40)));
-  const cut = text.slice(from, from + 120).trim();
-  return (from > 0 ? "…" : "") + cut + (from + 120 < text.length ? "…" : "");
-}
+/** Search the guides shown: sections whose title or words have all the words typed. Titles first. */
+export const search = (query: string): Hit[] => searchGuides(guides(), query);
 
 // ---------- About Pako: the legal notices (GPL section 0 and NOTICE.md term 1) ----------
 

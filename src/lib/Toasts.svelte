@@ -4,11 +4,12 @@
   import { app } from "./state.svelte";
   import { fadeIn, toastIn, flipIf, flipOpts } from "./motion";
   import Icon from "./Icon.svelte";
+  import { said, t } from "./i18n.svelte";
 
   /** `plain`: only messages without a button (the small tray window: "Link copied", what went
    *  wrong; "Show" and "Restart now" belong to Pako's own window). */
   let { plain = false }: { plain?: boolean } = $props();
-  const list = $derived(plain ? app.toasts.filter((t) => !t.action) : app.toasts);
+  const list = $derived(plain ? app.toasts.filter((m) => !m.action) : app.toasts);
   function hold(on: boolean) {
     app.toastHold = on;
     if (!on) app.toastFree = performance.now();
@@ -19,26 +20,26 @@
   class="toasts"
   aria-live="polite"
   role="region"
-  aria-label="Messages"
+  aria-label={t("Messages")}
   onpointerenter={() => hold(true)}
   onpointerleave={() => hold(false)}
   onfocusin={() => hold(true)}
   onfocusout={() => hold(false)}
 >
-  {#each list as t (t.id)}
-    <div class="toast" class:error={t.kind === "error"} role={t.kind === "error" ? "alert" : undefined} in:toastIn out:fadeIn={{ duration: 140 }} animate:flipIf={flipOpts}>
-      <Icon name={t.kind === "error" ? "alert" : "check"} size={14} stroke={2} />
-      <span>{t.text}</span>
-      {#if t.action}
+  {#each list as m (m.id)}
+    <div class="toast" class:error={m.kind === "error"} role={m.kind === "error" ? "alert" : undefined} in:toastIn out:fadeIn={{ duration: 140 }} animate:flipIf={flipOpts}>
+      <Icon name={m.kind === "error" ? "alert" : "check"} size={14} stroke={2} />
+      <span>{said(m.text)}</span>
+      {#if m.action}
         <button
           class="act"
           onclick={() => {
-            app.toasts = app.toasts.filter((x) => x.id !== t.id);
-            t.action?.run();
-          }}>{t.action.label}</button
+            app.toasts = app.toasts.filter((x) => x.id !== m.id);
+            m.action?.run();
+          }}>{said(m.action.label)}</button
         >
       {/if}
-      <button aria-label="Dismiss" onclick={() => (app.toasts = app.toasts.filter((x) => x.id !== t.id))}><Icon name="x" size={11} stroke={2.2} /></button>
+      <button aria-label={t("Dismiss")} onclick={() => (app.toasts = app.toasts.filter((x) => x.id !== m.id))}><Icon name="x" size={11} stroke={2.2} /></button>
     </div>
   {/each}
 </div>

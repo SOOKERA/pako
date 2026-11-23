@@ -578,22 +578,49 @@ fn toggle_mini(app: &AppHandle, near: PhysicalPosition<f64>) {
     }
 }
 
-pub fn setup(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Pako", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let pause = MenuItem::with_id(app, "pause", "Pause all", true, None::<&str>)?;
-    let resume = MenuItem::with_id(app, "resume", "Resume all", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Pako", true, None::<&str>)?;
+/// The tray icon's menu, in the language of the moment.
+fn words_menu<R: tauri::Runtime, M: Manager<R>>(app: &M) -> tauri::Result<Menu<R>> {
+    let open = MenuItem::with_id(app, "open", tr!("Open Pako", "Ouvrir Pako"), true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", tr!("Settings…", "Paramètres…"), true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause", tr!("Pause all", "Tout mettre en pause"), true, None::<&str>)?;
+    let resume = MenuItem::with_id(app, "resume", tr!("Resume all", "Tout reprendre"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", tr!("Quit Pako", "Quitter Pako"), true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &settings, &sep1, &pause, &resume, &sep2, &quit])?;
+    Menu::with_items(app, &[&open, &settings, &sep1, &pause, &resume, &sep2, &quit])
+}
+
+/// The tray icon's words when nothing calls for attention: the terms of use still to accept (a
+/// Pako just updated in the tray) are said quietly; the window opens on them when the user opens
+/// Pako or the browser sends it something.
+fn plain_tooltip() -> String {
+    if crate::consent::ok() { "Pako".into() } else { tr!("Pako: open it to continue", "Pako : ouvrez-le pour continuer") }
+}
+
+/// The tooltip for the bell's dot (on: something unread).
+fn tooltip(dot: bool) -> String {
+    if dot { tr!("Pako: new notifications", "Pako : nouvelles notifications") } else { plain_tooltip() }
+}
+
+/// The language changed: the tray's menu and tooltip are made again in the new one.
+pub fn refresh_words(app: &AppHandle) {
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(tray) = a.tray_by_id("pako") else { return };
+        if let Ok(menu) = words_menu(&a) {
+            let _ = tray.set_menu(Some(menu));
+        }
+        let _ = tray.set_tooltip(Some(tooltip(*DOT_SHOWN.lock().unwrap())));
+    });
+}
+
+pub fn setup(app: &tauri::App) -> tauri::Result<()> {
+    let menu = words_menu(app)?;
 
     let last_double: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
-    // Terms of use still to accept (a Pako just updated in the tray): said quietly here; the
-    // window opens on them when the user opens Pako or the browser sends it something.
     let mut tray = TrayIconBuilder::with_id("pako")
-        .tooltip(if crate::consent::ok() { "Pako" } else { "Pako: open it to continue" })
+        .tooltip(plain_tooltip())
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, e| {
@@ -689,7 +716,7 @@ pub fn show_dot(app: &AppHandle) {
         }
         if let Some(tray) = a.tray_by_id("pako") {
             let _ = tray.set_icon(Some(if on { dotted.clone() } else { plain.clone() }));
-            let _ = tray.set_tooltip(Some(if on { "Pako: new notifications" } else { "Pako" }));
+            let _ = tray.set_tooltip(Some(tooltip(on)));
         }
     });
 }

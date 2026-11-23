@@ -21,6 +21,7 @@
   import DeviceLinks from "./DeviceLinks.svelte";
   import RemoteRow from "./RemoteRow.svelte";
   import { fadeIn, pop, rowSlide } from "./motion";
+  import { around, t } from "./i18n.svelte";
 
   let { device: x, state: s }: { device: Device; state: DevicesState } = $props();
 
@@ -28,18 +29,18 @@
   let tab = $state<Tab>("files");
 
   const status = $derived.by(() => {
-    if (x.asksToPair) return "Wants to pair: confirm above";
-    if (!x.paired) return x.online ? "Connected · not confirmed on it yet" : "Confirm on the other PC (it asks there)";
-    if (x.online) return `Online · ${pathLabel(x.path) || "connected"}`;
-    if (!s.internet) return "Not reachable without internet";
-    return `Offline · ${ago(x.lastSeen)}`;
+    if (x.asksToPair) return t("Wants to pair: confirm above");
+    if (!x.paired) return x.online ? t("Connected · not confirmed on it yet") : t("Confirm on the other PC (it asks there)");
+    if (x.online) return t("Online · {how}", { how: pathLabel(x.path) || t("connected") });
+    if (!s.internet) return t("Not reachable without internet");
+    return t("Offline · {seen}", { seen: ago(x.lastSeen) });
   });
 
   // ---------- Files ----------
-  type Row = { kind: "history"; h: DirectHistory } | { kind: "moving"; t: DirectTransfer };
+  type Row = { kind: "history"; h: DirectHistory } | { kind: "moving"; m: DirectTransfer };
   const rows = $derived<Row[]>([
     ...s.history.filter((h) => h.contact === x.id).map((h) => ({ kind: "history" as const, h })),
-    ...s.transfers.filter((t) => t.contact === x.id).map((t) => ({ kind: "moving" as const, t })),
+    ...s.transfers.filter((m) => m.contact === x.id).map((m) => ({ kind: "moving" as const, m })),
   ]);
   let timeline: HTMLDivElement | undefined = $state();
   let scrolledOnce = false;
@@ -52,43 +53,42 @@
     queueMicrotask(() => timeline?.scrollTo({ top: timeline.scrollHeight, behavior: glide ? "smooth" : "auto" }));
   });
   const last: Record<string, { at: number; done: number; speed: number }> = {};
-  function speedOf(t: DirectTransfer) {
+  function speedOf(m: DirectTransfer) {
     const now = performance.now();
-    const p = last[t.id];
+    const p = last[m.id];
     if (!p) {
-      last[t.id] = { at: now, done: t.done, speed: 0 };
+      last[m.id] = { at: now, done: m.done, speed: 0 };
       return 0;
     }
     if (now - p.at > 400) {
-      const v = ((t.done - p.done) * 1000) / (now - p.at);
+      const v = ((m.done - p.done) * 1000) / (now - p.at);
       p.speed = p.speed ? p.speed * 0.6 + v * 0.4 : v;
       p.at = now;
-      p.done = t.done;
+      p.done = m.done;
     }
     return p.speed;
   }
-  const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
   function resultText(h: DirectHistory) {
-    if (h.result === "done") return h.outgoing ? "Delivered" : "Received";
-    if (h.result === "cancelled") return "Cancelled";
-    if (h.result === "declined") return "Declined";
-    return h.message ?? "Didn't go through";
+    if (h.result === "done") return h.outgoing ? t("Delivered") : t("Received");
+    if (h.result === "cancelled") return t("Cancelled");
+    if (h.result === "declined") return t("Declined");
+    return h.message ?? t("Didn't go through");
   }
-  function movingText(t: DirectTransfer) {
-    if (t.state === "offered") return "Starting…";
-    if (t.state === "preparing") return "Getting ready…";
-    if (t.state === "checking") return "Checking the files…";
-    if (t.state === "waiting") return `Waiting for ${x.name} to continue · ${percent(t.done, t.size)}% done`;
-    return `${percent(t.done, t.size)}% · ${bytes(t.done)} of ${bytes(t.size)}`;
+  function movingText(m: DirectTransfer) {
+    if (m.state === "offered") return t("Starting…");
+    if (m.state === "preparing") return t("Getting ready…");
+    if (m.state === "checking") return t("Checking the files…");
+    if (m.state === "waiting") return t("Waiting for {name} to continue · {pct}% done", { name: x.name, pct: percent(m.done, m.size) });
+    return t("{pct}% · {done} of {total}", { pct: percent(m.done, m.size), done: bytes(m.done), total: bytes(m.size) });
   }
   /** Cards unfolded (what was in them shown). */
   let unfolded = $state<Record<string, boolean>>({});
   /** One file or folder of a received transfer (a program or script is shown in its folder). */
   async function openPart(id: string, part: number, reveal: boolean) {
-    if (await api.directOpen(id, reveal, part)) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
+    if (await api.directOpen(id, reveal, part)) app.toast(t("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it."));
   }
   async function openReceived(id: string) {
-    if (await api.directOpen(id, false)) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
+    if (await api.directOpen(id, false)) app.toast(t("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it."));
   }
   let sending = $state(false);
   function sent(ok: boolean, message: string) {
@@ -108,8 +108,8 @@
     }
   }
   async function chooseFiles(dir: boolean) {
-    if (!inApp) return app.toast("Preview mode: nothing is sent.");
-    const r = await pick({ multiple: true, directory: dir, title: dir ? `Folders to send to ${x.name}` : `Files to send to ${x.name}` });
+    if (!inApp) return app.toast(t("Preview mode: nothing is sent."));
+    const r = await pick({ multiple: true, directory: dir, title: dir ? t("Folders to send to {name}", { name: x.name }) : t("Files to send to {name}", { name: x.name }) });
     await sendPaths(Array.isArray(r) ? r : r ? [r] : []);
   }
   // Dropped from Explorer: read by the window, then sent (see devices.svelte.ts).
@@ -154,8 +154,8 @@
 
   // ---------- Settings ----------
   async function changeFolder() {
-    if (!inApp) return app.toast("Preview mode: no folder picker.");
-    const r = await pick({ directory: true, multiple: false, title: `Where files from ${x.name} are saved` });
+    if (!inApp) return app.toast(t("Preview mode: no folder picker."));
+    const r = await pick({ directory: true, multiple: false, title: t("Where files from {name} are saved", { name: x.name }) });
     if (typeof r === "string") await app.run(() => devicesApi.setFolder(x.id, r)).then(() => devices.refresh());
   }
   async function toggleControl() {
@@ -168,8 +168,16 @@
   let removing = $state(false);
   let clearing = $state(false);
   function copyId() {
-    app.run(() => api.copyText(x.id)).then(() => app.toast(`${x.name}'s Pako ID is copied.`));
+    app.run(() => api.copyText(x.id)).then(() => app.toast(t("{name}'s Pako ID is copied.", { name: x.name })));
   }
+  /** "To finish pairing, confirm on <b>{name}</b>…": the code in bold in the middle. */
+  const finishLine = $derived(around(t("To finish pairing, confirm on {name}: it asks there, in My devices, with this safety code: {code}", { name: x.name }), "{code}"));
+  const tabs = $derived([
+    { value: "files", label: t("Files") },
+    { value: "links", label: t("Links") },
+    { value: "downloads", label: t("Downloads") },
+    { value: "settings", label: t("Settings") },
+  ]);
 </script>
 
 <!-- A card's chevron, and what was in it unfolded (as in Direct). -->
@@ -179,8 +187,8 @@
     class:open={unfolded[key]}
     aria-expanded={!!unfolded[key]}
     aria-controls="items-{key}"
-    aria-label={unfolded[key] ? `Hide what was in ${name}` : `Show what was in ${name}`}
-    title={unfolded[key] ? "Hide the files" : "Show the files"}
+    aria-label={unfolded[key] ? t("Hide what was in {name}", { name }) : t("Show what was in {name}", { name })}
+    title={unfolded[key] ? t("Hide the files") : t("Show the files")}
     onclick={() => (unfolded[key] = !unfolded[key])}><Icon name="chevron" size={12} stroke={2.4} /></button
   >
 {/snippet}
@@ -196,7 +204,7 @@
 <section class="pane card" role="presentation" data-tour="devices-pane" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping}
     <div class="dropzone" aria-hidden="true" transition:fadeIn={{ duration: 120 }}>
-      <div class="dropcard"><Icon name="send" size={20} />Drop to send to {x.name}</div>
+      <div class="dropcard"><Icon name="send" size={20} />{t("Drop to send to {name}", { name: x.name })}</div>
     </div>
   {/if}
   <header class="head">
@@ -207,26 +215,18 @@
     </div>
     <div class="spacer"></div>
     {#if !x.online && x.device}
-      <button class="btn small" onclick={() => app.run(() => api.directConnect(x.id))}><Icon name="retry" size={12} />Connect</button>
+      <button class="btn small" onclick={() => app.run(() => api.directConnect(x.id))}><Icon name="retry" size={12} />{t("Connect")}</button>
     {/if}
     <div class="tabwrap" data-tour="devices-tabs">
     <!-- Narrow (a small window, the details beside it): a menu instead, so the name keeps room. -->
-    <select class="input small tabmenu" aria-label="Show" value={tab} onchange={(e) => (tab = e.currentTarget.value as Tab)}>
-      <option value="files">Files</option>
-      <option value="links">Links</option>
-      <option value="downloads">Downloads</option>
-      <option value="settings">Settings</option>
+    <select class="input small tabmenu" aria-label={t("Show")} value={tab} onchange={(e) => (tab = e.currentTarget.value as Tab)}>
+      {#each tabs as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
     </select>
     <div class="tabs">
       <SegPick
         small
-        label="Show"
-        options={[
-          { value: "files", label: "Files" },
-          { value: "links", label: "Links" },
-          { value: "downloads", label: "Downloads" },
-          { value: "settings", label: "Settings" },
-        ]}
+        label={t("Show")}
+        options={tabs}
         value={tab}
         onpick={(v) => (tab = v as Tab)}
       />
@@ -237,7 +237,7 @@
   {#if x.device && !x.paired}
     <div class="note" transition:rowSlide={{ duration: 220 }}>
       <Icon name="alert" size={14} />
-      <span>To finish pairing, confirm on {x.name}: it asks there, in My devices, with this safety code: <b class="mono">{x.code}</b>{#if x.online}. If it doesn't ask, update Pako on {x.name}: older Pakos don't know My devices.{/if}</span>
+      <span>{finishLine[0]}<b class="mono">{x.code}</b>{finishLine[1]}{#if x.online}. {t("If it doesn't ask, update Pako on {name}: older Pakos don't know My devices.", { name: x.name })}{/if}</span>
     </div>
   {/if}
 
@@ -245,20 +245,20 @@
     <div class="tabbody" in:fadeIn={{ duration: 160 }}>
       {#if tab === "files"}
         <div class="timeline" bind:this={timeline}>
-          {#each rows as r (r.kind === "history" ? `h:${r.h.outgoing ? "o" : "i"}:${r.h.id}` : `t:${r.t.outgoing ? "o" : "i"}:${r.t.id}`)}
+          {#each rows as r (r.kind === "history" ? `h:${r.h.outgoing ? "o" : "i"}:${r.h.id}` : `t:${r.m.outgoing ? "o" : "i"}:${r.m.id}`)}
             {#if r.kind === "history"}
               {@const h = r.h}
               <div class="msg" class:out={h.outgoing} class:bad={h.result !== "done"} in:pop={{ duration: 240, from: 0.98, y: 8, origin: h.outgoing ? "right bottom" : "left bottom" }}>
                 <div class="bubble">
                   <div class="mtop"><FileIcon name={h.name} kind={h.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={h.name} class="mname" />{#if hasList(h.items, h.more)}{@render chev(`i:${h.outgoing ? "o" : "i"}:${h.id}`, h.name)}{/if}</div>
-                  <div class="mmeta">{itemsCount(h.files, h.items, h.more)} · {bytes(h.size)}{#if h.relayTo}{` · for ${h.relayTo}`}{/if}</div>
+                  <div class="mmeta">{itemsCount(h.files, h.items, h.more)} · {bytes(h.size)}{#if h.relayTo}{` · ${t("for {name}", { name: h.relayTo })}`}{/if}</div>
                   <div class="mfoot">
                     <span class="res" class:ok={h.result === "done"}>{resultText(h)}</span>
                     <span class="dim">{shortDate(h.date)}{#if h.path}{" · " + pathLabel(h.path)}{/if}</span>
                     {#if !h.outgoing && h.result === "done" && h.savedTo}
                       <span class="acts">
-                        <button class="link" onclick={() => app.run(() => openReceived(h.id))}>Open</button>
-                        <button class="link" onclick={() => app.run(() => api.directOpen(h.id, true))}>Folder</button>
+                        <button class="link" onclick={() => app.run(() => openReceived(h.id))}>{t("Open")}</button>
+                        <button class="link" onclick={() => app.run(() => api.directOpen(h.id, true))}>{t("Folder")}</button>
                       </span>
                     {/if}
                   </div>
@@ -266,41 +266,41 @@
                 </div>
               </div>
             {:else}
-              {@const t = r.t}
-              <div class="msg live" class:out={t.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: t.outgoing ? "right bottom" : "left bottom" }}>
+              {@const m = r.m}
+              <div class="msg live" class:out={m.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: m.outgoing ? "right bottom" : "left bottom" }}>
                 <div class="bubble">
-                  <div class="mtop"><FileIcon name={t.name} kind={t.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={t.name} class="mname" />{#if hasList(t.items, t.more)}{@render chev(`i:${t.outgoing ? "o" : "i"}:${t.id}`, t.name)}{/if}</div>
-                  <div class="mmeta">{itemsCount(t.files, t.items, t.more)} · {bytes(t.size)}{#if t.relayTo}{` · for ${t.relayTo}`}{/if}</div>
-                  <div class="bar" class:waiting={t.state === "waiting"}><i style:transform="scaleX({Math.min(1, t.done / Math.max(1, t.size))})"></i></div>
+                  <div class="mtop"><FileIcon name={m.name} kind={m.files > 1 ? "folder" : undefined} size={18} /><MiddleText text={m.name} class="mname" />{#if hasList(m.items, m.more)}{@render chev(`i:${m.outgoing ? "o" : "i"}:${m.id}`, m.name)}{/if}</div>
+                  <div class="mmeta">{itemsCount(m.files, m.items, m.more)} · {bytes(m.size)}{#if m.relayTo}{` · ${t("for {name}", { name: m.relayTo })}`}{/if}</div>
+                  <div class="bar" class:waiting={m.state === "waiting"}><i style:transform="scaleX({Math.min(1, m.done / Math.max(1, m.size))})"></i></div>
                   <div class="mfoot">
-                    <span class="dim">{movingText(t)}{#if t.state === "sending" || t.state === "receiving"}{" · " + speed(speedOf(t))}{/if}{#if t.path}{" · " + pathLabel(t.path)}{/if}</span>
-                    <button class="link end" onclick={() => app.run(() => api.directCancel(t.id))}>Cancel</button>
+                    <span class="dim">{movingText(m)}{#if m.state === "sending" || m.state === "receiving"}{" · " + speed(speedOf(m))}{/if}{#if m.path}{" · " + pathLabel(m.path)}{/if}</span>
+                    <button class="link end" onclick={() => app.run(() => api.directCancel(m.id))}>{t("Cancel")}</button>
                   </div>
-                  {@render fold(`i:${t.outgoing ? "o" : "i"}:${t.id}`, t.items, t.more, null)}
+                  {@render fold(`i:${m.outgoing ? "o" : "i"}:${m.id}`, m.items, m.more, null)}
                 </div>
               </div>
             {/if}
           {:else}
             <div class="nothing">
               <Icon name="send" size={20} />
-              <p>Nothing sent between this PC and {x.name} yet.</p>
-              <p class="dim">Drop files or folders here: they go straight to {x.name}, no Accept needed.</p>
+              <p>{t("Nothing sent between this PC and {name} yet.", { name: x.name })}</p>
+              <p class="dim">{t("Drop files or folders here: they go straight to {name}, no Accept needed.", { name: x.name })}</p>
             </div>
           {/each}
         </div>
         <footer class="compose" data-tour="devices-send">
           <span class="dim grow">
-            {#if !x.paired}Files go without asking once both PCs confirmed.{:else if x.online}Drop files or folders anywhere here to send them to {x.name}.{:else}{x.name} is offline: files go only while both PCs are on.{/if}
+            {#if !x.paired}{t("Files go without asking once both PCs confirmed.")}{:else if x.online}{t("Drop files or folders anywhere here to send them to {name}.", { name: x.name })}{:else}{t("{name} is offline: files go only while both PCs are on.", { name: x.name })}{/if}
           </span>
-          <button class="btn small" disabled={!x.online || sending} onclick={() => chooseFiles(false)}><Icon name="file" size={12} />Choose files</button>
-          <button class="btn small" disabled={!x.online || sending} onclick={() => chooseFiles(true)}><Icon name="folder" size={12} />Choose folder</button>
+          <button class="btn small" disabled={!x.online || sending} onclick={() => chooseFiles(false)}><Icon name="file" size={12} />{t("Choose files")}</button>
+          <button class="btn small" disabled={!x.online || sending} onclick={() => chooseFiles(true)}><Icon name="folder" size={12} />{t("Choose folder")}</button>
         </footer>
       {:else if tab === "links"}
         {#if !canControl}
           <div class="blank">
             <div class="blank-icon"><Icon name="link" size={22} /></div>
-            <p><b>{x.name} doesn't let this PC start its downloads.</b></p>
-            <p class="dim">On {x.name}: My devices › this PC › Settings, turn on "This device can control my Pako".</p>
+            <p><b>{t("{name} doesn't let this PC start its downloads.", { name: x.name })}</b></p>
+            <p class="dim">{t('On {name}: My devices › this PC › Settings, turn on "… can control my Pako".', { name: x.name })}</p>
           </div>
         {:else}
           <DeviceLinks device={x} state={s} ongot={() => (tab = "files")} />
@@ -309,20 +309,20 @@
         {#if !canControl}
           <div class="blank">
             <div class="blank-icon"><Icon name="download" size={22} /></div>
-            <p><b>{x.name} doesn't let this PC see or start its downloads.</b></p>
-            <p class="dim">On {x.name}: My devices › this PC › Settings, turn on "This device can control my Pako".</p>
+            <p><b>{t("{name} doesn't let this PC see or start its downloads.", { name: x.name })}</b></p>
+            <p class="dim">{t('On {name}: My devices › this PC › Settings, turn on "… can control my Pako".', { name: x.name })}</p>
           </div>
         {:else}
           <div class="rlist">
             {#if !x.online}
-              <p class="dim pad">{x.name} is offline. Its downloads show here while it's on.</p>
+              <p class="dim pad">{t("{name} is offline. Its downloads show here while it's on.", { name: x.name })}</p>
             {:else if !remote}
-              <p class="dim pad">Asking {x.name} for its downloads…</p>
+              <p class="dim pad">{t("Asking {name} for its downloads…", { name: x.name })}</p>
             {:else}
               {#each remote as it (it.id)}
                 <RemoteRow device={x} item={it} ongot={() => (tab = "files")} />
               {:else}
-                <p class="dim pad">No downloads on {x.name}.</p>
+                <p class="dim pad">{t("No downloads on {name}.", { name: x.name })}</p>
               {/each}
             {/if}
           </div>
@@ -331,47 +331,47 @@
         <div class="settings">
           <div class="srow">
             <div class="stext">
-              <div class="slabel">Files from {x.name} are saved in</div>
+              <div class="slabel">{t("Files from {name} are saved in", { name: x.name })}</div>
               <div class="path mono" title={x.folder}>{x.folder}</div>
-              <div class="shint">Files from this device are saved here, and only here. {x.name} can't pick another place on this PC.</div>
+              <div class="shint">{t("Files from this device are saved here, and only here. {name} can't pick another place on this PC.", { name: x.name })}</div>
             </div>
-            <button class="btn small" onclick={changeFolder}><Icon name="folder" size={12} />Change…</button>
+            <button class="btn small" onclick={changeFolder}><Icon name="folder" size={12} />{t("Change…")}</button>
           </div>
           {#if x.device}
             <div class="srow">
               <div class="stext">
-                <div class="slabel">{x.name} can control my Pako</div>
-                <div class="shint">It can see this PC's downloads, add links to them (into this PC's download folder, or a folder it names inside it), pause or resume them, change their priority, remove them, and get finished ones. It can also see your Direct contacts and your history with them, and send files to them through this PC. Nothing else: it can't open or run anything here, or look in other folders. Turned off, its next order is refused.</div>
+                <div class="slabel">{t("{name} can control my Pako", { name: x.name })}</div>
+                <div class="shint">{t("It can see this PC's downloads, add links to them (into this PC's download folder, or a folder it names inside it), pause or resume them, change their priority, remove them, and get finished ones. It can also see your Direct contacts and your history with them, and send files to them through this PC. Nothing else: it can't open or run anything here, or look in other folders. Turned off, its next order is refused.")}</div>
               </div>
-              <button class="switch" class:on={x.control} role="switch" aria-checked={x.control} aria-label="{x.name} can control my Pako" onclick={toggleControl}></button>
+              <button class="switch" class:on={x.control} role="switch" aria-checked={x.control} aria-label={t("{name} can control my Pako", { name: x.name })} onclick={toggleControl}></button>
             </div>
           {/if}
           <div class="srow">
             <div class="stext">
-              <div class="slabel">Safety code</div>
+              <div class="slabel">{t("Safety code")}</div>
               <div class="mono code">{x.code}</div>
-              <div class="shint">The same on both PCs. Pako ID <span class="mono">{x.id.slice(0, 8)}…</span> <button class="link" onclick={copyId}>Copy</button></div>
+              <div class="shint">{t("The same on both PCs.")} {t("Pako ID")} <span class="mono">{x.id.slice(0, 8)}…</span> <button class="link" onclick={copyId}>{t("Copy")}</button></div>
             </div>
           </div>
           <div class="loghead">
-            <span class="slabel">History</span>
+            <span class="slabel">{t("History")}</span>
             <div class="spacer"></div>
-            {#if log.length}<button class="link" onclick={() => (clearing = true)}>Clear</button>{/if}
+            {#if log.length}<button class="link" onclick={() => (clearing = true)}>{t("Clear (history)")}</button>{/if}
           </div>
           <div class="log">
             {#each log as l, i (l.date + ":" + i)}
               <div class="lrow" class:bad={!l.ok}>
-                <span class="who">{l.byMe ? "From this PC" : `From ${x.name}`}</span>
+                <span class="who">{l.byMe ? t("From this PC") : t("From {name}", { name: x.name })}</span>
                 <span class="what">{l.text}</span>
                 <span class="when dim">{shortDate(l.date)}</span>
               </div>
             {:else}
-              <p class="dim">Orders between this PC and {x.name} show here.</p>
+              <p class="dim">{t("Orders between this PC and {name} show here.", { name: x.name })}</p>
             {/each}
           </div>
           <div class="danger">
-            <button class="btn small" onclick={() => ((renaming = true), (renameTo = x.name))}><Icon name="pencil" size={12} />Rename</button>
-            <button class="btn small bad" onclick={() => (removing = true)}><Icon name="trash" size={12} />Remove this device</button>
+            <button class="btn small" onclick={() => ((renaming = true), (renameTo = x.name))}><Icon name="pencil" size={12} />{t("Rename")}</button>
+            <button class="btn small bad" onclick={() => (removing = true)}><Icon name="trash" size={12} />{t("Remove this device")}</button>
           </div>
         </div>
       {/if}
@@ -380,29 +380,29 @@
 </section>
 
 {#if renaming}
-  <Modal title="Rename {x.name}" width={420} onclose={() => (renaming = false)}>
-    <input class="input" bind:value={renameTo} maxlength="60" aria-label="New name" onkeydown={(e) => e.key === "Enter" && (renaming = false, app.run(() => devicesApi.rename(x.id, renameTo)))} />
+  <Modal title={t("Rename {name}", { name: x.name })} width={420} onclose={() => (renaming = false)}>
+    <input class="input" bind:value={renameTo} maxlength="60" aria-label={t("New name")} onkeydown={(e) => e.key === "Enter" && (renaming = false, app.run(() => devicesApi.rename(x.id, renameTo)))} />
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (renaming = false)}>Cancel</button>
-      <button class="btn primary" disabled={!renameTo.trim()} onclick={() => ((renaming = false), app.run(() => devicesApi.rename(x.id, renameTo)))}>Rename</button>
+      <button class="btn ghost" onclick={() => (renaming = false)}>{t("Cancel")}</button>
+      <button class="btn primary" disabled={!renameTo.trim()} onclick={() => ((renaming = false), app.run(() => devicesApi.rename(x.id, renameTo)))}>{t("Rename")}</button>
     {/snippet}
   </Modal>
 {/if}
 {#if removing}
-  <Modal title="Remove {x.name}?" width={440} onclose={() => (removing = false)}>
-    <p class="msgtext">{x.name} stops being one of your devices: it can't send files without asking or control this Pako any more, and the connection closes. Files already received stay. To pair again later, add it again on both PCs.</p>
+  <Modal title={t("Remove {name}?", { name: x.name })} width={440} onclose={() => (removing = false)}>
+    <p class="msgtext">{t("{name} stops being one of your devices: it can't send files without asking or control this Pako any more, and the connection closes. Files already received stay. To pair again later, add it again on both PCs.", { name: x.name })}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (removing = false)}>Cancel</button>
-      <button class="btn danger" onclick={() => ((removing = false), app.run(() => api.directRemoveContact(x.id)).then(() => devices.refresh()))}>Remove</button>
+      <button class="btn ghost" onclick={() => (removing = false)}>{t("Cancel")}</button>
+      <button class="btn danger" onclick={() => ((removing = false), app.run(() => api.directRemoveContact(x.id)).then(() => devices.refresh()))}>{t("Remove")}</button>
     {/snippet}
   </Modal>
 {/if}
 {#if clearing}
-  <Modal title="Clear the history?" width={420} onclose={() => (clearing = false)}>
-    <p class="msgtext">The list of orders between this PC and {x.name} is deleted from this PC. Files and downloads don't change.</p>
+  <Modal title={t("Clear the history?")} width={420} onclose={() => (clearing = false)}>
+    <p class="msgtext">{t("The list of orders between this PC and {name} is deleted from this PC. Files and downloads don't change.", { name: x.name })}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (clearing = false)}>Cancel</button>
-      <button class="btn danger" onclick={() => ((clearing = false), app.run(() => devicesApi.clearLog(x.id)))}>Clear</button>
+      <button class="btn ghost" onclick={() => (clearing = false)}>{t("Cancel")}</button>
+      <button class="btn danger" onclick={() => ((clearing = false), app.run(() => devicesApi.clearLog(x.id)))}>{t("Clear (history)")}</button>
     {/snippet}
   </Modal>
 {/if}

@@ -11,9 +11,13 @@
   import Markdown from "./help/Markdown.svelte";
   import { terms } from "./help/content";
   import { openLink, openWeb, SITE } from "./web";
+  import { around, t } from "./i18n.svelte";
 
   /** Used Pako before it had terms (the first-start setup was done then). */
   const existing = !!app.settings?.setupDone;
+
+  /** "Also on sookera.com/terms, …": the link sits in the middle of the sentence. */
+  const web = $derived(around(t("Also on {link}, always in their newest version."), "{link}"));
 
   let busy = $state(false);
   async function agree() {
@@ -23,7 +27,7 @@
       await api.acceptTerms();
     } catch (e) {
       // Pako runs anyway this time; the message says the answer couldn't be kept.
-      app.toast(`Pako couldn't save that you agreed, so it asks again next time: ${e}`, "error");
+      app.toast(t("Pako couldn't save that you agreed, so it asks again next time: {error}", { error: String(e) }), "error");
     }
     app.termsNeeded = false;
     await app.refresh();
@@ -31,23 +35,23 @@
   }
 </script>
 
-<Modal title={existing ? "Pako's terms of use" : "Terms of use"} width={560} closable={false} outsideCloses={false} onclose={() => {}}>
+<Modal title={existing ? t("Pako's terms of use") : t("Terms of use")} width={560} closable={false} outsideCloses={false} onclose={() => {}}>
   {#if existing}
-    <p class="intro">Pako now has terms of use. Please read them: Pako carries on as soon as you agree.</p>
-    <p class="intro kept">Your downloads and lists stay as they are. Paused and waiting downloads simply wait until you agree, and nothing is lost.</p>
+    <p class="intro">{t("Pako now has terms of use. Please read them: Pako carries on as soon as you agree.")}</p>
+    <p class="intro kept">{t("Your downloads and lists stay as they are. Paused and waiting downloads simply wait until you agree, and nothing is lost.")}</p>
   {:else}
-    <p class="intro">Before you start, please read Pako's terms of use. Pako starts as soon as you agree.</p>
+    <p class="intro">{t("Before you start, please read Pako's terms of use. Pako starts as soon as you agree.")}</p>
   {/if}
   <!-- Focusable so the keyboard can scroll it. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="terms" role="document" aria-label="Terms of use" tabindex="0">
+  <div class="terms" role="document" aria-label={t("Terms of use")} tabindex="0">
     <Markdown blocks={terms} onlink={openLink} />
   </div>
-  <p class="web">Also on <button class="lk" onclick={() => openWeb(SITE.terms)}>sookera.com/terms</button>, always in their newest version.</p>
+  <p class="web">{web[0]}<button class="lk" onclick={() => openWeb(SITE.terms)}>sookera.com/terms</button>{web[1]}</p>
 
   {#snippet actions()}
-    <button class="btn ghost" onclick={() => api.quitNow()}>Quit Pako</button>
-    <button class="btn primary" disabled={busy} onclick={agree}>Agree and continue</button>
+    <button class="btn ghost" onclick={() => api.quitNow()}>{t("Quit Pako")}</button>
+    <button class="btn primary" disabled={busy} onclick={agree}>{t("Agree and continue")}</button>
   {/snippet}
 </Modal>
 

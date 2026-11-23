@@ -122,16 +122,16 @@ fn rec_aad(id: &[u8; 16], idx: u64, len: u32, last: bool) -> [u8; 29] {
 pub fn read_header(f: &File) -> io::Result<Header> {
     let mut h = [0u8; HEADER as usize];
     if read_at(f, &mut h, 0)? < HEADER as usize || &h[..8] != MAGIC {
-        return Err(bad("Not a Pako private file"));
+        return Err(bad(&crate::tr!("Not a Pako private file", "Ce n’est pas un fichier privé de Pako")));
     }
     if u32::from_le_bytes(h[8..12].try_into().unwrap()) != 1 || u32::from_le_bytes(h[12..16].try_into().unwrap()) as u64 != BLOCK {
-        return Err(bad("A private file from a newer Pako"));
+        return Err(bad(&crate::tr!("A private file from a newer Pako", "Un fichier privé d’un Pako plus récent")));
     }
     let id: [u8; 16] = h[16..32].try_into().unwrap();
     let size = u64::from_le_bytes(h[32..40].try_into().unwrap());
     let klen = u16::from_le_bytes(h[40..42].try_into().unwrap()) as usize;
     if 42 + klen > HEADER as usize {
-        return Err(bad("Damaged private file"));
+        return Err(bad(&crate::tr!("Damaged private file", "Fichier privé endommagé")));
     }
     Ok(Header { id, size: (size != UNKNOWN).then_some(size), sealed_key: h[42..42 + klen].to_vec() })
 }
@@ -330,7 +330,7 @@ impl Writer {
     fn put(&self, idx: u64, at: usize, bytes: &[u8]) -> io::Result<()> {
         let (want, last) = self.want(idx);
         if want == 0 {
-            return Err(bad("Wrote past the end of the file"));
+            return Err(bad(&crate::tr!("Wrote past the end of the file", "Écriture au-delà de la fin du fichier")));
         }
         let bytes = &bytes[..bytes.len().min(want.saturating_sub(at))];
         // Held while writing too, so a whole block and a piece of the same block can never cross
@@ -379,12 +379,12 @@ impl Writer {
 
     fn load_pending(&self) -> io::Result<()> {
         let Ok(blob) = std::fs::read(&self.pending_path) else { return Ok(()) };
-        let plain = crypto::decrypt(&self.key, &self.pending_aad(), &blob).ok_or_else(|| bad("The unfinished private file's last pieces are damaged"))?;
+        let plain = crypto::decrypt(&self.key, &self.pending_aad(), &blob).ok_or_else(|| bad(&crate::tr!("The unfinished private file's last pieces are damaged", "Les derniers morceaux du fichier privé inachevé sont endommagés")))?;
         let mut pending = self.pending.lock().unwrap();
         let mut r = &plain[..];
         let take = |r: &mut &[u8], n: usize| -> io::Result<Vec<u8>> {
             if r.len() < n {
-                return Err(bad("Damaged pieces"));
+                return Err(bad(&crate::tr!("Damaged pieces", "Morceaux endommagés")));
             }
             let (a, b) = r.split_at(n);
             *r = b;
@@ -398,7 +398,7 @@ impl Writer {
                 let a = u32::from_le_bytes(take(&mut r, 4)?.try_into().unwrap()) as usize;
                 let b = u32::from_le_bytes(take(&mut r, 4)?.try_into().unwrap()) as usize;
                 if a > b || b as u64 > BLOCK {
-                    return Err(bad("Damaged pieces"));
+                    return Err(bad(&crate::tr!("Damaged pieces", "Morceaux endommagés")));
                 }
                 let bytes = Zeroizing::new(take(&mut r, b - a)?);
                 p.put(a, &bytes);
@@ -437,7 +437,7 @@ impl Writer {
             }
             let want = len_in(total, *idx);
             if !p.covers(want) {
-                return Err(bad("A piece of the file is missing"));
+                return Err(bad(&crate::tr!("A piece of the file is missing", "Un morceau du fichier manque")));
             }
             self.write_record(*idx, &p.data[..want], *idx == last)?;
             wrote_last |= *idx == last;
@@ -451,7 +451,7 @@ impl Writer {
                     }
                 }
                 None if total == 0 => self.write_record(0, &[], true)?,
-                _ => return Err(bad("The end of the file is missing")),
+                _ => return Err(bad(&crate::tr!("The end of the file is missing", "La fin du fichier manque"))),
             }
         }
         write_header(&self.file, &self.id, Some(total), &self.sealed_key)?;
@@ -484,7 +484,7 @@ impl Reader {
     pub fn open(path: &Path, key: Key) -> io::Result<Reader> {
         let file = File::open(path)?;
         let h = read_header(&file)?;
-        let size = h.size.ok_or_else(|| bad("This private file isn't finished"))?;
+        let size = h.size.ok_or_else(|| bad(&crate::tr!("This private file isn't finished", "Ce fichier privé n’est pas terminé")))?;
         let r = Reader { file, id: h.id, key, size, cache: Mutex::new(None) };
         // Checked at once: the last block must be there and marked last (a file cut short, or
         // a size changed to 0, is refused before anything is read).
@@ -505,9 +505,9 @@ impl Reader {
         }
         let want = len_in(self.size, idx);
         let last = idx == last_index(self.size);
-        let (plain, flag) = read_record(&self.file, &self.key, &self.id, idx)?.ok_or_else(|| bad("A piece of this private file is missing or damaged"))?;
+        let (plain, flag) = read_record(&self.file, &self.key, &self.id, idx)?.ok_or_else(|| bad(&crate::tr!("A piece of this private file is missing or damaged", "Un morceau de ce fichier privé manque ou est endommagé")))?;
         if plain.len() != want || flag != last {
-            return Err(bad("A piece of this private file is missing or damaged"));
+            return Err(bad(&crate::tr!("A piece of this private file is missing or damaged", "Un morceau de ce fichier privé manque ou est endommagé")));
         }
         *self.cache.lock().unwrap() = Some((idx, plain.clone()));
         Ok(plain)

@@ -5,6 +5,7 @@
 // Settings › Notifications.
 import type { Settings } from "./api";
 import { doneAlert } from "./alert";
+import { i18n, t, type Key } from "./i18n.svelte";
 
 export type NoticeKind =
   | "download-done"
@@ -29,8 +30,8 @@ export type Tone = "done" | "fail" | "info" | "wait" | "people";
 
 export interface KindInfo {
   id: NoticeKind;
-  /** Its name in Settings › Notifications. */
-  label: string;
+  /** Its name in Settings › Notifications, in English: show it with t(label) (it is a key). */
+  label: Key;
   /** The heading it sits under in Settings. */
   group: "Downloads" | "Upload" | "Direct" | "Pako";
   icon: string;
@@ -111,18 +112,19 @@ export function prefOf(s: Settings, kind: NoticeKind): { popup: boolean; bell: b
   return { popup: k.id === "download-done" ? doneAlert(s) !== "off" : (changed.popup ?? true), bell: changed.bell ?? k.bell };
 }
 
-/** "now", "5 min ago", "2 h ago", "Yesterday 14:05", "12 Nov 09:30". */
+/** "now", "5 min ago", "2 h ago", "Yesterday 14:05", "12 Nov 09:30" (in French « à l’instant »,
+ *  « il y a 5 min », « Hier à 14:05 », « 12 nov. 09:30 »). */
 export function noticeTime(at: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - at) / 1000));
-  if (s < 60) return "now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 60) return t("now (time)");
+  if (s < 3600) return t("{n} min ago", { n: Math.floor(s / 60) });
   const d = new Date(at);
-  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const hm = d.toLocaleTimeString(i18n.dates, { hour: "2-digit", minute: "2-digit" });
   const today = new Date(now);
-  if (d.toDateString() === today.toDateString()) return s < 6 * 3600 ? `${Math.floor(s / 3600)} h ago` : hm;
+  if (d.toDateString() === today.toDateString()) return s < 6 * 3600 ? t("{n} h ago", { n: Math.floor(s / 3600) }) : hm;
   const y = new Date(now - 86_400_000);
-  if (d.toDateString() === y.toDateString()) return `Yesterday ${hm}`;
-  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
+  if (d.toDateString() === y.toDateString()) return t("Yesterday {time}", { time: hm });
+  return `${d.toLocaleDateString(i18n.dates, { day: "numeric", month: "short" })} ${hm}`;
 }
 
 export const isToday = (at: number, now = Date.now()) => new Date(at).toDateString() === new Date(now).toDateString();

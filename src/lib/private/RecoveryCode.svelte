@@ -9,6 +9,7 @@
   import { app } from "../state.svelte";
   import { reduced } from "../motion";
   import Icon from "../Icon.svelte";
+  import { t } from "../i18n.svelte";
 
   let {
     confirmed = $bindable(false),
@@ -54,19 +55,19 @@
         return;
       }
     } else await navigator.clipboard.writeText(code).catch(() => {});
-    app.toast("Recovery code copied for one minute. Paste it somewhere safe, away from this PC.");
+    app.toast(t("Recovery code copied for one minute. Paste it somewhere safe, away from this PC."));
   }
 
   async function saveFile() {
     if (!inApp) {
-      app.toast("Preview mode: nothing is saved.");
+      app.toast(t("Preview mode: nothing is saved."));
       return;
     }
-    const path = await save({ title: "Save your recovery code", defaultPath: "Pako recovery code.txt", filters: [{ name: "Text", extensions: ["txt"] }] });
+    const path = await save({ title: t("Save your recovery code"), defaultPath: t("Pako recovery code.txt"), filters: [{ name: t("Text"), extensions: ["txt"] }] });
     if (!path) return;
     app.run(async () => {
       await api.privateSaveCode(path);
-      app.toast("Recovery code saved. Keep that file away from this PC.");
+      app.toast(t("Recovery code saved. Keep that file away from this PC."));
     });
   }
 
@@ -77,7 +78,7 @@
     const doc = f.contentDocument!;
     doc.open();
     doc.write(
-      `<!doctype html><title>Pako recovery code</title><body style="font-family:Segoe UI,sans-serif;padding:40px"><h2>Pako: your Private mode recovery code</h2><p style="font:600 22px Consolas,monospace;letter-spacing:2px">${code}</p><p>It opens Private mode if you forget your PIN or password, and lets you choose a new one. Keep it somewhere safe, away from this PC.</p></body>`,
+      `<!doctype html><title>${t("Pako recovery code")}</title><body style="font-family:Segoe UI,sans-serif;padding:40px"><h2>${t("Pako: your Private mode recovery code")}</h2><p style="font:600 22px Consolas,monospace;letter-spacing:2px">${code}</p><p>${t("It opens Private mode if you forget your PIN or password, and lets you choose a new one. Keep it somewhere safe, away from this PC.")}</p></body>`,
     );
     doc.close();
     f.contentWindow?.focus();
@@ -94,22 +95,23 @@
   {#if error}
     <p class="err">{error}</p>
   {:else}
-    <div class="code mono" aria-label="Your recovery code: {code}">
+    <div class="code mono" aria-label={t("Your recovery code: {code}", { code })}>
       {#each groups as g, i (i)}
         <span class="g" class:in={i < shown}>{g}</span>
       {/each}
     </div>
     <div class="acts">
-      <button class="btn" onclick={copy}><Icon name="copy" size={13} />Copy</button>
-      <button class="btn" onclick={saveFile}><Icon name="save" size={13} />Save as a file</button>
-      <button class="btn" onclick={print}><Icon name="printer" size={13} />Print</button>
+      <button class="btn" onclick={copy}><Icon name="copy" size={13} />{t("Copy")}</button>
+      <button class="btn" onclick={saveFile}><Icon name="save" size={13} />{t("Save as a file")}</button>
+      <button class="btn" onclick={print}><Icon name="printer" size={13} />{t("Print")}</button>
     </div>
     <p class="note">
-      Pako shows it only now and never keeps it. With it, you can open Private mode if you forget your PIN or password, and choose a new one. Keep it away from this
-      PC: anyone with it and this PC can open your private files. A newer code replaces it on this PC, but a copy of Pako's files made before still opens with the older one.
+      {t(
+        "Pako shows it only now and never keeps it. With it, you can open Private mode if you forget your PIN or password, and choose a new one. Keep it away from this PC: anyone with it and this PC can open your private files. A newer code replaces it on this PC, but a copy of Pako's files made before still opens with the older one.",
+      )}
     </p>
     <label class="field">
-      <span>To check you kept it, type its last group</span>
+      <span>{t("To check you kept it, type its last group")}</span>
       <input class="input mono last" maxlength="4" bind:value={last} placeholder="····" autocomplete="off" spellcheck="false" />
     </label>
   {/if}

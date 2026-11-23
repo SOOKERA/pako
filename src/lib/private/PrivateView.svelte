@@ -33,6 +33,7 @@
   import ColumnsButton from "../ColumnsButton.svelte";
   import { listColumns } from "../columns.svelte";
   import { LISTS, gridTemplate, shownColumns, withPost } from "../columns";
+  import { around, i18n, t, tMaybe } from "../i18n.svelte";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
 
@@ -235,28 +236,32 @@
   function actionsFor(list: Download[], folder: string | null): MenuItem[] {
     const items: MenuItem[] = [];
     const one = list.length === 1 && !folder ? list[0] : null;
-    if (one && done(one)) items.push(isVideo(one.name) ? { label: "Play", icon: "play", hint: "Enter", action: () => use(one) } : { label: "Open", icon: "open", hint: "Enter", action: () => use(one) });
+    if (one && done(one)) items.push(isVideo(one.name) ? { label: t("Play"), icon: "play", hint: t("Enter"), action: () => use(one) } : { label: t("Open"), icon: "open", hint: t("Enter"), action: () => use(one) });
     if (list.every(done)) {
-      items.push({ label: folder ? "Decrypt folder…" : one ? "Decrypt…" : `Decrypt ${list.length} files…`, icon: "unlock", action: () => (decrypting = { items: list, folder }) });
+      items.push({ label: folder ? t("Decrypt folder…") : one ? t("Decrypt…") : t("Decrypt {n} files…", { n: list.length }), icon: "unlock", action: () => (decrypting = { items: list, folder }) });
       // Sent as normal files, read decrypted as they go: no readable copy on this PC.
-      items.push({ label: "Send with Direct…", icon: "send", action: () => (sendingDirect = { items: list, title: folder }) });
-      items.push({ label: "Upload…", icon: "upload", action: () => upload(list) });
+      items.push({ label: t("Send with Direct…"), icon: "send", action: () => (sendingDirect = { items: list, title: folder }) });
+      items.push({ label: t("Upload…"), icon: "upload", action: () => upload(list) });
     }
     const pausing = list.filter(canPause).map((d) => d.id);
     const resuming = list.filter((d) => !done(d) && !canPause(d)).map((d) => d.id);
-    if (pausing.length) items.push({ label: pausing.length > 1 ? `Pause ${pausing.length}` : "Pause", icon: "pause", action: () => app.run(() => api.pause(pausing)).then(() => priv.refreshList()) });
+    if (pausing.length) items.push({ label: pausing.length > 1 ? t("Pause {n}", { n: pausing.length }) : t("Pause"), icon: "pause", action: () => app.run(() => api.pause(pausing)).then(() => priv.refreshList()) });
     if (resuming.length)
       items.push({
-        label: list.some((d) => d.status === "failed") ? "Try again" : resuming.length > 1 ? `Resume ${resuming.length}` : "Resume",
+        label: list.some((d) => d.status === "failed") ? t("Try again") : resuming.length > 1 ? t("Resume {n}", { n: resuming.length }) : t("Resume"),
         icon: "play",
         action: () => app.run(() => api.resume(resuming)).then(() => priv.refreshList()),
       });
     if (items.length) items.push({ separator: true });
-    items.push({ label: folder ? "Delete folder…" : one ? "Delete…" : `Delete ${list.length} files…`, icon: "trash", danger: true, hint: "Del", action: () => (deleting = list) });
+    items.push({ label: folder ? t("Delete folder…") : one ? t("Delete…") : t("Delete {n} files…", { n: list.length }), icon: "trash", danger: true, hint: t("Del"), action: () => (deleting = list) });
     return items;
   }
   /** The "N selected" bar's buttons (the menu's, without Open). */
-  const batch = $derived(several ? actionsFor(pickedList, null).filter((m) => "action" in m && m.label !== "Play" && m.label !== "Open" && m.label !== "Upload…" && m.label !== "Send with Direct…") : []);
+  const batch = $derived.by(() => {
+    if (!several) return [];
+    const not = new Set([t("Play"), t("Open"), t("Upload…"), t("Send with Direct…")]);
+    return actionsFor(pickedList, null).filter((m) => "action" in m && !not.has(m.label ?? ""));
+  });
 
   /** A row's id in the page, for the list's active row (screen readers) and scrolling to it. */
   const domId = (key: string) => "prow-" + key.replace(/[^A-Za-z0-9_-]/g, (c) => `_${c.charCodeAt(0)}`);
@@ -379,10 +384,10 @@
   function stamp(ms: number) {
     const date = new Date(ms);
     // The 24-hour clock in every language, like the temporary copies' names (14h32).
-    const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    const time = date.toLocaleTimeString(i18n.dates, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     if (new Date().toDateString() === date.toDateString()) return time;
     const year = date.getFullYear() === new Date().getFullYear() ? undefined : ("numeric" as const);
-    return `${date.toLocaleDateString([], { day: "numeric", month: "short", year })}, ${time}`;
+    return `${date.toLocaleDateString(i18n.dates, { day: "numeric", month: "short", year })}, ${time}`;
   }
 </script>
 
@@ -391,15 +396,15 @@
 <div class="pv">
   <div class="toolbar">
     <span class="mark"><Icon name="unlock" size={15} stroke={1.9} /></span>
-    <h1>Private downloads</h1>
+    <h1>{t("Private downloads")}</h1>
     <TutorialButton id="private" />
     {#if several}
-      <span class="sel" in:fadeIn={{ duration: 160 }} title="{picked.size} selected">
-        {picked.size}<span class="n">&nbsp;selected</span>
-        <button class="icon-btn tiny" aria-label="Select none (Esc)" title="Select none (Esc)" onclick={() => picked.clear()}><Icon name="x" size={11} /></button>
+      <span class="sel" in:fadeIn={{ duration: 160 }} title={t("{n} selected", { n: picked.size })}>
+        {picked.size}<span class="n">&nbsp;{t("selected (after a count)", { n: picked.size })}</span>
+        <button class="icon-btn tiny" aria-label={t("Select none (Esc)")} title={t("Select none (Esc)")} onclick={() => picked.clear()}><Icon name="x" size={11} /></button>
       </span>
     {:else}
-      <span class="dim small">{priv.list.length} {priv.list.length === 1 ? "item" : "items"}</span>
+      <span class="dim small">{t("{n} items", { n: priv.list.length })}</span>
     {/if}
     <div class="spacer"></div>
     {#if batch.length}
@@ -421,7 +426,7 @@
           <input
             type="checkbox"
             class="box"
-            aria-label="Select all (Ctrl+A)"
+            aria-label={t("Select all (Ctrl+A)")}
             checked={allPicked}
             indeterminate={somePicked}
             onchange={() =>
@@ -432,14 +437,14 @@
                     focus,
                   )}
           />
-          <span></span><span>Name</span>
+          <span></span><span>{t("Name")}</span>
           {#each LIST.cols as c (c.key)}
-            <span class="hc c-{c.key}" class:r={c.key === "size"}><ColumnGrip list="private" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />{c.label}</span>
+            <span class="hc c-{c.key}" class:r={c.key === "size"}><ColumnGrip list="private" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />{tMaybe(c.label)}</span>
           {/each}
           <span class="colcell"><ColumnsButton list="private" {onmenu} noRoom={() => noRoom} /></span>
         </div>
         <!-- The rows alone are the list (the titles' edges and buttons aren't its options). -->
-        <div class="opts" role="listbox" tabindex="0" aria-multiselectable="true" aria-label="Private downloads" aria-activedescendant={focus ? domId(focus) : undefined}>
+        <div class="opts" role="listbox" tabindex="0" aria-multiselectable="true" aria-label={t("Private downloads")} aria-activedescendant={focus ? domId(focus) : undefined}>
         {#each rows as r (keyOf(r))}
           <div class="rw" transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
           {#if r.kind === "folder"}
@@ -449,14 +454,14 @@
             {@const left = r.f.files.filter((d) => !done(d)).length}
             {@const fw = r.f.files.map((d) => priv.workOn(d.id)[0]).find((x) => !!x)}
             {@const fp = fw ? priv.progress(fw) : null}
-            {@const fState = fp ? `${fp.label}${fp.frac !== null ? ` · ${Math.floor(fp.frac * 100)}%` : ""}` : left ? `${r.f.files.length - left} of ${r.f.files.length} done` : stamp(r.f.date)}
+            {@const fState = fp ? `${fp.label}${fp.frac !== null ? ` · ${t("{pct}%", { pct: Math.floor(fp.frac * 100) })}` : ""}` : left ? t("{done} of {total} done", { done: r.f.files.length - left, total: r.f.files.length }) : stamp(r.f.date)}
             {@const fColor = fp ? (fp.failed ? "var(--st-fail-text)" : "var(--priv-text)") : left ? "var(--text-2)" : "var(--text-3)"}
             <div
               class="row folder"
               class:on
               class:focus={focus === `folder:${r.f.name}`}
               id={domId(`folder:${r.f.name}`)}
-              aria-label="{r.f.name}, folder, {fState}"
+              aria-label={t("{name}, folder, {state}", { name: r.f.name, state: fState })}
               role="option"
               tabindex="-1"
               aria-selected={on}
@@ -467,7 +472,7 @@
               <input
                 type="checkbox"
                 class="box"
-                aria-label="Select {r.f.name}"
+                aria-label={t("Select {name}", { name: r.f.name })}
                 checked={on}
                 indeterminate={!on && ids.some((id) => picked.has(id))}
                 onclick={(e) => e.stopPropagation()}
@@ -477,7 +482,7 @@
                 class="fold"
                 class:open={r.open}
                 aria-expanded={r.open}
-                aria-label={r.open ? `Close ${r.f.name}` : `Open ${r.f.name}`}
+                aria-label={r.open ? t("Close {name}", { name: r.f.name }) : t("Open {name}", { name: r.f.name })}
                 onclick={(e) => {
                   e.stopPropagation();
                   if (r.open) closed.add(r.f.name);
@@ -485,7 +490,7 @@
                 }}><Icon name="chevron" size={13} stroke={2} /></button
               >
               <div class="main">
-                <span class="name"><Icon name="folder" size={14} />{r.f.name}<span class="chip">{r.f.files.length} files</span></span>
+                <span class="name"><Icon name="folder" size={14} /><span class="fname">{r.f.name}</span><span class="chip">{t("{n} files", { n: r.f.files.length })}</span></span>
                 {#if stateUnder}<span class="under" style="color: {fColor}">{fState}</span>{/if}
               </div>
               <span class="size mono c-size">{bytes(size)}</span>
@@ -494,8 +499,8 @@
                 {#if !left}
                   <button
                     class="icon-btn"
-                    title="Decrypt folder…"
-                    aria-label="Decrypt {r.f.name}"
+                    title={t("Decrypt folder…")}
+                    aria-label={t("Decrypt {name}", { name: r.f.name })}
                     onclick={(e) => {
                       e.stopPropagation();
                       decrypting = { items: r.f.files, folder: r.f.name };
@@ -504,8 +509,8 @@
                 {/if}
                 <button
                   class="icon-btn danger"
-                  title="Delete folder…"
-                  aria-label="Delete {r.f.name}"
+                  title={t("Delete folder…")}
+                  aria-label={t("Delete {name}", { name: r.f.name })}
                   onclick={(e) => {
                     e.stopPropagation();
                     deleting = r.f.files;
@@ -518,7 +523,7 @@
             {@const look = statusLook(d.status, d.message)}
             {@const w = priv.workOn(d.id)[0]}
             {@const wp = w ? priv.progress(w) : null}
-            {@const dState = wp ? `${wp.label}${wp.frac !== null ? ` · ${Math.floor(wp.frac * 100)}%` : ""}` : done(d) ? stamp(when(d)) : running(d) && priv.speeds[d.id] ? speed(priv.speeds[d.id]) : look.label}
+            {@const dState = wp ? `${wp.label}${wp.frac !== null ? ` · ${t("{pct}%", { pct: Math.floor(wp.frac * 100) })}` : ""}` : done(d) ? stamp(when(d)) : running(d) && priv.speeds[d.id] ? speed(priv.speeds[d.id]) : look.label}
             {@const dColor = wp ? (wp.failed ? "var(--st-fail-text)" : "var(--priv-text)") : done(d) ? "var(--text-3)" : look.text}
             <div
               class="row"
@@ -528,7 +533,7 @@
               class:on={picked.has(d.id)}
               class:focus={focus === d.id}
               id={domId(d.id)}
-              aria-label="{d.name}, {done(d) ? `downloaded ${stamp(when(d))}` : line(d)}"
+              aria-label={done(d) ? t("{name}, downloaded {when}", { name: d.name, when: stamp(when(d)) }) : `${d.name}, ${line(d)}`}
               role="option"
               tabindex="-1"
               aria-selected={picked.has(d.id)}
@@ -537,7 +542,7 @@
               oncontextmenu={(e) => menuFile(e, d)}
               onkeydown={() => {}}
             >
-              <input type="checkbox" class="box" aria-label="Select {d.name}" checked={picked.has(d.id)} onclick={(e) => e.stopPropagation()} onchange={() => toggle([d.id])} />
+              <input type="checkbox" class="box" aria-label={t("Select {name}", { name: d.name })} checked={picked.has(d.id)} onclick={(e) => e.stopPropagation()} onchange={() => toggle([d.id])} />
               <FileIcon name={d.name} size={20} faded={d.status === "paused"} />
               <div class="main">
                 <span class="name" title={d.name}>{#if r.rel}<span class="rel">{r.rel}\</span>{/if}{d.name}</span>
@@ -556,8 +561,8 @@
                 {#if done(d)}
                   <button
                     class="icon-btn"
-                    title={isVideo(d.name) ? "Play in Pako" : "Open"}
-                    aria-label={isVideo(d.name) ? `Play ${d.name}` : `Open ${d.name}`}
+                    title={isVideo(d.name) ? t("Play in Pako") : t("Open")}
+                    aria-label={isVideo(d.name) ? t("Play {name}", { name: d.name }) : t("Open {name}", { name: d.name })}
                     onclick={(e) => {
                       e.stopPropagation();
                       use(d);
@@ -565,22 +570,22 @@
                   >
                   <button
                     class="icon-btn"
-                    title="Send with Direct or Upload"
-                    aria-label="Send {d.name}"
+                    title={t("Send with Direct or Upload")}
+                    aria-label={t("Send {name}", { name: d.name })}
                     aria-haspopup="menu"
                     onclick={(e) => {
                       e.stopPropagation();
                       const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                       onmenu(r.right - 200, r.bottom + 4, [
-                        { label: "Send with Direct…", icon: "send", action: () => (sendingDirect = { items: [d], title: null }) },
-                        { label: "Upload…", icon: "upload", action: () => upload([d]) },
+                        { label: t("Send with Direct…"), icon: "send", action: () => (sendingDirect = { items: [d], title: null }) },
+                        { label: t("Upload…"), icon: "upload", action: () => upload([d]) },
                       ]);
                     }}><Icon name="send" size={13} /></button
                   >
                   <button
                     class="icon-btn"
-                    title="Decrypt…"
-                    aria-label="Decrypt {d.name}"
+                    title={t("Decrypt…")}
+                    aria-label={t("Decrypt {name}", { name: d.name })}
                     onclick={(e) => {
                       e.stopPropagation();
                       decrypting = { items: [d], folder: null };
@@ -589,8 +594,8 @@
                 {/if}
                 <button
                   class="icon-btn danger"
-                  title="Delete…"
-                  aria-label="Delete {d.name}"
+                  title={t("Delete…")}
+                  aria-label={t("Delete {name}", { name: d.name })}
                   onclick={(e) => {
                     e.stopPropagation();
                     deleting = [d];
@@ -604,14 +609,16 @@
         </div>
       </div>
     {:else}
+      {@const [a, rest] = around(
+        t("Downloads from your browser's private windows come here, encrypted. So do links you send with {download} (in Links and the Download with Pako window). You can also move a finished download here: right-click it, then {move}."),
+        "{download}",
+      )}
+      {@const [b, c] = around(rest, "{move}")}
       <!-- The tutorial's first step points here too when nothing is in Private mode yet. -->
       <div class="empty" data-tour="private-list">
         <span class="emark"><Icon name="lock" size={20} stroke={1.8} /></span>
-        <p class="et">Nothing in Private mode yet</p>
-        <p class="es">
-          Downloads from your browser's private windows come here, encrypted. So do links you send with <b>Download privately</b> (in Links and the Download with Pako window). You can
-          also move a finished download here: right-click it, then <b>Move to Private</b>.
-        </p>
+        <p class="et">{t("Nothing in Private mode yet")}</p>
+        <p class="es">{a}<b>{t("Download privately")}</b>{b}<b>{t("Move to Private")}</b>{c}</p>
       </div>
     {/if}
     {#if priv.details}
@@ -619,7 +626,7 @@
         <PanelResizer page="private" width={sideW} avail={bodyW} />
         <PrivateDetails
           d={several ? null : focusFile}
-          folder={several ? { name: `${picked.size} selected`, files: pickedList, several: true } : focusFolder}
+          folder={several ? { name: t("{n} selected", { n: picked.size }), files: pickedList, several: true } : focusFolder}
           onuse={use}
           ondecrypt={(items, folder) => (decrypting = { items, folder })}
           onsend={(items, folder) => (sendingDirect = { items, title: folder })}
@@ -650,10 +657,10 @@
 
 {#if deleting}
   {@const list = deleting}
-  <Modal title={list.length === 1 ? `Delete ${list[0].name}?` : `Delete ${list.length} private files?`} width={440} onclose={() => (deleting = null)}>
-    <p class="msg">{list.length === 1 ? "It's" : "They're"} deleted from Private mode for good: there is no copy in the Recycle Bin.</p>
+  <Modal title={list.length === 1 ? t("Delete {name}?", { name: list[0].name }) : t("Delete {n} private files?", { n: list.length })} width={440} onclose={() => (deleting = null)}>
+    <p class="msg">{list.length === 1 ? t("It's deleted from Private mode for good: there is no copy in the Recycle Bin.") : t("They're deleted from Private mode for good: there is no copy in the Recycle Bin.")}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (deleting = null)}>Cancel</button>
+      <button class="btn ghost" onclick={() => (deleting = null)}>{t("Cancel")}</button>
       <button
         class="btn danger-fill"
         onclick={() => {
@@ -663,7 +670,7 @@
             await api.privateRemove(ids);
             await priv.refreshList();
           });
-        }}><Icon name="trash" size={13} />Delete</button
+        }}><Icon name="trash" size={13} />{t("Delete")}</button
       >
     {/snippet}
   </Modal>
@@ -799,7 +806,14 @@
     gap: 7px;
     font-weight: 500;
   }
+  /* A long folder name gives way first: its file count stays whole. */
+  .row.folder .fname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .chip {
+    flex: none;
     font-size: 11px;
     font-weight: 400;
     padding: 1px 7px;

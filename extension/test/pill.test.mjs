@@ -15,7 +15,7 @@ import { toLight } from "../light.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const TAB = 6;
 const PAGE = "https://watch.example.org/v/7";
-const FILES = ["pill.js", "caught.js"];
+const FILES = ["lang.js", "pill.js", "caught.js"];
 
 const MASTER = [
   "#EXTM3U",

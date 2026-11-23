@@ -57,7 +57,12 @@ impl Host {
 const UPLOAD_URL: &str = "https://upload.gofile.io/uploadfile";
 const CONTENTS_URL: &str = "https://api.gofile.io/contents";
 /// What Gofile does with guest files (their FAQ): kept while people download them.
-pub const KEEP_NOTE: &str = "Gofile keeps files while people download them. After 10 days without a download, they may be removed.";
+pub fn keep_note() -> String {
+    crate::tr!(
+        "Gofile keeps files while people download them. After 10 days without a download, they may be removed.",
+        "Gofile garde les fichiers tant qu’on les télécharge. Après 10 jours sans téléchargement, ils peuvent être supprimés."
+    )
+}
 /// Gofile's keep rule: this long without a download and a file may be removed.
 const KEEP_DAYS: u64 = 10;
 /// "May be removed by Gofile soon" this many days before that.
@@ -151,14 +156,19 @@ pub enum Mode {
 
 /// "Protect with a password": the shortest password Pako takes.
 pub const PASSWORD_MIN: usize = 8;
-const NEEDS_7ZIP: &str = "Protecting an upload with a password needs 7-Zip: Settings › Features & updates › What Pako can do.";
+fn needs_7zip() -> String {
+    crate::tr!(
+        "Protecting an upload with a password needs 7-Zip: Settings › Features & updates › What Pako can do.",
+        "Protéger une mise en ligne par un mot de passe demande 7-Zip : Paramètres › Fonctions et mises à jour › Ce que Pako sait faire."
+    )
+}
 
 /// The archive's name from the upload's name ("Photos.zip" → "Photos", "3 files" stays).
 fn archive_stem(name: &str) -> String {
     let base = name.strip_suffix(".zip").unwrap_or(name);
     let clean: String = base.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c }).collect();
     let clean = clean.trim().trim_end_matches('.').to_string();
-    if clean.is_empty() { "Upload".into() } else { clean }
+    if clean.is_empty() { crate::tr!("Upload", "Envoi") } else { clean }
 }
 
 /// 7-Zip's arguments for a protected archive: AES-256 with the file names hidden (`-mhe=on`),
@@ -291,7 +301,7 @@ fn file_name(p: &Path) -> String {
 /// Size and change time of a picked file: a private file's real size (read decrypted as it
 /// goes up), else the file's own.
 fn size_of(p: &Path) -> io::Result<(u64, std::time::SystemTime)> {
-    crate::private_send::info(p).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "This file isn't there any more."))
+    crate::private_send::info(p).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, crate::tr!("This file isn't there any more.", "Ce fichier n’est plus là.")))
 }
 
 /// Turns the picked files and folders into what gets uploaded.
@@ -352,7 +362,7 @@ pub fn path_sizes(paths: &[String]) -> Vec<PathSize> {
                         out.files = files.len();
                         out.size = files.iter().map(|e| e.size).sum();
                     }
-                    Err(e) => out.error = Some(format!("Couldn't read this folder ({e}).")),
+                    Err(e) => out.error = Some(crate::tr!("Couldn't read this folder ({e}).", "Impossible de lire ce dossier ({e}).")),
                 }
             } else {
                 match size_of(&path) {
@@ -360,7 +370,7 @@ pub fn path_sizes(paths: &[String]) -> Vec<PathSize> {
                         out.size = len;
                         out.files = 1;
                     }
-                    Err(_) => out.error = Some("This file isn't there any more.".into()),
+                    Err(_) => out.error = Some(crate::tr!("This file isn't there any more.", "Ce fichier n’est plus là.")),
                 }
             }
             out
@@ -370,7 +380,7 @@ pub fn path_sizes(paths: &[String]) -> Vec<PathSize> {
 
 pub fn gather(paths: &[PathBuf], mode: Mode) -> Result<Payload> {
     if paths.is_empty() {
-        bail!("Nothing was picked.");
+        bail!(crate::tr!("Nothing was picked.", "Rien n’a été choisi."));
     }
     // One file goes as it is, unless "Compressed ZIP" or "ZIP in parts" was picked for it (a
     // plain ZIP of one file would only add a step for the receiver).
@@ -388,11 +398,11 @@ pub fn gather(paths: &[PathBuf], mode: Mode) -> Result<Payload> {
             entries.push(Entry { path: p.clone(), name: top, size, mtime, dir: false });
         }
         if entries.len() > MAX_FILES {
-            bail!("That's more than {MAX_FILES} files: Gofile can't hold that many.");
+            bail!(crate::tr!("That's more than {MAX_FILES} files: Gofile can't hold that many.", "Cela fait plus de {MAX_FILES} fichiers : Gofile ne peut pas en garder autant."));
         }
     }
     if !entries.iter().any(|e| !e.dir) {
-        bail!("There are no files in what was picked.");
+        bail!(crate::tr!("There are no files in what was picked.", "Il n’y a aucun fichier dans ce qui a été choisi."));
     }
     // Same order every time; two picked items with the same name get " (2)".
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.name.cmp(&b.name)));
@@ -406,7 +416,7 @@ pub fn gather(paths: &[PathBuf], mode: Mode) -> Result<Payload> {
         }
         dedupe(&mut entries);
         let n = entries.len();
-        let name = if one_folder { file_name(&paths[0]) } else { format!("{n} files") };
+        let name = if one_folder { file_name(&paths[0]) } else { crate::tr!("{n} files", "{n} fichiers") };
         return Ok(Payload::Files { name, entries });
     }
     let name = if paths.len() == 1 {
@@ -414,7 +424,11 @@ pub fn gather(paths: &[PathBuf], mode: Mode) -> Result<Payload> {
     } else {
         let first = file_name(&paths[0]);
         let stem = first.rsplit_once('.').map(|(s, _)| s.to_string()).filter(|s| !s.is_empty()).unwrap_or(first);
-        format!("{stem} and {} more.zip", paths.len() - 1)
+        // The same name the window shows before it's made (SendBasket: "{name} and {n} more.zip").
+        match paths.len() - 1 {
+            1 => crate::tr!("{stem} and 1 more.zip", "{stem} et 1 autre.zip"),
+            more => crate::tr!("{stem} and {} more.zip", "{stem} et {} autres.zip", more),
+        }
     };
     Ok(Payload::Zip { name, entries })
 }
@@ -436,7 +450,7 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<Entry>) -> Result<()> {
             out.push(Entry { path: it.path(), name, size: m.len(), mtime: m.modified().unwrap_or(UNIX_EPOCH), dir: false });
         }
         if out.len() > MAX_FILES {
-            bail!("That's more than {MAX_FILES} files: Gofile can't hold that many.");
+            bail!(crate::tr!("That's more than {MAX_FILES} files: Gofile can't hold that many.", "Cela fait plus de {MAX_FILES} fichiers : Gofile ne peut pas en garder autant."));
         }
     }
     if out.len() == before {
@@ -663,7 +677,7 @@ impl<W: Write> Write for Counted<'_, W> {
 }
 
 fn changed(name: &str) -> io::Error {
-    io::Error::other(format!("\"{name}\" changed while it was being uploaded. Try again."))
+    io::Error::other(crate::tr!("\"{name}\" changed while it was being uploaded. Try again.", "« {name} » a changé pendant sa mise en ligne. Réessayez."))
 }
 
 /// Writes the ZIP of `entries` into `out`. `stop` ends it early (Cancel).
@@ -946,7 +960,7 @@ impl Write for PartWriter {
         }
         if self.cur.is_none() {
             if self.made.len() as u64 >= MAX_PARTS {
-                return Err(io::Error::other(format!("That makes more than {MAX_PARTS} parts. Pick a bigger part size.")));
+                return Err(io::Error::other(crate::tr!("That makes more than {MAX_PARTS} parts. Pick a bigger part size.", "Cela fait plus de {MAX_PARTS} parties. Choisissez une taille de partie plus grande.")));
             }
             let path = self.dir.join(part_name(&self.zip, self.made.len() + 1));
             self.cur = Some(io::BufWriter::with_capacity(1024 * 1024, File::create(&path)?));
@@ -1065,7 +1079,14 @@ fn private_fingerprint(paths: &[String]) -> String {
 }
 
 /// Said when a private file changed since its upload in parts started.
-const PRIVATE_CHANGED: &str = "A private file changed since this upload started, so its parts wouldn't fit together. Start the upload again.";
+/// (In both languages: it's recognised again when it comes back as an error.)
+fn private_changed(fr: bool) -> &'static str {
+    if fr {
+        "Un fichier privé a changé depuis le début de cette mise en ligne, donc ses parties ne s’assembleraient pas. Recommencez la mise en ligne."
+    } else {
+        "A private file changed since this upload started, so its parts wouldn't fit together. Start the upload again."
+    }
+}
 
 fn private_parts_of(path: &Path) -> Option<Arc<PrivateParts>> {
     PRIVATE_PARTS.lock().unwrap().get(path.parent()?).cloned()
@@ -1142,13 +1163,13 @@ impl Write for GateWriter {
 fn private_part_ready(path: &Path) -> io::Result<()> {
     let Some(pp) = private_parts_of(path) else { return Ok(()) };
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let idx = (0..MAX_PARTS as usize).find(|&i| part_name(&pp.zip, i + 1) == name).ok_or_else(|| io::Error::other("Not one of this upload's parts."))?;
+    let idx = (0..MAX_PARTS as usize).find(|&i| part_name(&pp.zip, i + 1) == name).ok_or_else(|| io::Error::other(crate::tr!("Not one of this upload's parts.", "Ce n’est pas l’une des parties de cette mise en ligne.")))?;
     if *pp.whole.lock().unwrap() == Some(idx) && path.exists() {
         return Ok(());
     }
     // Locked: nothing is made (and nothing is read) until Private mode is open again.
     if !crate::private_send::is_open() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP));
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, private_locked_stop()));
     }
     // Every part from the files the upload started with (one saved back since wouldn't fit).
     if private_fingerprint(&pp.paths) != pp.fingerprint {
@@ -1156,7 +1177,7 @@ fn private_part_ready(path: &Path) -> io::Result<()> {
             g.end();
         }
         wipe_parts_in(&pp.dir);
-        return Err(io::Error::other(PRIVATE_CHANGED));
+        return Err(io::Error::other(private_changed(crate::i18n::is_fr())));
     }
     let (num, ready) = {
         let mut maker = pp.maker.lock().unwrap();
@@ -1183,7 +1204,7 @@ fn private_part_ready(path: &Path) -> io::Result<()> {
                         let paths: Vec<PathBuf> = pp.paths.iter().map(PathBuf::from).collect();
                         match gather(&paths, Mode::Parts) {
                             Ok(Payload::Zip { entries, .. }) => *e = Some(entries),
-                            _ => return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP)),
+                            _ => return Err(io::Error::new(io::ErrorKind::PermissionDenied, private_locked_stop())),
                         }
                     }
                     e.clone().expect("set above")
@@ -1218,7 +1239,7 @@ fn private_part_ready(path: &Path) -> io::Result<()> {
         let still = maker.as_ref().is_some_and(|g| g.num == num);
         match answer {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) if still => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(io::Error::new(io::ErrorKind::PermissionDenied, private_locked_stop())),
             Ok(Ok(k)) if k == idx && still => {
                 let g = maker.as_mut().expect("still");
                 g.made = k;
@@ -1226,7 +1247,7 @@ fn private_part_ready(path: &Path) -> io::Result<()> {
                 *pp.whole.lock().unwrap() = Some(idx);
                 return Ok(());
             }
-            Ok(Ok(_)) => return Err(io::Error::other("The parts came out of order. Try again.")),
+            Ok(Ok(_)) => return Err(io::Error::other(crate::tr!("The parts came out of order. Try again.", "Les parties sont sorties dans le désordre. Réessayez."))),
             Ok(Err(e)) => {
                 if still {
                     maker.take();
@@ -1237,7 +1258,7 @@ fn private_part_ready(path: &Path) -> io::Result<()> {
                 if still {
                     maker.take();
                 }
-                return Err(io::Error::other("Making the part stopped. Try again."));
+                return Err(io::Error::other(crate::tr!("Making the part stopped. Try again.", "La création de la partie s’est arrêtée. Réessayez.")));
             }
         }
     }
@@ -1253,7 +1274,7 @@ pub(crate) async fn private_part_before(e: &Entry) -> Result<(), Option<String>>
     let p = e.path.clone();
     match tokio::task::spawn_blocking(move || private_part_ready(&p)).await {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) if err.kind() == io::ErrorKind::PermissionDenied || err.to_string() == PRIVATE_CHANGED => Err(Some(err.to_string())),
+        Ok(Err(err)) if err.kind() == io::ErrorKind::PermissionDenied || [false, true].iter().any(|&fr| err.to_string() == private_changed(fr)) => Err(Some(err.to_string())),
         Ok(Err(_)) => Err(None),
         Err(err) => Err(Some(err.to_string())),
     }
@@ -1311,7 +1332,12 @@ pub fn private_parts_locked() {
 static PROTECTED_PRIVATE: Mutex<Vec<std::sync::Weak<Job>>> = Mutex::new(Vec::new());
 
 /// Said when Private mode locked while private files were being uploaded.
-const PRIVATE_LOCKED_STOP: &str = "Private mode locked, so this upload stopped. Open Private mode, then Try again.";
+fn private_locked_stop() -> String {
+    crate::tr!(
+        "Private mode locked, so this upload stopped. Open Private mode, then Try again.",
+        "Le mode privé s’est verrouillé, donc cette mise en ligne s’est arrêtée. Ouvrez le mode privé, puis Réessayer."
+    )
+}
 
 /// Private mode locked: every password-protected upload of private files stops. One still making
 /// its archive stops 7-Zip (its readable copies are wiped); one already uploading the archive
@@ -1386,7 +1412,14 @@ impl PartsLeft {
 }
 
 /// Said on an upload in parts that Pako was closed during (or the PC lost power).
-const PARTS_STOPPED: &str = "Pako was closed before every part was up. Try again to upload the parts left (the link stays the same).";
+/// (In both languages: it's recognised again on the job it was put on.)
+fn parts_stopped(fr: bool) -> &'static str {
+    if fr {
+        "Pako a été fermé avant que toutes les parties soient en ligne. Réessayez pour mettre en ligne les parties restantes (le lien reste le même)."
+    } else {
+        "Pako was closed before every part was up. Try again to upload the parts left (the link stays the same)."
+    }
+}
 
 /// A send in parts, back from its Uploaded entry after Pako restarts: failed, with the parts
 /// not up yet left for "Try again", into the same folder with the same key and account. None
@@ -1424,7 +1457,7 @@ fn parts_job(item: &SentItem) -> Option<Job> {
     job.protected = pl.protected;
     job.produced.store(up, Ordering::Relaxed);
     job.files_done.store(pl.done.len(), Ordering::Relaxed);
-    *job.phase.lock().unwrap() = Phase::Failed(PARTS_STOPPED.into());
+    *job.phase.lock().unwrap() = Phase::Failed(parts_stopped(crate::i18n::is_fr()).into());
     *job.folder.lock().unwrap() = Some((folder, item.link.clone()));
     *job.left.lock().unwrap() = left;
     *job.key.lock().unwrap() = key;
@@ -1445,7 +1478,7 @@ fn to_continue(on: bool, restored: &[String], jobs: &[Arc<Job>]) -> Vec<String> 
     }
     jobs.iter()
         .filter(|j| restored.contains(&j.id))
-        .filter(|j| matches!(&*j.phase.lock().unwrap(), Phase::Failed(m) if m == PARTS_STOPPED))
+        .filter(|j| matches!(&*j.phase.lock().unwrap(), Phase::Failed(m) if m == parts_stopped(false) || m == parts_stopped(true)))
         .filter(|j| j.view().can_resume)
         // Private files in parts: only once Private mode is open (they can't be read before).
         .filter(|j| !private_job(j) || crate::private_send::is_open())
@@ -1527,23 +1560,26 @@ struct UploadData {
 
 fn net_error(e: &reqwest::Error) -> String {
     if e.is_connect() {
-        "No connection to Gofile. Check your internet, then try again.".into()
+        crate::tr!("No connection to Gofile. Check your internet, then try again.", "Pas de connexion à Gofile. Vérifiez votre connexion internet, puis réessayez.")
     } else if e.is_timeout() {
-        "Gofile stopped answering. Try again in a few minutes.".into()
+        crate::tr!("Gofile stopped answering. Try again in a few minutes.", "Gofile ne répond plus. Réessayez dans quelques minutes.")
     } else {
-        "The upload was cut off. Try again.".into()
+        crate::tr!("The upload was cut off. Try again.", "La mise en ligne a été coupée. Réessayez.")
     }
 }
 
 fn status_error(code: u16, body: &str) -> String {
     match code {
-        413 => "That's too big for Gofile.".into(),
-        429 => "Gofile asks to slow down. Try again in a few minutes.".into(),
-        401 | 403 => "Gofile refused the upload. Try again; if it keeps happening, Gofile may have changed its rules.".into(),
-        c if c >= 500 => "Gofile is busy right now. Try again in a few minutes.".into(),
+        413 => crate::tr!("That's too big for Gofile.", "C’est trop gros pour Gofile."),
+        429 => crate::tr!("Gofile asks to slow down. Try again in a few minutes.", "Gofile demande de ralentir. Réessayez dans quelques minutes."),
+        401 | 403 => crate::tr!(
+            "Gofile refused the upload. Try again; if it keeps happening, Gofile may have changed its rules.",
+            "Gofile a refusé la mise en ligne. Réessayez ; si cela continue, Gofile a peut-être changé ses règles."
+        ),
+        c if c >= 500 => crate::tr!("Gofile is busy right now. Try again in a few minutes.", "Gofile est occupé pour le moment. Réessayez dans quelques minutes."),
         c => {
             let status = serde_json::from_str::<UploadReply>(body).map(|r| r.status).unwrap_or_default();
-            if status.is_empty() { format!("Gofile refused the upload ({c}).") } else { format!("Gofile refused the upload ({status}).") }
+            if status.is_empty() { crate::tr!("Gofile refused the upload ({c}).", "Gofile a refusé la mise en ligne ({c}).") } else { crate::tr!("Gofile refused the upload ({status}).", "Gofile a refusé la mise en ligne ({status}).") }
         }
     }
 }
@@ -1937,13 +1973,13 @@ pub struct SendState {
     pub sent: Vec<SentView>,
     /// Pako holds a Gofile guest key, so sent files can be deleted from Gofile.
     pub can_delete: bool,
-    pub keep_note: &'static str,
+    pub keep_note: String,
     /// Download counts are being asked for right now.
     pub checking: bool,
     /// When they were last asked for (ms).
     pub checked_at: Option<u64>,
     /// Set when Gofile didn't share the counts at the last check.
-    pub counts_note: Option<&'static str>,
+    pub counts_note: Option<String>,
     /// What Pako's sends take in your Google Drive (items still on the Sent list), and how many.
     pub drive_used: u64,
     pub drive_sends: usize,
@@ -1970,7 +2006,9 @@ pub struct DriveSendStatus {
     pub error: Option<String>,
 }
 
-const REFUSED_NOTE: &str = "Gofile didn't share download counts with Pako this time.";
+fn refused_note() -> String {
+    crate::tr!("Gofile didn't share download counts with Pako this time.", "Gofile n’a pas communiqué le nombre de téléchargements à Pako cette fois-ci.")
+}
 
 #[derive(Default)]
 struct Checks {
@@ -2026,7 +2064,9 @@ impl Drop for Claim<'_> {
     }
 }
 
-const BUSY_ITEM: &str = "Pako is changing this upload right now. Try again in a moment.";
+fn busy_item() -> String {
+    crate::tr!("Pako is changing this upload right now. Try again in a moment.", "Pako modifie cette mise en ligne en ce moment. Réessayez dans un instant.")
+}
 
 /// What reading sent.json gave.
 #[derive(Debug, Default)]
@@ -2048,7 +2088,10 @@ fn load_sent(path: &Path) -> Loaded {
         Err(_) => {
             return Loaded {
                 locked: true,
-                note: Some("Pako couldn't open your list of uploads, so it shows none and leaves the list as it is. Restart Pako to try again.".into()),
+                note: Some(crate::tr!(
+                    "Pako couldn't open your list of uploads, so it shows none and leaves the list as it is. Restart Pako to try again.",
+                    "Pako n’a pas pu ouvrir votre liste de mises en ligne : il n’en affiche aucun et laisse la liste telle quelle. Redémarrez Pako pour réessayer."
+                )),
                 ..Default::default()
             };
         }
@@ -2073,14 +2116,26 @@ fn load_sent(path: &Path) -> Loaded {
         return Loaded {
             items,
             locked: true,
-            note: Some("Part of your list of uploads couldn't be read, and Pako couldn't keep a copy of it, so it leaves the list as it is. Restart Pako to try again.".into()),
+            note: Some(crate::tr!(
+                "Part of your list of uploads couldn't be read, and Pako couldn't keep a copy of it, so it leaves the list as it is. Restart Pako to try again.",
+                "Une partie de votre liste de mises en ligne n’a pas pu être lue, et Pako n’a pas pu en garder une copie : il laisse la liste telle quelle. Redémarrez Pako pour réessayer."
+            )),
         };
     }
     let kept = aside.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let note = match bad {
-        None => format!("Pako couldn't read your list of uploads, so it starts a new one. The old list is kept as {kept} in Pako's data folder."),
-        Some(1) => format!("1 upload in your list couldn't be read, so it isn't shown. The old list is kept as {kept} in Pako's data folder."),
-        Some(n) => format!("{n} uploads in your list couldn't be read, so they aren't shown. The old list is kept as {kept} in Pako's data folder."),
+        None => crate::tr!(
+            "Pako couldn't read your list of uploads, so it starts a new one. The old list is kept as {kept} in Pako's data folder.",
+            "Pako n’a pas pu lire votre liste de mises en ligne, donc il en commence une nouvelle. L’ancienne liste est gardée sous le nom {kept} dans le dossier de données de Pako."
+        ),
+        Some(1) => crate::tr!(
+            "1 upload in your list couldn't be read, so it isn't shown. The old list is kept as {kept} in Pako's data folder.",
+            "1 mise en ligne de votre liste n’a pas pu être lue, donc elle n’est pas affichée. L’ancienne liste est gardée sous le nom {kept} dans le dossier de données de Pako."
+        ),
+        Some(n) => crate::tr!(
+            "{n} uploads in your list couldn't be read, so they aren't shown. The old list is kept as {kept} in Pako's data folder.",
+            "{n} mises en ligne de votre liste n’ont pas pu être lues, donc elles ne sont pas affichées. L’ancienne liste est gardée sous le nom {kept} dans le dossier de données de Pako."
+        ),
     };
     Loaded { items, note: Some(note), locked: false }
 }
@@ -2137,11 +2192,11 @@ fn copy_file<W: Write>(e: &Entry, out: &mut W, stop: &AtomicBool) -> io::Result<
             return Err(io::Error::other("cancelled"));
         }
         if private && crate::private_send::lock_count() != since {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP));
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, private_locked_stop()));
         }
         let k = src.read(&mut buf)?;
         if private && crate::private_send::lock_count() != since {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, PRIVATE_LOCKED_STOP));
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, private_locked_stop()));
         }
         if k == 0 {
             break;
@@ -2252,7 +2307,7 @@ fn link_from(data: &UploadData) -> Result<String, String> {
     data.download_page
         .clone()
         .or_else(|| data.code.clone().map(|c| format!("https://gofile.io/d/{c}")))
-        .ok_or_else(|| "Gofile didn't send the link back.".to_string())
+        .ok_or_else(|| crate::tr!("Gofile didn't send the link back.", "Gofile n’a pas renvoyé le lien."))
 }
 
 /// Why packing / reading stopped, when it failed for its own reason (not because the upload
@@ -2432,10 +2487,10 @@ impl Sender {
                 })
                 .collect(),
             can_delete: shared || inner.sent.iter().any(|s| s.key.is_some()),
-            keep_note: KEEP_NOTE,
+            keep_note: keep_note(),
             checking,
             checked_at,
-            counts_note: refused.then_some(REFUSED_NOTE),
+            counts_note: refused.then(refused_note),
             drive_used: inner.sent.iter().filter(|s| s.on_drive() && !s.gone).map(|s| s.size).sum(),
             drive_sends: inner.sent.iter().filter(|s| s.on_drive() && !s.gone).count(),
             list_note: self.list_note.lock().unwrap().clone(),
@@ -2516,7 +2571,7 @@ impl Sender {
     fn part_mb(&self, asked: Option<u32>) -> Result<u32> {
         let mb = asked.unwrap_or_else(|| self.app.try_state::<Arc<Engine>>().map(|e| e.settings().send_part_mb).unwrap_or(PART_DEFAULT_MB));
         if !part_mb_ok(mb) {
-            bail!("The part size must be between {PART_MIN_MB} MB and 10 GB.");
+            bail!(crate::tr!("The part size must be between {PART_MIN_MB} MB and 10 GB.", "La taille d’une partie doit être entre {PART_MIN_MB} Mo et 10 Go."));
         }
         Ok(mb)
     }
@@ -2549,10 +2604,10 @@ impl Sender {
         let password = password.map(zeroize::Zeroizing::new).filter(|p| !p.is_empty());
         if let Some(p) = &password {
             if p.chars().count() < PASSWORD_MIN {
-                anyhow::bail!("The password needs at least {PASSWORD_MIN} characters.");
+                anyhow::bail!(crate::tr!("The password needs at least {PASSWORD_MIN} characters.", "Le mot de passe doit faire au moins {PASSWORD_MIN} caractères."));
             }
             if crate::components::seven_zip().is_none() {
-                anyhow::bail!("{NEEDS_7ZIP}");
+                anyhow::bail!(needs_7zip());
             }
         }
         let picked: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
@@ -2657,11 +2712,11 @@ impl Sender {
             if !ok {
                 return Err(Fail { msg: status_error(code, &text), code: Some(code) });
             }
-            let reply: UploadReply = serde_json::from_str(&text).map_err(|_| Fail::msg("Gofile answered something Pako doesn't understand."))?;
+            let reply: UploadReply = serde_json::from_str(&text).map_err(|_| Fail::msg(crate::tr!("Gofile answered something Pako doesn't understand.", "Gofile a répondu quelque chose que Pako ne comprend pas.")))?;
             if reply.status != "ok" {
-                return Err(Fail::msg(format!("Gofile refused the upload ({}).", reply.status)));
+                return Err(Fail::msg(crate::tr!("Gofile refused the upload ({}).", "Gofile a refusé la mise en ligne ({}).", reply.status)));
             }
-            reply.data.ok_or_else(|| Fail::msg("Gofile didn't send the link back."))
+            reply.data.ok_or_else(|| Fail::msg(crate::tr!("Gofile didn't send the link back.", "Gofile n’a pas renvoyé le lien.")))
         }
         .await;
         if outcome.is_err() {
@@ -2702,18 +2757,19 @@ impl Sender {
     /// password goes to 7-Zip through its input, never on its command line (other programs can
     /// read those).
     async fn make_protected(&self, job: &Arc<Job>, compress: bool) -> Result<Vec<Entry>, String> {
-        let seven = crate::components::seven_zip().ok_or(NEEDS_7ZIP)?;
-        let password = job.password.lock().unwrap().take().ok_or("Type the password again: Pako doesn't keep it.")?;
+        let seven = crate::components::seven_zip().ok_or_else(needs_7zip)?;
+        let password = job.password.lock().unwrap().take().ok_or_else(|| crate::tr!("Type the password again: Pako doesn't keep it.", "Saisissez à nouveau le mot de passe : Pako ne le garde pas."))?;
         let dir = parts_root().join(&job.id);
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Pako couldn't make a folder for the archive ({e})."))?;
+        std::fs::create_dir_all(&dir).map_err(|e| crate::tr!("Pako couldn't make a folder for the archive ({e}).", "Pako n’a pas pu créer de dossier pour l’archive ({e})."))?;
         if let Some(free) = crate::system::free_space(&dir) {
             let need = job.input + 64 * MB;
             if free < need {
                 let _ = std::fs::remove_dir_all(&dir);
                 let drive = dir.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
-                return Err(format!(
+                return Err(crate::tr!(
                     "Protecting it with a password needs {} free on {drive}, and it has {}. Free some space first.",
+                    "Le protéger par un mot de passe demande {} de libre sur {drive}, et il y a {}. Libérez d’abord de la place.",
                     drivesend::human(need),
                     drivesend::human(free)
                 ));
@@ -2725,7 +2781,10 @@ impl Sender {
             let count = job.input.div_ceil((job.part_mb as u64 * MB).max(1));
             if count > MAX_PARTS {
                 let _ = std::fs::remove_dir_all(&dir);
-                return Err(format!("That would make about {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size."));
+                return Err(crate::tr!(
+                    "That would make about {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size.",
+                    "Cela ferait environ {count} parties, et le maximum est {MAX_PARTS}. Choisissez une taille de partie plus grande."
+                ));
             }
         }
         let stem = archive_stem(&job.name);
@@ -2741,8 +2800,9 @@ impl Sender {
                 let need = private_bytes + 64 * MB;
                 if free < need {
                     let _ = std::fs::remove_dir_all(&dir);
-                    return Err(format!(
+                    return Err(crate::tr!(
                         "Protecting private files needs {} free on the drive of Windows' temporary folder for a moment, and it has {}. Free some space first.",
+                        "Protéger des fichiers privés demande un moment {} de libre sur le disque du dossier temporaire de Windows, et il y a {}. Libérez d’abord de la place.",
                         drivesend::human(need),
                         drivesend::human(free)
                     ));
@@ -2754,7 +2814,7 @@ impl Sender {
             // Locked already (between the hand-over and now): nothing is read.
             if !crate::private_send::is_open() {
                 let _ = std::fs::remove_dir_all(&dir);
-                return Err(PRIVATE_LOCKED_STOP.into());
+                return Err(private_locked_stop().into());
             }
         }
         let (paths, copies) = match tokio::task::spawn_blocking({
@@ -2766,7 +2826,11 @@ impl Sender {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 let _ = std::fs::remove_dir_all(&dir);
-                return Err(if e.kind() == io::ErrorKind::PermissionDenied { "Private mode locked: open it and upload again.".into() } else { format!("Pako couldn't read a private file ({e}).") });
+                return Err(if e.kind() == io::ErrorKind::PermissionDenied {
+                    crate::tr!("Private mode locked: open it and upload again.", "Le mode privé s’est verrouillé : ouvrez-le et relancez la mise en ligne.")
+                } else {
+                    crate::tr!("Pako couldn't read a private file ({e}).", "Pako n’a pas pu lire un fichier privé ({e}).")
+                });
             }
             Err(e) => return Err(e.to_string()),
         };
@@ -2779,7 +2843,10 @@ impl Sender {
                     crate::private_send::wipe_copies(c);
                 }
                 let _ = std::fs::remove_dir_all(&dir);
-                return Err(format!("Two of the picked items are called \"{dup}\": rename one, or upload them without a password."));
+                return Err(crate::tr!(
+                    "Two of the picked items are called \"{dup}\": rename one, or upload them without a password.",
+                    "Deux des éléments choisis s’appellent « {dup} » : renommez-en un, ou mettez-les en ligne sans mot de passe."
+                ));
             }
         }
         // The picked paths, one per line, in a list file beside the folder (not uploaded); with
@@ -2793,7 +2860,7 @@ impl Sender {
             if let Some(c) = &copies {
                 crate::private_send::wipe_copies(c);
             }
-            format!("Pako couldn't start 7-Zip ({e}).")
+            crate::tr!("Pako couldn't start 7-Zip ({e}).", "Pako n’a pas pu lancer 7-Zip ({e}).")
         })?;
         job.making.store(true, Ordering::Relaxed);
         self.changed();
@@ -2805,7 +2872,7 @@ impl Sender {
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000);
         let made = async {
-            let mut child = cmd.spawn().map_err(|e| format!("Pako couldn't start 7-Zip ({e})."))?;
+            let mut child = cmd.spawn().map_err(|e| crate::tr!("Pako couldn't start 7-Zip ({e}).", "Pako n’a pas pu lancer 7-Zip ({e})."))?;
             if let Some(mut stdin) = child.stdin.take() {
                 use tokio::io::AsyncWriteExt;
                 // 7-Zip asks for it twice when it makes an archive.
@@ -2834,9 +2901,10 @@ impl Sender {
                             Some(h) => h.await.unwrap_or_default(),
                             None => String::new(),
                         };
-                        Err(format!("7-Zip couldn't make the archive: {}", text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("it stopped")))
+                        let why = text.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string).unwrap_or_else(|| crate::tr!("it stopped", "il s’est arrêté"));
+                        Err(crate::tr!("7-Zip couldn't make the archive: {why}", "7-Zip n’a pas pu créer l’archive : {why}"))
                     }
-                    Err(e) => Err(format!("7-Zip couldn't make the archive ({e}).")),
+                    Err(e) => Err(crate::tr!("7-Zip couldn't make the archive ({e}).", "7-Zip n’a pas pu créer l’archive ({e}).")),
                 },
             }
         }
@@ -2860,7 +2928,7 @@ impl Sender {
         made.sort_by_key(|(p, _)| (p.extension().and_then(|x| x.to_str()).and_then(|x| x.parse::<u32>().ok()).unwrap_or(0), p.clone()));
         if made.is_empty() {
             let _ = std::fs::remove_dir_all(&dir);
-            return Err("7-Zip didn't make the archive.".into());
+            return Err(crate::tr!("7-Zip didn't make the archive.", "7-Zip n’a pas créé l’archive."));
         }
         let mut list = Vec::with_capacity(made.len());
         let mut files = Vec::with_capacity(made.len());
@@ -2883,22 +2951,26 @@ impl Sender {
         if entries.iter().any(|e| crate::private_send::is_private(&e.path)) {
             return self.make_private_parts(job, entries);
         }
-        let size = zip_size(entries, Pack::Off, Z64_AT).ok_or("Pako couldn't work out the ZIP's size.")?;
+        let size = zip_size(entries, Pack::Off, Z64_AT).ok_or_else(|| crate::tr!("Pako couldn't work out the ZIP's size.", "Pako n’a pas pu calculer la taille du ZIP."))?;
         let part = job.part_mb as u64 * MB;
         let count = size.div_ceil(part.max(1));
         if count > MAX_PARTS {
-            return Err(format!("That would make {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size."));
+            return Err(crate::tr!(
+                "That would make {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size.",
+                "Cela ferait {count} parties, et le maximum est {MAX_PARTS}. Choisissez une taille de partie plus grande."
+            ));
         }
         let dir = parts_root().join(&job.id);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Pako couldn't make a folder for the parts ({e})."))?;
+        std::fs::create_dir_all(&dir).map_err(|e| crate::tr!("Pako couldn't make a folder for the parts ({e}).", "Pako n’a pas pu créer de dossier pour les parties ({e})."))?;
         // The parts take as much room as the ZIP (plus a little to spare).
         if let Some(free) = crate::system::free_space(&dir) {
             let need = size + 64 * MB;
             if free < need {
                 let _ = std::fs::remove_dir_all(&dir);
                 let drive = dir.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
-                return Err(format!(
+                return Err(crate::tr!(
                     "Making the parts needs {} free on {drive}, and it has {}. Free some space, or pick One ZIP (it needs no room on this PC).",
+                    "Créer les parties demande {} de libre sur {drive}, et il y a {}. Libérez de la place, ou choisissez Un ZIP (il ne prend pas de place sur ce PC).",
                     drivesend::human(need),
                     drivesend::human(free)
                 ));
@@ -2929,9 +3001,12 @@ impl Sender {
                     return Err("cancelled".into());
                 }
                 return Err(match other {
-                    Ok(Err(e)) if e.kind() == io::ErrorKind::StorageFull => "This PC's drive got full while Pako made the parts. Free some space, then try again.".into(),
-                    Ok(Err(e)) => format!("Pako couldn't make the parts: {e}"),
-                    _ => "Making the parts stopped unexpectedly. Try again.".into(),
+                    Ok(Err(e)) if e.kind() == io::ErrorKind::StorageFull => crate::tr!(
+                        "This PC's drive got full while Pako made the parts. Free some space, then try again.",
+                        "Le disque de ce PC s’est rempli pendant que Pako créait les parties. Libérez de la place, puis réessayez."
+                    ),
+                    Ok(Err(e)) => crate::tr!("Pako couldn't make the parts: {e}", "Pako n’a pas pu créer les parties : {e}"),
+                    _ => crate::tr!("Making the parts stopped unexpectedly. Try again.", "La création des parties s’est arrêtée de façon inattendue. Réessayez."),
                 });
             }
         };
@@ -2951,11 +3026,14 @@ impl Sender {
     /// Private files in parts: the parts' names and sizes are known from the ZIP's size; each is
     /// made only when it goes up (see "private files in parts").
     fn make_private_parts(&self, job: &Arc<Job>, entries: &[Entry]) -> Result<Vec<Entry>, String> {
-        let size = zip_size(entries, Pack::Off, Z64_AT).ok_or("Pako couldn't work out the ZIP's size.")?;
+        let size = zip_size(entries, Pack::Off, Z64_AT).ok_or_else(|| crate::tr!("Pako couldn't work out the ZIP's size.", "Pako n’a pas pu calculer la taille du ZIP."))?;
         let part = job.part_mb as u64 * MB;
         let count = size.div_ceil(part.max(1));
         if count > MAX_PARTS {
-            return Err(format!("That would make {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size."));
+            return Err(crate::tr!(
+                "That would make {count} parts, and the most is {MAX_PARTS}. Pick a bigger part size.",
+                "Cela ferait {count} parties, et le maximum est {MAX_PARTS}. Choisissez une taille de partie plus grande."
+            ));
         }
         let dir = private_parts_dir(&job.id);
         // One part at a time on the drive of Windows' temporary folder.
@@ -2963,11 +3041,17 @@ impl Sender {
         if let Some(free) = crate::system::free_space(&probe) {
             let need = part.min(size) + 64 * MB;
             if free < need {
-                return Err(format!("Each part needs {} free on the drive of Windows' temporary folder for a moment, and it has {}. Free some space, or pick a smaller part size.", drivesend::human(need), drivesend::human(free)));
+                return Err(crate::tr!(
+                    "Each part needs {} free on the drive of Windows' temporary folder for a moment, and it has {}. Free some space, or pick a smaller part size.",
+                    "Chaque partie demande un moment {} de libre sur le disque du dossier temporaire de Windows, et il y a {}. Libérez de la place, ou choisissez une taille de partie plus petite.",
+                    drivesend::human(need),
+                    drivesend::human(free)
+                ));
             }
         }
         let fingerprint = private_fingerprint(&job.paths);
-        private_parts_register(&dir, &job.name, part, job.paths.clone(), Some(entries.to_vec()), fingerprint.clone()).map_err(|e| format!("Pako couldn't make a folder for the parts ({e})."))?;
+        private_parts_register(&dir, &job.name, part, job.paths.clone(), Some(entries.to_vec()), fingerprint.clone())
+            .map_err(|e| crate::tr!("Pako couldn't make a folder for the parts ({e}).", "Pako n’a pas pu créer de dossier pour les parties ({e})."))?;
         let mut list = Vec::new();
         let mut files = Vec::new();
         for i in 0..count as usize {
@@ -3016,7 +3100,7 @@ impl Sender {
         let mut folder = job.folder.lock().unwrap().clone();
         if folder.is_none() {
             if entries.is_empty() {
-                return Err("There are no files to upload.".into());
+                return Err(crate::tr!("There are no files to upload.", "Il n’y a aucun fichier à mettre en ligne."));
             }
             let first = entries.remove(0);
             // Nothing is up if this fails: "Try again" starts the whole send over.
@@ -3040,7 +3124,7 @@ impl Sender {
                     }
                     return Err(match link {
                         Err(e) => e,
-                        Ok(_) => "Gofile didn't say which folder it made.".to_string(),
+                        Ok(_) => crate::tr!("Gofile didn't say which folder it made.", "Gofile n’a pas dit quel dossier il a créé."),
                     });
                 }
             };
@@ -3083,9 +3167,15 @@ impl Sender {
             let n = failed.len();
             *job.left.lock().unwrap() = failed;
             return Err(if n == 1 {
-                "1 file didn't upload. Try again to upload just that one (the link stays the same).".into()
+                crate::tr!(
+                    "1 file didn't upload. Try again to upload just that one (the link stays the same).",
+                    "1 fichier n’a pas été mis en ligne. Réessayez pour ne mettre en ligne que celui-là (le lien reste le même)."
+                )
             } else {
-                format!("{n} files didn't upload. Try again to upload just those (the link stays the same).")
+                crate::tr!(
+                    "{n} files didn't upload. Try again to upload just those (the link stays the same).",
+                    "{n} fichiers n’ont pas été mis en ligne. Réessayez pour ne mettre en ligne que ceux-là (le lien reste le même)."
+                )
             });
         }
         Ok((link, Some(folder_id), None))
@@ -3260,7 +3350,7 @@ impl Sender {
         // Stopped because Private mode locked (not by you): a failure "Try again" carries on,
         // never a Cancel that deletes what's already up.
         let result = match result {
-            Err(m) if m == "cancelled" && job.locked_stop.load(Ordering::SeqCst) => Err(PRIVATE_LOCKED_STOP.to_string()),
+            Err(m) if m == "cancelled" && job.locked_stop.load(Ordering::SeqCst) => Err(private_locked_stop().to_string()),
             r => r,
         };
         match result {
@@ -3290,7 +3380,13 @@ impl Sender {
                 // Pako's window in view shows it already (a message at the bottom): no pop-up.
                 if let Some(e) = self.app.try_state::<Arc<Engine>>() {
                     let pop = if self.window_in_view() { Pop::Skip } else { Pop::Pref };
-                    e.notify_pop("upload-done", "Upload finished, link copied", &format!("{}: paste the link to anyone.", job.name), Go::item("send", job.id.clone()), pop);
+                    e.notify_pop(
+                        "upload-done",
+                        &crate::tr!("Upload finished, link copied", "Mise en ligne terminée, lien copié"),
+                        &crate::tr!("{}: paste the link to anyone.", "{} : collez le lien où vous voulez.", job.name),
+                        Go::item("send", job.id.clone()),
+                        pop,
+                    );
                 }
             }
             Err(msg) if msg == "cancelled" => {
@@ -3330,7 +3426,13 @@ impl Sender {
                     // Carrying on by itself after a restart: tried again quietly.
                 } else if let Some(e) = self.app.try_state::<Arc<Engine>>() {
                     let pop = if self.window_in_view() { Pop::Skip } else { Pop::Pref };
-                    e.notify_pop("upload-failed", "Couldn't upload a file", &format!("{}: {msg}", job.name), Go::item("send", job.id.clone()), pop);
+                    e.notify_pop(
+                        "upload-failed",
+                        &crate::tr!("Couldn't upload a file", "Impossible de mettre un fichier en ligne"),
+                        &crate::tr!("{}: {msg}", "{} : {msg}", job.name),
+                        Go::item("send", job.id.clone()),
+                        pop,
+                    );
                 }
             }
         }
@@ -3496,7 +3598,7 @@ impl Sender {
 
     /// Takes a sent item off the list; `online` also deletes it from Gofile (permanent).
     pub async fn remove(&self, id: &str, online: bool) -> Result<()> {
-        let Some(_claim) = self.changing.take(id) else { bail!(BUSY_ITEM) };
+        let Some(_claim) = self.changing.take(id) else { bail!(busy_item()) };
         self.remove_claimed(id, online).await
     }
 
@@ -3506,7 +3608,7 @@ impl Sender {
             let inner = self.inner.lock().unwrap();
             (inner.sent.iter().find(|s| s.id == id).cloned(), inner.token.clone())
         };
-        let Some(item) = item else { bail!("It's no longer on the list.") };
+        let Some(item) = item else { bail!(crate::tr!("It's no longer on the list.", "Il n’est plus dans la liste.")) };
         if online {
             // Its failed send (if any) comes off the list first, so "Try again" can't upload into
             // the folder being deleted; it comes back if the deleting doesn't work.
@@ -3515,14 +3617,14 @@ impl Sender {
                 .lock()
                 .unwrap()
                 .take_failed(id)
-                .map_err(|_| anyhow!("It's still uploading. Cancel it first, then delete it."))?;
+                .map_err(|_| anyhow!(crate::tr!("It's still uploading. Cancel it first, then delete it.", "Il est encore en cours de mise en ligne. Annulez-le d’abord, puis supprimez-le.")))?;
             if let Err(msg) = self.store_of(&item).delete(&item, shared).await {
                 if let Some((i, job)) = parked {
                     let mut inner = self.inner.lock().unwrap();
                     let i = i.min(inner.jobs.len());
                     inner.jobs.insert(i, job);
                 }
-                bail!("{msg} It's still on the list.");
+                bail!("{msg}{}", still_listed());
             }
         }
         {
@@ -3640,15 +3742,15 @@ impl Sender {
 
     /// Changes when an upload gets deleted (None = keep it).
     pub async fn set_expiry(&self, id: &str, at: Option<u64>) -> Result<()> {
-        let Some(_claim) = self.changing.take(id) else { bail!(BUSY_ITEM) };
-        let (Some(item), shared) = self.item(id) else { bail!("It's no longer on the list.") };
+        let Some(_claim) = self.changing.take(id) else { bail!(busy_item()) };
+        let (Some(item), shared) = self.item(id) else { bail!(crate::tr!("It's no longer on the list.", "Il n’est plus dans la liste.")) };
         if at.is_some_and(|a| a <= now_millis()) {
-            bail!("Pick a date that hasn't passed.");
+            bail!(crate::tr!("Pick a date that hasn't passed.", "Choisissez une date qui n’est pas passée."));
         }
         let on_host = match self.store_of(&item).set_expiry(&item, shared, at).await {
             Ok(by) => by == ExpiryBy::Host && at.is_some(),
             // The service would still delete it on the old date: nothing changes.
-            Err(msg) if item.expiry_on_host => bail!("{msg} Nothing changed."),
+            Err(msg) if item.expiry_on_host => bail!(crate::tr!("{msg} Nothing changed.", "{msg} Rien n’a changé.")),
             // Pako deletes it itself then.
             Err(_) => false,
         };
@@ -3670,7 +3772,7 @@ impl Sender {
 
     /// The link of an upload as a QR code (SVG), made here: nothing is sent anywhere.
     pub fn qr(&self, id: &str) -> Result<String> {
-        let (Some(item), _) = self.item(id) else { bail!("It's no longer on the list.") };
+        let (Some(item), _) = self.item(id) else { bail!(crate::tr!("It's no longer on the list.", "Il n’est plus dans la liste.")) };
         qr_svg(&item.link)
     }
 
@@ -3713,10 +3815,30 @@ impl Sender {
         let Some(engine) = self.app.try_state::<Arc<Engine>>() else { return };
         match (swept.deleted.as_slice(), new_fails.as_slice()) {
             ([], []) => {}
-            ([one], []) => engine.notify("upload-deleted", "Upload deleted", &format!("{}: its \"Delete after\" date came, so Pako deleted it.", one.name), Go::page("send")),
-            (many, []) => engine.notify("upload-deleted", "Uploads deleted", &format!("{} uploads reached their \"Delete after\" date, so Pako deleted them.", many.len()), Go::page("send")),
-            (_, [(id, msg, _)]) => engine.notify("upload-deleted", "Pako couldn't delete an upload", &format!("{msg} Pako tries again every hour."), Go::item("send", id.clone())),
-            (_, fails) => engine.notify("upload-deleted", "Pako couldn't delete some uploads", &format!("{} uploads are past their \"Delete after\" date. Pako tries again every hour.", fails.len()), Go::page("send")),
+            ([one], []) => engine.notify(
+                "upload-deleted",
+                &crate::tr!("Upload deleted", "Mise en ligne supprimée"),
+                &crate::tr!("{}: its \"Delete after\" date came, so Pako deleted it.", "{} : sa date « Supprimer après » est arrivée, donc Pako l’a supprimé.", one.name),
+                Go::page("send"),
+            ),
+            (many, []) => engine.notify(
+                "upload-deleted",
+                &crate::tr!("Uploads deleted", "Mises en ligne supprimées"),
+                &crate::tr!("{} uploads reached their \"Delete after\" date, so Pako deleted them.", "{} mises en ligne ont atteint leur date « Supprimer après », donc Pako les a supprimées.", many.len()),
+                Go::page("send"),
+            ),
+            (_, [(id, msg, _)]) => engine.notify(
+                "upload-deleted",
+                &crate::tr!("Pako couldn't delete an upload", "Pako n’a pas pu supprimer une mise en ligne"),
+                &crate::tr!("{msg} Pako tries again every hour.", "{msg} Pako réessaie toutes les heures."),
+                Go::item("send", id.clone()),
+            ),
+            (_, fails) => engine.notify(
+                "upload-deleted",
+                &crate::tr!("Pako couldn't delete some uploads", "Pako n’a pas pu supprimer certaines mises en ligne"),
+                &crate::tr!("{} uploads are past their \"Delete after\" date. Pako tries again every hour.", "{} mises en ligne ont dépassé leur date « Supprimer après ». Pako réessaie toutes les heures.", fails.len()),
+                Go::page("send"),
+            ),
         }
     }
 
@@ -3731,7 +3853,7 @@ impl Sender {
         }
         match self.remove_claimed(id, true).await {
             Ok(()) => Ok(true),
-            Err(e) => Err(e.to_string().trim_end_matches(" It's still on the list.").to_string()),
+            Err(e) => Err(e.to_string().trim_end_matches(still_listed().as_str()).to_string()),
         }
     }
 
@@ -3755,10 +3877,16 @@ impl Sender {
     }
 }
 
+/// What a delete that didn't work adds: the upload stays on the list (taken off again when the
+/// hourly sweep says why).
+fn still_listed() -> String {
+    crate::tr!(" It's still on the list.", " Il est toujours dans la liste.")
+}
+
 /// A QR code of `text` as SVG (dark modules on a transparent background).
 pub fn qr_svg(text: &str) -> Result<String> {
     use qrcode::render::svg;
-    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|_| anyhow!("This link is too long for a QR code."))?;
+    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|_| anyhow!(crate::tr!("This link is too long for a QR code.", "Ce lien est trop long pour un QR code.")))?;
     Ok(code.render::<svg::Color>().min_dimensions(160, 160).quiet_zone(false).dark_color(svg::Color("#000")).light_color(svg::Color("#fff")).build())
 }
 

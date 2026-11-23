@@ -571,6 +571,10 @@ pub struct Settings {
     /// Light or dark: "dark" (default), "light" or "system" (follow Windows' app mode). Changed
     /// only through `theme::theme_set` (Settings › Window › Theme and the title bar's button).
     pub theme: String,
+    /// Pako's language: "en" (default) or "fr". Asked, never guessed (Pako Setup, a portable
+    /// Pako's first-start setup, Settings › General › Language). Changed only through
+    /// `i18n::language_set`, so an older copy of the settings can't put the previous one back.
+    pub language: String,
     /// Direct › "Be visible to Pakos on this network": "home" (default: only while every network
     /// this PC is on is one Windows marks as Private or Domain), "always" or "never". Pako
     /// always looks for its contacts on the network; this only decides whether it answers.
@@ -671,6 +675,7 @@ impl Default for Settings {
             tour_offered: false,
             tours_done: Vec::new(),
             theme: "dark".into(),
+            language: "en".into(),
             direct_visible: "home".into(),
             mirror_hosts: Vec::new(),
             terms_accepted: None,
@@ -702,6 +707,113 @@ pub struct Progress {
     pub speed: u64,
     pub connections: u32,
     pub name: String,
+}
+
+/// Words Pako recognises again later (a message compared to know what happened, such as a
+/// download's reason for stopping): written in English and French, so a message made before a
+/// language switch is still recognised. Shown with `say`, compared with `is_said`/`starts_said`.
+pub type Said = [&'static str; 2];
+
+/// The words in the language of the moment.
+pub fn say(w: Said) -> String {
+    w[usize::from(crate::i18n::is_fr())].to_string()
+}
+
+/// `msg` is these words, in either language.
+pub fn is_said(msg: &str, w: Said) -> bool {
+    w.contains(&msg)
+}
+
+/// `msg` starts with these words, in either language.
+pub fn starts_said(msg: &str, w: Said) -> bool {
+    w.iter().any(|p| msg.starts_with(p))
+}
+
+/// Why a link isn't added (a paste, or a link sent by another of your PCs).
+pub const NOT_WEB_LINK: Said = ["not a web link", "ce n’est pas un lien web"];
+pub const ONLY_HTTP: Said = ["only http and https links are supported", "seuls les liens http et https sont pris en charge"];
+pub const FOLDER_EMPTY: Said = ["the folder is empty", "le dossier est vide"];
+pub const GOOGLE_KIND: Said = [
+    "this kind of Google file (form, site...) can't be downloaded",
+    "ce type de fichier Google (formulaire, site…) ne peut pas être téléchargé",
+];
+
+/// The words that may travel to another of your PCs (why a link it sent wasn't added here, a
+/// download's message in its list): each PC sends them in English (`in_english`) and shows
+/// them in its own language (`direct::words`), like Direct's own lines.
+const TRAVELLING: &[Said] = &[
+    NOT_WEB_LINK,
+    ONLY_HTTP,
+    FOLDER_EMPTY,
+    GOOGLE_KIND,
+    crate::engine::NEEDS_VIDEO_TOOLS,
+    crate::engine::NO_ANSWER,
+    crate::engine::SPLICE_FAILED,
+    [crate::drive::FOLDER_NOT_PUBLIC, crate::drive::FOLDER_NOT_PUBLIC_FR],
+    [crate::drive::CANT_LIST_NOW, crate::drive::CANT_LIST_NOW_FR],
+    [crate::drive::NO_KEY, crate::drive::NO_KEY_FR],
+    crate::engine::FILE_CHANGED,
+    crate::engine::WEB_PAGE,
+    crate::engine::RESUME_STOPPED,
+    crate::engine::NEEDS_PASSWORD,
+    crate::engine::EXTRACTED,
+    crate::fetch::BLOCKED_MESSAGE,
+    crate::fetch::QUOTA_MESSAGE,
+    crate::fetch::NOT_FOUND,
+    crate::fetch::REFUSED,
+    crate::fetch::ANSWERED,
+    crate::fetch::NAME_NOT_FOUND,
+    crate::video::NEEDS_TOOLS,
+    crate::video::SITE_CHANGED,
+    crate::video::DRM,
+    crate::video::UNREADABLE,
+    crate::video::NO_SITE,
+];
+
+/// Travelling words that START a message whose rest is only a code ("File not found on the
+/// server (404).", "Server error (502)"), or a code and one of `TAILS`.
+const TRAVELLING_STARTS: &[Said] = &[
+    crate::fetch::NOT_FOUND,
+    crate::fetch::REFUSED,
+    crate::fetch::ANSWERED,
+    ["Server error", "Erreur du serveur"],
+    ["Server busy", "Serveur occupé"],
+];
+
+/// Endings that follow a code in those messages (fetch.rs).
+const TAILS: &[Said] = &[[". The link may have expired.", ". Le lien a peut-être expiré."]];
+
+/// `msg` with its travelling start (and ending) said in the other language: `from`/`to` are 0
+/// (English) or 1 (French). None when it isn't such a message, or what's left isn't a code.
+fn swap_start(msg: &str, from: usize, to: usize) -> Option<String> {
+    for w in TRAVELLING_STARTS {
+        let Some(rest) = msg.strip_prefix(w[from]) else { continue };
+        let (code, tail) = match TAILS.iter().find(|t| rest.ends_with(t[from])) {
+            Some(t) => (&rest[..rest.len() - t[from].len()], t[to]),
+            None => (rest, ""),
+        };
+        // Only a code is left ("(404).", " 418", " (403)"): numbers, brackets, spaces, a full stop.
+        if code.chars().all(|c| c.is_ascii_digit() || " ().\u{a0}".contains(c)) {
+            return Some(format!("{}{code}{tail}", w[to]));
+        }
+    }
+    None
+}
+
+/// One of the travelling words in English (as it is when it's none of them, or English already).
+pub fn in_english(msg: &str) -> String {
+    if let Some(w) = TRAVELLING.iter().find(|w| w[1] == msg) {
+        return w[0].to_string();
+    }
+    swap_start(msg, 1, 0).unwrap_or_else(|| msg.to_string())
+}
+
+/// The French of one of the travelling words given in English.
+pub fn french_of(msg: &str) -> Option<String> {
+    if let Some(w) = TRAVELLING.iter().find(|w| w[0] == msg) {
+        return Some(w[1].to_string());
+    }
+    swap_start(msg, 0, 1)
 }
 
 pub fn now_secs() -> u64 {

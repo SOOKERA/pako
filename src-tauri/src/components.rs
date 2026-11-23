@@ -245,7 +245,7 @@ pub fn remove_all(kinds: &[Kind]) -> Result<()> {
     // Held while removing: no install (daily, "site changed") starts in between.
     let _guards = kinds
         .iter()
-        .map(|k| InstallGuard::take(*k).map_err(|_| anyhow!("{} is being installed right now.", k.label())))
+        .map(|k| InstallGuard::take(*k).map_err(|_| anyhow!(tr!("{} is being installed right now.", "{} est en cours d’installation.", k.label()))))
         .collect::<Result<Vec<_>>>()?;
     remove_in(&dir(), kinds)
 }
@@ -266,7 +266,11 @@ fn remove_in(base: &Path, kinds: &[Kind]) -> Result<()> {
             for (target, old) in moved.iter().rev() {
                 let _ = std::fs::rename(old, target);
             }
-            bail!("{} is in use (a preview, a video or an extraction is running). Close it, then try again.", kind.label());
+            bail!(tr!(
+            "{} is in use (a preview, a video or an extraction is running). Close it, then try again.",
+            "{} est utilisé (un aperçu, une vidéo ou une extraction est en cours). Fermez-le, puis réessayez.",
+            kind.label()
+        ));
         }
         moved.push((target, old));
     }
@@ -314,9 +318,13 @@ fn can_swap(kind: Kind) -> Result<()> {
     let probe = dir().join(format!(".check-{}", kind.folder()));
     let _ = std::fs::remove_dir_all(&probe);
     if running_from(&target) || std::fs::rename(&target, &probe).is_err() {
-        bail!("{} is in use (a preview, a video or an extraction is running). Close it, then try again.", kind.label());
+        bail!(tr!(
+            "{} is in use (a preview, a video or an extraction is running). Close it, then try again.",
+            "{} est utilisé (un aperçu, une vidéo ou une extraction est en cours). Fermez-le, puis réessayez.",
+            kind.label()
+        ));
     }
-    std::fs::rename(&probe, &target).map_err(|e| anyhow!("Couldn't put {} back in place: {e}", kind.label()))
+    std::fs::rename(&probe, &target).map_err(|e| anyhow!(tr!("Couldn't put {} back in place: {e}", "Impossible de remettre {} en place : {e}", kind.label())))
 }
 
 impl Serialize for Status {
@@ -354,7 +362,7 @@ struct InstallGuard(Kind);
 impl InstallGuard {
     fn take(kind: Kind) -> Result<Self> {
         if !INSTALLING.lock().unwrap().insert(kind) {
-            bail!("{} is already being installed.", kind.label());
+            bail!(tr!("{} is already being installed.", "{} est déjà en cours d’installation.", kind.label()));
         }
         Ok(Self(kind))
     }
@@ -496,9 +504,9 @@ async fn release_at(http: &reqwest::Client, kind: Kind, which: &str) -> Result<R
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
-        .context("Couldn't reach GitHub")?;
+        .context(tr!("Couldn't reach GitHub", "Impossible de joindre GitHub"))?;
     if !r.status().is_success() {
-        bail!("GitHub answered {}", r.status().as_u16());
+        bail!(tr!("GitHub answered {}", "GitHub a répondu {}", r.status().as_u16()));
     }
     Ok(r.json().await?)
 }
@@ -533,7 +541,7 @@ fn release_version(kind: Kind, rel: &Release) -> Option<String> {
 
 pub async fn latest_version(http: &reqwest::Client, kind: Kind) -> Result<String> {
     let rel = latest_release(http, kind).await?;
-    release_version(kind, &rel).ok_or_else(|| anyhow!("No Windows build in the latest release"))
+    release_version(kind, &rel).ok_or_else(|| anyhow!(tr!("No Windows build in the latest release", "Pas de version Windows dans la dernière publication")))
 }
 
 /// Progress callback: (stage, bytes done, bytes total).
@@ -541,9 +549,9 @@ pub type Progress<'a> = &'a (dyn Fn(&str, u64, Option<u64>) + Send + Sync);
 
 /// Downloads a file, reporting progress; returns its SHA-256 (hex).
 async fn fetch(http: &reqwest::Client, url: &str, to: &Path, progress: Progress<'_>) -> Result<String> {
-    let resp = http.get(url).header(reqwest::header::USER_AGENT, "Pako").send().await.context("Download failed")?;
+    let resp = http.get(url).header(reqwest::header::USER_AGENT, "Pako").send().await.context(tr!("Download failed", "Le téléchargement a échoué"))?;
     if !resp.status().is_success() {
-        bail!("The download server answered {}", resp.status().as_u16());
+        bail!(tr!("The download server answered {}", "Le serveur de téléchargement a répondu {}", resp.status().as_u16()));
     }
     let total = resp.content_length();
     let mut file = std::fs::File::create(to)?;
@@ -552,13 +560,13 @@ async fn fetch(http: &reqwest::Client, url: &str, to: &Path, progress: Progress<
     let mut last = Instant::now();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("The download was cut")?;
+        let chunk = chunk.context(tr!("The download was cut", "Le téléchargement a été coupé"))?;
         file.write_all(&chunk)?;
         hash.update(&chunk);
         done += chunk.len() as u64;
         if last.elapsed() >= Duration::from_millis(250) {
             last = Instant::now();
-            progress("Downloading", done, total);
+            progress(&tr!("Downloading", "Téléchargement"), done, total);
         }
     }
     file.sync_all()?;
@@ -568,7 +576,7 @@ async fn fetch(http: &reqwest::Client, url: &str, to: &Path, progress: Progress<
 /// The SHA-256 published for `file_name` in a checksum file.
 async fn published_sha256(http: &reqwest::Client, url: &str, file_name: &str) -> Result<String> {
     let text = http.get(url).header(reqwest::header::USER_AGENT, "Pako").send().await?.text().await?;
-    hash_for(&text, file_name).ok_or_else(|| anyhow!("The checksum file doesn't list {file_name}"))
+    hash_for(&text, file_name).ok_or_else(|| anyhow!(tr!("The checksum file doesn't list {file_name}", "Le fichier des sommes de contrôle ne mentionne pas {file_name}")))
 }
 
 /// Finds the hash for `file_name` in the formats projects publish: "<hash>  <name>" lines
@@ -593,7 +601,7 @@ fn hash_for(text: &str, file_name: &str) -> Option<String> {
 }
 
 fn asset<'a>(rel: &'a Release, name: &str) -> Result<&'a Asset> {
-    rel.assets.iter().find(|a| a.name == name).ok_or_else(|| anyhow!("{name} is missing from the release"))
+    rel.assets.iter().find(|a| a.name == name).ok_or_else(|| anyhow!(tr!("{name} is missing from the release", "{name} manque dans la publication")))
 }
 
 /// Unpacks a whole zip into `out`, folders included. A name that would land outside `out`
@@ -607,7 +615,7 @@ fn unzip_tree(zip_path: &Path, out: &Path) -> Result<usize> {
         // A "\" in a zip name is a folder too on Windows.
         let parts: Vec<&str> = raw.trim_end_matches(['/', '\\']).split(['/', '\\']).collect();
         if parts.iter().any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':')) {
-            bail!("The download holds a file that would land outside its folder ({raw})");
+            bail!(tr!("The download holds a file that would land outside its folder ({raw})", "Le téléchargement contient un fichier qui atterrirait hors de son dossier ({raw})"));
         }
         let dest = parts.iter().fold(out.to_path_buf(), |d, p| d.join(p));
         if f.is_dir() {
@@ -631,11 +639,11 @@ fn unzip_tree(zip_path: &Path, out: &Path) -> Result<usize> {
 /// anything is unpacked, then unpacked whole into `out` (yt-dlp.exe and `_internal`).
 fn unpack_yt_dlp(zip_path: &Path, got: &str, want: &str, out: &Path) -> Result<()> {
     if !got.eq_ignore_ascii_case(want) {
-        bail!("The downloaded file doesn't match yt-dlp's published checksum");
+        bail!(tr!("The downloaded file doesn't match yt-dlp's published checksum", "Le fichier téléchargé ne correspond pas à la somme de contrôle publiée par yt-dlp"));
     }
     unzip_tree(zip_path, out)?;
     if !out.join("yt-dlp.exe").is_file() || !out.join("_internal").is_dir() {
-        bail!("yt-dlp.exe wasn't in the download");
+        bail!(tr!("yt-dlp.exe wasn't in the download", "yt-dlp.exe n’était pas dans le téléchargement"));
     }
     Ok(())
 }
@@ -671,14 +679,17 @@ fn swap_in(new: &Path, target: &Path, prev: &Path, name: &str) -> Result<()> {
     let _ = std::fs::remove_dir_all(prev);
     if target.exists() && (running_from(target) || rename_patiently(target, prev).is_err()) {
         let _ = std::fs::remove_dir_all(new);
-        bail!("{name} is in use (a preview, a video or an extraction is running). Close it, then try again.");
+        bail!(tr!(
+            "{name} is in use (a preview, a video or an extraction is running). Close it, then try again.",
+            "{name} est utilisé (un aperçu, une vidéo ou une extraction est en cours). Fermez-le, puis réessayez."
+        ));
     }
     if let Err(e) = rename_patiently(new, target) {
         if prev.exists() {
             let _ = rename_patiently(prev, target);
         }
         let _ = std::fs::remove_dir_all(new);
-        return Err(anyhow!("Couldn't put the new files in place: {e}"));
+        return Err(anyhow!(tr!("Couldn't put the new files in place: {e}", "Impossible de mettre les nouveaux fichiers en place : {e}")));
     }
     let _ = std::fs::remove_dir_all(prev);
     Ok(())
@@ -717,7 +728,7 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
     let rebuilding = old_build(kind);
     // In use: say so now, not after a 150 MB download.
     can_swap(kind)?;
-    progress("Checking the latest version", 0, None);
+    progress(&tr!("Checking the latest version", "Recherche de la dernière version"), 0, None);
     let rel = latest_release(http, kind).await?;
     let base = dir();
     std::fs::create_dir_all(&base)?;
@@ -740,17 +751,17 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                 asset_name = a.name.clone();
                 let zip_path = work.join(YTDLP_ZIP);
                 let got = fetch(http, &a.browser_download_url, &zip_path, progress).await?;
-                progress("Checking the file", 0, None);
+                progress(&tr!("Checking the file", "Vérification du fichier"), 0, None);
                 let want = published_sha256(http, &asset(&rel, "SHA2-256SUMS")?.browser_download_url, YTDLP_ZIP).await?;
                 arrived = got.eq_ignore_ascii_case(&want);
-                progress("Unpacking", 0, None);
+                progress(&tr!("Unpacking", "Décompression"), 0, None);
                 let (z, t) = (zip_path.clone(), tmp.clone());
                 tauri::async_runtime::spawn_blocking(move || unpack_yt_dlp(&z, &got, &want, &t))
                     .await
-                    .map_err(|e| anyhow!("Couldn't unpack yt-dlp: {e}"))??;
+                    .map_err(|e| anyhow!(tr!("Couldn't unpack yt-dlp: {e}", "Impossible de décompresser yt-dlp : {e}")))??;
                 let exe = tmp.join("yt-dlp.exe");
                 if !tauri::async_runtime::spawn_blocking(move || yt_dlp_runs(&exe)).await.unwrap_or(false) {
-                    bail!("The new yt-dlp didn't start");
+                    bail!(tr!("The new yt-dlp didn't start", "Le nouveau yt-dlp n’a pas démarré"));
                 }
             }
             Kind::Deno => {
@@ -758,18 +769,18 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                 asset_name = name.into();
                 let zip_path = work.join(name);
                 let got = fetch(http, &asset(&rel, name)?.browser_download_url, &zip_path, progress).await?;
-                progress("Checking the file", 0, None);
+                progress(&tr!("Checking the file", "Vérification du fichier"), 0, None);
                 let sums = asset(&rel, &format!("{name}.sha256sum"))?;
                 if got != published_sha256(http, &sums.browser_download_url, name).await? {
-                    bail!("The downloaded file doesn't match Deno's published checksum");
+                    bail!(tr!("The downloaded file doesn't match Deno's published checksum", "Le fichier téléchargé ne correspond pas à la somme de contrôle publiée par Deno"));
                 }
-                progress("Unpacking", 0, None);
+                progress(&tr!("Unpacking", "Décompression"), 0, None);
                 if unzip(&zip_path, &tmp, |n| n.ends_with("deno.exe"))? == 0 {
-                    bail!("deno.exe wasn't in the download");
+                    bail!(tr!("deno.exe wasn't in the download", "deno.exe n’était pas dans le téléchargement"));
                 }
             }
             Kind::Ffmpeg => {
-                let (a, _) = pick_ffmpeg(&rel.assets).ok_or_else(|| anyhow!("No Windows build in the latest release"))?;
+                let (a, _) = pick_ffmpeg(&rel.assets).ok_or_else(|| anyhow!(tr!("No Windows build in the latest release", "Pas de version Windows dans la dernière publication")))?;
                 let sums = &asset(&rel, "checksums.sha256")?.browser_download_url;
                 let zip_path = work.join(&a.name);
                 asset_name = a.name.clone();
@@ -780,18 +791,18 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                     tries += 1;
                     let want = published_sha256(http, sums, &a.name).await?;
                     let got = fetch(http, &a.browser_download_url, &zip_path, progress).await?;
-                    progress("Checking the file", 0, None);
+                    progress(&tr!("Checking the file", "Vérification du fichier"), 0, None);
                     if got == want {
                         break;
                     }
                     if tries == 2 {
-                        bail!("The downloaded file doesn't match the published checksum");
+                        bail!(tr!("The downloaded file doesn't match the published checksum", "Le fichier téléchargé ne correspond pas à la somme de contrôle publiée"));
                     }
                 }
-                progress("Unpacking", 0, None);
+                progress(&tr!("Unpacking", "Décompression"), 0, None);
                 let n = unzip(&zip_path, &tmp, |p| p.contains("/bin/") && p.ends_with(".exe"))?;
                 if n == 0 {
-                    bail!("ffmpeg.exe wasn't in the download");
+                    bail!(tr!("ffmpeg.exe wasn't in the download", "ffmpeg.exe n’était pas dans le téléchargement"));
                 }
             }
             Kind::SevenZip => {
@@ -801,7 +812,7 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                     .assets
                     .iter()
                     .find(|a| a.name.starts_with("7z") && a.name.ends_with("-x64.exe"))
-                    .ok_or_else(|| anyhow!("No 64-bit 7-Zip in the latest release"))?;
+                    .ok_or_else(|| anyhow!(tr!("No 64-bit 7-Zip in the latest release", "Pas de 7-Zip 64 bits dans la dernière publication")))?;
                 let zr = work.join("7zr.exe");
                 let zr_asset = asset(&rel, "7zr.exe")?;
                 let zr_got = fetch(http, &zr_asset.browser_download_url, &zr, progress).await?;
@@ -809,16 +820,16 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                 asset_name = installer.name.clone();
                 let inst_got = fetch(http, &installer.browser_download_url, &inst, progress).await?;
                 // Checked before anything from the download is run.
-                progress("Checking the file", 0, None);
+                progress(&tr!("Checking the file", "Vérification du fichier"), 0, None);
                 for (got, want) in [
                     (zr_got, seven_zip_expected(&rel.tag_name, false, zr_asset.digest.as_deref())),
                     (inst_got, seven_zip_expected(&rel.tag_name, true, installer.digest.as_deref())),
                 ] {
                     if want.is_some_and(|w| !w.eq_ignore_ascii_case(&got)) {
-                        bail!("The downloaded 7-Zip doesn't match the one Pako knows");
+                        bail!(tr!("The downloaded 7-Zip doesn't match the one Pako knows", "Le 7-Zip téléchargé ne correspond pas à celui que Pako connaît"));
                     }
                 }
-                progress("Unpacking", 0, None);
+                progress(&tr!("Unpacking", "Décompression"), 0, None);
                 let mut cmd = Command::new(&zr);
                 cmd.arg("x").arg("-y").arg(format!("-o{}", work.join("full").display())).arg(&inst);
                 in_own_folder(&mut cmd, &zr);
@@ -827,9 +838,9 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                     use std::os::windows::process::CommandExt;
                     cmd.creation_flags(0x0800_0000);
                 }
-                let out = cmd.output().context("Couldn't run 7-Zip's extractor")?;
+                let out = cmd.output().context(tr!("Couldn't run 7-Zip's extractor", "Impossible d’exécuter l’extracteur de 7-Zip"))?;
                 if !out.status.success() {
-                    bail!("Couldn't unpack 7-Zip");
+                    bail!(tr!("Couldn't unpack 7-Zip", "Impossible de décompresser 7-Zip"));
                 }
                 for f in ["7z.exe", "7z.dll", "License.txt"] {
                     let from = work.join("full").join(f);
@@ -838,7 +849,7 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
                     }
                 }
                 if !tmp.join("7z.exe").is_file() || !tmp.join("7z.dll").is_file() {
-                    bail!("7z.exe wasn't in the download");
+                    bail!(tr!("7z.exe wasn't in the download", "7z.exe n’était pas dans le téléchargement"));
                 }
             }
         }
@@ -863,9 +874,9 @@ pub async fn install(http: &reqwest::Client, kind: Kind, progress: Progress<'_>)
     let new = tmp.clone();
     tauri::async_runtime::spawn_blocking(move || swap_in(&new, &target, &prev, kind.label()))
         .await
-        .map_err(|e| anyhow!("Couldn't put the new files in place: {e}"))??;
+        .map_err(|e| anyhow!(tr!("Couldn't put the new files in place: {e}", "Impossible de mettre les nouveaux fichiers en place : {e}")))??;
     let _ = std::fs::remove_file(rebuild_note(&base, kind));
-    progress("Done", 0, None);
+    progress(&tr!("Done", "Terminé"), 0, None);
     Ok(installed_version(kind).unwrap_or_else(|| release_version(kind, &rel).unwrap_or_default()))
 }
 

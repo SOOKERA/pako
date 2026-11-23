@@ -17,7 +17,15 @@ pub(super) fn other_account(owner: Option<&str>, connected: Option<&str>) -> Opt
     if connected.is_some_and(|c| c.eq_ignore_ascii_case(owner)) {
         return None;
     }
-    Some(format!("This upload is in the Google Drive of {owner}. Connect that account (Upload › Google Drive), then try again."))
+    Some(crate::tr!(
+        "This upload is in the Google Drive of {owner}. Connect that account (Upload › Google Drive), then try again.",
+        "Cette mise en ligne est dans le Google Drive de {owner}. Connectez ce compte (Envoi › Google Drive), puis réessayez."
+    ))
+}
+
+/// An answer's code as said in a reason ("404"), or that it wasn't one Pako knows.
+fn answer_code(code: u16) -> String {
+    if code >= 300 { code.to_string() } else { crate::tr!("unknown answer", "réponse inconnue") }
 }
 
 /// Gofile's address for contents (delete, update).
@@ -127,7 +135,7 @@ impl Store<'_> {
                 let link = d.share_and_link(&made).await?;
                 Ok((made.id, link))
             }
-            Host::Gofile => Err("Gofile makes its folder with the first file uploaded.".into()),
+            Host::Gofile => Err(crate::tr!("Gofile makes its folder with the first file uploaded.", "Gofile crée son dossier avec le premier fichier mis en ligne.")),
         }
     }
 
@@ -135,7 +143,7 @@ impl Store<'_> {
     pub async fn delete(&self, item: &SentItem, shared: Option<String>) -> Result<(), String> {
         match self.host {
             Host::Drive => {
-                let target = item.folder_id.clone().or(item.file_id.clone()).ok_or("Pako doesn't know where this is in your Google Drive.")?;
+                let target = item.folder_id.clone().or(item.file_id.clone()).ok_or_else(|| crate::tr!("Pako doesn't know where this is in your Google Drive.", "Pako ne sait pas où cela se trouve dans votre Google Drive."))?;
                 // Another account's Drive would answer "not found", which counts as deleted.
                 if let Some(msg) = other_account(item.account.as_deref(), self.s.send_google.email().await.as_deref()) {
                     return Err(msg);
@@ -143,8 +151,8 @@ impl Store<'_> {
                 self.s.drive().delete(&target).await.map_err(|f| f.msg)
             }
             Host::Gofile => {
-                let token = token_for(item, shared).ok_or("Pako doesn't have the Gofile key for this file, so it can't delete it.")?;
-                let target = item.folder_id.clone().or(item.file_id.clone()).ok_or("Pako doesn't know this file's place on Gofile.")?;
+                let token = token_for(item, shared).ok_or_else(|| crate::tr!("Pako doesn't have the Gofile key for this file, so it can't delete it.", "Pako n’a pas la clé Gofile de ce fichier, donc il ne peut pas le supprimer."))?;
+                let target = item.folder_id.clone().or(item.file_id.clone()).ok_or_else(|| crate::tr!("Pako doesn't know this file's place on Gofile.", "Pako ne sait pas où se trouve ce fichier sur Gofile."))?;
                 gofile_delete(&self.s.http, GOFILE_API, &token, &target).await
             }
         }
@@ -170,13 +178,13 @@ impl Store<'_> {
     /// Direct's outbox (a small note file the receiver reads): comes with Direct part 2.
     #[allow(dead_code)]
     pub async fn write_outbox(&self, _name: &str, _bytes: &[u8]) -> Result<String, String> {
-        Err("Not available yet.".into())
+        Err(crate::tr!("Not available yet.", "Pas encore disponible."))
     }
 
     /// Reads someone's outbox note from its public address: comes with Direct part 2.
     #[allow(dead_code)]
     pub async fn read_outbox(&self, _address: &str) -> Result<Vec<u8>, String> {
-        Err("Not available yet.".into())
+        Err(crate::tr!("Not available yet.", "Pas encore disponible."))
     }
 }
 
@@ -210,7 +218,7 @@ pub(super) async fn gofile_delete(http: &reqwest::Client, base: &str, token: &st
     if deleted(code, ok_body) || text.contains("error-notFound") {
         return Ok(());
     }
-    Err(format!("Gofile didn't delete it ({}).", if code >= 300 { code.to_string() } else { "unknown answer".into() }))
+    Err(crate::tr!("Gofile didn't delete it ({}).", "Gofile ne l’a pas supprimé ({}).", answer_code(code)))
 }
 
 /// Sets a Gofile folder's expiry (Unix seconds), or removes it (None).
@@ -233,7 +241,7 @@ pub(super) async fn gofile_expiry(http: &reqwest::Client, base: &str, token: &st
     if ok {
         Ok(())
     } else {
-        Err(format!("Gofile didn't take the date ({}).", if code >= 300 { code.to_string() } else { "unknown answer".into() }))
+        Err(crate::tr!("Gofile didn't take the date ({}).", "Gofile n’a pas pris la date ({}).", answer_code(code)))
     }
 }
 

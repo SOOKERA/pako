@@ -9,9 +9,10 @@
 //!   What changes from one version to the next is done here, not in the uninstaller: a Pako
 //!   that updated itself keeps the uninstaller of the version first installed, but this exe is
 //!   always the current one.
-//! - `Pako.exe --install-choices --start-with-windows=0|1 --browsers=0|1 [--terms-accepted=1]`: run by Pako Setup's
-//!   window once Pako is installed (never by a silent install). Saves Setup's two choices in
-//!   Pako's settings and does them now: Start with Windows, and the browser connection. No window.
+//! - `Pako.exe --install-choices --start-with-windows=0|1 --browsers=0|1 [--terms-accepted=1] [--lang=en|fr]`:
+//!   run by Pako Setup's window once Pako is installed (never by a silent install). Saves Setup's
+//!   choices in Pako's settings and does them now: Start with Windows, the browser connection,
+//!   and the language (only when Setup sends it). No window.
 //! - The Windows Apps entry shows a version: Pako's own updates replace Pako.exe without the
 //!   installer, so each start of an installed copy brings that number up to date.
 
@@ -44,11 +45,19 @@ fn choice(args: &[String], name: &str) -> Option<bool> {
     args.iter().find_map(|a| a.strip_prefix(&prefix)).map(|v| v.trim() == "1")
 }
 
+/// `--lang=en|fr` → the language picked in Pako Setup (sent only when it was picked there, or on
+/// a first install, where English is the choice; missing → the saved one stays). Anything else
+/// than "fr" is English.
+fn language(args: &[String]) -> Option<&'static str> {
+    args.iter().find_map(|a| a.strip_prefix("--lang=")).map(crate::i18n::choice)
+}
+
 /// `args`: the arguments after the exe (the first is `INSTALL_CHOICES`). 0 = all done; 1 = some
 /// of it couldn't be done (Setup goes on: Settings can still change both).
 pub fn install_choices(args: &[String]) -> i32 {
     let start = choice(args, "--start-with-windows");
     let browsers = choice(args, "--browsers");
+    let lang = language(args);
     // Setup's window says "By installing (updating), you accept the terms of use": that counts,
     // so the first start doesn't ask again. An acceptance already saved is kept as it is.
     let terms = (choice(args, "--terms-accepted") == Some(true)).then(crate::terms::version).flatten();
@@ -64,6 +73,9 @@ pub fn install_choices(args: &[String]) -> i32 {
         }
         if let Some(v) = browsers {
             s.browser_connect = v;
+        }
+        if let Some(l) = lang {
+            s.language = l.into();
         }
         s.installer_choices = true;
         in_tray = s.start_in_tray;
@@ -239,6 +251,13 @@ mod tests {
         assert_eq!(super::choice(&a, "--browsers"), Some(true));
         assert_eq!(super::choice(&a, "--other"), None);
         assert_eq!(super::choice(&a, "--terms-accepted"), None, "silent installs: not accepted");
+        assert_eq!(super::language(&a), None, "no --lang: the saved language stays");
+        let fr: Vec<String> = ["--install-choices", "--lang=fr"].map(String::from).to_vec();
+        assert_eq!(super::language(&fr), Some("fr"));
+        let en: Vec<String> = ["--install-choices", "--lang=en"].map(String::from).to_vec();
+        assert_eq!(super::language(&en), Some("en"));
+        let odd: Vec<String> = ["--install-choices", "--lang=de"].map(String::from).to_vec();
+        assert_eq!(super::language(&odd), Some("en"), "anything but French is English");
     }
 
     use super::*;

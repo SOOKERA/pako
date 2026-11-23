@@ -128,7 +128,17 @@ The private list has its own keys, mostly the same (see [Private mode](private-m
 
 You pick the look in the first-start setup (dark unless you pick another). Click the sun at the top right, next to the bell, to switch to light; click the moon to go back. The choice is kept, and the small tray window, the pop-ups and the **Download with Pako** window follow it.
 
-In **Settings › Window › Theme**, pick **Dark**, **Light** or **Match Windows**. **Match Windows** follows the app mode chosen in Windows (**Settings › Personalization › Colors**), even while Pako is open. The browser extension's window follows your browser's light or dark mode.
+In **Settings › Window › Look › Theme**, pick **Dark**, **Light** or **Match Windows**. **Match Windows** follows the app mode chosen in Windows (**Settings › Personalization › Colors**), even while Pako is open. The browser extension's window follows your browser's light or dark mode.
+
+## English or French
+
+Pako speaks English or French. It doesn't guess from Windows: it asks, and stays in English until you pick French.
+
+- **Pako Setup** asks first, with **English | Français** at the top right of its window (see [Pako Setup's window](install.md#pako-setups-window)).
+- **The first-start setup** asks in its first row, **Language**: that's where a portable Pako asks.
+- **Later**, pick **English** or **Français** in **Settings › Window › Look › Language**. Settings shows it at once; **Save** keeps it, **Cancel** goes back.
+
+It changes every window at once (the tray window, the pop-ups, the **Download with Pako** window), the tray icon's menu, notifications, Help's guides and What's new, and the browser extension (see [Check it's connected](browser-extension.md#check-its-connected)). A guide not in French yet shows in English. The names you give (contacts, devices, files) stay as you wrote them.
 
 ## Good to know
 

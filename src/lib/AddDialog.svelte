@@ -7,6 +7,7 @@
   import { findLinks } from "./format";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
+  import { t } from "./i18n.svelte";
 
   let { text = "", onclose }: { text?: string; onclose: () => void } = $props();
 
@@ -28,34 +29,34 @@
   }
 </script>
 
-<Modal title="Add links" width={540} {onclose}>
+<Modal title={t("Add links")} width={540} {onclose}>
   <textarea
     bind:this={area}
     bind:value
     class="input"
     rows="6"
     spellcheck="false"
-    placeholder="Paste links, or any text that contains links (a message, an email, a web page). Google Drive files and folders work too."
+    placeholder={t("Paste links, or any text that contains links (a message, an email, a web page). Google Drive files and folders work too.")}
     onkeydown={(e) => e.key === "Enter" && e.ctrlKey && submit()}
   ></textarea>
   <div class="found" class:none={!links.length}>
     {#if links.length}
       <Icon name="check" size={13} stroke={2.4} />
-      {links.length === 1 ? "1 link found" : `${links.length} links found`}{drive ? ` (${drive} Google Drive)` : ""}
+      {t("{n} links found", { n: links.length })}{drive ? ` (${drive} Google Drive)` : ""}
     {:else}
-      {value.trim() ? "No links found in this text" : "Links are picked out automatically"}
+      {value.trim() ? t("No links found in this text") : t("Links are picked out automatically")}
     {/if}
   </div>
 
-  <p class="hint">They go to Links first: you see names and sizes, pick what you want, then download.</p>
+  <p class="hint">{t("They go to Links first: you see names and sizes, pick what you want, then download.")}</p>
   {#if drive}
-    <p class="note">Drive links shared with "anyone with the link" open right here, folders too. Files only shared with some people open in your browser instead.</p>
+    <p class="note">{t('Drive links shared with "anyone with the link" open right here, folders too. Files only shared with some people open in your browser instead.')}</p>
   {/if}
 
   {#snippet actions()}
-    <button class="btn ghost" onclick={onclose}>Cancel</button>
+    <button class="btn ghost" onclick={onclose}>{t("Cancel")}</button>
     <button class="btn primary" disabled={busy || !links.length} onclick={submit}>
-      {busy ? "Adding…" : links.length > 1 ? `Add ${links.length} links` : "Add link"}
+      {busy ? t("Adding…") : links.length > 1 ? t("Add {n} links", { n: links.length }) : t("Add link")}
     </button>
   {/snippet}
 </Modal>

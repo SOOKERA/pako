@@ -4,13 +4,13 @@
   // Picking a PIN or a password for Private mode (turning it on, changing it, after the
   // recovery code). Typed twice; says plainly what each one protects.
   import { untrack } from "svelte";
+  import { t } from "../i18n.svelte";
 
   let {
     kind = $bindable<"pin" | "password">("pin"),
     secret = $bindable(""),
     valid = $bindable(false),
-    label = "Your new",
-  }: { kind?: "pin" | "password"; secret?: string; valid?: boolean; label?: string } = $props();
+  }: { kind?: "pin" | "password"; secret?: string; valid?: boolean } = $props();
 
   let first = $state("");
   let again = $state("");
@@ -42,14 +42,14 @@
 </script>
 
 <div class="picker">
-  <div class="seg" role="radiogroup" aria-label="PIN or password">
-    <button role="radio" aria-checked={kind === "pin"} class:on={kind === "pin"} onclick={() => (kind = "pin")}>4-digit PIN</button>
-    <button role="radio" aria-checked={kind === "password"} class:on={kind === "password"} onclick={() => (kind = "password")}>Password</button>
+  <div class="seg" role="radiogroup" aria-label={t("PIN or password")}>
+    <button role="radio" aria-checked={kind === "pin"} class:on={kind === "pin"} onclick={() => (kind = "pin")}>{t("4-digit PIN")}</button>
+    <button role="radio" aria-checked={kind === "password"} class:on={kind === "password"} onclick={() => (kind = "password")}>{t("Password")}</button>
     <span class="thumb" class:right={kind === "password"} aria-hidden="true"></span>
   </div>
 
   <label class="field">
-    <span>{label} {kind === "pin" ? "PIN" : "password"}</span>
+    <span>{kind === "pin" ? t("Your new PIN") : t("Your new password")}</span>
     <input
       bind:this={firstEl}
       class="input"
@@ -62,7 +62,7 @@
     />
   </label>
   <label class="field">
-    <span>Type it again</span>
+    <span>{t("Type it again")}</span>
     <input
       class="input"
       type="password"
@@ -75,11 +75,11 @@
   </label>
   <p class="state" class:bad={again.length > 0 && !same}>
     {#if first && !ok}
-      {kind === "pin" ? "The PIN is 4 digits." : "At least 10 characters."}
+      {kind === "pin" ? t("The PIN is 4 digits.") : t("At least 10 characters.")}
     {:else if again && !same}
-      They don't match yet.
+      {t("They don't match yet.")}
     {:else if kind === "password" && ok && !strong}
-      Longer is safer: a few words in a row, with a digit or a sign, is hard to guess.
+      {t("Longer is safer: a few words in a row, with a digit or a sign, is hard to guess.")}
     {:else}
       &nbsp;
     {/if}
@@ -87,11 +87,12 @@
 
   {#if kind === "pin"}
     <p class="note">
-      A PIN slows down someone at this PC: Pako waits longer after each wrong try. Someone who gets Pako's files and can use your Windows account could try all
-      10,000 PINs in minutes. A password is the real protection.
+      {t(
+        "A PIN slows down someone at this PC: Pako waits longer after each wrong try. Someone who gets Pako's files and can use your Windows account could try all 10,000 PINs in minutes. A password is the real protection.",
+      )}
     </p>
   {:else}
-    <p class="note">At least 10 characters. A long one you can remember is best: a few words in a row, with a digit or a sign, works well.</p>
+    <p class="note">{t("At least 10 characters. A long one you can remember is best: a few words in a row, with a digit or a sign, works well.")}</p>
   {/if}
 </div>
 

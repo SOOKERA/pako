@@ -18,6 +18,8 @@
   import type { MenuItem } from "./menu";
   import { choices, targets } from "./devices.svelte";
   import { downloadFoundOn, downloadOnMenu, downloadSplit, sending } from "./downloadOn.svelte";
+  import { waitingForYou } from "./linkState";
+  import { i18n, t, tMaybe } from "./i18n.svelte";
 
   const items = $derived(app.foundFocusItems);
   const one = $derived(items.length === 1 && !app.foundFocus?.startsWith("g:") ? items[0] : null);
@@ -46,7 +48,7 @@
       if (f.state === "ready") {
         h.ready++;
         h.ids.push(f.id);
-      } else if (hostLook(f).label === "Checking") h.checking++;
+      } else if (f.state === "checking" || f.state === "opening") h.checking++;
       h.size += f.template.size ?? 0;
       if (m.chosen?.id === f.id) h.chosen++;
       by.set(host, h);
@@ -55,31 +57,31 @@
     // Its parts all ready, some still being checked, or none working.
     const look = (h: { ready: number; checking: number }) =>
       h.ready === parts
-        ? { label: "Ready", color: "var(--st-done-text)" }
+        ? { label: t("Ready"), color: "var(--st-done-text)" }
         : h.checking
-          ? { label: "Checking", color: "var(--st-check-text)" }
+          ? { label: t("Checking"), color: "var(--st-check-text)" }
           : h.ready
-            ? { label: `${h.ready} of ${parts} ready`, color: "var(--st-limit-text)" }
-            : { label: "Broken", color: "var(--st-fail-text)" };
+            ? { label: t("{n} of {total} ready", { n: h.ready, total: parts }), color: "var(--st-limit-text)" }
+            : { label: t("Broken"), color: "var(--st-fail-text)" };
     return by.size > 1 ? [...by.values()].map((h) => ({ ...h, parts, on: h.chosen === parts, look: look(h) })) : [];
   });
 
   function look(f: FoundItem) {
     switch (f.state) {
       case "ready":
-        return { label: "Ready", color: "var(--st-done-text)" };
+        return { label: t("Ready"), color: "var(--st-done-text)" };
       case "checking":
-        return { label: "Checking link", color: "var(--st-check-text)" };
+        return { label: t("Checking link"), color: "var(--st-check-text)" };
       case "opening":
-        return (f.message ?? "").startsWith("Waiting for you")
-          ? { label: "Waiting for you", color: "var(--st-limit-text)" }
-          : { label: "Opening link…", color: "var(--st-check-text)" };
+        return waitingForYou(f.message)
+          ? { label: t("Waiting for you"), color: "var(--st-limit-text)" }
+          : { label: t("Opening link…"), color: "var(--st-check-text)" };
       case "broken":
-        return { label: "Link broken", color: "var(--st-fail-text)" };
+        return { label: t("Link broken"), color: "var(--st-fail-text)" };
       case "needsTools":
-        return { label: "Needs the video tools", color: "var(--st-limit-text)" };
+        return { label: t("Needs the video tools"), color: "var(--st-limit-text)" };
       default:
-        return { label: "Only in the browser", color: "var(--st-limit-text)" };
+        return { label: t("Only in the browser"), color: "var(--st-limit-text)" };
     }
   }
 
@@ -119,7 +121,7 @@
     const o = pickQuality(s.options ?? [], want);
     return o?.size ? ` · ≈ ${bytes(o.size)}` : "";
   }
-  const defaultLabel = $derived(defaultQ === 0 ? "Audio only (M4A)" : `Best up to ${defaultQ}p`);
+  const defaultLabel = $derived(defaultQ === 0 ? t("Audio only ({format})", { format: "M4A" }) : t("Best up to {q}p", { q: defaultQ }));
   async function setQuality(v: string) {
     const ids = videos.map((f) => f.id);
     if (!ids.length || v === "mixed") return;
@@ -138,7 +140,7 @@
       await app.run(async () => {
         const n = await api.foundDownload(ids, false, app.foundDest);
         await app.refresh();
-        if (n) app.toast(`${n === 1 ? "1 file" : `${n} files`} moved to Downloads`);
+        if (n) app.toast(t("{n} files moved to Downloads", { n }));
       });
     };
     if (here) return local(able);
@@ -169,7 +171,7 @@
       const n = await api.foundDownload(ids, false, app.foundDest, null, true);
       await app.refresh();
       await priv.refreshList();
-      if (n) app.toast(`${n === 1 ? "1 file" : `${n} files`} downloading in Private mode`);
+      if (n) app.toast(t("{n} files downloading in Private mode", { n }));
     });
   }
 
@@ -182,9 +184,9 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const these = able;
     const items: MenuItem[] = targets.list.length
-      ? downloadOnMenu(targets.list, () => downloadThese(true), (t) => downloadFoundOn(t, these), true)
-      : [{ label: "Download on this PC", icon: "download", action: () => downloadThese(true) }];
-    if (priv.status.on) items.splice(1, 0, { label: "Download privately", icon: "lock", hint: "Private mode", action: downloadPrivately });
+      ? downloadOnMenu(targets.list, () => downloadThese(true), (to) => downloadFoundOn(to, these), true)
+      : [{ label: t("Download on this PC"), icon: "download", action: () => downloadThese(true) }];
+    if (priv.status.on) items.splice(1, 0, { label: t("Download privately"), icon: "lock", hint: t("Private mode"), action: downloadPrivately });
     // Opens upwards from the panel's foot, its right edge on the arrow's.
     onMenu = { x: r.right, y: r.top - 6, items };
   }
@@ -196,33 +198,33 @@
 
   function when(ms: number) {
     const date = new Date(ms);
-    const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    return new Date().toDateString() === date.toDateString() ? `Today, ${time}` : `${date.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}, ${time}`;
+    const time = date.toLocaleTimeString(i18n.dates, { hour: "2-digit", minute: "2-digit" });
+    return new Date().toDateString() === date.toDateString() ? t("Today, {time}", { time }) : `${date.toLocaleDateString(i18n.dates, { day: "numeric", month: "short", year: "numeric" })}, ${time}`;
   }
 </script>
 
 <div class="panel details-panel">
   {#if items.length}
-    {@const lk = one ? look(one) : { label: set ? "Split archive" : "Folder", color: "var(--text-2)" }}
+    {@const lk = one ? look(one) : { label: set ? t("Split archive") : t("Folder"), color: "var(--text-2)" }}
     <section class="top">
       <div class="headline">
         <span class="st" style="color: {lk.color}">{lk.label}</span>
         <span class="src">{sourceOf(items[0].template).label}</span>
-        <button class="icon-btn" aria-label="Close details panel" onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
+        <button class="icon-btn" aria-label={t("Close details panel")} onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
       </div>
       <div class="name">{title}</div>
       <div class="facts mono">
-        <span>{size ? bytes(size) : one?.state === "checking" ? "Size: checking…" : "Size unknown"}</span>
-        {#if !one}<span>{items.length} {set ? (items.length === 1 ? "part" : "parts") : items.length === 1 ? "file" : "files"}</span>{/if}
+        <span>{size ? bytes(size) : one?.state === "checking" ? t("Size: checking…") : t("Size unknown")}</span>
+        {#if !one}<span>{set ? t("{n} parts", { n: items.length }) : t("{n} files", { n: items.length })}</span>{/if}
       </div>
       {#if one && (one.state === "broken" || one.state === "needsAccount" || one.message)}
         <div class="callout" class:err={one.state === "broken"} class:limit={one.state === "needsAccount"}>
           <Icon name="alert" size={14} />
-          <span>{one.message ?? look(one).label}</span>
+          <span>{one.message ? tMaybe(one.message) : look(one).label}</span>
         </div>
         {#if one.state === "needsAccount"}
           <button class="btn primary small" onclick={() => app.run(() => api.openInDrive(one.id))}>
-            <Icon name="globe" size={13} />Open in browser
+            <Icon name="globe" size={13} />{t("Open in browser")}
           </button>
         {/if}
       {/if}
@@ -230,35 +232,35 @@
 
     {#if mirror}
       <section class="hostlist" data-tour="found-hosts-panel">
-        <div class="label">Hosts <span class="muted">{mirror.items.length}</span></div>
-        <div class="hrows" role="radiogroup" aria-label="Host to download from">
+        <div class="label">{t("Hosts")} <span class="muted">{mirror.items.length}</span></div>
+        <div class="hrows" role="radiogroup" aria-label={t("Host to download from")}>
           {#each mirror.items as f (f.id)}
             {@const h = hostLook(f)}
             {@const on = mirror.chosen?.id === f.id}
             <button class="host" class:on role="radio" aria-checked={on} disabled={!canDownload(f)} title={f.message ?? f.template.link} onclick={() => !on && app.pickHost([f.id])}>
               <span class="radio" aria-hidden="true"></span>
               <span class="hname">{sourceOf(f.template).label}</span>
-              <span class="hst" style="color: {h.color}">{h.label}</span>
+              <span class="hst" style="color: {h.color}">{tMaybe(h.label)}</span>
               <span class="hsize mono">{f.template.size != null ? bytes(f.template.size) : "—"}</span>
             </button>
           {/each}
         </div>
-        <p class="hnote">Pako downloads from the picked host. If it fails for good, Pako goes on from the next ready one by itself.</p>
+        <p class="hnote">{t("Pako downloads from the picked host. If it fails for good, Pako goes on from the next ready one by itself.")}</p>
       </section>
     {:else if setHosts.length}
       <section class="hostlist" data-tour="found-hosts-panel">
-        <div class="label">Hosts <span class="muted">{setHosts.length}</span></div>
-        <div class="hrows" role="radiogroup" aria-label="Host to download the parts from">
+        <div class="label">{t("Hosts")} <span class="muted">{setHosts.length}</span></div>
+        <div class="hrows" role="radiogroup" aria-label={t("Host to download the parts from")}>
           {#each setHosts as h (h.host)}
             <button class="host" class:on={h.on} role="radio" aria-checked={h.on} disabled={!h.ids.length} onclick={() => !h.on && app.pickHost(h.ids)}>
               <span class="radio" aria-hidden="true"></span>
               <span class="hname">{h.label}</span>
               <span class="hst" style="color: {h.look.color}">{h.look.label}</span>
-              <span class="hsize mono">{h.parts} {h.parts === 1 ? "part" : "parts"}</span>
+              <span class="hsize mono">{t("{n} parts", { n: h.parts })}</span>
             </button>
           {/each}
         </div>
-        <p class="hnote">The parts on several hosts download from the picked host. If one fails for good, Pako goes on from another host by itself.</p>
+        <p class="hnote">{t("The parts on several hosts download from the picked host. If one fails for good, Pako goes on from another host by itself.")}</p>
       </section>
     {/if}
 
@@ -280,51 +282,60 @@
       {#snippet extra()}
         {#if choices.list.length || items.some((f) => f.device)}
           <div class="qfield" data-tour="found-device">
-            <span class="qk">Download on</span>
-            <select class="input" aria-label="Download on" value={onDevice} onchange={(e) => setDevice(e.currentTarget.value)}>
-              {#if onDevice === "mixed"}<option value="mixed" disabled>Different for each</option>{/if}
-              <option value="">This PC</option>
+            <span class="qk">{t("Download on")}</span>
+            <select class="input" aria-label={t("Download on")} value={onDevice} onchange={(e) => setDevice(e.currentTarget.value)}>
+              {#if onDevice === "mixed"}<option value="mixed" disabled>{t("Different for each")}</option>{/if}
+              <option value="">{t("This PC")}</option>
               {#each choices.list as c (c.id)}
-                <option value={c.id}>{c.name}{c.online ? "" : " (offline)"}</option>
+                <option value={c.id}>{c.online ? c.name : t("{name} (offline)", { name: c.name })}</option>
               {/each}
               {#if onDevice && onDevice !== "mixed" && !choices.list.some((c) => c.id === onDevice)}
-                <option value={onDevice} disabled>A PC no longer offered</option>
+                <option value={onDevice} disabled>{t("A PC no longer offered")}</option>
               {/if}
             </select>
             {#if deviceNote}
               <span class="qnote warn" transition:rowSlide={{ duration: 180 }}><Icon name="alert" size={12} />{deviceNote}</span>
             {:else if onDevice && onDevice !== "mixed"}
-              <span class="qnote" transition:rowSlide={{ duration: 180 }}>Download sends {items.length > 1 ? "them" : "it"} to that PC, with {videos.length ? "the quality and " : ""}priority set here, into that PC's own download folder{items[0].folder ? ` (in a folder named ${items[0].folder})` : ""}.</span>
+              {@const folder = items[0].folder ? t(" (in a folder named {name})", { name: items[0].folder }) : ""}
+              <span class="qnote" transition:rowSlide={{ duration: 180 }}
+                >{items.length > 1
+                  ? videos.length
+                    ? t("Download sends them to that PC, with the quality and priority set here, into that PC's own download folder{folder}.", { folder })
+                    : t("Download sends them to that PC, with priority set here, into that PC's own download folder{folder}.", { folder })
+                  : videos.length
+                    ? t("Download sends it to that PC, with the quality and priority set here, into that PC's own download folder{folder}.", { folder })
+                    : t("Download sends it to that PC, with priority set here, into that PC's own download folder{folder}.", { folder })}</span
+              >
             {/if}
           </div>
         {/if}
         {#if videos.length}
           <div class="qfield">
-            <span class="qk">Quality{#if videos.length > 1}<span class="qn">{` · for ${videos.length} videos`}</span>{/if}</span>
-            <select class="input" aria-label="Video quality" value={current} onchange={(e) => setQuality(e.currentTarget.value)}>
-              {#if current === "mixed"}<option value="mixed" disabled>Different for each</option>{/if}
-              <option value="default">Default: {defaultLabel}{sizeFor(defaultQ, defaultQ === 0)}</option>
+            <span class="qk">{t("Quality")}{#if videos.length > 1}<span class="qn">{` · ${t("for {n} videos", { n: videos.length })}`}</span>{/if}</span>
+            <select class="input" aria-label={t("Video quality")} value={current} onchange={(e) => setQuality(e.currentTarget.value)}>
+              {#if current === "mixed"}<option value="mixed" disabled>{t("Different for each")}</option>{/if}
+              <option value="default">{t("Default: {quality}", { quality: defaultLabel })}{sizeFor(defaultQ, defaultQ === 0)}</option>
               {#each heights as h (h)}
                 <option value={String(h)}>{h}p{h >= 2160 ? " (4K)" : h >= 1440 ? " (2K)" : ""}{sizeFor(h)}</option>
               {/each}
-              <option value="m4a">Audio only (M4A){sizeFor(0, true)}</option>
-              <option value="mp3">Audio only (MP3){sizeFor(0, true)}</option>
+              <option value="m4a">{t("Audio only ({format})", { format: "M4A" })}{sizeFor(0, true)}</option>
+              <option value="mp3">{t("Audio only ({format})", { format: "MP3" })}{sizeFor(0, true)}</option>
             </select>
-            <span class="qnote">If a video doesn't have the quality, Pako takes the closest lower one.</span>
+            <span class="qnote">{t("If a video doesn't have the quality, Pako takes the closest lower one.")}</span>
           </div>
         {/if}
         {#if set}
           <div class="xrow">
             <div>
-              <div class="xt">Extract when all parts are done</div>
+              <div class="xt">{t("Extract when all parts are done")}</div>
               <div class="xn">
-                {#if !app.sevenZip}Needs 7-Zip (Settings › Features &amp; updates).{:else}Into the set's folder, next to the parts.{/if}
+                {#if !app.sevenZip}{t("Needs 7-Zip (Settings › Features & updates).")}{:else}{t("Into the set's folder, next to the parts.")}{/if}
               </div>
             </div>
-            <button class="switch" class:on={extractOn} role="switch" aria-checked={extractOn} aria-label="Extract when all parts are done" onclick={() => change({ extract: !extractOn })}></button>
+            <button class="switch" class:on={extractOn} role="switch" aria-checked={extractOn} aria-label={t("Extract when all parts are done")} onclick={() => change({ extract: !extractOn })}></button>
           </div>
           {#if set.missing.length}
-            <div class="callout err"><Icon name="alert" size={14} /><span>Incomplete: {set.missing.join(", ")}. The set can't be extracted without it.</span></div>
+            <div class="callout err"><Icon name="alert" size={14} /><span>{t("Incomplete: {parts}. The set can't be extracted without it.", { parts: set.missing.join(", ") })}</span></div>
           {/if}
         {/if}
       {/snippet}
@@ -332,13 +343,13 @@
 
     {#if one}
       <section class="details">
-        <div class="label">Details</div>
+        <div class="label">{t("Details")}</div>
         <dl>
-          <dt>Link</dt><dd class="link"><MiddleText text={one.template.link} /></dd>
-          {#if extension(one.template.name)}<dt>Type</dt><dd>{extension(one.template.name)}</dd>{/if}
-          {#if one.folder}<dt>In folder</dt><dd><MiddleText text={`${one.folder}${one.relDir ? `\\${one.relDir}` : ""}`} /></dd>{/if}
-          {#if one.template.source.kind === "video"}<dt>Length</dt><dd>{duration(one.template.source.duration)}</dd>{/if}
-          <dt>Added</dt><dd>{when(one.template.date || one.template.addedAt)}</dd>
+          <dt>{t("Link")}</dt><dd class="link"><MiddleText text={one.template.link} /></dd>
+          {#if extension(one.template.name)}<dt>{t("Type")}</dt><dd>{extension(one.template.name)}</dd>{/if}
+          {#if one.folder}<dt>{t("In folder")}</dt><dd><MiddleText text={`${one.folder}${one.relDir ? `\\${one.relDir}` : ""}`} /></dd>{/if}
+          {#if one.template.source.kind === "video"}<dt>{t("Length")}</dt><dd>{duration(one.template.source.duration)}</dd>{/if}
+          <dt>{t("Added")}</dt><dd>{when(one.template.date || one.template.addedAt)}</dd>
         </dl>
       </section>
     {/if}
@@ -346,31 +357,31 @@
     <div class="panel-actions">
       <div class="split">
         <button class="btn primary" disabled={!able.length || sending.busy} onclick={() => downloadThese()}>
-          <Icon name="download" size={13} stroke={2.4} /><span class="l">{able.length > 1 ? `Download ${able.length}` : "Download"}</span>
+          <Icon name="download" size={13} stroke={2.4} /><span class="l">{able.length > 1 ? t("Download {n}", { n: able.length }) : t("Download")}</span>
         </button>
         {#if more}
           <button
             class="btn primary more"
             disabled={!able.length || sending.busy}
-            aria-label="More ways to download"
+            aria-label={t("More ways to download")}
             aria-haspopup="menu"
-            title={targets.list.length ? "Download on this PC, privately, or on one of your devices" : "Download, or Download privately"}
+            title={targets.list.length ? t("Download on this PC, privately, or on one of your devices") : t("Download, or Download privately")}
             onclick={openOn}
           >
             <Icon name="chevron" size={12} stroke={2.6} />
           </button>
         {/if}
       </div>
-      <button class="btn danger" onclick={remove}><Icon name="trash" size={13} /><span class="l">Remove</span></button>
+      <button class="btn danger" onclick={remove}><Icon name="trash" size={13} /><span class="l">{t("Remove")}</span></button>
     </div>
   {:else}
     <div class="none">
       <div class="headline end">
-        <button class="icon-btn" aria-label="Close details panel" onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
+        <button class="icon-btn" aria-label={t("Close details panel")} onclick={() => app.togglePanel()}><Icon name="chevronsRight" size={14} stroke={2} /></button>
       </div>
       <div class="none-body">
         <Icon name="link" size={22} />
-        <p>Select a link to see its details and settings.</p>
+        <p>{t("Select a link to see its details and settings.")}</p>
       </div>
     </div>
   {/if}

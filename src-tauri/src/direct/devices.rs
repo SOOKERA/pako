@@ -225,13 +225,14 @@ fn opts_for(checked: &[String], opts: Vec<LinkOpts>) -> Vec<LinkOpts> {
 }
 
 /// A link that is never sent to another PC as it is: a playlist (its videos are picked here
-/// first) or a link page Pako must click through (it's opened here first). Says why.
-pub fn open_here_first(link: &str) -> Option<&'static str> {
+/// first) or a link page Pako must click through (it's opened here first). Says why (only
+/// ever on this PC, in its language).
+pub fn open_here_first(link: &str) -> Option<String> {
     if crate::video::is_playlist_link(link) {
-        return Some("A playlist: open it in Links first to pick the videos.");
+        return Some(crate::tr!("A playlist: open it in Links first to pick the videos.", "Une playlist : ouvrez-la d’abord dans Liens pour choisir les vidéos."));
     }
     let gate = url::Url::parse(link).ok().and_then(|u| u.host_str().map(crate::gates::is_known_gate)).unwrap_or(false);
-    gate.then_some("A link page: Pako opens it in Links first, then sends the file.")
+    gate.then(|| crate::tr!("A link page: Pako opens it in Links first, then sends the file.", "Une page de liens : Pako l’ouvre d’abord dans Liens, puis envoie le fichier."))
 }
 
 /// What adding a device's links on this PC gave.
@@ -708,9 +709,10 @@ impl Node {
         Ok(())
     }
 
-    /// The suggested receiving folder for a device of this name: `<download folder>\From <name>`.
+    /// The suggested receiving folder for a device of this name: `<download folder>\From <name>`
+    /// (« De <name> » in French; no name yet: "my device" / « mon appareil »).
     pub fn default_folder(&self, name: &str) -> String {
-        let name = super::clean_name(name).unwrap_or_else(|| "my device".into());
+        let name = super::clean_name(name).unwrap_or_else(|| crate::tr!("my device", "mon appareil"));
         self.folder_for(&Contact { name, ..Default::default() }).display().to_string()
     }
 
@@ -831,11 +833,12 @@ impl Node {
         };
         // (Not from a contact you muted: it still shows in My devices.)
         if let Some(name) = asks {
+            let name = crate::direct::words::who(&name);
             self.tell(
                 peer,
                 "direct-request",
-                "Pair a device",
-                &format!("{name} says this PC is one of its devices. Confirm it in My devices."),
+                &crate::tr!("Pair a device", "Associer un appareil"),
+                &crate::tr!("{name} says this PC is one of its devices. Confirm it in My devices.", "{name} dit que ce PC est l’un de ses appareils. Confirmez-le dans Mes appareils."),
                 Go::item("devices", peer),
             );
         }
@@ -1027,7 +1030,7 @@ impl Node {
             (c.name.clone(), paired(c) && c.their_control)
         };
         if !ok {
-            return Err(format!("{name} doesn't let this PC control it. On {name}, turn on \"This device can control my Pako\" for this PC."));
+            return Err(format!("{name} doesn't let this PC control it. On {name}, turn on \"… can control my Pako\" for this PC."));
         }
         self.order_answer(id, order).await
     }

@@ -28,7 +28,7 @@ The PC part of the button lets you send from another of your PCs: see [Send from
 ## Add someone
 
 1. Ask them for their Pako ID, or send them yours.
-2. Click **Add** (or **Add contact**), paste their ID under **Their Pako ID**, type a **Name** (what you call them) and click **Add contact**.
+2. Click **Add** (or **Add contact**), paste their ID under **Their Pako ID**, type a name under **Their name** (what you call them) and click **Add contact**.
 3. Pako reaches them. The first time, they're asked to accept. While they're asked, they show "Waiting for them to accept". If they don't answer, the line says "No answer yet. Pako asks again later."
 
 If they decline, their line says "They declined. You can ask again after 7 days." For 7 days their Pako turns you away without asking them; after that, **Connect** asks again.

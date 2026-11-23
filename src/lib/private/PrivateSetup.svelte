@@ -12,6 +12,7 @@
   import Icon from "../Icon.svelte";
   import SecretPicker from "./SecretPicker.svelte";
   import RecoveryCode from "./RecoveryCode.svelte";
+  import { around, t } from "../i18n.svelte";
 
   let { only, onclose }: { only?: "code" | "change" | "recovered"; onclose: () => void } = $props();
 
@@ -31,16 +32,16 @@
 
   const title = $derived(
     step === "about" || step === "secret"
-      ? "Turn on Private mode"
+      ? t("Turn on Private mode")
       : step === "verify"
-        ? "New recovery code"
+        ? t("New recovery code")
         : step === "code"
-        ? "Your recovery code"
+        ? t("Your recovery code")
         : step === "change"
           ? only === "recovered"
-            ? "Choose a new PIN or password"
-            : "Change PIN or password"
-          : "Private mode is on",
+            ? t("Choose a new PIN or password")
+            : t("Change PIN or password")
+          : t("Private mode is on"),
   );
 
   async function turnOn() {
@@ -95,7 +96,7 @@
       await api.privateConfirmCode(last);
       await priv.load();
       if (only === "code") {
-        app.toast("New recovery code kept. The old one no longer works on this PC.");
+        app.toast(t("New recovery code kept. The old one no longer works on this PC."));
         onclose();
       } else step = "done";
     } catch (e) {
@@ -111,7 +112,7 @@
     try {
       await api.privateChange(only === "recovered" ? null : current, secret, kind);
       await priv.load();
-      app.toast(kind === "pin" ? "New PIN saved. The old one no longer works on this PC." : "New password saved. The old one no longer works on this PC.");
+      app.toast(kind === "pin" ? t("New PIN saved. The old one no longer works on this PC.") : t("New password saved. The old one no longer works on this PC."));
       onclose();
     } catch (e) {
       error = String(e);
@@ -127,22 +128,24 @@
       <div class="step">
         {#if step === "about"}
           <div class="hero"><span class="lockmark"><Icon name="lock" size={22} stroke={1.8} /></span></div>
-          <p class="lead">Keep the downloads from your browser's private windows behind a PIN or a password.</p>
+          {@const [goA, goB] = around(t("They go to a {private} list in Downloads, hidden until you open it."), "{private}")}
+          {@const [resetA, resetB] = around(
+            t("If you forget your PIN or password and don't have your recovery code, nobody can open the private list or its files, not even us. The only way back is {reset}, which deletes them."),
+            "{reset}",
+          )}
+          <p class="lead">{t("Keep the downloads from your browser's private windows behind a PIN or a password.")}</p>
           <ul>
-            <li>They go to a <b>Private</b> list in Downloads, hidden until you open it.</li>
-            <li>Their files are encrypted on this PC: they can't be opened from File Explorer.</li>
-            <li>Private mode locks itself when you step away, lock Windows or close Pako.</li>
+            <li>{goA}<b>{t("Private")}</b>{goB}</li>
+            <li>{t("Their files are encrypted on this PC: they can't be opened from File Explorer.")}</li>
+            <li>{t("Private mode locks itself when you step away, lock Windows or close Pako.")}</li>
           </ul>
-          <p class="warn">
-            If you forget your PIN or password and don't have your recovery code, nobody can open the private list or its files, not even us. The only way back is
-            <b>Reset Private mode</b>, which deletes them.
-          </p>
+          <p class="warn">{resetA}<b>{t("Reset Private mode")}</b>{resetB}</p>
         {:else if step === "secret"}
           <SecretPicker bind:kind bind:secret bind:valid />
         {:else if step === "verify"}
-          <p class="lead">Type your PIN or password to make a new recovery code. Private mode stays locked.</p>
+          <p class="lead">{t("Type your PIN or password to make a new recovery code. Private mode stays locked.")}</p>
           <label class="field">
-            <span>Your PIN or password</span>
+            <span>{t("Your PIN or password")}</span>
             <!-- svelte-ignore a11y_autofocus -->
             <input class="input" type="password" autocomplete="current-password" autofocus bind:value={current} onkeydown={(e) => e.key === "Enter" && current && !busy && verify()} />
           </label>
@@ -151,19 +154,19 @@
         {:else if step === "change"}
           {#if only !== "recovered"}
             <label class="field">
-              <span>Your current PIN or password</span>
+              <span>{t("Your current PIN or password")}</span>
               <input class="input" type="password" autocomplete="current-password" bind:value={current} />
             </label>
           {:else}
-            <p class="lead">Private mode is open with your recovery code. Choose a new PIN or password for next time.</p>
+            <p class="lead">{t("Private mode is open with your recovery code. Choose a new PIN or password for next time.")}</p>
           {/if}
           <SecretPicker bind:kind bind:secret bind:valid />
         {:else}
           <div class="hero"><span class="lockmark ok"><Icon name="check" size={22} stroke={2.2} /></span></div>
-          <p class="lead">Private mode is on.</p>
-          <p class="sub">
-            Downloads from private windows now go to <b>Private</b> in Downloads. Open it there, or with <span class="kbd">Ctrl+Shift+P</span>.
-          </p>
+          {@const [onA, onRest] = around(t("Downloads from private windows now go to {private} in Downloads. Open it there, or with {keys}."), "{private}")}
+          {@const [onB, onC] = around(onRest, "{keys}")}
+          <p class="lead">{t("Private mode is on.")}</p>
+          <p class="sub">{onA}<b>{t("Private")}</b>{onB}<span class="kbd">{t("Ctrl+Shift+P")}</span>{onC}</p>
         {/if}
         {#if error}<p class="err">{error}</p>{/if}
       </div>
@@ -171,22 +174,22 @@
   </div>
   {#snippet actions()}
     {#if step === "about"}
-      <button class="btn ghost" onclick={onclose}>Not now</button>
-      <button class="btn primary" onclick={() => (step = "secret")}>Continue</button>
+      <button class="btn ghost" onclick={onclose}>{t("Not now")}</button>
+      <button class="btn primary" onclick={() => (step = "secret")}>{t("Continue")}</button>
     {:else if step === "secret"}
-      <button class="btn ghost" disabled={busy} onclick={() => (step = "about")}>Back</button>
-      <button class="btn primary" disabled={!valid || busy} onclick={turnOn}>{busy ? "Turning on…" : "Turn on Private mode"}</button>
+      <button class="btn ghost" disabled={busy} onclick={() => (step = "about")}>{t("Back")}</button>
+      <button class="btn primary" disabled={!valid || busy} onclick={turnOn}>{busy ? t("Turning on…") : t("Turn on Private mode")}</button>
     {:else if step === "verify"}
-      <button class="btn ghost" disabled={busy} onclick={onclose}>Cancel</button>
-      <button class="btn primary" disabled={!current || busy} onclick={verify}>{busy ? "Checking…" : "Continue"}</button>
+      <button class="btn ghost" disabled={busy} onclick={onclose}>{t("Cancel")}</button>
+      <button class="btn primary" disabled={!current || busy} onclick={verify}>{busy ? t("Checking…") : t("Continue")}</button>
     {:else if step === "code"}
-      {#if only !== "code"}<button class="btn ghost" disabled={busy} onclick={() => (step = "done")}>Skip</button>{:else}<button class="btn ghost" disabled={busy} onclick={giveUp}>Cancel</button>{/if}
-      <button class="btn primary" disabled={!confirmed || busy} onclick={keepCode}>{busy ? "Saving…" : "I kept it"}</button>
+      {#if only !== "code"}<button class="btn ghost" disabled={busy} onclick={() => (step = "done")}>{t("Skip")}</button>{:else}<button class="btn ghost" disabled={busy} onclick={giveUp}>{t("Cancel")}</button>{/if}
+      <button class="btn primary" disabled={!confirmed || busy} onclick={keepCode}>{busy ? t("Saving…") : t("I kept it")}</button>
     {:else if step === "change"}
-      {#if only !== "recovered"}<button class="btn ghost" disabled={busy} onclick={onclose}>Cancel</button>{/if}
-      <button class="btn primary" disabled={!valid || busy || (only !== "recovered" && !current)} onclick={change}>{busy ? "Saving…" : "Save"}</button>
+      {#if only !== "recovered"}<button class="btn ghost" disabled={busy} onclick={onclose}>{t("Cancel")}</button>{/if}
+      <button class="btn primary" disabled={!valid || busy || (only !== "recovered" && !current)} onclick={change}>{busy ? t("Saving…") : t("Save")}</button>
     {:else}
-      <button class="btn primary" onclick={done}>Open Private mode</button>
+      <button class="btn primary" onclick={done}>{t("Open Private mode")}</button>
     {/if}
   {/snippet}
 </Modal>

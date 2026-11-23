@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
-// Small helpers for the Dashboard's hand-made SVG charts.
+// Small helpers for the Dashboard's hand-made SVG charts. Dates in the language shown.
+import { i18n, t } from "./i18n.svelte";
 
 /** A round top for an axis, in the same 1024-based units the app shows (MB, GB). */
 export function niceMax(v: number) {
@@ -20,28 +21,31 @@ export function barPath(x: number, w: number, top: number, base: number, round =
   return `M${x} ${base}V${top + r}Q${x} ${top} ${x + r} ${top}H${x + w - r}Q${x + w} ${top} ${x + w} ${top + r}V${base}Z`;
 }
 
+/** French writes months and days in small letters: a tooltip's title still starts with a capital. */
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
 const dateOf = (key: string) => new Date(key.length === 7 ? key + "-01T12:00:00" : key + "T12:00:00");
 
 /** "16 Nov", "Nov 2026" or "14:00", for a bar's key. */
 export function bucketLabel(key: string, step: string, withYear = false) {
   if (step === "hour") return `${key}:00`;
   const d = dateOf(key);
-  if (step === "month") return d.toLocaleDateString([], { month: "short", year: withYear ? "numeric" : undefined });
-  return d.toLocaleDateString([], { day: "numeric", month: "short", year: withYear ? "numeric" : undefined });
+  if (step === "month") return d.toLocaleDateString(i18n.dates, { month: "short", year: withYear ? "numeric" : undefined });
+  return d.toLocaleDateString(i18n.dates, { day: "numeric", month: "short", year: withYear ? "numeric" : undefined });
 }
 
 /** The long form for tooltips: "Monday 16 November", "November 2026", "14:00 to 15:00". */
 export function bucketTitle(key: string, step: string) {
-  if (step === "hour") return `${key}:00 to ${String((Number(key) + 1) % 24).padStart(2, "0")}:00`;
+  if (step === "hour") return t("{from} to {to} (hours)", { from: `${key}:00`, to: `${String((Number(key) + 1) % 24).padStart(2, "0")}:00` });
   const d = dateOf(key);
-  if (step === "month") return d.toLocaleDateString([], { month: "long", year: "numeric" });
-  return d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+  if (step === "month") return cap(d.toLocaleDateString(i18n.dates, { month: "long", year: "numeric" }));
+  return cap(d.toLocaleDateString(i18n.dates, { weekday: "long", day: "numeric", month: "long", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }));
 }
 
 /** "16 Nov" (with the year when it isn't this year), for a "YYYY-MM-DD" day. */
 export function dayLabel(key: string) {
   const d = dateOf(key);
-  return d.toLocaleDateString([], { day: "numeric", month: "short", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+  return d.toLocaleDateString(i18n.dates, { day: "numeric", month: "short", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
 }
 
 /** Which bars get a label under the chart (about `want` of them, always the last). */

@@ -12,6 +12,7 @@
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
   import Modal from "./Modal.svelte";
+  import { t } from "./i18n.svelte";
 
   let { onclose, onfreed = () => {} }: { onclose: () => void; /** Something was deleted: the room changed. */ onfreed?: () => void } = $props();
 
@@ -65,9 +66,8 @@
       }
     }
     deleting = false;
-    const n = (k: number) => (k === 1 ? "1 upload" : `${k} uploads`);
-    if (!failed.length) app.toast(`Deleted ${n(done)} from your Google Drive, ${bytes(freed)} freed`);
-    else app.toast(`Deleted ${n(done)}. ${n(failed.length)} couldn't be deleted: ${failed[0]}`, "error");
+    if (!failed.length) app.toast(t("Deleted {n} uploads from your Google Drive, {size} freed", { n: done, size: bytes(freed) }));
+    else app.toast(`${t("Deleted {n} uploads.", { n: done })} ${t("{n} uploads couldn't be deleted: {error}", { n: failed.length, error: failed[0] })}`, "error");
     if (done) {
       app.driveTick++;
       onfreed();
@@ -76,10 +76,14 @@
   }
 </script>
 
-<Modal title="Make room in your Google Drive" width={540} onclose={() => !deleting && onclose()}>
-  <p class="msg">Ticked uploads are deleted from your Google Drive for good, and their links stop working for everyone. Your own copies on this PC aren't touched. Uploads older than a week are ticked to start with.</p>
+<Modal title={t("Make room in your Google Drive")} width={540} onclose={() => !deleting && onclose()}>
+  <p class="msg">{t("Ticked uploads are deleted from your Google Drive for good, and their links stop working for everyone. Your own copies on this PC aren't touched. Uploads older than a week are ticked to start with.")}</p>
   {#if elsewhere.length}
-    <p class="msg dim">{elsewhere.length === 1 ? "1 upload is" : `${elsewhere.length} uploads are`} in another Google account{elsewhere[0].account ? ` (${elsewhere[0].account})` : ""}: connect that account to delete {elsewhere.length === 1 ? "it" : "them"}.</p>
+    <p class="msg dim">
+      {elsewhere[0].account
+        ? t("{n} uploads are in another Google account ({account}): connect that account to delete them.", { n: elsewhere.length, account: elsewhere[0].account })
+        : t("{n} uploads are in another Google account: connect that account to delete them.", { n: elsewhere.length })}
+    </p>
   {/if}
   {#if mine.length}
     <ul class="rlist">
@@ -97,12 +101,12 @@
       {/each}
     </ul>
   {:else}
-    <p class="msg dim">Nothing Pako uploaded is in your Google Drive yet, so there's nothing to delete here. Free some room in Google Drive itself.</p>
+    <p class="msg dim">{t("Nothing Pako uploaded is in your Google Drive yet, so there's nothing to delete here. Free some room in Google Drive itself.")}</p>
   {/if}
   {#snippet actions()}
-    <span class="dim picked">{ticked.length ? `${ticked.length} ticked · ${bytes(pickedSize)} freed` : "Nothing ticked"}</span>
-    <button class="btn ghost" disabled={deleting} onclick={onclose}>Cancel</button>
-    <button class="btn danger-fill" disabled={deleting || !ticked.length} onclick={deletePicked}><Icon name="trash" size={13} />{deleting ? "Deleting…" : "Delete from Google Drive"}</button>
+    <span class="dim picked">{ticked.length ? t("{n} ticked · {size} freed", { n: ticked.length, size: bytes(pickedSize) }) : t("Nothing ticked")}</span>
+    <button class="btn ghost" disabled={deleting} onclick={onclose}>{t("Cancel")}</button>
+    <button class="btn danger-fill" disabled={deleting || !ticked.length} onclick={deletePicked}><Icon name="trash" size={13} />{deleting ? t("Deleting…") : t("Delete from {host}", { host: "Google Drive" })}</button>
   {/snippet}
 </Modal>
 

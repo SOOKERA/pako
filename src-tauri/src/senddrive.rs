@@ -79,16 +79,18 @@ pub(super) fn folder_body(name: &str, parent: Option<&str>) -> serde_json::Value
     v
 }
 
-/// Sizes in plain words ("4.2 GB").
+/// Sizes in plain words ("4.2 GB"; « 4,2 Go » in French).
 pub(super) fn human(n: u64) -> String {
-    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
+    let fr = crate::i18n::is_fr();
+    let units: [&str; 5] = if fr { ["octets", "Ko", "Mo", "Go", "To"] } else { ["bytes", "KB", "MB", "GB", "TB"] };
     let mut v = n as f64;
     let mut i = 0;
-    while v >= 1000.0 && i < UNITS.len() - 1 {
+    while v >= 1000.0 && i < units.len() - 1 {
         v /= 1000.0;
         i += 1;
     }
-    if i == 0 { format!("{n} bytes") } else if v >= 100.0 { format!("{v:.0} {}", UNITS[i]) } else { format!("{v:.1} {}", UNITS[i]) }
+    let s = if i == 0 { format!("{n} {}", units[0]) } else if v >= 100.0 { format!("{v:.0} {}", units[i]) } else { format!("{v:.1} {}", units[i]) };
+    if fr { s.replace('.', ",") } else { s }
 }
 
 /// Google's reason in an error answer ("storageQuotaExceeded", …).
@@ -117,27 +119,31 @@ fn drive_fail(code: u16, body: &str) -> Fail {
 pub(super) fn drive_error(code: u16, body: &str) -> String {
     match (code, reason(body).as_deref()) {
         (_, Some("storageQuotaExceeded" | "quotaExceeded")) => {
-            "Your Google Drive is full. Make room (delete older uploads), then try again.".into()
+            crate::tr!("Your Google Drive is full. Make room (delete older uploads), then try again.", "Votre Google Drive est plein. Faites de la place (supprimez d’anciennes mises en ligne), puis réessayez.")
         }
         (403, Some("userRateLimitExceeded" | "rateLimitExceeded")) | (429, _) => {
-            "Google asks to slow down. Try again in a few minutes.".into()
+            crate::tr!("Google asks to slow down. Try again in a few minutes.", "Google demande de ralentir. Réessayez dans quelques minutes.")
         }
-        (401, _) => "Your Google Drive login expired. Connect Google Drive again.".into(),
-        (403, _) => "Google refused this. Connect Google Drive again, then try again.".into(),
-        (404, _) => "Google Drive doesn't have it any more.".into(),
-        (c, _) if c >= 500 => "Google Drive is busy right now. Try again in a few minutes.".into(),
-        (c, _) => format!("Google Drive refused it ({c})."),
+        (401, _) => crate::tr!("Your Google Drive login expired. Connect Google Drive again.", "Votre connexion à Google Drive a expiré. Connectez à nouveau Google Drive."),
+        (403, _) => crate::tr!("Google refused this. Connect Google Drive again, then try again.", "Google a refusé. Connectez à nouveau Google Drive, puis réessayez."),
+        (404, _) => crate::tr!("Google Drive doesn't have it any more.", "Google Drive ne l’a plus."),
+        (c, _) if c >= 500 => crate::tr!("Google Drive is busy right now. Try again in a few minutes.", "Google Drive est occupé pour le moment. Réessayez dans quelques minutes."),
+        (c, _) => crate::tr!("Google Drive refused it ({c}).", "Google Drive a refusé ({c})."),
     }
 }
 
 fn drive_net_error(e: &reqwest::Error) -> String {
     if e.is_connect() {
-        "No connection to Google Drive. Check your internet, then try again.".into()
+        crate::tr!("No connection to Google Drive. Check your internet, then try again.", "Pas de connexion à Google Drive. Vérifiez votre connexion internet, puis réessayez.")
     } else if e.is_timeout() {
-        "Google Drive stopped answering. Try again in a few minutes.".into()
+        crate::tr!("Google Drive stopped answering. Try again in a few minutes.", "Google Drive ne répond plus. Réessayez dans quelques minutes.")
     } else {
-        "The upload was cut off. Try again.".into()
+        crate::tr!("The upload was cut off. Try again.", "La mise en ligne a été coupée. Réessayez.")
     }
+}
+
+fn connect_first() -> String {
+    crate::tr!("Connect your Google Drive first (Upload › Google Drive).", "Connectez d’abord votre Google Drive (Envoi › Google Drive).")
 }
 
 /// What one piece's request came back with.
@@ -159,7 +165,7 @@ impl Drive<'_> {
     async fn token(&self, force: bool) -> Result<String, Fail> {
         match self.google.access_token(force).await {
             Ok(Some(t)) => Ok(t),
-            Ok(None) => Err(Fail::msg("Connect your Google Drive first (Upload › Google Drive).")),
+            Ok(None) => Err(Fail::msg(connect_first())),
             Err(e) => Err(Fail::msg(e.to_string())),
         }
     }
@@ -192,7 +198,7 @@ impl Drive<'_> {
     /// Your Drive's storage: (limit, used). No limit = some Workspace accounts.
     pub async fn quota(&self) -> Result<(Option<u64>, u64), Fail> {
         let text = self.call_ok(reqwest::Method::GET, &format!("{API}/about?fields=storageQuota(limit,usage)"), None).await?;
-        let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| Fail::msg("Google Drive answered something Pako doesn't understand."))?;
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| Fail::msg(crate::tr!("Google Drive answered something Pako doesn't understand.", "Google Drive a répondu quelque chose que Pako ne comprend pas.")))?;
         let num = |k: &str| v["storageQuota"][k].as_str().and_then(|s| s.parse::<u64>().ok());
         Ok((num("limit"), num("usage").unwrap_or(0)))
     }
@@ -212,7 +218,7 @@ impl Drive<'_> {
 
     pub async fn create_folder(&self, name: &str, parent: Option<&str>) -> Result<DriveFile, Fail> {
         let text = self.call_ok(reqwest::Method::POST, &format!("{API}/files?fields=id,webViewLink"), Some(&folder_body(name, parent))).await?;
-        serde_json::from_str(&text).map_err(|_| Fail::msg("Google Drive didn't say which folder it made."))
+        serde_json::from_str(&text).map_err(|_| Fail::msg(crate::tr!("Google Drive didn't say which folder it made.", "Google Drive n’a pas dit quel dossier il a créé.")))
     }
 
     /// Anyone with the link can view it.
@@ -230,7 +236,11 @@ impl Drive<'_> {
         match shared {
             Ok(link) => Ok(link),
             Err(f) if self.delete(&file.id).await.is_ok() => Err(f.msg),
-            Err(f) => Err(format!("{} It stays in Pako's folder of your Google Drive (\"{UPLOADS_FOLDER}\", or \"{OLD_UPLOADS_FOLDER}\" from an earlier Pako): delete it there if you don't need it.", f.msg)),
+            Err(f) => Err(crate::tr!(
+                "{} It stays in Pako's folder of your Google Drive (\"{UPLOADS_FOLDER}\", or \"{OLD_UPLOADS_FOLDER}\" from an earlier Pako): delete it there if you don't need it.",
+                "{} Il reste dans le dossier de Pako de votre Google Drive (« {UPLOADS_FOLDER} », ou « {OLD_UPLOADS_FOLDER} » d’un Pako plus ancien) : supprimez-le là-bas si vous n’en avez pas besoin.",
+                f.msg
+            )),
         }
     }
 
@@ -241,7 +251,7 @@ impl Drive<'_> {
         }
         let text = self.call_ok(reqwest::Method::GET, &format!("{API}/files/{}?fields=webViewLink", file.id), None).await?;
         let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-        v["webViewLink"].as_str().map(str::to_string).ok_or_else(|| Fail::msg("Google Drive didn't send the link back."))
+        v["webViewLink"].as_str().map(str::to_string).ok_or_else(|| Fail::msg(crate::tr!("Google Drive didn't send the link back.", "Google Drive n’a pas renvoyé le lien.")))
     }
 
     /// Deletes it for good (a folder with everything in it). Already gone is fine.
@@ -278,7 +288,7 @@ impl Drive<'_> {
             if !(200..300).contains(&code) {
                 return Err(drive_fail(code, &text));
             }
-            return location.ok_or_else(|| Fail::msg("Google Drive didn't open the upload."));
+            return location.ok_or_else(|| Fail::msg(crate::tr!("Google Drive didn't open the upload.", "Google Drive n’a pas ouvert la mise en ligne.")));
         }
     }
 
@@ -290,7 +300,7 @@ impl Drive<'_> {
         // refused for good is said again on every try, then the upload stops with it.)
         let token = match self.google.access_token(false).await {
             Ok(Some(t)) => t,
-            Ok(None) => return Put::Fail(Fail::msg("Connect your Google Drive first (Upload › Google Drive).")),
+            Ok(None) => return Put::Fail(Fail::msg(connect_first())),
             Err(e) => return Put::Retry(e.to_string()),
         };
         let resp = self
@@ -313,18 +323,18 @@ impl Drive<'_> {
         match code {
             200 | 201 => match serde_json::from_str::<DriveFile>(&text) {
                 Ok(f) => Put::Done(f),
-                Err(_) => Put::Fail(Fail::msg("Google Drive didn't say which file it made.")),
+                Err(_) => Put::Fail(Fail::msg(crate::tr!("Google Drive didn't say which file it made.", "Google Drive n’a pas dit quel fichier il a créé."))),
             },
             308 => match next_offset(range.as_deref()) {
                 Some(n) => Put::More(n),
-                None => Put::Retry("Google Drive's answer was unclear.".into()),
+                None => Put::Retry(crate::tr!("Google Drive's answer was unclear.", "La réponse de Google Drive n’était pas claire.")),
             },
             401 => {
                 // Renewed before the next try.
                 let _ = self.google.access_token(true).await;
                 Put::Retry(drive_error(code, &text))
             }
-            404 | 410 => Put::Fail(Fail::msg("The upload was open too long and Google closed it. Try again.")),
+            404 | 410 => Put::Fail(Fail::msg(crate::tr!("The upload was open too long and Google closed it. Try again.", "La mise en ligne est restée ouverte trop longtemps et Google l’a fermée. Réessayez."))),
             c if rate_limited(c, &text) || c >= 500 => Put::Retry(drive_error(code, &text)),
             _ => Put::Fail(drive_fail(code, &text)),
         }
@@ -408,14 +418,14 @@ impl Drive<'_> {
                 }
             };
             if next < start || next > start + pending.len() as u64 {
-                return Err(Fail::msg("Google Drive lost track of the upload. Try again."));
+                return Err(Fail::msg(crate::tr!("Google Drive lost track of the upload. Try again.", "Google Drive a perdu la trace de la mise en ligne. Réessayez.")));
             }
             let confirmed = (next - start) as usize;
             add(confirmed as u64);
             if confirmed == 0 {
                 stalled += 1;
                 if stalled >= PIECE_TRIES {
-                    return Err(Fail::msg("Google Drive isn't taking the upload. Try again in a few minutes."));
+                    return Err(Fail::msg(crate::tr!("Google Drive isn't taking the upload. Try again in a few minutes.", "Google Drive n’accepte pas la mise en ligne. Réessayez dans quelques minutes.")));
                 }
             } else {
                 stalled = 0;
@@ -512,8 +522,9 @@ impl Sender {
     async fn check_room(&self, need: u64) -> Result<(), String> {
         if let Some(free) = self.store(Host::Drive).free_space().await? {
             if need > free {
-                return Err(format!(
+                return Err(crate::tr!(
                     "This upload needs {}, and your Google Drive has {} free. Make room (delete older uploads), then try again.",
+                    "Cette mise en ligne demande {}, et votre Google Drive a {} de libre. Faites de la place (supprimez d’anciennes mises en ligne), puis réessayez.",
                     human(need),
                     human(free)
                 ));
@@ -525,7 +536,7 @@ impl Sender {
     /// Connected, and the send fits (said before anything is made or uploaded).
     pub(super) async fn drive_ready(&self, job: &Arc<Job>) -> Result<(), String> {
         if !self.store(Host::Drive).connected().await {
-            return Err("Connect your Google Drive first (Upload › Google Drive).".into());
+            return Err(connect_first());
         }
         self.check_room(job.total.unwrap_or(job.input)).await
     }
@@ -561,7 +572,7 @@ impl Sender {
             }
         } else {
             if entries.is_empty() {
-                return Err("There are no files to upload.".into());
+                return Err(crate::tr!("There are no files to upload.", "Il n’y a aucun fichier à mettre en ligne."));
             }
             // In parts: the folder is named after the ZIP, without ".zip".
             let name = if job.part_mb > 0 { job.name.strip_suffix(".zip").unwrap_or(&job.name) } else { &job.name };
@@ -604,9 +615,15 @@ impl Sender {
             let n = failed.len();
             *job.left.lock().unwrap() = failed;
             return Err(if n == 1 {
-                "1 file didn't upload. Try again to upload just that one (the link stays the same).".into()
+                crate::tr!(
+                    "1 file didn't upload. Try again to upload just that one (the link stays the same).",
+                    "1 fichier n’a pas été mis en ligne. Réessayez pour ne mettre en ligne que celui-là (le lien reste le même)."
+                )
             } else {
-                format!("{n} files didn't upload. Try again to upload just those (the link stays the same).")
+                crate::tr!(
+                    "{n} files didn't upload. Try again to upload just those (the link stays the same).",
+                    "{n} fichiers n’ont pas été mis en ligne. Réessayez pour ne mettre en ligne que ceux-là (le lien reste le même)."
+                )
             });
         }
         Ok((link, Some(folder_id), None))
@@ -678,6 +695,11 @@ mod tests {
         assert!(drive_error(401, "").contains("Connect Google Drive again"));
         assert_eq!(human(4_200_000_000), "4.2 GB");
         assert_eq!(human(512), "512 bytes");
+        crate::i18n::test_french(true);
+        assert_eq!(human(4_200_000_000), "4,2 Go");
+        assert_eq!(human(512), "512 octets");
+        assert!(drive_error(503, "").contains("occup"));
+        crate::i18n::test_french(false);
     }
 
     /// A stand-in for Google: takes pieces, says "308, bytes=0-N" until the last one.

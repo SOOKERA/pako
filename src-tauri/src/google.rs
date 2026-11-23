@@ -30,8 +30,9 @@ pub struct Account {
     client_file: &'static str,
     login_file: &'static str,
     scopes: &'static str,
-    /// Said when the registration file is missing.
+    /// Said when the registration file is missing (in English, and in French).
     missing: &'static str,
+    missing_fr: &'static str,
 }
 
 /// The sending sign-in ("Pako Send"): only the files Pako uploads, plus who is signed in.
@@ -40,6 +41,7 @@ pub const SENDING: Account = Account {
     login_file: "google_send_login.bin",
     scopes: "https://www.googleapis.com/auth/drive.file openid email",
     missing: "Uploading to Google Drive isn't set up on this PC (google_send_client.json is missing from Pako's data folder).",
+    missing_fr: "La mise en ligne sur Google Drive n’est pas configurée sur ce PC (google_send_client.json manque dans le dossier de données de Pako).",
 };
 
 #[derive(Clone, Deserialize)]
@@ -126,7 +128,7 @@ fn built_in(a: Account) -> Option<ClientCreds> {
 fn creds_in(dir: &std::path::Path, a: Account) -> Result<ClientCreds> {
     match std::fs::read_to_string(dir.join(a.client_file)) {
         Ok(text) => serde_json::from_str(&text).with_context(|| format!("{} is not valid", a.client_file)),
-        Err(_) => built_in(a).ok_or_else(|| anyhow!(a.missing)),
+        Err(_) => built_in(a).ok_or_else(|| anyhow!(a.missing_words())),
     }
 }
 
@@ -143,7 +145,15 @@ const OLD_DOWNLOADS: Account = Account {
     login_file: "google_login.bin",
     scopes: "",
     missing: "",
+    missing_fr: "",
 };
+
+impl Account {
+    /// `missing` in the language of the moment.
+    fn missing_words(&self) -> &'static str {
+        if crate::i18n::is_fr() { self.missing_fr } else { self.missing }
+    }
+}
 
 /// Marks the old temporary copies (appProperties key = the install that made them).
 const OLD_INSTALL_KEY: &str = "zdInstall";
@@ -255,22 +265,39 @@ pub fn old_cleanup_note(outcome: &OldCleanup) -> Option<(String, String)> {
     match outcome {
         OldCleanup::Done | OldCleanup::Later => None,
         OldCleanup::Removed(n) => Some((
-            "Google Drive tidied".into(),
-            format!(
-                "Pako removed {n} temporary {} an older version had left in your Google Drive.",
-                if *n == 1 { "copy" } else { "copies" }
-            ),
+            crate::tr!("Google Drive tidied", "Google Drive rangé"),
+            if *n == 1 {
+                crate::tr!(
+                    "Pako removed {n} temporary copy an older version had left in your Google Drive.",
+                    "Pako a supprimé {n} copie temporaire qu’une ancienne version avait laissée dans votre Google Drive."
+                )
+            } else {
+                crate::tr!(
+                    "Pako removed {n} temporary copies an older version had left in your Google Drive.",
+                    "Pako a supprimé {n} copies temporaires qu’une ancienne version avait laissées dans votre Google Drive."
+                )
+            },
         )),
         OldCleanup::GaveUp(names) if names.is_empty() => Some((
-            "Temporary copies may be left in your Google Drive".into(),
-            "An older Pako made temporary copies in your Google Drive and Pako couldn't remove them. Look for files ending in \"(Pako temporary copy)\" in your Drive and delete them.".into(),
+            crate::tr!("Temporary copies may be left in your Google Drive", "Des copies temporaires restent peut-être dans votre Google Drive"),
+            crate::tr!(
+                "An older Pako made temporary copies in your Google Drive and Pako couldn't remove them. Look for files ending in \"(Pako temporary copy)\" in your Drive and delete them.",
+                "Un ancien Pako a fait des copies temporaires dans votre Google Drive et Pako n’a pas pu les supprimer. Cherchez dans votre Drive les fichiers qui finissent par « (Pako temporary copy) » et supprimez-les."
+            ),
         )),
         OldCleanup::GaveUp(names) => {
             let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
-            let more = if names.len() > 5 { format!(" and {} more", names.len() - 5) } else { String::new() };
+            let more = if names.len() > 5 { match names.len() - 5 {
+                1 => crate::tr!(" and 1 more", " et 1 autre"),
+                more => crate::tr!(" and {} more", " et {} autres", more),
+            } } else { String::new() };
             Some((
-                "Temporary copies are left in your Google Drive".into(),
-                format!("Pako couldn't remove these copies an older version made: {}{more}. Delete them in your Google Drive.", shown.join(", ")),
+                crate::tr!("Temporary copies are left in your Google Drive", "Des copies temporaires restent dans votre Google Drive"),
+                crate::tr!(
+                    "Pako couldn't remove these copies an older version made: {}{more}. Delete them in your Google Drive.",
+                    "Pako n’a pas pu supprimer ces copies faites par une ancienne version : {}{more}. Supprimez-les dans votre Google Drive.",
+                    shown.join(", ")
+                ),
             ))
         }
     }
@@ -301,7 +328,7 @@ impl Google {
 
     /// What to say when the registration file is missing.
     pub fn missing_note(&self) -> &'static str {
-        self.account.missing
+        self.account.missing_words()
     }
 
     /// The signed-in account's email; None when not signed in, or when Google didn't say which
@@ -346,7 +373,7 @@ impl Google {
             .timeout(GOOGLE_WAIT)
             .send()
             .await
-            .context("Could not reach Google to renew the login")?;
+            .with_context(|| crate::tr!("Could not reach Google to renew the login", "Impossible de joindre Google pour renouveler la connexion"))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let err: Option<TokenError> = resp.json().await.ok();
@@ -360,14 +387,14 @@ impl Google {
                         st.access = None;
                         forget_login_files(self.account);
                     }
-                    bail!("Your Google login expired. Connect Google Drive again in Upload › Google Drive.");
+                    bail!(crate::tr!(
+                        "Your Google login expired. Connect Google Drive again in Upload › Google Drive.",
+                        "Votre connexion Google a expiré. Connectez à nouveau Google Drive dans Envoi › Google Drive."
+                    ));
                 }
             }
-            bail!(
-                "Google refused to renew the login ({}{})",
-                status.as_u16(),
-                err.and_then(|e| e.error_description).map(|d| format!(": {d}")).unwrap_or_default()
-            );
+            let why = err.and_then(|e| e.error_description).map(|d| crate::tr!(": {d}", " : {d}")).unwrap_or_default();
+            bail!(crate::tr!("Google refused to renew the login ({}{why})", "Google a refusé de renouveler la connexion ({}{why})", status.as_u16()));
         }
         let t: TokenResponse = resp.json().await?;
         let mut st = self.state.lock().await;
@@ -432,7 +459,7 @@ impl Google {
 
         let code = tokio::time::timeout(Duration::from_secs(300), wait_for_code(&listener, &state))
             .await
-            .map_err(|_| anyhow!("Sign-in timed out. Try again."))??;
+            .map_err(|_| anyhow!(crate::tr!("Sign-in timed out. Try again.", "La connexion a pris trop de temps. Réessayez.")))??;
 
         let resp = self
             .http
@@ -451,7 +478,7 @@ impl Google {
         if !resp.status().is_success() {
             // Google's own reason in a few words, not its raw answer.
             let why = resp.json::<TokenError>().await.ok().map(|e| format!(" ({})", e.error_description.unwrap_or(e.error))).unwrap_or_default();
-            bail!("Google refused the sign-in{why}. Try again.");
+            bail!(crate::tr!("Google refused the sign-in{why}. Try again.", "Google a refusé la connexion{why}. Réessayez."));
         }
         let t: TokenResponse = resp.json().await?;
         // The box for Google Drive was left unticked on Google's page: this login couldn't add
@@ -459,11 +486,14 @@ impl Google {
         if !missing_scopes(self.account.scopes, t.scope.as_deref()).is_empty() {
             let token = t.refresh_token.unwrap_or(t.access_token);
             let _ = self.http.post(REVOKE_URL).form(&[("token", token)]).timeout(GOOGLE_WAIT).send().await;
-            bail!("Google didn't give Pako the permission to add files to your Google Drive. Connect again and, on Google's page, tick the box for Google Drive before you continue.");
+            bail!(crate::tr!(
+                "Google didn't give Pako the permission to add files to your Google Drive. Connect again and, on Google's page, tick the box for Google Drive before you continue.",
+                "Google n’a pas donné à Pako l’autorisation d’ajouter des fichiers à votre Google Drive. Connectez-vous à nouveau et, sur la page de Google, cochez la case de Google Drive avant de continuer."
+            ));
         }
         let refresh = t
             .refresh_token
-            .ok_or_else(|| anyhow!("Google didn't return a lasting login. Try again."))?;
+            .ok_or_else(|| anyhow!(crate::tr!("Google didn't return a lasting login. Try again.", "Google n’a pas renvoyé de connexion durable. Réessayez.")))?;
 
         // Unknown (Google didn't say): kept empty, never a placeholder two accounts would share
         // (uploads are matched to their account by it before anything is deleted).
@@ -555,9 +585,9 @@ async fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<S
         }
         let ok = code.is_some() && err.is_none();
         let page = if ok {
-            page_html("Signed in", "You can close this tab and go back to Pako.")
+            page_html(&crate::tr!("Signed in", "Connecté"), &crate::tr!("You can close this tab and go back to Pako.", "Vous pouvez fermer cet onglet et revenir à Pako."))
         } else {
-            page_html("Sign-in not completed", "Go back to Pako and try again.")
+            page_html(&crate::tr!("Sign-in not completed", "Connexion non terminée"), &crate::tr!("Go back to Pako and try again.", "Revenez à Pako et réessayez."))
         };
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -570,9 +600,9 @@ async fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<S
         if let Some(e) = err {
             // Google's own short word for it ("access_denied"), never a long or odd text.
             let e: String = e.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(40).collect();
-            bail!("Sign-in was cancelled ({e}).");
+            bail!(crate::tr!("Sign-in was cancelled ({e}).", "La connexion a été annulée ({e})."));
         }
-        return code.ok_or_else(|| anyhow!("Sign-in answer didn't match. Try again."));
+        return code.ok_or_else(|| anyhow!(crate::tr!("Sign-in answer didn't match. Try again.", "La réponse de connexion ne correspondait pas. Réessayez.")));
     }
 }
 

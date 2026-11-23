@@ -4,6 +4,8 @@
 
 Press **F1** anywhere in Pako, or click **Help** at the bottom left. Help has these guides (with a search box), **What's new**, **About Pako**, and every tutorial: the **Quick tour** shows what each page is for, and each page's own tutorial shows its details.
 
+Help speaks Pako's language (see [English or French](downloading.md#english-or-french)): in French, the guides and **What's new** are in French, and a guide not translated yet shows in English.
+
 ## Finding a setting
 
 **Settings** has one tab per part of Pako: **Features & updates**, **Browser extension**, **Accounts**, **Window**, **Notifications**, **Downloads**, **Private mode** and **Upload**. Inside each tab, the settings sit in small titled groups (in **Downloads**: **Speed**, **Saving files**, **Videos**, **While downloading**…). Click a tab, or use **↑** **↓** and **Enter**; **Ctrl+Tab** goes to the next tab from anywhere in Settings.
@@ -27,7 +29,7 @@ When something goes wrong, tell Sookera in one click with **Send report**, or wi
 
 ### The list of problems
 
-Pako keeps a short private list of the last 300 problems it ran into: downloads and videos that stopped, link checks, uploads, Direct transfers, update checks and the browser extension. It can also hold a short note from the window when a tutorial was slow to show (which part of the window kept it waiting, in pixels and milliseconds; never a file name). Each line says when, where, the message Pako showed you, and Pako's version. It's the file `problems.log` in Pako's data folder (see [Where your settings and lists are kept](install.md#where-your-settings-and-lists-are-kept)).
+Pako keeps a short private list of the last 300 problems it ran into: downloads and videos that stopped, link checks, uploads, Direct transfers, update checks and the browser extension. It can also hold a short note from the window when a tutorial was slow to show (which part of the window kept it waiting, in pixels and milliseconds; never a file name). Each line says when, where, the message Pako showed you (in the language Pako was in then), and Pako's version. It's the file `problems.log` in Pako's data folder (see [Where your settings and lists are kept](install.md#where-your-settings-and-lists-are-kept)).
 
 Before a line is written, Pako takes out what could say who you are or what you download:
 

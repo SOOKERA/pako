@@ -15,11 +15,12 @@
 
   // (pill.js's choice: never a page element named "browser".)
   const api = kit.api;
+  /** The qualities offered, and their words (in Pako's language: kit.tr). */
   const QUALITIES = [
-    [1080, "Up to 1080p", "MP4"],
-    [720, "Up to 720p", "MP4"],
-    [480, "Up to 480p", "MP4"],
-    [0, "Audio only", "M4A"],
+    [1080, () => kit.tr("Up to {height}p", { height: 1080 }), "MP4"],
+    [720, () => kit.tr("Up to {height}p", { height: 720 }), "MP4"],
+    [480, () => kit.tr("Up to {height}p", { height: 480 }), "MP4"],
+    [0, () => kit.tr("Audio only"), "M4A"],
   ];
 
   // ---------- which video, as a link Pako knows ----------
@@ -131,7 +132,7 @@
       const v = kit.videoAt(x, y);
       return v && videoUrl(v) ? v : null;
     },
-    items: () => [{ head: "Download with Pako" }, ...QUALITIES.map(([quality, text, side]) => ({ text, side, quality }))],
+    items: () => [{ head: kit.tr("Download with Pako") }, ...QUALITIES.map(([quality, text, side]) => ({ text: text(), side, quality }))],
     pick: async (item, video) => {
       const url = videoUrl(video);
       if (!url) return null;

@@ -12,8 +12,13 @@
   import { bytes } from "./format";
   import Icon from "./Icon.svelte";
   import Modal from "./Modal.svelte";
+  import { around, num, t } from "./i18n.svelte";
 
   const request = $derived(app.direct?.requests?.[0] ?? null);
+  /** "Once you accept, … in **Direct** and …": the page's name in bold, mid-sentence. */
+  const onceAccepted = $derived(
+    around(t("Once you accept, {name} becomes one of your contacts in {page} and you connect by yourselves whenever both Pakos are open. You're only asked this once.", { name: request?.name ?? "" }), "{page}"),
+  );
   /** Contacts you muted: their offers wait in their conversation, asked only once it's open. */
   const muted = $derived(new Set((app.direct?.contacts ?? []).filter((c) => c.muted).map((c) => c.id)));
   const offer = $derived(
@@ -28,7 +33,6 @@
       folder = null;
     }
   });
-  const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
   /** Accept answers only once the question has been on screen for a moment. */
   let armed = $state(false);
@@ -39,8 +43,8 @@
     answered = "";
     if (!shown) return;
     armed = false;
-    const t = setTimeout(() => (armed = true), 600);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => (armed = true), 600);
+    return () => clearTimeout(timer);
   });
 
   /** One answer per question: the dialog stays for a moment until the engine takes the question
@@ -82,71 +86,71 @@
   const answerOffer = (id: string, accept: boolean) => answer(() => api.directAnswerOffer(id, accept, accept ? folder : null));
 
   async function change() {
-    const r = await pick({ directory: true, multiple: false, title: "Where to save these files" });
+    const r = await pick({ directory: true, multiple: false, title: t("Where to save these files") });
     if (typeof r === "string") folder = r;
   }
 </script>
 
 {#if request}
   {@const r = request}
-  <Modal title="{r.name} wants to connect" width={480} closeLabel="Decline" onclose={() => answerRequest(r.peer, false)}>
+  <Modal title={t("{name} wants to connect", { name: r.name })} width={480} closeLabel={t("Decline")} onclose={() => answerRequest(r.peer, false)}>
     <div class="body">
-      <p class="who dim small"><Icon name="alert" size={13} />Not in your contacts. The name is the one they chose; Pako can't check it.</p>
+      <p class="who dim small"><Icon name="alert" size={13} />{t("Not in your contacts. The name is the one they chose; Pako can't check it.")}</p>
       {#if r.knownAs}
-        <p class="warn small">You already have a contact called {r.knownAs}. This is a different Pako: if you expected {r.knownAs}, decline.</p>
+        <p class="warn small">{t("You already have a contact called {name}. This is a different Pako: if you expected {name}, decline.", { name: r.knownAs })}</p>
       {/if}
-      <p>Once you accept, {r.name} becomes one of your contacts in <b>Direct</b> and you connect by yourselves whenever both Pakos are open. You're only asked this once.</p>
+      <p>{onceAccepted[0]}<b>{t("Direct")}</b>{onceAccepted[1]}</p>
       <div class="code">
-        <span class="dim">Safety code</span>
+        <span class="dim">{t("Safety code")}</span>
         <b class="mono">{r.code}</b>
       </div>
-      <p class="dim small">If you know them, check they see the same code (by voice or chat). A different code means it isn't them.</p>
-      <p class="dim small">If you decline (or close this), Pako turns {r.name} away without asking you for 7 days.</p>
+      <p class="dim small">{t("If you know them, check they see the same code (by voice or chat). A different code means it isn't them.")}</p>
+      <p class="dim small">{t("If you decline (or close this), Pako turns {name} away without asking you for 7 days.", { name: r.name })}</p>
       {#if nameMissing}
-        <label class="lbl dim small" for="reqmyname">Your name (what {r.name} sees)</label>
-        <input id="reqmyname" class="input" class:missing={needName} bind:this={nameField} bind:value={myName} placeholder="What your contacts see" maxlength="60" aria-invalid={needName} />
-        {#if needName}<p class="need small" role="alert">Fill in your name first: {r.name} sees it when you accept.</p>{/if}
+        <label class="lbl dim small" for="reqmyname">{t("Your name (what {name} sees)", { name: r.name })}</label>
+        <input id="reqmyname" class="input" class:missing={needName} bind:this={nameField} bind:value={myName} placeholder={t("What your contacts see")} maxlength="60" aria-invalid={needName} />
+        {#if needName}<p class="need small" role="alert">{t("Fill in your name first: {name} sees it when you accept.", { name: r.name })}</p>{/if}
       {/if}
     </div>
     {#snippet actions()}
-      <button class="btn ghost" title="Decline (Esc)" onclick={() => answerRequest(r.peer, false)}>Decline</button>
-      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => answerRequest(r.peer, true)}>Accept</button>
+      <button class="btn ghost" title={t("Decline (Esc)")} onclick={() => answerRequest(r.peer, false)}>{t("Decline")}</button>
+      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => answerRequest(r.peer, true)}>{t("Accept")}</button>
     {/snippet}
   </Modal>
 {:else if offer}
   {@const o = offer}
-  <Modal title="{o.contactName} wants to send you files" width={500} closeLabel="Decline" onclose={() => answerOffer(o.id, false)}>
+  <Modal title={t("{name} wants to send you files", { name: o.contactName })} width={500} closeLabel={t("Decline")} onclose={() => answerOffer(o.id, false)}>
     <div class="body">
       <div class="what">
         <Icon name={o.files > 1 ? "folder" : "file"} size={18} />
         <div>
           <div class="wname">{o.name}</div>
-          <div class="dim small">{plural(o.files, "file")} · {bytes(o.size)}</div>
+          <div class="dim small">{t("{n} files", { n: num(o.files) })} · {bytes(o.size)}</div>
         </div>
       </div>
       {#if o.files > 1}
         <ul class="sample dim small">
           {#each o.sample as s, i (i)}<li>{s}</li>{/each}
-          {#if o.files > o.sample.length}<li>and {plural(o.files - o.sample.length, "more file")}</li>{/if}
+          {#if o.files > o.sample.length}<li>{t("and {n} more files", { n: num(o.files - o.sample.length) })}</li>{/if}
         </ul>
       {/if}
-      <span class="lbl dim small">Save to</span>
+      <span class="lbl dim small">{t("Save to")}</span>
       <div class="field">
         <span class="path" title={folder ?? o.folder}>{folder ?? o.folder}</span>
-        <button class="link" onclick={change}>Change</button>
+        <button class="link" onclick={change}>{t("Change")}</button>
       </div>
       {#if o.askedBecause}
         <p class="dim small">{o.askedBecause}</p>
       {:else if !(app.direct?.contacts ?? []).some((c) => c.id === o.contact)}
         <!-- One of your own PCs (devices aren't in Direct's people): asked until it's paired both ways. -->
-        <p class="dim small">Files from {o.contactName} come without asking once it's paired both ways: confirm it in My devices on both PCs.</p>
+        <p class="dim small">{t("Files from {name} come without asking once it's paired both ways: confirm it in My devices on both PCs.", { name: o.contactName })}</p>
       {:else}
-        <p class="dim small">To skip this question for {o.contactName}, turn on "Can send to me without asking" in Direct.</p>
+        <p class="dim small">{t('To skip this question for {name}, turn on "Can send to me without asking" in Direct.', { name: o.contactName })}</p>
       {/if}
     </div>
     {#snippet actions()}
-      <button class="btn ghost" title="Decline (Esc)" onclick={() => answerOffer(o.id, false)}>Decline</button>
-      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => answerOffer(o.id, true)}><Icon name="download" size={13} stroke={2.2} />Accept</button>
+      <button class="btn ghost" title={t("Decline (Esc)")} onclick={() => answerOffer(o.id, false)}>{t("Decline")}</button>
+      <button class="btn primary" class:arming={!armed} aria-disabled={!armed} onclick={() => answerOffer(o.id, true)}><Icon name="download" size={13} stroke={2.2} />{t("Accept")}</button>
     {/snippet}
   </Modal>
 {/if}

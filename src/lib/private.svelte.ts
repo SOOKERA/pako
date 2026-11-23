@@ -4,7 +4,11 @@
 import { api, listen, type Download, type PrivateStatus, type SendMode } from "./api";
 import { app } from "./state.svelte";
 import { devices } from "./devices.svelte";
-import { leaveWords, lockedNote, type WorkKind } from "./privateLeave";
+import { i18n, said, t, type Words } from "./i18n.svelte";
+import { leaveWords, lockedNote, useWords, type WorkKind } from "./privateLeave";
+
+// The questions and notes about leaving or locking speak the window's language.
+useWords(t, () => i18n.locale);
 
 /** Something running on private files while Private mode is open: a send with Direct, an
  *  upload, or Decrypt…. Its progress shows on the files' rows and in the details panel. */
@@ -13,8 +17,9 @@ export interface PrivateWork {
   kind: WorkKind;
   /** The private files it works on. */
   ids: string[];
-  /** What it's called on screen ("Holiday.mp4", "3 files", "the folder Trip"). */
-  what: string;
+  /** What it's called on screen ("Holiday.mp4", "3 files", "the folder Trip"; words that follow
+   *  a language switch). */
+  what: Words;
   /** Who it goes to (Direct: the contact or PC's name). */
   to?: string;
   /** The Direct transfer's or the upload's id. */
@@ -85,7 +90,7 @@ class PrivateMode {
     if (!this.named.length) return;
     const gone = new Set(this.named);
     this.named = [];
-    app.toasts = app.toasts.filter((t) => !gone.has(t.id));
+    app.toasts = app.toasts.filter((x) => !gone.has(x.id));
   }
   /** Decrypt…: the current file's bytes so far, per piece of work. */
   private decryptAt = $state<Record<string, number>>({});
@@ -251,7 +256,7 @@ class PrivateMode {
     const kept = app.basket.filter((b) => !b.private);
     if (kept.length === app.basket.length) return;
     app.basket = kept;
-    app.toast("Private mode locked, so its files left New upload. Open it and add them again to upload them.");
+    app.toast(t("Private mode locked, so its files left New upload. Open it and add them again to upload them."));
   }
 
   async lockNow() {
@@ -296,20 +301,21 @@ class PrivateMode {
   progress(w: PrivateWork): { frac: number | null; label: string; failed: boolean } {
     if (w.kind === "decrypt") {
       const done = w.done + (this.decryptAt[w.key] ?? 0);
-      return { frac: w.total ? Math.min(1, done / w.total) : null, label: "Decrypting", failed: false };
+      return { frac: w.total ? Math.min(1, done / w.total) : null, label: t("Decrypting"), failed: false };
     }
     if (w.kind === "send") {
-      const who = w.to ?? "them";
-      const t = this.transfers().find((x) => x.id === w.job);
-      if (!t) return { frac: null, label: `Sending to ${who}`, failed: false };
-      const label = t.state === "offered" ? `Waiting for ${who} to accept` : t.state === "waiting" ? `Waiting for ${who} to come back` : `Sending to ${who}`;
-      return { frac: t.size ? Math.min(1, t.done / t.size) : null, label, failed: false };
+      const who = w.to ?? t("them");
+      const tr = this.transfers().find((x) => x.id === w.job);
+      if (!tr) return { frac: null, label: t("Sending to {who}", { who }), failed: false };
+      const label =
+        tr.state === "offered" ? t("Waiting for {who} to accept", { who }) : tr.state === "waiting" ? t("Waiting for {who} to come back", { who }) : t("Sending to {who}", { who });
+      return { frac: tr.size ? Math.min(1, tr.done / tr.size) : null, label, failed: false };
     }
     const j = app.sends.find((x) => x.id === w.job);
-    if (!j) return { frac: null, label: "Uploading", failed: false };
-    if (j.status === "failed") return { frac: null, label: j.message ?? "The upload stopped", failed: true };
+    if (!j) return { frac: null, label: t("Uploading"), failed: false };
+    if (j.status === "failed") return { frac: null, label: j.message ?? t("The upload stopped"), failed: true };
     const total = j.total ?? j.size;
-    return { frac: total ? Math.min(1, j.sent / total) : null, label: "Uploading", failed: false };
+    return { frac: total ? Math.min(1, j.sent / total) : null, label: t("Uploading"), failed: false };
   }
 
   /** Its send or upload as Direct / Upload lists it now (undefined: not listed). */
@@ -359,13 +365,13 @@ class PrivateMode {
   }
 
   /** A send with Direct started (`job`: its transfer's id). */
-  sending(items: Download[], what: string, to: string, job: string, device: boolean) {
+  sending(items: Download[], what: Words, to: string, job: string, device: boolean) {
     if (device) devices.start();
     this.work = [...this.work, { key: `send:${job}`, kind: "send", ids: items.map((d) => d.id), what, to, job, done: 0, total: 0, at: Date.now() }];
   }
 
   /** Uploads private files from the private list: no trip to Upload, its progress shows here. */
-  async upload(items: Download[], what: string, paths: string[], mode: SendMode | null, name: string | null, days: number, partMb: number | null, password: string | null) {
+  async upload(items: Download[], what: Words, paths: string[], mode: SendMode | null, name: string | null, days: number, partMb: number | null, password: string | null) {
     const job = await api.sendStart(paths, mode, name, days, null, partMb, password);
     this.work = [...this.work, { key: `upload:${job}`, kind: "upload", ids: items.map((d) => d.id), what, job, done: 0, total: 0, at: Date.now() }];
     await app.refreshSends();
@@ -376,7 +382,8 @@ class PrivateMode {
   async decrypt(items: Download[], folder: string | null, dir: string, then: "off" | "downloads" | "leave"): Promise<string> {
     const key = `decrypt:${Date.now()}`;
     const total = items.reduce((n, d) => n + (d.size ?? d.downloaded), 0);
-    const what = folder ? `the folder ${folder}` : items.length === 1 ? items[0].name : `${items.length} files`;
+    const n = items.length;
+    const what: Words = folder ? () => t("the folder {name}", { name: folder }) : n === 1 ? items[0].name : () => t("{n} files", { n });
     this.work = [...this.work, { key, kind: "decrypt", ids: items.map((d) => d.id), what, done: 0, total, at: Date.now() }];
     let made = 0;
     let last = "";
@@ -399,7 +406,7 @@ class PrivateMode {
 
   /** What leaving would stop, in words ("sending Holiday.mp4", "2 things in progress"), or "". */
   stopsWords(): string {
-    return leaveWords(this.running().map((w) => ({ kind: w.kind, what: w.what })), this.playing);
+    return leaveWords(this.running().map((w) => ({ kind: w.kind, what: said(w.what) })), this.playing);
   }
 
   /** Leaving the private screens (another page, Settings, Help, a sidebar entry): Private mode

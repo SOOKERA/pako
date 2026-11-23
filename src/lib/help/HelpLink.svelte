@@ -4,11 +4,14 @@
   // A small "?" next to something tricky: opens Help on the guide section that explains it.
   import Icon from "../Icon.svelte";
   import { help } from "./help.svelte";
+  import { t, tMaybe } from "../i18n.svelte";
 
-  let { to, label = "How this works" }: { to: string; label?: string } = $props();
+  /** `label`: its words (already translated, or English words of ours: they are translated here). */
+  let { to, label }: { to: string; label?: string } = $props();
+  const words = $derived(label ? tMaybe(label) : t("How this works"));
 </script>
 
-<button class="hl" title={label} aria-label={label} onclick={() => help.show(to)}><Icon name="help" size={15} stroke={1.8} /></button>
+<button class="hl" title={words} aria-label={words} onclick={() => help.show(to)}><Icon name="help" size={15} stroke={1.8} /></button>
 
 <style>
   .hl {

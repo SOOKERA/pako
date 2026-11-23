@@ -1,5 +1,25 @@
 # What's new
 
+## 1.4.0
+
+### Language
+
+- **Pako speaks French**: every window, the tray, notifications, tutorials, Help's guides and What's new.
+- Pako Setup asks the language at the top right (**English | Français**), a portable Pako in its first-start setup, and you can change it any time in **Settings › Window › Look › Language**.
+- Pako Setup over an installed Pako opens in the language Pako uses, and the uninstaller speaks it too.
+
+### Browser extension
+
+- The browser extension (1.3.0) speaks Pako's language too, and follows a change by itself.
+
+### Window
+
+- In the tray window, a tab's name now shortens with … when there isn't room, so its count always shows whole.
+
+### Fixed
+
+- My devices: a link the other PC didn't take no longer names the link twice in why.
+
 ## 1.3.4
 
 ### Fixed

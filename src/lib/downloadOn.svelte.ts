@@ -12,6 +12,7 @@
 import { app } from "./state.svelte";
 import { api, canDownload, type FoundItem } from "./api";
 import { devicesApi, type DownloadTarget, type LinkOpts } from "./devices.svelte";
+import { t } from "./i18n.svelte";
 export { downloadOnMenu } from "./devices.svelte";
 
 /** The link another PC downloads a Links row from: the link as it was pasted (a video site's
@@ -50,7 +51,7 @@ export const sending = new Sending();
  *  The ones it took leave Links, like a download here; a link it didn't take, or one that is
  *  opened here first (a playlist not opened yet, a link page), keeps its row with a note.
  *  Says what happened in a toast. */
-export async function downloadFoundOn(t: DownloadTarget, items: FoundItem[], o: { first?: boolean } = {}) {
+export async function downloadFoundOn(target: DownloadTarget, items: FoundItem[], o: { first?: boolean } = {}) {
   if (sending.busy) return;
   const rows = app
     .oncePerFile(items.filter(canDownload))
@@ -66,26 +67,27 @@ export async function downloadFoundOn(t: DownloadTarget, items: FoundItem[], o: 
   }
   sending.busy = true;
   try {
-    const { text, failed, held } = await devicesApi.addLinks(t.id, [...opts.values()], names);
+    const { text, failed, held } = await devicesApi.addLinks(target.id, [...opts.values()], names);
     const kept = new Set(failed);
     const heldWhy = new Map(held);
     const taken = rows.filter((f) => !kept.has(linkOf(f).trim()) && !heldWhy.has(linkOf(f).trim()));
     if (taken.length) await api.foundRemove(app.withMirrors(taken).map((f) => f.id)).catch(() => {});
     const refused = rows.filter((f) => kept.has(linkOf(f).trim()));
-    if (refused.length) await api.foundDeviceNote(refused.map((f) => f.id), `${t.name} didn't take it: ${text}`).catch(() => {});
+    if (refused.length) await api.foundDeviceNote(refused.map((f) => f.id), t("{name} didn't take it: {why}", { name: target.name, why: text })).catch(() => {});
     for (const [link, why] of held) {
       const ids = rows.filter((f) => linkOf(f).trim() === link).map((f) => f.id);
       if (ids.length) await api.foundDeviceNote(ids, why).catch(() => {});
     }
     await app.refresh();
     const stay = failed.length + held.length;
-    if (stay) app.toast(`${t.name}: ${text}. ${stay === 1 ? "1 link stays" : `${stay} links stay`} here (see its row).`, "error");
-    else app.toast(`${text} on ${t.name}.`);
+    if (stay) app.toast(t("{name}: {why}. {n} links stay here (see its row).", { name: target.name, why: text, n: stay }), "error");
+    else app.toast(t("{what} on {name}.", { what: text, name: target.name }));
   } catch (e) {
     // Not sent at all (offline, refused): every row stays, saying why.
-    await api.foundDeviceNote(rows.map((f) => f.id), `Not sent to ${t.name}: ${String(e)}`).catch(() => {});
+    const why = t("Not sent to {name}: {why}", { name: target.name, why: String(e) });
+    await api.foundDeviceNote(rows.map((f) => f.id), why).catch(() => {});
     await app.refresh();
-    app.toast(`Not sent to ${t.name}: ${String(e)}`, "error");
+    app.toast(why, "error");
   } finally {
     sending.busy = false;
   }
@@ -113,6 +115,6 @@ export async function downloadSplit(items: FoundItem[], first: boolean, here: (r
   if (split.stay.length) {
     await app.refresh();
     const n = split.stay.length;
-    app.toast(`${n === 1 ? "1 link stays" : `${n} links stay`} in Links: ${split.stay[0][1]}`, "error");
+    app.toast(t("{n} links stay in Links: {why}", { n, why: split.stay[0][1] }), "error");
   }
 }

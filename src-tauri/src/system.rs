@@ -119,7 +119,7 @@ pub fn set_autostart(on: bool, in_tray: bool) -> Result<(), String> {
             (data.len() * 2) as u32,
         )
     };
-    if r == 0 { Ok(()) } else { Err(format!("Windows refused to add Pako to start-up (error {r}).")) }
+    if r == 0 { Ok(()) } else { Err(tr!("Windows refused to add Pako to start-up (error {r}).", "Windows a refusé d’ajouter Pako au démarrage (erreur {r}).")) }
 }
 
 /// Windows' start-up entry may go when it starts this Pako, or a Pako that isn't there any more
@@ -210,7 +210,7 @@ pub fn register_url_protocol() -> Result<(), String> {
     ]
     .into_iter()
     .try_for_each(|(k, n, v)| reg_set_hkcu(k, n, v))
-    .map_err(|r| format!("Windows refused to register pako:// links (error {r})."))
+    .map_err(|r| tr!("Windows refused to register pako:// links (error {r}).", "Windows a refusé d’enregistrer les liens pako:// (erreur {r})."))
 }
 
 /// Uninstalling: removes pako:// links, if they open this copy (a portable Pako elsewhere

@@ -6,6 +6,7 @@
   import Icon from "./Icon.svelte";
   import { listColumns } from "./columns.svelte";
   import type { MenuItem } from "./menu";
+  import { t } from "./i18n.svelte";
 
   let {
     list,
@@ -27,7 +28,7 @@
   }
 </script>
 
-<button class="colbtn" aria-label="Columns" aria-haspopup="menu" title="Columns: show or hide them" onclick={open}><Icon name="columns" size={13} /></button>
+<button class="colbtn" aria-label={t("Columns")} aria-haspopup="menu" title={t("Columns: show or hide them")} onclick={open}><Icon name="columns" size={13} /></button>
 
 <style>
   .colbtn {

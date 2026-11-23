@@ -11,7 +11,8 @@
 #        Pako.exe        the portable Pako, and the file Pako's own updates download (both kinds)
 #        Pako-Setup.exe  the installer (per user, no admin): same Pako.exe inside
 #        latest.json     what Pako's update check reads (version, SHA-256, signatures)
-#        help.zip        the guides (docs/help/*.md without AUDIT.md, flat): pako.sookera.com/help
+#        help.zip        the guides (docs/help/*.md without AUDIT.md, at the top; their French,
+#                        docs/help/fr/*.md without TRADUCTION.md, in fr/): pako.sookera.com/help
 #                        is built from the latest release's help.zip, so the site matches this Pako
 #        LICENSE         the GNU GPL version 3, and NOTICE.md: the copyright and Sookera's
 #        NOTICE.md       additional terms (they go with every copy; the installer puts them next to
@@ -79,6 +80,15 @@ if (-not $groups.Count) { throw "docs/help/whats-new.md: the '## $version' secti
 $fixed = @(for ($i = 0; $i -lt $groups.Count; $i++) { if ($groups[$i] -eq "Fixed") { $i } })
 if ($fixed.Count -gt 1) { throw "docs/help/whats-new.md: the '## $version' section has more than one '### Fixed' group." }
 if ($fixed.Count -eq 1 -and $fixed[0] -ne $groups.Count - 1) { throw "docs/help/whats-new.md: '### Fixed' must be the last group of '## $version'." }
+# French What's new: the same '## ' headings as the English (else the version shows in English).
+# Checked here, before anything is built.
+$frNew = Join-Path $root "docs/help/fr/whats-new.md"
+if (Test-Path $frNew) {
+    $headsOf = { param($path) @([regex]::Matches([IO.File]::ReadAllText($path), '(?m)^##\s+(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value }) -join " | " }
+    $enHeads = & $headsOf (Join-Path $root "docs/help/whats-new.md")
+    $frHeads = & $headsOf $frNew
+    if ($frHeads -ne $enHeads) { throw "docs/help/fr/whats-new.md must have the same '## ' headings as docs/help/whats-new.md (rename '## Next version' in both). English: $enHeads. French: $frHeads." }
+}
 # The Firefox extension signed by Mozilla, for the extension's current version (src-tauri/build.rs
 # builds the same file into Pako.exe).
 $extManifest = Get-Content (Join-Path $root "extension/manifest.firefox.json") -Raw | ConvertFrom-Json
@@ -232,12 +242,25 @@ try {
     Remove-Variable texts
     Copy-Item $exe (Join-Path $out "Pako.exe") -Force
     Copy-Item $setup (Join-Path $out "Pako-Setup.exe") -Force
-    # The guides for the website (the same files Pako's Help shows), without the audit log.
-    $help = Get-ChildItem (Join-Path $root "docs/help") -Filter *.md | Where-Object { $_.Name -ne "AUDIT.md" }
+    # The guides for the website (the same files Pako's Help shows), without the audit log, and
+    # their French under fr/ (docs/help/fr/*.md, without TRADUCTION.md: the translators' note).
+    # help.zip: README.md, downloading.md... at the top, fr/README.md, fr/downloading.md... below.
+    # Zipped by hand so the names inside use "/" (Windows PowerShell's Compress-Archive writes "fr\").
+    $helpDir = Join-Path $root "docs/help"
+    $help = @(Get-ChildItem $helpDir -Filter *.md -File | Where-Object { $_.Name -ne "AUDIT.md" })
     if (-not ($help | Where-Object { $_.Name -eq "README.md" })) { throw "docs/help/README.md (the guide index) is missing." }
+    $frDir = Join-Path $helpDir "fr"
+    $helpFr = @(if (Test-Path $frDir) { Get-ChildItem $frDir -Filter *.md -File | Where-Object { $_.Name -ne "TRADUCTION.md" } })
     $zip = Join-Path $out "help.zip"
     if (Test-Path $zip) { Remove-Item $zip -Force }
-    Compress-Archive -Path $help.FullName -DestinationPath $zip
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($f in $help) { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, $f.Name, [IO.Compression.CompressionLevel]::Optimal) }
+        foreach ($f in $helpFr) { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, "fr/$($f.Name)", [IO.Compression.CompressionLevel]::Optimal) }
+    } finally {
+        $archive.Dispose()
+    }
     # The licence and its additional terms go with every copy (the portable Pako is one file).
     foreach ($legal in @("LICENSE", "NOTICE.md")) {
         $from = Join-Path $root $legal

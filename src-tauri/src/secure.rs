@@ -23,7 +23,7 @@ pub fn protect(data: &[u8]) -> Result<Vec<u8>> {
             &mut output,
         );
         if ok == 0 {
-            bail!("Windows could not encrypt the login");
+            bail!(tr!("Windows could not encrypt the login", "Windows n’a pas pu chiffrer la connexion"));
         }
         let out = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         LocalFree(output.pbData as _);
@@ -45,7 +45,7 @@ pub fn unprotect(data: &[u8]) -> Result<Vec<u8>> {
             &mut output,
         );
         if ok == 0 {
-            bail!("Windows could not decrypt the saved login");
+            bail!(tr!("Windows could not decrypt the saved login", "Windows n’a pas pu déchiffrer la connexion enregistrée"));
         }
         let out = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         LocalFree(output.pbData as _);

@@ -20,7 +20,8 @@
   import { choices, targets } from "./devices.svelte";
   import { downloadFoundOn, downloadOnMenu, downloadSplit, sending } from "./downloadOn.svelte";
   import { pop } from "./motion";
-  import { linkLook, linkTip, type LinkLook } from "./linkState";
+  import { linkLook, linkTip, type LinkLook, type Say } from "./linkState";
+  import { around, t, tMaybe, type Key } from "./i18n.svelte";
 
   import { priv } from "./private.svelte";
   import ColumnGrip from "./ColumnGrip.svelte";
@@ -46,6 +47,18 @@
   );
   const noRoom = $derived(LIST.cols.filter((c) => !colState.hidden.includes(c.key) && !shown.keys.includes(c.key)).map((c) => c.key));
   const unsort = (key: string) => app.unsortIf("found", key);
+  /** The link marks' words (linkState.ts) in the language shown. */
+  const say: Say = (key, params) => t(key as Key, params);
+  /** "Sort by size", and what screen readers hear ("Size, sorted lowest first. Sort by size"). */
+  function sortWords(label: string, key: string, az: boolean) {
+    const sort = t("Sort by {column}", { column: label.toLowerCase() });
+    const s = app.sortFound;
+    if (s?.key !== key) return { title: sort, aria: `${label}. ${sort}` };
+    const k: Key = az ? (s.dir > 0 ? "{column}, sorted A to Z. {sort}" : "{column}, sorted Z to A. {sort}") : s.dir > 0 ? "{column}, sorted lowest first. {sort}" : "{column}, sorted highest first. {sort}";
+    return { title: sort, aria: t(k, { column: label, sort }) };
+  }
+  const nameSort = $derived(sortWords(t("Name"), "name", true));
+  const tipKeys = $derived(around(t("Tip: press {keys} anywhere to paste links."), "{keys}"));
   function columnsMenu(e: MouseEvent) {
     e.preventDefault();
     onmenu(e.clientX, e.clientY, listColumns.menu("found", unsort, () => noRoom));
@@ -67,7 +80,7 @@
   targets.start();
   // The per-link "Download on" (a row's PC marker, its name in the tooltip).
   choices.start();
-  const deviceName = (id: string) => choices.list.find((c) => c.id === id)?.name ?? "another PC";
+  const deviceName = (id: string) => choices.list.find((c) => c.id === id)?.name ?? t("another PC");
 
   /** "Download on ▾" in the toolbar: This PC (the usual Download) or one of your devices. */
   function onMenu(e: MouseEvent) {
@@ -118,7 +131,7 @@
       const count = await api.foundDownload(ids, first, app.foundDest, alert, privately);
       await app.refresh();
       if (privately) await priv.refreshList();
-      if (count) app.toast(privately ? `${count === 1 ? "1 file" : `${count} files`} downloading in Private mode` : `${count === 1 ? "1 file" : `${count} files`} moved to Downloads`);
+      if (count) app.toast(privately ? t("{n} files downloading in Private mode", { n: count }) : t("{n} files moved to Downloads", { n: count }));
       // Nothing left to pick: show the downloads running.
       if (!app.found.length) app.view = "downloads";
     } catch (e) {
@@ -136,7 +149,7 @@
   /** Dead links out of the way, whatever the filter. */
   function clearBroken() {
     const ids = app.found.filter((f) => f.state === "broken").map((f) => f.id);
-    if (ids.length) app.removeFound(ids, ids.length === 1 ? "1 broken link removed" : `${ids.length} broken links removed`);
+    if (ids.length) app.removeFound(ids, t("{n} broken links removed", { n: ids.length }));
   }
 
   /** The arrow next to the main button: how the picked links tell you when they finish (the
@@ -145,7 +158,7 @@
   function moreMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const items: MenuItem[] = alertMenu(pickedAlert, setPickedAlert);
-    if (priv.status.on) items.push({ separator: true }, { label: "Download privately", icon: "lock", hint: "Private mode", action: () => download(false, null, app.picked, false, true, true) });
+    if (priv.status.on) items.push({ separator: true }, { label: t("Download privately"), icon: "lock", hint: t("Private mode"), action: () => download(false, null, app.picked, false, true, true) });
     onmenu(r.right - 230, r.bottom + 6, items);
   }
 
@@ -169,7 +182,7 @@
     const ids = items.map((f) => f.id);
     // A file on several hosts downloads once.
     const able = app.oncePerFile(items.filter(canDownload));
-    const count = items.length > 1 ? ` ${items.length}` : "";
+    const count = items.length > 1 ? items.length : 0;
     const all = (p: Priority) => items.every((f) => f.template.priority === p);
     const set = (o: Parameters<typeof api.foundSet>[1]) =>
       app.run(async () => {
@@ -177,18 +190,18 @@
         await app.refresh();
       });
     const menu: MenuItem[] = [
-      { label: able.length > 1 ? `Download ${able.length}` : "Download", icon: "download", disabled: !able.length, action: () => download(false, null, able) },
-      { label: "Download first", icon: "up", disabled: !able.length, action: () => download(true, null, able) },
-      { label: "Download as Important", icon: "bell", disabled: !able.length, action: () => download(false, "important", able) },
-      ...(priv.status.on ? [{ label: "Download privately", icon: "lock", hint: "Private mode", disabled: !able.length, action: () => download(false, null, able, false, true, true) }] : []),
+      { label: able.length > 1 ? t("Download {n}", { n: able.length }) : t("Download"), icon: "download", disabled: !able.length, action: () => download(false, null, able) },
+      { label: t("Download first"), icon: "up", disabled: !able.length, action: () => download(true, null, able) },
+      { label: t("Download as Important"), icon: "bell", disabled: !able.length, action: () => download(false, "important", able) },
+      ...(priv.status.on ? [{ label: t("Download privately"), icon: "lock", hint: t("Private mode"), disabled: !able.length, action: () => download(false, null, able, false, true, true) }] : []),
       ...(targets.list.length && able.length ? [{ separator: true }, ...downloadOnMenu(targets.list, null, (t) => downloadFoundOn(t, able), true)] : []),
       { separator: true },
       ...alertMenu(sharedAlert(items.map((f) => alertOf(f.template, doneAlert(app.settings)))), (a) => set({ alert: a })),
-      { label: "Priority: First", icon: "up", hint: all("first") ? "✓" : "", action: () => set({ priority: "first" }) },
-      { label: "Priority: Normal", icon: "minus", hint: all("normal") ? "✓" : "", action: () => set({ priority: "normal" }) },
-      { label: "Priority: Later", icon: "down", hint: all("later") ? "✓" : "", action: () => set({ priority: "later" }) },
+      { label: t("Priority: First"), icon: "up", hint: all("first") ? "✓" : "", action: () => set({ priority: "first" }) },
+      { label: t("Priority: Normal"), icon: "minus", hint: all("normal") ? "✓" : "", action: () => set({ priority: "normal" }) },
+      { label: t("Priority: Later"), icon: "down", hint: all("later") ? "✓" : "", action: () => set({ priority: "later" }) },
       {
-        label: "Save to…",
+        label: t("Save to…"),
         icon: "folder",
         action: async () => {
           const picked = await pickFolder({ directory: true, defaultPath: items[0].dest ?? dest });
@@ -200,7 +213,7 @@
       ...(inTicked
         ? [
             {
-              label: row.length > 1 ? "Remove only this folder" : "Remove only this one",
+              label: row.length > 1 ? t("Remove only this folder") : t("Remove only this one"),
               icon: "trash",
               danger: true,
               action: () => app.removeFound(row.map((f) => f.id)),
@@ -208,7 +221,7 @@
           ]
         : []),
       {
-        label: `Remove${count}`,
+        label: count ? t("Remove {n}", { n: count }) : t("Remove"),
         icon: "trash",
         danger: true,
         action: () => app.removeFound(ids),
@@ -226,7 +239,7 @@
       return {
         label: sourceOf(f.template).label,
         icon: m.chosen?.id === f.id ? "check" : f.template.source.kind === "gDrive" ? "drive" : "globe",
-        hint: f.template.size != null && h.label === "Ready" ? `${h.label} · ${bytes(f.template.size)}` : h.label,
+        hint: f.template.size != null && f.state === "ready" ? `${tMaybe(h.label)} · ${bytes(f.template.size)}` : tMaybe(h.label),
         disabled: !canDownload(f),
         action: () => app.pickHost([f.id]),
       };
@@ -318,15 +331,15 @@
     if ((e.target as HTMLElement).closest(".row")) return;
     e.preventDefault();
     const items: MenuItem[] = [
-      { label: "Paste links", icon: "link", hint: "Ctrl+V", action: () => pasteLinks() },
-      { label: "Add links…", icon: "plus", action: onadd },
+      { label: t("Paste links"), icon: "link", hint: "Ctrl+V", action: () => pasteLinks() },
+      { label: t("Add links…"), icon: "plus", action: onadd },
       { separator: true },
-      { label: "Tick all", icon: "check", hint: "Ctrl+A", disabled: !app.foundVisible.length, action: () => app.setTicked(app.foundVisible, true) },
-      { label: "Untick all", icon: "x", hint: "Esc", disabled: !app.ticked.length, action: () => app.setTicked(app.foundVisible, false) },
+      { label: t("Tick all"), icon: "check", hint: "Ctrl+A", disabled: !app.foundVisible.length, action: () => app.setTicked(app.foundVisible, true) },
+      { label: t("Untick all"), icon: "x", hint: t("Esc"), disabled: !app.ticked.length, action: () => app.setTicked(app.foundVisible, false) },
     ];
     if (app.foundCounts.broken) {
       items.push({ separator: true });
-      items.push({ label: `Clear broken links · ${app.foundCounts.broken}`, icon: "trash", action: clearBroken });
+      items.push({ label: t("Clear broken links · {n}", { n: app.foundCounts.broken }), icon: "trash", action: clearBroken });
     }
     onmenu(e.clientX, e.clientY, items);
   }
@@ -369,53 +382,53 @@
 
 <div class="found {hideCls}" class:easing={listColumns.easing && app.foundRows.length <= 60} style={colsStyle}>
   <div class="toolbar">
-    <h1>Links</h1>
+    <h1>{t("Links")}</h1>
     <TutorialButton id="found" />
     {#if app.adding}
-      <span class="adding"><span class="ring"></span>Adding links…</span>
+      <span class="adding"><span class="ring"></span>{t("Adding links…")}</span>
     {/if}
     {#if n}
-      <div class="selchip"><span><b>{n} picked</b>{#if app.pickedSize}<span class="dim">{` · ${bytes(app.pickedSize)}`}</span>{/if}</span></div>
+      <div class="selchip"><span><b>{t("{n} picked", { n })}</b>{#if app.pickedSize}<span class="dim">{` · ${bytes(app.pickedSize)}`}</span>{/if}</span></div>
     {:else if app.found.length}
-      <span class="dim small none-picked">Nothing picked</span>
+      <span class="dim small none-picked">{t("Nothing picked")}</span>
     {/if}
-    <button class="icon-btn add" data-tour="found-add" title="Add links (or press Ctrl+V anywhere)" aria-label="Add links" onclick={onadd}><Icon name="plus" size={15} stroke={2.2} /></button>
+    <button class="icon-btn add" data-tour="found-add" title={t("Add links (or press Ctrl+V anywhere)")} aria-label={t("Add links")} onclick={onadd}><Icon name="plus" size={15} stroke={2.2} /></button>
     <div class="spacer"></div>
     <button class="btn dest" data-tour="found-dest" title={dest} onclick={chooseDest}>
-      <Icon name="folder" size={14} /><span class="dim wide">Save to</span><span class="dname">{destName}</span>
+      <Icon name="folder" size={14} /><span class="dim wide">{t("Save to")}</span><span class="dname">{destName}</span>
       <span class="dchev"><Icon name="chevron" size={11} stroke={2.4} /></span>
     </button>
     {#if app.foundCounts.broken}
-      <button class="btn ghost clearb" title="Remove every link that doesn't work" onclick={clearBroken}>
-        <Icon name="trash" size={13} /><span class="wide">Clear broken ·</span>{app.foundCounts.broken}
+      <button class="btn ghost clearb" title={t("Remove every link that doesn't work")} onclick={clearBroken}>
+        <Icon name="trash" size={13} /><span class="wide">{t("Clear broken ·")}</span>{app.foundCounts.broken}
       </button>
     {/if}
-    <button class="btn ghost danger" title="Remove the ticked links" disabled={!app.ticked.length} onclick={remove}>
-      <span class="narrow"><Icon name="trash" size={13} /></span><span class="mid">Remove</span>{tickedRows ? ` ${tickedRows}` : ""}
+    <button class="btn ghost danger" title={t("Remove the ticked links")} disabled={!app.ticked.length} onclick={remove}>
+      <span class="narrow"><Icon name="trash" size={13} /></span><span class="mid">{t("Remove")}</span>{tickedRows ? ` ${tickedRows}` : ""}
     </button>
     {#if n && !startsNow}
-      <button class="btn" disabled={busy} title="The downloads that started last step aside (nothing lost) and these start now" onclick={() => download(true)}>
-        <Icon name="up" size={13} stroke={2.4} /><span class="wide">Download first</span>
+      <button class="btn" disabled={busy} title={t("The downloads that started last step aside (nothing lost) and these start now")} onclick={() => download(true)}>
+        <Icon name="up" size={13} stroke={2.4} /><span class="wide">{t("Download first")}</span>
       </button>
     {/if}
     {#if targets.list.length}
-      <button class="btn on" data-tour="found-download-on" disabled={!n || busy || sending.busy} title="Download on this PC or on one of your devices" aria-haspopup="menu" onclick={onMenu} transition:pop={{ duration: 180, from: 0.94, y: 0 }}>
-        <Icon name="devices" size={14} /><span class="wide">Download on</span><span class="ochev"><Icon name="chevron" size={11} stroke={2.4} /></span>
+      <button class="btn on" data-tour="found-download-on" disabled={!n || busy || sending.busy} title={t("Download on this PC or on one of your devices")} aria-haspopup="menu" onclick={onMenu} transition:pop={{ duration: 180, from: 0.94, y: 0 }}>
+        <Icon name="devices" size={14} /><span class="wide">{t("Download on")}</span><span class="ochev"><Icon name="chevron" size={11} stroke={2.4} /></span>
       </button>
     {/if}
-    <div class="notify" data-tour="found-notify" title="When they finish: Off, Pop-up, or Important (a big pop-up in the middle of the screen)">
+    <div class="notify" data-tour="found-notify" title={t("When they finish: Off, Pop-up, or Important (a big pop-up in the middle of the screen)")}>
       <Icon name={pickedAlert === "off" ? "bell-off" : "bell"} size={14} />
-      <SegPick small label="Notify when done" options={ALERTS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={n ? pickedAlert : null} onpick={setPickedAlert} />
+      <SegPick small label={t("Notify when done")} options={ALERTS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={n ? pickedAlert : null} onpick={setPickedAlert} />
     </div>
     <div class="split" data-tour="found-download">
-      <button class="btn primary" disabled={!n || busy} title={startsNow ? "Download" : "Add to queue"} onclick={() => download(false)}>
+      <button class="btn primary" disabled={!n || busy} title={startsNow ? t("Download") : t("Add to queue")} onclick={() => download(false)}>
         {#if startsNow}
-          <Icon name="download" size={14} stroke={2.4} /><span class="mid">Download</span>{n ? ` ${n}` : ""}
+          <Icon name="download" size={14} stroke={2.4} /><span class="mid">{t("Download")}</span>{n ? ` ${n}` : ""}
         {:else}
-          <Icon name="queue" size={14} stroke={2.2} /><span class="mid">Add to queue ·</span> {n}
+          <Icon name="queue" size={14} stroke={2.2} /><span class="mid">{t("Add to queue ·")}</span> {n}
         {/if}
       </button>
-      <button class="btn primary more" disabled={!n || busy} aria-label="More download options" title={priv.status.on ? "Notify when done, or Download privately" : "Notify when done"} onclick={moreMenu}>
+      <button class="btn primary more" disabled={!n || busy} aria-label={t("More download options")} title={priv.status.on ? t("Notify when done, or Download privately") : t("Notify when done")} onclick={moreMenu}>
         <Icon name="chevron" size={12} stroke={2.6} />
       </button>
     </div>
@@ -430,8 +443,8 @@
         role="checkbox"
         aria-checked={allTick === "some" ? "mixed" : allTick === "all"}
         disabled={!app.foundVisible.length}
-        aria-label={allTick === "all" ? "Untick all" : "Tick all"}
-        title={allTick === "all" ? "Untick all (Esc)" : "Tick all (Ctrl+A)"}
+        aria-label={allTick === "all" ? t("Untick all") : t("Tick all")}
+        title={allTick === "all" ? t("Untick all (Esc)") : t("Tick all (Ctrl+A)")}
         onclick={() => app.setTicked(app.foundVisible, allTick !== "all")}
       >
         {#if allTick === "some"}
@@ -441,15 +454,16 @@
         {/if}
       </button>
     </div>
-    <div class="cell">Type</div>
-    <button class="cell sorter" class:sorted={app.sortFound?.key === "name"} onclick={() => app.toggleSort("found", "name")} title="Sort by name" aria-label="Name{app.sortFound?.key === 'name' ? (app.sortFound.dir > 0 ? ', sorted A to Z' : ', sorted Z to A') : ''}. Sort by name">
-      Name
+    <div class="cell">{t("Type")}</div>
+    <button class="cell sorter" class:sorted={app.sortFound?.key === "name"} onclick={() => app.toggleSort("found", "name")} title={nameSort.title} aria-label={nameSort.aria}>
+      {t("Name")}
       {#if app.sortFound?.key === "name"}<Icon name={app.sortFound.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
     </button>
     {#each LIST.cols as c (c.key)}
+      {@const sw = sortWords(c.label, c.key, false)}
       <div class="cell hc c-{c.key}">
         <ColumnGrip list="found" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />
-        <button class="sorter" class:sorted={app.sortFound?.key === c.key} onclick={() => app.toggleSort("found", c.key as SortKey)} title="Sort by {c.label.toLowerCase()}" aria-label="{c.label}{app.sortFound?.key === c.key ? (app.sortFound.dir > 0 ? ', sorted lowest first' : ', sorted highest first') : ''}. Sort by {c.label.toLowerCase()}">
+        <button class="sorter" class:sorted={app.sortFound?.key === c.key} onclick={() => app.toggleSort("found", c.key as SortKey)} title={sw.title} aria-label={sw.aria}>
           {#if c.key === "link"}<Icon name="link" size={12} stroke={2.2} />{:else}{c.label}{/if}
           {#if app.sortFound?.key === c.key}<Icon name={app.sortFound.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
         </button>
@@ -463,7 +477,7 @@
     data-tour="found-list"
     role="grid"
     tabindex="-1"
-    aria-label="Links"
+    aria-label={t("Links")}
     aria-multiselectable="true"
     aria-activedescendant={app.foundFocus && !app.foundFocus.startsWith("g:") ? "frow-" + app.foundFocus : undefined}
     bind:this={body}
@@ -474,18 +488,18 @@
     {#if app.found.length === 0}
       <div class="empty">
         <div class="empty-icon"><Icon name="link" size={26} /></div>
-        <h3>No links yet</h3>
-        <p>Paste links here first: Pako checks them, then you pick what to download.</p>
-        <button class="btn primary" onclick={onadd}><Icon name="plus" size={14} stroke={2.4} />Add links</button>
-        <p class="hint">Tip: press <kbd>Ctrl</kbd> + <kbd>V</kbd> anywhere to paste links.</p>
+        <h3>{t("No links yet")}</h3>
+        <p>{t("Paste links here first: Pako checks them, then you pick what to download.")}</p>
+        <button class="btn primary" onclick={onadd}><Icon name="plus" size={14} stroke={2.4} />{t("Add links")}</button>
+        <p class="hint">{tipKeys[0]}<kbd>Ctrl</kbd> + <kbd>V</kbd>{tipKeys[1]}</p>
       </div>
     {:else if app.foundRows.length === 0}
-      <div class="empty small"><p>Nothing here{app.search ? ` for "${app.search}"` : ""}.</p></div>
+      <div class="empty small"><p>{app.search ? t('Nothing here for "{search}".', { search: app.search }) : t("Nothing here.")}</p></div>
     {:else}
       {#if isVirtual}<div style="height: {win.padTop}px"></div>{/if}
       {#each shownRows as r (r.kind === "folder" ? "g:" + r.key : r.f.id)}
         {#if r.kind === "folder"}
-          {@const t = folderTick(r.items)}
+          {@const tk = folderTick(r.items)}
           {@const size = r.items.reduce((s, f) => s + (f.template.size ?? 0), 0)}
           {@const newest = r.items.reduce((m, x) => Math.max(m, x.template.date || x.template.addedAt), 0)}
           <div
@@ -507,17 +521,17 @@
             <div class="cell">
               <button
                 class="check"
-                class:on={t.all}
-                class:some={t.some}
+                class:on={tk.all}
+                class:some={tk.some}
                 role="checkbox"
-                aria-checked={t.some ? "mixed" : t.all}
-                aria-label="Pick all files in {r.name}"
+                aria-checked={tk.some ? "mixed" : tk.all}
+                aria-label={t("Pick all files in {name}", { name: r.name })}
                 onclick={(e) => {
                   e.stopPropagation();
-                  app.setTicked(app.withMirrors(r.items), !t.all);
+                  app.setTicked(app.withMirrors(r.items), !tk.all);
                 }}
               >
-                {#if t.some}
+                {#if tk.some}
                   <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 5h6" stroke="var(--accent-ink)" stroke-width="2" /></svg>
                 {:else}
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
@@ -527,13 +541,13 @@
             <div class="cell type">
               <span class="stb" style="background: {r.set?.missing.length ? 'var(--st-fail)' : 'transparent'}"></span>
               <FileIcon kind={r.set ? "archive" : "folder"} size={18} />
-              {#if r.set}<span class="ext mono">PARTS</span>{/if}
+              {#if r.set}<span class="ext mono">{t("PARTS")}</span>{/if}
             </div>
             <div class="cell name">
               <button
                 class="chev"
                 ondblclick={(e) => e.stopPropagation()}
-                aria-label={r.open ? "Collapse folder" : "Expand folder"}
+                aria-label={r.open ? t("Collapse folder") : t("Expand folder")}
                 onclick={(e) => {
                   e.stopPropagation();
                   app.toggleFoundFolder(r.key);
@@ -543,21 +557,21 @@
               </button>
               <span class="fname">{r.name}</span>
               {#if r.set}
-                <span class="chip">{t.total} parts · {t.on} picked</span>
+                <span class="chip">{t("{n} parts", { n: tk.total })} · {t("{n} picked", { n: tk.on })}</span>
                 {#if r.set.missing.length}<span class="chip warn" title={r.set.missing.join(", ")}>{r.set.missing[0]}{r.set.missing.length > 1 ? ` +${r.set.missing.length - 1}` : ""}</span>{/if}
               {:else}
-                <span class="chip">{t.total} {t.total === 1 ? "file" : "files"} · {t.on} picked</span>
+                <span class="chip">{t("{n} files", { n: tk.total })} · {t("{n} picked", { n: tk.on })}</span>
               {/if}
             </div>
             <div class="cell src c-source"><span class="dot" style="background: {sourceOf(r.items[0].template).color}"></span><span class="ell">{sourceOf(r.items[0].template).label}</span></div>
             <div class="cell size c-size mono">{size ? bytes(size) : ""}</div>
             {#if r.set}
-              {@const said = r.set.missing.length ? "Incomplete set" : "Split archive"}
+              {@const said = r.set.missing.length ? t("Incomplete set") : t("Split archive")}
               <div class="cell link c-link" class:ready={!r.set.missing.length} class:broken={r.set.missing.length > 0} title={said} role="img" aria-label={said}>
                 {#if r.set.missing.length}<Icon name="alert" size={14} />{:else}<Icon name="check" size={14} stroke={2.6} />{/if}
               </div>
             {:else}
-              <div class="cell link c-link ready" title="Opened" role="img" aria-label="Opened"><Icon name="check" size={14} stroke={2.6} /></div>
+              <div class="cell link c-link ready" title={t("Opened")} role="img" aria-label={t("Opened")}><Icon name="check" size={14} stroke={2.6} /></div>
             {/if}
             <div class="cell date mono c-date" title={dateTitle(newest)}>{shortDate(newest)}</div>
           </div>
@@ -566,7 +580,7 @@
           {@const m = r.mirror}
           {@const all = m ? m.items : [f]}
           {@const able = canDownload(f)}
-          {@const look = linkLook({ state: f.state, message: f.message, video: f.template.source.kind === "video", deviceNote: f.deviceNote && able ? f.deviceNote : null, toolsBusy: app.videoToolsBusy })}
+          {@const look = linkLook({ state: f.state, message: f.message, video: f.template.source.kind === "video", deviceNote: f.deviceNote && able ? f.deviceNote : null, toolsBusy: app.videoToolsBusy }, say)}
           {@const on = app.isTicked(f)}
           <div
             class="row"
@@ -593,7 +607,7 @@
                 class:on
                 role="checkbox"
                 aria-checked={on}
-                aria-label={on ? `Unpick ${f.template.name}` : `Pick ${f.template.name}`}
+                aria-label={on ? t("Unpick {name}", { name: f.template.name }) : t("Pick {name}", { name: f.template.name })}
                 onclick={(e) => {
                   e.stopPropagation();
                   app.setTicked(all, !on);
@@ -619,8 +633,8 @@
                      step on. Pop-up (the usual) shows only while pointed at. -->
                 <button
                   class="bell {level}"
-                  title="Notify when done: {alertLabel(level)} (click to change)"
-                  aria-label="Notify when done: {alertLabel(level)}"
+                  title={t("Notify when done: {level} (click to change)", { level: alertLabel(level) })}
+                  aria-label={t("Notify when done: {level}", { level: alertLabel(level) })}
                   tabindex="-1"
                   onpointerdown={(e) => e.stopPropagation()}
                   ondblclick={(e) => e.stopPropagation()}
@@ -638,16 +652,16 @@
               {#if f.template.private}
                 <span
                   class="devmark"
-                  title="From a private window: kept only until you quit Pako, never sent to another PC, and a private download once downloaded"
-                  aria-label="Private"
-                ><Icon name="lock" size={11} stroke={2.2} /><span class="devname">private</span></span>
+                  title={t("From a private window: kept only until you quit Pako, never sent to another PC, and a private download once downloaded")}
+                  aria-label={t("Private")}
+                ><Icon name="lock" size={11} stroke={2.2} /><span class="devname">{t("private")}</span></span>
               {/if}
               {#if f.device || f.deviceNote}
                 <span
                   class="devmark"
                   class:warn={!!f.deviceNote}
-                  title={f.device ? `Downloads on ${deviceName(f.device)}${f.deviceNote ? ` · ${f.deviceNote}` : ""}` : (f.deviceNote ?? "")}
-                  aria-label={f.device ? `Downloads on ${deviceName(f.device)}` : "Back to this PC"}
+                  title={f.device ? `${t("Downloads on {device}", { device: deviceName(f.device) })}${f.deviceNote ? ` · ${f.deviceNote}` : ""}` : (f.deviceNote ?? "")}
+                  aria-label={f.device ? t("Downloads on {device}", { device: deviceName(f.device) }) : t("Back to this PC")}
                   transition:pop={{ duration: 160, from: 0.8, y: 0 }}
                 ><Icon name="devices" size={12} stroke={2.1} />{#if f.device}<span class="devname">{deviceName(f.device)}</span>{/if}</span>
               {/if}
@@ -655,16 +669,16 @@
                 <button
                   class="hosts"
                   data-tour="found-hosts"
-                  title="The same file on {m.items.length} hosts: pick the one to download from (the others are backups)"
-                  aria-label="Pick the host · on {m.items.length} hosts"
+                  title={t("The same file on {n} hosts: pick the one to download from (the others are backups)", { n: m.items.length })}
+                  aria-label={t("Pick the host · on {n} hosts", { n: m.items.length })}
                   aria-haspopup="menu"
                   ondblclick={(e) => e.stopPropagation()}
                   onclick={(e) => hostMenu(e, m)}
-                ><span class="hlong">on {m.items.length} hosts</span><span class="hshort"><Icon name="globe" size={11} stroke={2.2} />{m.items.length}</span><Icon name="chevron" size={10} stroke={2.6} /></button>
+                ><span class="hlong">{t("on {n} hosts", { n: m.items.length })}</span><span class="hshort"><Icon name="globe" size={11} stroke={2.2} />{m.items.length}</span><Icon name="chevron" size={10} stroke={2.6} /></button>
               {/if}
             </div>
             <div class="cell src c-source"><span class="dot" style="background: {sourceOf(f.template).color}"></span><span class="ell" title={sourceOf(f.template).label}>{sourceOf(f.template).label}</span></div>
-            <div class="cell size c-size mono" title={f.template.source.kind === "video" && f.template.size != null ? "Estimated size for the chosen quality" : ""}>{f.template.size != null ? (f.template.source.kind === "video" ? "≈ " : "") + bytes(f.template.size) : f.state === "checking" || f.state === "opening" ? "…" : "—"}</div>
+            <div class="cell size c-size mono" title={f.template.source.kind === "video" && f.template.size != null ? t("Estimated size for the chosen quality") : ""}>{f.template.size != null ? (f.template.source.kind === "video" ? "≈ " : "") + bytes(f.template.size) : f.state === "checking" || f.state === "opening" ? "…" : "—"}</div>
             <!-- The link's state as one small mark (its words in the tooltip and for screen readers,
                  from linkState.ts); a state you can act on is a button that does it (install the
                  tools, show the link page, open it in the browser). -->
@@ -674,7 +688,7 @@
                   <button
                     class="sbtn"
                     class:quiet={look.quiet}
-                    title={linkTip(look)}
+                    title={linkTip(look, say)}
                     aria-label={look.word}
                     in:pop={{ duration: 160, from: 0.6, y: 0 }}
                     onclick={(e) => {
@@ -683,7 +697,7 @@
                     }}>{@render markIcon(look)}</button
                   >
                 {:else}
-                  <span class="smark" title={linkTip(look)} role="img" aria-label={look.word} in:pop={{ duration: 160, from: 0.6, y: 0 }}>{@render markIcon(look)}</span>
+                  <span class="smark" title={linkTip(look, say)} role="img" aria-label={look.word} in:pop={{ duration: 160, from: 0.6, y: 0 }}>{@render markIcon(look)}</span>
                 {/if}
               {/key}
             </div>
@@ -700,22 +714,23 @@
   {@const ask = dupAsk}
   {@const all = ask.dups.length === ask.ids.length}
   <Modal
-    title={ask.dups.length === 1 ? `"${ask.dups[0].template.name}" is already downloaded` : `${ask.dups.length} of these are already downloaded`}
+    title={ask.dups.length === 1 ? t('"{name}" is already downloaded', { name: ask.dups[0].template.name }) : t("{n} of these are already downloaded", { n: ask.dups.length })}
     width={480}
     onclose={() => (dupAsk = null)}
   >
     <p class="dup-msg">
-      {ask.dups.length === 1 ? "It's" : "They're"} already in your downloads or in the folder.
-      Downloading again keeps the old {ask.dups.length === 1 ? "file" : "files"} and saves a second copy with a new name.
+      {ask.dups.length === 1
+        ? t("It's already in your downloads or in the folder. Downloading again keeps the old file and saves a second copy with a new name.")
+        : t("They're already in your downloads or in the folder. Downloading again keeps the old files and saves a second copy with a new name.")}
     </p>
     {#if ask.dups.length > 1}
       <ul class="dup-list">
         {#each ask.dups.slice(0, 6) as f (f.id)}<li class="ell">{f.template.name}</li>{/each}
-        {#if ask.dups.length > 6}<li class="more">and {ask.dups.length - 6} more</li>{/if}
+        {#if ask.dups.length > 6}<li class="more">{t("and {n} more", { n: ask.dups.length - 6 })}</li>{/if}
       </ul>
     {/if}
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (dupAsk = null)}>Cancel</button>
+      <button class="btn ghost" onclick={() => (dupAsk = null)}>{t("Cancel")}</button>
       <button
         class="btn"
         onclick={() => {
@@ -723,7 +738,7 @@
           const askIds = new Set(ask.ids);
           const items = app.found.filter((f) => askIds.has(f.id));
           download(ask.first, ask.alert, items, true, false, ask.privately);
-        }}>Download again</button
+        }}>{t("Download again")}</button
       >
       {#if !all}
         <button
@@ -734,7 +749,7 @@
             const askIds = new Set(ask.ids);
             const items = app.found.filter((f) => askIds.has(f.id) && !skip.has(f.id));
             download(ask.first, ask.alert, items, true, false, ask.privately);
-          }}>Skip {ask.dups.length === 1 ? "it" : "them"}</button
+          }}>{ask.dups.length === 1 ? t("Skip it") : t("Skip them")}</button
         >
       {/if}
     {/snippet}
@@ -928,6 +943,14 @@
   @container (max-width: 760px) {
     .selchip,
     .none-picked {
+      display: none;
+    }
+  }
+  /* French words are longer: the folder keeps only its icon a little sooner (its title says
+     where), so the page title isn't cut. */
+  @container (max-width: 800px) {
+    :global(html[lang="fr"]) .toolbar .dname,
+    :global(html[lang="fr"]) .toolbar .dchev {
       display: none;
     }
   }

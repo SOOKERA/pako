@@ -5,6 +5,16 @@
 // Blocks between "full-only:start" and "full-only:end" are only in the full extension:
 // `node extension/build.mjs` takes them out of Pako Light.
 
+// The extension's words in French (lang.js): Firefox loads it first (its manifest), Chromium's
+// service worker takes it here.
+if (typeof importScripts === "function" && !globalThis.__pakoWords) {
+  try {
+    importScripts("lang.js");
+  } catch (e) {
+    console.warn("Pako: the extension's words didn't load (it speaks English):", e?.message || e);
+  }
+}
+
 /** Firefox, by an API only Firefox has. Never by the name `browser`: Chromium browsers have it too
  *  now (seen in Vivaldi 8.3, Chromium 156), and taking them for Firefox would leave out what only
  *  Chromium does (the catch at the server's answer, reloading after an update, holding a private
@@ -27,11 +37,86 @@ const NOT_CONNECTED = "Pako isn't connected. Click the Pako button in the toolba
  *  browser can keep running the background script it took when the extension was added, after
  *  Pako wrote a newer one in the folder, even across restarts (seen in Vivaldi 8.3): it then
  *  reads the new manifest but runs the old script. Told apart by this, the extension reloads. */
-const SCRIPT_VERSION = "1.2.12";
+const SCRIPT_VERSION = "1.3.0";
 
 // The toolbar window and the pages ask through here. Registered first, at
 // once, so nothing else that runs at start-up (or fails there) can keep it from answering.
 api.runtime.onMessage.addListener(onMessage);
+
+// ---------- Pako's language ----------
+// The extension speaks Pako's language (English or French), never the browser's. Pako's answers
+// say it (`lang`: added by Pako's helper to every answer; an older Pako says nothing, so
+// English), and the extension asks for it on its own ("language", answered by the helper alone:
+// it never starts Pako) when the browser starts, when the background page starts after a while,
+// and (Firefox) when a right-click menu shows. Kept in storage.local, so it holds when Pako can't
+// be reached. Pako can't tell the extension itself (the browser only lets the extension ask).
+
+const WORDS = globalThis.__pakoWords;
+/** "en" or "fr": what Pako said last. */
+let lang = "en";
+/** When the extension last asked Pako for its language (also kept, across background starts). */
+let langAskedAt = 0;
+/** At most this often on its own (a background page started again, a menu shown). */
+const LANG_EVERY = 10 * 60 * 1000;
+const LANG_MENU_EVERY = 60 * 1000;
+const langReady = Promise.resolve()
+  .then(() => api.storage.local.get({ pakoLang: "en", langAskedAt: 0 }))
+  .then(
+    (s) => {
+      lang = WORDS ? WORDS.langOf(s?.pakoLang) : "en";
+      langAskedAt = Math.max(langAskedAt, Number(s?.langAskedAt) || 0);
+    },
+    () => {},
+  );
+
+/** The words for `key` (the English) in Pako's language, placeholders filled. */
+function tr(key, vars) {
+  if (WORDS) return WORDS.tr(lang, key, vars);
+  return vars ? key.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : key;
+}
+/** Text that may be one of the extension's (or an older Pako's) English sentences. */
+const trMaybe = (text) => (WORDS ? WORDS.maybe(lang, text) : text);
+
+/** Pako said its language (`value`; none from an older Pako: English). A change remakes the
+ *  right-click items in it; the toolbar window and the page scripts follow the storage. */
+function learnLang(value) {
+  const next = WORDS ? WORDS.langOf(value) : "en";
+  if (next === lang) return;
+  lang = next;
+  saveState({ pakoLang: next });
+  syncMenus(true);
+}
+
+/** Asks Pako's helper for Pako's language (`every`: not if asked within that long). Never
+ *  through `send`: it changes nothing else. Sent as `private` so an older Pako, which doesn't
+ *  know this request, notes nothing about it ("Unknown request.": English). Not reached: the
+ *  language kept stays. */
+let langAsking = null;
+async function askLanguage(every = 0) {
+  await langReady;
+  if (langAsking) return langAsking;
+  if (every && Date.now() - langAskedAt < every && langAskedAt <= Date.now()) return;
+  langAskedAt = Date.now();
+  saveState({ langAskedAt });
+  langAsking = nativeMessage({ kind: "language", private: true })
+    .then(
+      (reply) => {
+        if (reply && typeof reply === "object") learnLang(reply.lang);
+      },
+      () => {},
+    )
+    .finally(() => (langAsking = null));
+  return langAsking;
+}
+
+// The toolbar window can learn it too (when it asks Pako's helper itself).
+api.storage.onChanged?.addListener((changes, area) => {
+  if (area !== "local" || !changes?.pakoLang) return;
+  const next = WORDS ? WORDS.langOf(changes.pakoLang.newValue) : "en";
+  if (next === lang) return;
+  lang = next;
+  syncMenus(true);
+});
 /* full-only:start */
 /** The qualities the player's Download button offers (0 = audio only). */
 const VIDEO_QUALITIES = [1080, 720, 480, 0];
@@ -87,10 +172,14 @@ function nativeMessage(message) {
 async function send(message) {
   inFlight++;
   try {
+    await langReady;
     const reply = await nativeMessage(message);
     if (reply && typeof reply === "object") {
       newerInFolder(reply.ext);
       learnHolds(reply);
+      learnLang(reply.lang);
+      // Pako's words (an older Pako's are English): in Pako's language.
+      if (typeof reply.error === "string") reply.error = trMaybe(reply.error);
       /* full-only:start */
       learnAsks(reply);
       learnPrepares(reply);
@@ -101,19 +190,19 @@ async function send(message) {
       /* full-only:end */
       return reply;
     }
-    const detail = `No answer from ${HOST}`;
+    const detail = tr("No answer from {host}", { host: HOST });
     console.warn("Pako:", detail);
     /* full-only:start */
     pakoAnswered(false);
     /* full-only:end */
-    return { ok: false, error: "Pako didn't answer.", detail };
+    return { ok: false, error: tr("Pako didn't answer."), detail };
   } catch (e) {
     const detail = e?.message || String(e);
     console.warn(`Pako: couldn't reach ${HOST}:`, detail);
     /* full-only:start */
     pakoAnswered(false);
     /* full-only:end */
-    return { ok: false, error: NOT_CONNECTED, detail };
+    return { ok: false, error: tr(NOT_CONNECTED), detail };
   } finally {
     inFlight--;
   }
@@ -248,9 +337,9 @@ function isWebLink(url) {
 /** `isPrivate`: from a private window: Pako keeps no trace of it beyond the file (every kind
  *  of request says so, not only a taken-over download). */
 async function download(url, referrer, filename, { takeover = false, incognito = false, storeId, totalBytes = 0, mime = "", hold = false, paused = false, isPrivate = false } = {}) {
-  if (!isWebLink(url)) return { ok: false, error: "Pako only takes http and https links." };
+  if (!isWebLink(url)) return { ok: false, error: tr("Pako only takes http and https links.") };
   // Pako Light sends nothing from the sites it leaves alone (Pako checks again on its side).
-  if (LIGHT && (onSkippedSite(url) || onSkippedSite(referrer))) return { ok: false, error: LIGHT_SKIPPED };
+  if (LIGHT && (onSkippedSite(url) || onSkippedSite(referrer))) return { ok: false, error: tr(LIGHT_SKIPPED) };
   const message = {
     kind: "download",
     urls: [url],
@@ -277,7 +366,7 @@ async function download(url, referrer, filename, { takeover = false, incognito =
 /** "All links on this page": in parts small enough for Pako's line (each part is added to Links).
  *  Pako Light leaves out links to the sites it leaves alone, and sends nothing from them. */
 async function sendLinks(urls, referrer, isPrivate = false) {
-  if (LIGHT && onSkippedSite(referrer)) return { ok: false, error: LIGHT_SKIPPED };
+  if (LIGHT && onSkippedSite(referrer)) return { ok: false, error: tr(LIGHT_SKIPPED) };
   // The page's address travels with each part.
   const base = JSON.stringify(referrer || "").length + 64;
   const parts = [];
@@ -296,7 +385,7 @@ async function sendLinks(urls, referrer, isPrivate = false) {
     size += cost;
   }
   if (part.length) parts.push(part);
-  if (!parts.length) return { ok: false, error: "No links on this page." };
+  if (!parts.length) return { ok: false, error: tr("No links on this page.") };
   for (const p of parts) {
     // A private window's links: kept in Pako's memory only, marked private in Links.
     const reply = await send(isPrivate ? { kind: "links", urls: p, referrer, private: true } : { kind: "links", urls: p, referrer });
@@ -308,10 +397,10 @@ async function sendLinks(urls, referrer, isPrivate = false) {
 /* full-only:start */
 /** The player's Download button: one video straight to Downloads in that quality. */
 async function sendVideo(url, quality, { incognito = false, storeId } = {}) {
-  if (!isWebLink(url)) return { ok: false, error: "Pako only takes http and https links." };
-  if (!VIDEO_QUALITIES.includes(quality)) return { ok: false, error: "Unknown video quality." };
+  if (!isWebLink(url)) return { ok: false, error: tr("Pako only takes http and https links.") };
+  if (!VIDEO_QUALITIES.includes(quality)) return { ok: false, error: tr("Unknown video quality.") };
   // Only a video site's link: no other site's cookies are ever read for this.
-  if (!isVideoSite(url)) return { ok: false, error: "Pako can't download videos from this page." };
+  if (!isVideoSite(url)) return { ok: false, error: tr("Pako can't download videos from this page.") };
   // A private window's: no cookies (Pako's video tool would need them in a file), no trace.
   if (incognito) return send({ kind: "video", urls: [url], quality, siteCookies: [], private: true });
   return send({ kind: "video", urls: [url], quality, siteCookies: await siteCookiesFor(url, incognito, storeId) });
@@ -446,14 +535,14 @@ function makeMenus() {
       made = true;
       // Named for what they take: on an image that is also a link, both show, and two items
       // both called "Download with Pako" couldn't be told apart.
-      api.contextMenus.create({ id: "pako-link", title: "Download link with Pako", contexts: ["link"] });
-      api.contextMenus.create({ id: "pako-media", title: "Download image with Pako", contexts: ["image"] });
+      api.contextMenus.create({ id: "pako-link", title: tr("Download link with Pako"), contexts: ["link"] });
+      api.contextMenus.create({ id: "pako-media", title: tr("Download image with Pako"), contexts: ["image"] });
       /* full-only:start */
-      api.contextMenus.create({ id: "pako-media-video", title: "Download video with Pako", contexts: ["video"] });
-      api.contextMenus.create({ id: "pako-media-audio", title: "Download audio with Pako", contexts: ["audio"] });
+      api.contextMenus.create({ id: "pako-media-video", title: tr("Download video with Pako"), contexts: ["video"] });
+      api.contextMenus.create({ id: "pako-media-audio", title: tr("Download audio with Pako"), contexts: ["audio"] });
       /* full-only:end */
-      api.contextMenus.create({ id: "pako-page", title: "Send this page to Pako", contexts: ["page"] });
-      api.contextMenus.create({ id: "pako-all", title: "Send all links on this page to Pako (to pick from)", contexts: ["page"] });
+      api.contextMenus.create({ id: "pako-page", title: tr("Send this page to Pako"), contexts: ["page"] });
+      api.contextMenus.create({ id: "pako-all", title: tr("Send all links on this page to Pako (to pick from)"), contexts: ["page"] });
       resolve();
     };
     // Chromium calls back; Firefox's `browser` answers with a promise.
@@ -470,6 +559,8 @@ function syncMenus(force = false) {
   return menuWork;
 }
 async function syncMenusNow(force) {
+  // (Made in Pako's language: the one kept, read at start.)
+  await langReady;
   const show = !(await fullHere());
   if (!force && show === menusShown) return;
   menusShown = show;
@@ -485,7 +576,7 @@ function retitlePageItem(url) {
   let changes = [];
   if (LIGHT) changes = [["pako-page", { enabled: !skipped }], ["pako-all", { enabled: !skipped }]];
   /* full-only:start */
-  else changes = [["pako-page", { title: skipped ? "Download video with Pako" : "Send this page to Pako" }]];
+  else changes = [["pako-page", { title: skipped ? tr("Download video with Pako") : tr("Send this page to Pako") }]];
   /* full-only:end */
   for (const [id, props] of changes) {
     try {
@@ -519,7 +610,17 @@ api.runtime.onInstalled.addListener(() => {
   // starts Pako), so Settings › Browser extension shows this browser as Installed at once.
   send({ kind: "ping" }).catch(() => {});
 });
-api.runtime.onStartup?.addListener(() => syncMenus(true));
+api.runtime.onStartup?.addListener(() => {
+  syncMenus(true);
+  // The browser just started: Pako's language may have changed meanwhile.
+  askLanguage();
+});
+// Firefox shows its menus only when asked: they follow a language changed in Pako since.
+api.contextMenus.onShown?.addListener(() => {
+  askLanguage(LANG_MENU_EVERY).then(() => api.contextMenus.refresh?.());
+});
+// The background page started again (it sleeps when idle): asked now and then.
+askLanguage(LANG_EVERY);
 
 async function pageLinks(tabId) {
   const [result] = await api.scripting.executeScript({
@@ -532,6 +633,7 @@ async function pageLinks(tabId) {
 }
 
 api.contextMenus.onClicked.addListener(async (info, tab) => {
+  await langReady;
   const referrer = info.pageUrl || tab?.url || "";
   // No tab told (Firefox, outside a tab): taken as private, so no cookies are read for it.
   const incognito = tab ? !!tab.incognito : true;
@@ -541,13 +643,13 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
   const storeId = tab?.cookieStoreId;
   let reply;
   // Pako Light: nothing from a frame of a site it leaves alone either (an embedded one).
-  if (LIGHT && onSkippedSite(info.frameUrl)) reply = { ok: false, error: LIGHT_SKIPPED };
+  if (LIGHT && onSkippedSite(info.frameUrl)) reply = { ok: false, error: tr(LIGHT_SKIPPED) };
   /* full-only:start */
   // A player built from parts has no address of its own (blob:): its page on a video site,
   // else what the Pako button offers for this page.
   else if (isMediaItem(info.menuItemId) && /^(video|audio)$/.test(info.mediaType || "") && !/^https?:/i.test(info.srcUrl || "")) {
     if (tab?.url && isVideoSite(tab.url)) reply = await download(tab.url, "", "", { incognito, storeId, isPrivate });
-    else reply = { ok: false, error: "This player doesn't give its video's address. Click the Pako button: Videos on this page, or Record this video." };
+    else reply = { ok: false, error: tr("This player doesn't give its video's address. Click the Pako button: Videos on this page, or Record this video.") };
   }
   /* full-only:end */
   else if (info.menuItemId === "pako-link") reply = await download(info.linkUrl, referrer, "", { incognito, storeId, isPrivate });
@@ -555,10 +657,10 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
   else if (info.menuItemId === "pako-page") reply = await download(tab?.url, "", "", { incognito, storeId, isPrivate });
   else if (info.menuItemId === "pako-all" && tab?.id != null) {
     // Pako Light doesn't even read the page's links on a site it leaves alone.
-    if (LIGHT && (onSkippedSite(tab.url) || onSkippedSite(referrer))) reply = { ok: false, error: LIGHT_SKIPPED };
+    if (LIGHT && (onSkippedSite(tab.url) || onSkippedSite(referrer))) reply = { ok: false, error: tr(LIGHT_SKIPPED) };
     else {
       const urls = await pageLinks(tab.id).catch(() => []);
-      reply = urls.length ? await sendLinks(urls, referrer, isPrivate) : { ok: false, error: "No links on this page." };
+      reply = urls.length ? await sendLinks(urls, referrer, isPrivate) : { ok: false, error: tr("No links on this page.") };
     }
   }
   if (reply && !reply.ok) flag(reply.error, reply.detail, isPrivate);
@@ -568,7 +670,9 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
  *  `isPrivate`: about something from a private window (Pako's words may name what was sent):
  *  kept in the browser's memory only, never in the extension's storage on disk. */
 async function flag(error, detail, isPrivate = false) {
-  const said = { lastError: error || "", lastDetail: detail || "" };
+  await langReady;
+  // (Pako's words, from an older Pako in English: in Pako's language.)
+  const said = { lastError: trMaybe(error || ""), lastDetail: detail || "" };
   if (isPrivate) await Promise.resolve(api.storage.session?.set(said)).catch(() => {});
   else await api.storage.local.set(said);
   api.action.setBadgeBackgroundColor({ color: "#F96263" });
@@ -757,8 +861,8 @@ async function startAgain(url, name, storeId, reply, isPrivate = false) {
     started = await api.downloads.download(opts).then((id) => id, () => null);
   }
   if (started == null) {
-    const why = (reply.error || "Pako couldn't take this download").replace(/[.\s]+$/, "");
-    flag(`${why}. Your browser couldn't start it again: open the link again to download it.`, reply.detail, isPrivate);
+    const why = (reply.error || tr("Pako couldn't take this download")).replace(/[.\s]+$/, "");
+    flag(tr("{why}. Your browser couldn't start it again: open the link again to download it.", { why }), reply.detail, isPrivate);
     // Pako's row for it says so too.
     if (typeof reply.followed === "string") {
       send({ kind: "follow", urls: [url], filename: name, private: isPrivate, follow: { pako: reply.followed, browserId: -1, state: "interrupted", error: "RESTART_FAILED" } });
@@ -782,8 +886,10 @@ function watchRestart(id, name, isPrivate) {
   const timer = setTimeout(async () => {
     const [now] = await api.downloads.search({ id }).catch(() => []);
     if (!now || now.state !== "interrupted" || now.error === "USER_CANCELED") return;
-    const what = name ? `"${name}"` : "this download";
-    flag(`Pako couldn't get ${what}, and your browser couldn't start it again. Download it once more from the page.`, String(now.error || ""), isPrivate);
+    const said = name
+      ? tr('Pako couldn\'t get "{name}", and your browser couldn\'t start it again. Download it once more from the page.', { name })
+      : tr("Pako couldn't get this download, and your browser couldn't start it again. Download it once more from the page.");
+    flag(said, String(now.error || ""), isPrivate);
   }, RESTART_CHECK);
   timer?.unref?.();
 }
@@ -1633,8 +1739,10 @@ function onCaught(details) {
       t?.unref?.();
     }
     const name = seen?.filename || "";
-    const what = name ? `"${name}"` : "the others";
-    flag(`This page asked for several downloads at once, so Pako took only the first ones. To download ${what}, use the page again.`, "", false);
+    const said = name
+      ? tr('This page asked for several downloads at once, so Pako took only the first ones. To download "{name}", use the page again.', { name })
+      : tr("This page asked for several downloads at once, so Pako took only the first ones. To download the others, use the page again.");
+    flag(said, "", false);
   } else if (!again) {
     const entry = { at: now, took: undefined };
     for (const k of keys) caughtLately.set(k, entry);
@@ -1652,7 +1760,7 @@ function onCaught(details) {
       .finally(() => inFlight--);
   }
   if (details.type === "main_frame" && details.tabId >= 0) {
-    const said = over ? "This page asked for several downloads at once, so Pako didn't take this one. Use Back, then download it again." : "";
+    const said = over ? tr("This page asked for several downloads at once, so Pako didn't take this one. Use Back, then download it again.") : "";
     sentPages.set(details.tabId, { tab, stay: over || again || pageIsPost(details.tabId), handed, at: now, said });
   }
 }
@@ -1666,11 +1774,11 @@ async function sentPageAnswer(tabId) {
   const tab = await s.tab;
   if (tab?.incognito) {
     // Handed back to the tab, or not: said as it is.
-    if ((await s.handed) === false) return { ok: true, stay: true, said: "This private window's download couldn't go on in your browser. Use Back and download it once more." };
-    return { ok: true, stay: true, said: "This private window's download goes on in your browser." };
+    if ((await s.handed) === false) return { ok: true, stay: true, said: tr("This private window's download couldn't go on in your browser. Use Back and download it once more.") };
+    return { ok: true, stay: true, said: tr("This private window's download goes on in your browser.") };
   }
   if (s.said) return { ok: true, stay: true, said: s.said };
-  if (await s.stay) return { ok: true, stay: true, said: "This download went to Pako. Use Back to return to your page." };
+  if (await s.stay) return { ok: true, stay: true, said: tr("This download went to Pako. Use Back to return to your page.") };
   return { ok: true, stay: false };
 }
 
@@ -1696,8 +1804,8 @@ async function handCaught(details, seen, tabNow) {
   }
   if (reply.ok) return "pako";
   if (isPrivate) {
-    const why = (reply.error || "Pako couldn't take this download").replace(/[.\s]+$/, "");
-    flag(`${why}. Download it once more from the page.`, reply.detail, true);
+    const why = (reply.error || tr("Pako couldn't take this download")).replace(/[.\s]+$/, "");
+    flag(tr("{why}. Download it once more from the page.", { why }), reply.detail, true);
     if (typeof reply.followed === "string") {
       send({ kind: "follow", urls: [url], filename: name, private: true, follow: { pako: reply.followed, browserId: -1, state: "interrupted", error: "RESTART_FAILED" } });
     }
@@ -1715,7 +1823,7 @@ async function againInTab(tab, url, name) {
   const id = ALLOW_RULES + (allowNext++ % ALLOW_RING);
   try {
     // (A filter can't hold * ^ | as plain characters.)
-    if (/[*^|]/.test(url) || url.length > 4000) throw new Error("This address can't be let through.");
+    if (/[*^|]/.test(url) || url.length > 4000) throw new Error(tr("This address can't be let through."));
     const rule = { id, priority: 2, action: { type: "allow" }, condition: { urlFilter: `|${url}|`, tabIds: [tab.id], resourceTypes: ["main_frame"] } };
     clearTimeout(allowRules.get(id)?.timer);
     const timer = setTimeout(() => dropAllow(id), ALLOW_FOR);
@@ -1726,8 +1834,10 @@ async function againInTab(tab, url, name) {
     return true;
   } catch (e) {
     dropAllow(id);
-    const what = name ? `"${name}"` : "this download";
-    flag(`Pako's extension couldn't hand ${what} back to your private window. Download it once more from the page.`, e?.message || String(e), true);
+    const said = name
+      ? tr('Pako\'s extension couldn\'t hand "{name}" back to your private window. Download it once more from the page.', { name })
+      : tr("Pako's extension couldn't hand this download back to your private window. Download it once more from the page.");
+    flag(said, e?.message || String(e), true);
     return false;
   }
 }
@@ -1932,12 +2042,12 @@ async function streamCookies(url, incognito, storeId) {
  *  referrer), the page's title (the file's name) and the cookies for the stream's server. */
 async function sendStream(tabId, url) {
   const item = (await caughtList(tabId)).find((v) => v.url === url);
-  if (!item) return { ok: false, error: "This video isn't on the page any more. Play it again." };
+  if (!item) return { ok: false, error: tr("This video isn't on the page any more. Play it again.") };
   const tab = await api.tabs.get(tabId).catch(() => null);
-  if (!tab) return { ok: false, error: "This tab is closed." };
+  if (!tab) return { ok: false, error: tr("This tab is closed.") };
   // Asked again at the click (the pill's menu or the popup may have been opened before the
   // page asked for a key system): never a protected video.
-  if ((await videosOf(tabId)).protected) return { ok: false, error: PROTECTED };
+  if ((await videosOf(tabId)).protected) return { ok: false, error: tr(PROTECTED) };
   const message = {
     kind: "stream",
     urls: [item.url],
@@ -1990,7 +2100,7 @@ async function videosOf(tabId) {
 // loaded it (else the top frame), once per frame and page. No page where nothing was caught is
 // ever touched, and on the video sites Pako knows, player.js keeps its own pill.
 
-const PILL_FILES = ["pill.js", "caught.js"];
+const PILL_FILES = ["lang.js", "pill.js", "caught.js"];
 /** The popup's names for what was caught. */
 const CAUGHT_KINDS = { hls: "HLS stream", dash: "DASH stream", file: "Video file" };
 /** The frames of a tab that have the pill (`frameId|page`), in the same memory-only storage as
@@ -2040,23 +2150,24 @@ function offerPill(tabId, frameId, page) {
  *  downloads at once, several are listed like in the popup, and Record this video follows the
  *  popup's rule (a video plays or is listed, never a protected one, not while recording). */
 function pillMenu({ list, playing, protected: locked, recording }) {
-  const items = [{ head: "Download with Pako" }];
-  if (locked) return [...items, { info: PROTECTED }];
-  const upTo = (v) => (v.height ? `up to ${v.height}p` : "");
+  const items = [{ head: tr("Download with Pako") }];
+  if (locked) return [...items, { info: tr(PROTECTED) }];
+  const upTo = (v) => (v.height ? tr("up to {height}p", { height: v.height }) : "");
+  const kind = (v) => tr(CAUGHT_KINDS[v.kind]);
   if (list.length === 1) {
     const v = list[0];
-    items.push({ text: "Download this video", side: upTo(v) || CAUGHT_KINDS[v.kind], send: { type: "pill-send", url: v.url } });
+    items.push({ text: tr("Download this video"), side: upTo(v) || kind(v), send: { type: "pill-send", url: v.url } });
   } else {
     for (const v of list) {
-      const text = upTo(v) ? `${CAUGHT_KINDS[v.kind]} · ${upTo(v)}` : CAUGHT_KINDS[v.kind];
+      const text = upTo(v) ? `${kind(v)} · ${upTo(v)}` : kind(v);
       items.push({ text, side: v.host, send: { type: "pill-send", url: v.url } });
     }
   }
-  if (!list.length) items.push({ info: "Pako didn't find this video's address." });
+  if (!list.length) items.push({ info: tr("Pako didn't find this video's address.") });
   const busy = recording && ["waiting", "recording", "saving"].includes(recording.state);
-  if (busy) items.push({ sep: true }, { info: "Recording this video: the Pako button in the toolbar shows how it's going." });
+  if (busy) items.push({ sep: true }, { info: tr("Recording this video: the Pako button in the toolbar shows how it's going.") });
   else if (playing || list.length) {
-    items.push({ sep: true }, { text: "Record this video", side: "reloads the page", send: { type: "pill-record" }, done: "Recording…" });
+    items.push({ sep: true }, { text: tr("Record this video"), side: tr("reloads the page"), send: { type: "pill-record" }, done: tr("Recording…") });
   }
   return items;
 }
@@ -2064,8 +2175,8 @@ function pillMenu({ list, playing, protected: locked, recording }) {
 /** Record this video from the pill: only where the pill would offer it. */
 async function recordFromPill(tabId) {
   const v = await videosOf(tabId);
-  if (v.protected) return { ok: false, error: PROTECTED };
-  if (!v.playing && !v.list.length) return { ok: false, error: "Play the video first, then try again." };
+  if (v.protected) return { ok: false, error: tr(PROTECTED) };
+  if (!v.playing && !v.list.length) return { ok: false, error: tr("Play the video first, then try again.") };
   return startRecording(tabId);
 }
 
@@ -2095,22 +2206,28 @@ function openNative() {
   const port = api.runtime.connectNative(HOST);
   const waiting = [];
   let gone = false;
-  port.onMessage.addListener((reply) => waiting.shift()?.(reply && typeof reply === "object" ? reply : { ok: false, error: "Pako didn't answer." }));
+  port.onMessage.addListener((reply) => {
+    if (reply && typeof reply === "object") {
+      learnLang(reply.lang);
+      if (typeof reply.error === "string") reply.error = trMaybe(reply.error);
+    }
+    waiting.shift()?.(reply && typeof reply === "object" ? reply : { ok: false, error: tr("Pako didn't answer.") });
+  });
   port.onDisconnect.addListener(() => {
     void api.runtime.lastError;
     gone = true;
-    for (const resolve of waiting.splice(0)) resolve({ ok: false, error: NOT_CONNECTED });
+    for (const resolve of waiting.splice(0)) resolve({ ok: false, error: tr(NOT_CONNECTED) });
   });
   return {
     ask: (message) =>
       new Promise((resolve) => {
-        if (gone) return resolve({ ok: false, error: NOT_CONNECTED });
+        if (gone) return resolve({ ok: false, error: tr(NOT_CONNECTED) });
         waiting.push(resolve);
         try {
           port.postMessage(message);
         } catch {
           waiting.pop();
-          resolve({ ok: false, error: NOT_CONNECTED });
+          resolve({ ok: false, error: tr(NOT_CONNECTED) });
         }
       }),
     close: () => {
@@ -2140,7 +2257,8 @@ async function stopRecording(error, told = false) {
   const r = rec;
   if (!r || r.state === "done" || r.state === "failed") return;
   r.state = error ? "failed" : "done";
-  r.error = error || "";
+  // (Pako's words too, an older Pako's in English: in Pako's language.)
+  r.error = error ? trMaybe(error) : "";
   clearTimeout(r.timer);
   try {
     r.page?.postMessage({ t: "stop" });
@@ -2156,11 +2274,11 @@ async function stopRecording(error, told = false) {
  *  missing), then the page reloads with the recorder in it. */
 async function startRecording(tabId) {
   if (rec && ["waiting", "recording", "saving"].includes(rec.state)) {
-    return { ok: false, error: "Pako is already recording a video. Stop that one first." };
+    return { ok: false, error: tr("Pako is already recording a video. Stop that one first.") };
   }
   const tab = await api.tabs.get(tabId).catch(() => null);
-  if (!tab || !isWebLink(tab.url)) return { ok: false, error: "Pako can't record on this page." };
-  if (tab.incognito) return { ok: false, error: "Pako doesn't record in private windows." };
+  if (!tab || !isWebLink(tab.url)) return { ok: false, error: tr("Pako can't record on this page.") };
+  if (tab.incognito) return { ok: false, error: tr("Pako doesn't record in private windows.") };
   const r = { tabId, session: crypto.randomUUID(), state: "waiting", bytes: 0, error: "", seq: {}, page: null, queue: Promise.resolve() };
   r.native = openNative();
   const reply = await r.native.ask(recordMessage(r, "start", { page: tab.url, title: String(tab.title || "").slice(0, 300) }));
@@ -2178,7 +2296,7 @@ async function startRecording(tabId) {
   } catch (e) {
     await r.native.ask(recordMessage(r, "cancel"));
     r.native.close();
-    return { ok: false, error: "This browser can't record videos. Update it, then try again.", detail: e?.message || String(e) };
+    return { ok: false, error: tr("This browser can't record videos. Update it, then try again."), detail: e?.message || String(e) };
   }
   rec = r;
   r.timer = setTimeout(() => {
@@ -2256,11 +2374,13 @@ removeRecorder();
  *  top, see `api.runtime.onMessage`). Every one is answered, whatever goes wrong. */
 function onMessage(msg, sender, respond) {
   (async () => {
+    // (Its answers in Pako's language: the one kept, read at start.)
+    await langReady;
     // "Send this page" comes from the toolbar window only, never from a page in a tab. A
     // private window's tab (the window says so): Pako keeps no trace of it.
     if (msg?.type === "send-tab" && !sender?.tab) respond(await download(msg.url, "", "", { incognito: !!msg.incognito, storeId: msg.storeId, isPrivate: msg.incognito === true }));
     // (With this script's version: the toolbar window tells an older script the browser kept.)
-    else if (msg?.type === "ping") respond({ ...(await send({ kind: "ping" })), script: SCRIPT_VERSION });
+    else if (msg?.type === "ping") respond({ ...(await send({ kind: "ping" })), script: SCRIPT_VERSION, lang });
     // The toolbar window: are private windows on (the browser's own switch for Pako)?
     else if (msg?.type === "private") respond({ allowed: await privateAllowed() });
     // Pako Light's popup: is the full extension on here (then Light stays out of the way), and
@@ -2311,10 +2431,10 @@ function onMessage(msg, sender, respond) {
     // links on pages")?
     else if (msg?.type === "asks-first" && !sender?.tab && !LIGHT) respond({ ok: true, asks: !FIREFOX && !!api.declarativeNetRequest?.updateSessionRules && !!(await catchState())?.asks });
     /* full-only:end */
-    else respond({ ok: false, error: "Pako's extension didn't understand this request.", detail: String(msg?.type || "") });
+    else respond({ ok: false, error: tr("Pako's extension didn't understand this request."), detail: String(msg?.type || "") });
   })().catch((e) => {
     console.warn("Pako:", e);
-    respond({ ok: false, error: "Pako's extension ran into a problem. Try again.", detail: e?.message || String(e) });
+    respond({ ok: false, error: tr("Pako's extension ran into a problem. Try again."), detail: e?.message || String(e) });
   });
   return true; // answered later
 }

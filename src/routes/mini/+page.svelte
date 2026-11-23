@@ -15,6 +15,7 @@
   import Toasts from "#lib/Toasts.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "#lib/motion.ts";
   import { confirmClick, CONFIRM_FOR, type Armed } from "#lib/confirm.ts";
+  import { t } from "#lib/i18n.svelte.ts";
 
   onMount(() => app.start());
   // Transfers with your own PCs come from My devices (Direct's state leaves them out). Asked
@@ -52,16 +53,16 @@
    *  today (Open, Folder). Older finished ones and older failures stay in the full window. */
   const SHOWN = 8;
   /** A time from the list (seconds or milliseconds) fell on today's date. */
-  function isToday(t: number | null | undefined) {
-    if (!t) return false;
-    return new Date(t > 1e12 ? t : t * 1000).toDateString() === new Date().toDateString();
+  function isToday(at: number | null | undefined) {
+    if (!at) return false;
+    return new Date(at > 1e12 ? at : at * 1000).toDateString() === new Date().toDateString();
   }
   const STOPPED = new Set<Download["status"]>(["failed", "quotaExceeded", "needsAccount"]);
   /** Re-checked every minute, so yesterday's ones leave the list after midnight. */
   let clock = $state(0);
   onMount(() => {
-    const t = setInterval(() => clock++, 60_000);
-    return () => clearInterval(t);
+    const tick = setInterval(() => clock++, 60_000);
+    return () => clearInterval(tick);
   });
   const unfinished = $derived.by(() => {
     void clock;
@@ -96,7 +97,35 @@
   /** The switch at the top: what's downloading, what's being uploaded, or what moves in Direct
    *  (with people and with your own PCs). Direct's half shows once Direct runs on this PC. */
   let tab = $state<"down" | "up" | "direct">("down");
-  const TABS = ["down", "up", "direct"] as const;
+  // The highlight sits under the picked tab as it is laid out: the tabs aren't always equal (in
+  // French the first one, « Téléchargements », gets more room; Direct's opens out), so it is
+  // measured, again whenever a tab's size changes (a count appears, the language switches, the
+  // window is resized), and slides there.
+  let tabBar = $state<HTMLElement>();
+  const tabEls = $state<Partial<Record<"down" | "up" | "direct", HTMLButtonElement>>>({});
+  let thumbX = $state(0);
+  let thumbW = $state(0);
+  /** Not sliding into place the first time (it would slide in from the left edge). */
+  let thumbPlaced = $state(false);
+  function placeThumb() {
+    const el = tabEls[tab];
+    if (!el || !tabBar) return;
+    thumbX = el.offsetLeft - 2;
+    thumbW = el.offsetWidth;
+    if (!thumbPlaced) requestAnimationFrame(() => (thumbPlaced = true));
+  }
+  $effect(() => {
+    void tab;
+    placeThumb();
+  });
+  $effect(() => {
+    const bar = tabBar;
+    if (!bar) return;
+    const ro = new ResizeObserver(() => placeThumb());
+    ro.observe(bar);
+    for (const el of bar.querySelectorAll("button")) ro.observe(el);
+    return () => ro.disconnect();
+  });
   // A send still on the list above (its files partly up already) isn't shown twice.
   const recentSent = $derived(app.sent.filter((s) => !app.sends.some((j) => j.id === s.id)).slice(0, 6 - Math.min(6, app.sends.length)));
   function showUploads() {
@@ -155,7 +184,7 @@
   const dMoving = $derived(
     dedupe([...(app.direct?.transfers ?? []), ...(devices.data?.transfers ?? [])]).sort((a, b) => Number(FLOWING.has(b.state)) - Number(FLOWING.has(a.state))),
   );
-  const dFlowing = $derived(dMoving.filter((t) => FLOWING.has(t.state)).length);
+  const dFlowing = $derived(dMoving.filter((x) => FLOWING.has(x.state)).length);
   /** Today's finished ones, newest first: enough to fill the list, at least 3. */
   const dDone = $derived.by(() => {
     void clock;
@@ -166,62 +195,62 @@
   });
   /** Live speed per transfer, from how much moved since the last update (as in Direct). */
   const seen: Record<string, { at: number; done: number; speed: number }> = {};
-  function rate(t: DirectTransfer) {
+  function rate(x: DirectTransfer) {
     const now = performance.now();
-    const prev = seen[t.id];
+    const prev = seen[x.id];
     if (!prev) {
-      seen[t.id] = { at: now, done: t.done, speed: 0 };
+      seen[x.id] = { at: now, done: x.done, speed: 0 };
       return 0;
     }
     if (now - prev.at > 400) {
-      const s = ((t.done - prev.done) * 1000) / (now - prev.at);
+      const s = ((x.done - prev.done) * 1000) / (now - prev.at);
       prev.speed = Math.max(0, prev.speed ? prev.speed * 0.6 + s * 0.4 : s);
       prev.at = now;
-      prev.done = t.done;
+      prev.done = x.done;
     }
     return prev.speed;
   }
-  const dRate = () => dMoving.filter((t) => FLOWING.has(t.state)).reduce((a, t) => a + rate(t), 0);
+  const dRate = () => dMoving.filter((x) => FLOWING.has(x.state)).reduce((a, x) => a + rate(x), 0);
   /** A transfer's line: what it's doing and with whom, and its colours. */
-  function dLook(t: DirectTransfer) {
-    const name = whoOf(t.contact).name || (t.outgoing ? "them" : "a contact");
-    if (t.state === "sending" && t.relayTo) return { label: `Sending to ${t.relayTo} through ${name}`, color: "var(--st-run)", text: "var(--text)" };
-    if (t.state === "sending") return { label: `Sending to ${name}`, color: "var(--st-run)", text: "var(--text)" };
-    if (t.state === "receiving") return { label: `Receiving from ${name}`, color: "var(--st-run)", text: "var(--text)" };
-    if (t.state === "checking") return { label: "Checking the files", color: "var(--st-check)", text: "var(--st-check-text)" };
-    if (t.state === "waiting") return { label: `Waiting for ${name} to continue`, color: "var(--st-retry)", text: "var(--st-retry-text)" };
-    if (t.state === "offered") return { label: `Waiting for ${name} to accept`, color: "var(--st-wait)", text: "var(--st-wait-text)" };
-    return { label: t.outgoing ? `Getting ready for ${name}` : `Getting ready, from ${name}`, color: "var(--st-wait)", text: "var(--st-wait-text)" };
+  function dLook(x: DirectTransfer) {
+    const name = whoOf(x.contact).name || (x.outgoing ? t("them (no name)") : t("a contact (no name)"));
+    if (x.state === "sending" && x.relayTo) return { label: t("Sending to {to} through {name}", { to: x.relayTo, name }), color: "var(--st-run)", text: "var(--text)" };
+    if (x.state === "sending") return { label: t("Sending to {name}", { name }), color: "var(--st-run)", text: "var(--text)" };
+    if (x.state === "receiving") return { label: t("Receiving from {name}", { name }), color: "var(--st-run)", text: "var(--text)" };
+    if (x.state === "checking") return { label: t("Checking the files"), color: "var(--st-check)", text: "var(--st-check-text)" };
+    if (x.state === "waiting") return { label: t("Waiting for {name} to continue", { name }), color: "var(--st-retry)", text: "var(--st-retry-text)" };
+    if (x.state === "offered") return { label: t("Waiting for {name} to accept", { name }), color: "var(--st-wait)", text: "var(--st-wait-text)" };
+    return { label: x.outgoing ? t("Getting ready for {name}", { name }) : t("Getting ready, from {name}", { name }), color: "var(--st-wait)", text: "var(--st-wait-text)" };
   }
   /** How a finished one ended, said as in Direct. */
   function dEnd(h: DirectHistory) {
-    if (h.result === "done" && h.outgoing && h.relayTo) return { label: `Passed on to ${whoOf(h.contact).name || "your PC"}`, text: "var(--st-done-text)" };
-    if (h.result === "done") return { label: h.outgoing ? "Delivered" : "Received", text: "var(--st-done-text)" };
-    if (h.result === "declined") return { label: "Declined", text: "var(--text-3)" };
-    if (h.result === "cancelled") return { label: "Cancelled", text: "var(--text-3)" };
-    return { label: "Didn't go through", text: "var(--st-fail-text)" };
+    if (h.result === "done" && h.outgoing && h.relayTo) return { label: t("Passed on to {name}", { name: whoOf(h.contact).name || t("your PC (no name)") }), text: "var(--st-done-text)" };
+    if (h.result === "done") return { label: h.outgoing ? t("Delivered") : t("Received"), text: "var(--st-done-text)" };
+    if (h.result === "declined") return { label: t("Declined"), text: "var(--text-3)" };
+    if (h.result === "cancelled") return { label: t("Cancelled"), text: "var(--text-3)" };
+    return { label: t("Didn't go through"), text: "var(--st-fail-text)" };
   }
   /** Opens a received file; a program or script is shown in its folder instead (as in Direct). */
   async function openReceived(h: DirectHistory, reveal: boolean) {
     try {
       const shownInstead = await api.directOpen(h.id, reveal);
-      if (shownInstead && !reveal) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
+      if (shownInstead && !reveal) app.toast(t("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it."));
     } catch (e) {
       app.toast(String(e), "error");
     }
   }
   /** Cancel asks once, like Remove: ✕ turns into "Cancel" for a few seconds. */
-  async function cancelClick(t: DirectTransfer) {
+  async function cancelClick(x: DirectTransfer) {
     const now = performance.now();
-    const what = confirmClick(armed, t.id, now);
+    const what = confirmClick(armed, x.id, now);
     if (what === "arm") {
-      armed = { id: t.id, at: now };
+      armed = { id: x.id, at: now };
       clearTimeout(confirmTimer);
       confirmTimer = setTimeout(() => (armed = null), CONFIRM_FOR);
     } else if (what === "confirm") {
       clearTimeout(confirmTimer);
       armed = null;
-      await app.run(() => api.directCancel(t.id));
+      await app.run(() => api.directCancel(x.id));
     }
   }
   /** Open Pako: on the page of the half shown. The Direct half opens the page of its top row
@@ -239,7 +268,7 @@
   function videoAs(d: Download): string {
     const src = d.source;
     if (src?.kind !== "video") return "";
-    if (src.quality === 0) return src.audio ? `Audio only · ${src.audio.toUpperCase()}` : "Audio only";
+    if (src.quality === 0) return src.audio ? t("Audio only · {format}", { format: src.audio.toUpperCase() }) : t("Audio only");
     const q = src.quality ?? app.settings?.videoQuality;
     return q ? `${q}p` : "";
   }
@@ -255,7 +284,7 @@
   <header data-tauri-drag-region>
     <span class="brand" data-tauri-drag-region><Logo size={14} /></span>
     {#if tab === "down" && allDone && app.totalSpeed === 0}
-      <span class="spd done" data-tauri-drag-region in:fadeIn={{ duration: 160 }}><Icon name="check" size={12} stroke={2.4} />All done</span>
+      <span class="spd done" data-tauri-drag-region in:fadeIn={{ duration: 160 }}><Icon name="check" size={12} stroke={2.4} />{t("All done")}</span>
     {:else if tab === "down"}
       <span class="spd mono" class:on={app.totalSpeed > 0} data-tauri-drag-region in:fadeIn={{ duration: 160 }}><Icon name="download" size={12} stroke={2.2} />{speed(app.totalSpeed)}</span>
     {:else if tab === "up"}
@@ -265,20 +294,20 @@
       <span class="spd mono" class:on={r > 0} data-tauri-drag-region in:fadeIn={{ duration: 160 }}><Icon name="send" size={12} stroke={2.2} />{speed(r)}</span>
     {/if}
     <span class="grow" data-tauri-drag-region></span>
-    <button class="icon-btn gear" title="Settings" aria-label="Settings" onclick={() => app.run(() => api.openSettings())}><Icon name="settings" size={13} /></button>
+    <button class="icon-btn gear" title={t("Settings")} aria-label={t("Settings")} onclick={() => app.run(() => api.openSettings())}><Icon name="settings" size={13} /></button>
     <span class="sep"></span>
-    <WinButton kind="pin" small on={pinned} label="Always on top" title={pinned ? "Always on top: on" : "Always on top"} onclick={togglePin} />
-    <WinButton kind="minimize" small label="Minimize" onclick={() => app.run(() => api.miniHide())} />
-    <WinButton kind="close" small label="Close" onclick={() => app.run(() => api.miniHide())} />
+    <WinButton kind="pin" small on={pinned} label={t("Always on top")} title={pinned ? t("Always on top: on") : t("Always on top")} onclick={togglePin} />
+    <WinButton kind="minimize" small label={t("Minimize")} onclick={() => app.run(() => api.miniHide())} />
+    <WinButton kind="close" small label={t("Close")} onclick={() => app.run(() => api.miniHide())} />
   </header>
 
-  <div class="switch2" class:three={directOn} role="tablist" aria-label={directOn ? "Show downloads, uploads or Direct" : "Show downloads or uploads"}>
-    <span class="thumb" style:transform="translateX(calc({TABS.indexOf(tab)} * (100% + 2px)))" aria-hidden="true"></span>
-    <button role="tab" aria-selected={tab === "down"} class:on={tab === "down"} onclick={() => (tab = "down")}>
-      Downloads{#if app.runningCount}<span class="cnt" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.runningCount}</span>{/if}
+  <div class="switch2" class:three={directOn} role="tablist" aria-label={directOn ? t("Show downloads, uploads or Direct") : t("Show downloads or uploads")} bind:this={tabBar}>
+    <span class="thumb" class:placed={thumbPlaced} style:transform="translateX({thumbX}px)" style:width="{thumbW}px" aria-hidden="true"></span>
+    <button role="tab" class="first" aria-selected={tab === "down"} class:on={tab === "down"} onclick={() => (tab = "down")} title={t("Downloads (tray tab)")} bind:this={tabEls.down}>
+      <span class="lbl">{t("Downloads (tray tab)")}</span>{#if app.runningCount}<span class="cnt" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.runningCount}</span>{/if}
     </button>
-    <button role="tab" aria-selected={tab === "up"} class:on={tab === "up"} onclick={showUploads}>
-      Uploads{#if app.uploadingCount}<span class="cnt" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.uploadingCount}</span>{/if}
+    <button role="tab" aria-selected={tab === "up"} class:on={tab === "up"} onclick={showUploads} bind:this={tabEls.up}>
+      <span class="lbl">{t("Uploads (tray tab)")}</span>{#if app.uploadingCount}<span class="cnt" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{app.uploadingCount}</span>{/if}
     </button>
     <!-- Always there, folded to nothing until Direct runs: it opens out (and the highlight
          narrows) smoothly instead of jumping. -->
@@ -291,6 +320,7 @@
       inert={!directOn}
       class:on={tab === "direct"}
       onclick={() => (tab = "direct")}
+      bind:this={tabEls.direct}
     >
       Direct{#if dFlowing}<span class="cnt" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>{dFlowing}</span>{/if}
     </button>
@@ -298,7 +328,7 @@
 
   {#snippet who(w: Who)}
     {#if w.device}
-      <span class="who dev" title={w.name || "One of your PCs"}><Icon name="devices" size={11} stroke={2.2} /></span>
+      <span class="who dev" title={w.name || t("One of your PCs")}><Icon name="devices" size={11} stroke={2.2} /></span>
     {:else}
       <span class="who" title={w.name}>{initial(w.name || "?")}</span>
     {/if}
@@ -309,7 +339,7 @@
     {#if !app.sends.length && !recentSent.length}
       <div class="empty" in:fadeIn={{ duration: 160 }}>
         <Icon name="upload" size={20} stroke={2} />
-        <p>Nothing uploaded yet.</p>
+        <p>{t("Nothing uploaded yet.")}</p>
       </div>
     {:else}
       {#each app.sends as j (j.id)}
@@ -319,11 +349,11 @@
           {#if j.status === "uploading"}
             <div class="bar"><div class="fill" style="width: {upPct(j)}%; background: var(--st-run)"></div></div>
             <div class="sub">
-              <span style="color: var(--st-run-text)">Uploading</span>
-              <span class="mono">{j.speed ? speed(j.speed) : `${Math.floor(upPct(j))}%`}</span>
+              <span style="color: var(--st-run-text)">{t("Uploading")}</span>
+              <span class="mono">{j.speed ? speed(j.speed) : t("{pct}%", { pct: Math.floor(upPct(j)) })}</span>
             </div>
           {:else}
-            <div class="sub"><span style="color: var(--st-fail-text)">Not uploaded</span><span class="mono">{bytes(j.size)}</span></div>
+            <div class="sub"><span style="color: var(--st-fail-text)">{t("Not uploaded")}</span><span class="mono">{bytes(j.size)}</span></div>
           {/if}
         </div>
         </div>
@@ -334,15 +364,15 @@
         <div class="item">
           <div class="top">
             <MiddleText text={s.name} class="nm" />
-            <button class="icon-btn" aria-label="Copy the link of {s.name}" title="Copy link" onclick={() => app.copyLink(s.link)}><Icon name="copy" size={12} /></button>
+            <button class="icon-btn" aria-label={t("Copy the link of {name}", { name: s.name })} title={t("Copy link")} onclick={() => app.copyLink(s.link)}><Icon name="copy" size={12} /></button>
           </div>
           <div class="sub">
             {#if look}
               <span class="badge" style:color={look.text}><span class="dot" style:background={look.dot}></span>{look.label}</span>
             {:else if s.incomplete}
-              <span style="color: var(--st-wait-text)">Not all uploaded</span>
+              <span style="color: var(--st-wait-text)">{t("Not all uploaded")}</span>
             {:else}
-              <span style="color: var(--st-done-text)">Uploaded</span>
+              <span style="color: var(--st-done-text)">{t("Uploaded")}</span>
             {/if}
             <span class="mono">{bytes(s.size)}</span>
           </div>
@@ -356,31 +386,31 @@
     {#if !dMoving.length && !dDone.length}
       <div class="empty" in:fadeIn={{ duration: 160 }}>
         <Icon name="send" size={20} stroke={2} />
-        <p>Nothing sent or received today.</p>
+        <p>{t("Nothing sent or received today.")}</p>
       </div>
     {:else}
-      {#each dMoving as t (t.id)}
-        {@const w = whoOf(t.contact)}
-        {@const look = dLook(t)}
-        {@const r = FLOWING.has(t.state) ? rate(t) : 0}
+      {#each dMoving as x (x.id)}
+        {@const w = whoOf(x.contact)}
+        {@const look = dLook(x)}
+        {@const r = FLOWING.has(x.state) ? rate(x) : 0}
         <div class="row" transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
         <div class="item">
           <div class="top">
             {@render who(w)}
-            <MiddleText text={t.name} class="nm" />
+            <MiddleText text={x.name} class="nm" />
             <button
-              class={armed?.id === t.id ? "act danger" : "icon-btn"}
-              aria-label={armed?.id === t.id ? `Cancel ${t.name} now` : `Cancel ${t.name}`}
-              title={armed?.id === t.id ? "Stops this transfer" : "Cancel"}
-              onclick={() => cancelClick(t)}
+              class={armed?.id === x.id ? "act danger" : "icon-btn"}
+              aria-label={armed?.id === x.id ? t("Cancel {name} now", { name: x.name }) : t("Cancel {name}", { name: x.name })}
+              title={armed?.id === x.id ? t("Stops this transfer") : t("Cancel")}
+              onclick={() => cancelClick(x)}
             >
-              {#if armed?.id === t.id}<span in:fadeIn={{ duration: 120 }}>Cancel</span>{:else}<Icon name="x" size={12} />{/if}
+              {#if armed?.id === x.id}<span in:fadeIn={{ duration: 120 }}>{t("Cancel")}</span>{:else}<Icon name="x" size={12} />{/if}
             </button>
           </div>
-          <div class="bar"><div class="fill" style="width: {percent(t.done, t.size)}%; background: {look.color}"></div></div>
+          <div class="bar"><div class="fill" style="width: {percent(x.done, x.size)}%; background: {look.color}"></div></div>
           <div class="sub">
             <span class="cut" style="color: {look.text}">{look.label}</span>
-            <span class="mono">{r > 0 ? `${percent(t.done, t.size)}% · ${speed(r)}` : `${percent(t.done, t.size)}% of ${bytes(t.size)}`}</span>
+            <span class="mono">{r > 0 ? t("{pct}% · {speed}", { pct: percent(x.done, x.size), speed: speed(r) }) : t("{pct}% of {size}", { pct: percent(x.done, x.size), size: bytes(x.size) })}</span>
           </div>
         </div>
         </div>
@@ -394,8 +424,8 @@
             {@render who(w)}
             <MiddleText text={h.name} class="nm" />
             {#if h.result === "done" && !h.outgoing && h.savedTo}
-              <button class="act" onclick={() => openReceived(h, false)}>Open</button>
-              <button class="act" onclick={() => openReceived(h, true)}>Folder</button>
+              <button class="act" onclick={() => openReceived(h, false)}>{t("Open")}</button>
+              <button class="act" onclick={() => openReceived(h, true)}>{t("Folder")}</button>
             {:else}
               <span class="end" style:color={end.text}>{end.label}</span>
             {/if}
@@ -410,21 +440,21 @@
     {#if !list.length}
       <div class="empty" in:fadeIn={{ duration: 160 }}>
         <Icon name="check" size={20} stroke={2} />
-        <p>Nothing downloading.</p>
+        <p>{t("Nothing downloading.")}</p>
       </div>
     {:else}
       {#each list as d, i (d.id)}
         {@const look = statusLook(d.status, d.message)}
         {@const p = app.live[d.id]}
         <div class="row" transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
-        {#if i === openShown && more > 0}<div class="more">and {more} more in Pako</div>{/if}
+        {#if i === openShown && more > 0}<div class="more">{t("and {n} more in Pako", { n: more })}</div>{/if}
         {#if d.status === "completed"}
         <div class="item done" in:fadeIn={{ duration: 160 }}>
           <div class="top">
             <span class="ok"><Icon name="check" size={11} stroke={2.6} /></span>
             <MiddleText text={d.name} class="nm" />
-            <button class="act" onclick={() => app.run(() => api.openItem(d.id, false))}>Open</button>
-            <button class="act" onclick={() => app.run(() => api.openItem(d.id, true))}>Folder</button>
+            <button class="act" onclick={() => app.run(() => api.openItem(d.id, false))}>{t("Open")}</button>
+            <button class="act" onclick={() => app.run(() => api.openItem(d.id, true))}>{t("Folder")}</button>
           </div>
         </div>
         {:else}
@@ -432,39 +462,39 @@
           <div class="top">
             <MiddleText text={d.name} class="nm" />
             {#if isActive(d.status) || d.status === "queued"}
-              <button class="icon-btn" aria-label="Pause {d.name}" onclick={() => app.run(() => api.pause([d.id]))}><Icon name="pause" size={12} /></button>
+              <button class="icon-btn" aria-label={t("Pause {name}", { name: d.name })} onclick={() => app.run(() => api.pause([d.id]))}><Icon name="pause" size={12} /></button>
             {:else}
-              <button class="icon-btn" aria-label="Resume {d.name}" onclick={() => app.run(() => api.resume([d.id]))}><Icon name="play" size={12} /></button>
+              <button class="icon-btn" aria-label={t("Resume {name}", { name: d.name })} onclick={() => app.run(() => api.resume([d.id]))}><Icon name="play" size={12} /></button>
             {/if}
             <button
               class={armed?.id === d.id ? "act danger" : "icon-btn"}
-              aria-label={armed?.id === d.id ? `Remove ${d.name} now: what was downloaded so far is deleted` : `Remove ${d.name}`}
-              title={armed?.id === d.id ? "What was downloaded so far is deleted" : "Remove"}
+              aria-label={armed?.id === d.id ? t("Remove {name} now: what was downloaded so far is deleted", { name: d.name }) : t("Remove {name}", { name: d.name })}
+              title={armed?.id === d.id ? t("What was downloaded so far is deleted") : t("Remove")}
               onclick={() => removeClick(d)}
             >
-              {#if armed?.id === d.id}<span in:fadeIn={{ duration: 120 }}>Remove</span>{:else}<Icon name="x" size={12} />{/if}
+              {#if armed?.id === d.id}<span in:fadeIn={{ duration: 120 }}>{t("Remove")}</span>{:else}<Icon name="x" size={12} />{/if}
             </button>
           </div>
           <div class="bar"><div class="fill" style="width: {pct(d)}%; background: {look.color}"></div></div>
           <div class="sub">
             <span style="color: {look.text}">{videoAs(d) ? `${look.label} · ${videoAs(d)}` : look.label}</span>
-            <span class="mono">{p?.speed ? speed(p.speed) : d.size ? `${Math.floor(pct(d))}% of ${bytes(d.size)}` : bytes(d.downloaded)}</span>
+            <span class="mono">{p?.speed ? speed(p.speed) : d.size ? t("{pct}% of {size}", { pct: Math.floor(pct(d)), size: bytes(d.size) }) : bytes(d.downloaded)}</span>
           </div>
         </div>
         {/if}
         </div>
       {/each}
-      {#if openShown === list.length && more > 0}<div class="more">and {more} more in Pako</div>{/if}
+      {#if openShown === list.length && more > 0}<div class="more">{t("and {n} more in Pako", { n: more })}</div>{/if}
     {/if}
   </div>
   {/if}
 
   <footer>
     {#if tab === "down"}
-      <button class="btn ghost small" onclick={() => app.run(() => api.pauseAll())} in:fadeIn={{ duration: 160 }}><Icon name="pause" size={12} />Pause all</button>
-      <button class="btn ghost small" onclick={() => app.run(() => api.resumeAll())} in:fadeIn={{ duration: 160 }}><Icon name="play" size={12} />Resume all</button>
+      <button class="btn ghost small" onclick={() => app.run(() => api.pauseAll())} in:fadeIn={{ duration: 160 }}><Icon name="pause" size={12} />{t("Pause all (tray)")}</button>
+      <button class="btn ghost small" onclick={() => app.run(() => api.resumeAll())} in:fadeIn={{ duration: 160 }}><Icon name="play" size={12} />{t("Resume all")}</button>
     {/if}
-    <button class="btn small open" onclick={openPako}>Open Pako</button>
+    <button class="btn small open" onclick={openPako}>{t("Open Pako")}</button>
   </footer>
 </div>
 {/key}
@@ -491,18 +521,22 @@
     background: var(--bg);
     border: 1px solid var(--line);
   }
-  /* One highlight under the picked half that slides across. */
+  /* One highlight under the picked tab that slides across (placed and sized from the tab itself,
+     see placeThumb). */
   .thumb {
     position: absolute;
     top: 2px;
     bottom: 2px;
     left: 2px;
-    width: calc((100% - 6px - 2px * var(--k)) / (2 + var(--k)));
     border-radius: var(--radius);
     background: var(--raise);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     pointer-events: none;
-    transition: transform var(--mid) var(--ease);
+  }
+  .thumb.placed {
+    transition:
+      transform var(--mid) var(--ease),
+      width var(--mid) var(--ease);
   }
   :global(:root[data-theme="light"]) .thumb {
     background: var(--bg);
@@ -535,6 +569,21 @@
   }
   .switch2 button + button {
     margin-left: 2px;
+  }
+  /* A tab's words shorten ("Téléchar…") before its count, which always shows whole. */
+  .lbl {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cnt {
+    flex-shrink: 0;
+  }
+  /* French: « Téléchargements » needs more room than « Envoi » and « Direct », so the first tab
+     gets a bigger share (the English tabs stay equal). */
+  :global(html:lang(fr)) .switch2 button.first {
+    flex-grow: 1.6;
   }
   .switch2 button.third {
     flex-grow: var(--k);
@@ -815,5 +864,9 @@
   }
   footer .open {
     margin-left: auto;
+  }
+  /* French is longer: the three buttons stay on one line with a little less room inside. */
+  :global(html:lang(fr)) footer .small {
+    padding: 0 8px;
   }
 </style>

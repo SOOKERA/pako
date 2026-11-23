@@ -18,6 +18,10 @@
           r.style.colorScheme = "light";
         }
       } catch (e) {}
+      // The language this window last showed (i18n.svelte.ts), for screen readers from the start.
+      try {
+        if (localStorage.getItem("pako.lang") === "fr") document.documentElement.lang = "fr";
+      } catch (e) {}
     </script>
     %sveltekit.head%
   </head>

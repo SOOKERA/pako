@@ -7,6 +7,7 @@
   import { onMount } from "svelte";
   import { api, type Download } from "../api";
   import Modal from "../Modal.svelte";
+  import { t } from "../i18n.svelte";
 
   let { d, onclose }: { d: Download; onclose: () => void } = $props();
 
@@ -24,12 +25,12 @@
       .privatePlay(d.id)
       .then((info) => (src = info.url))
       .catch((e) => (error = String(e)));
-    const t = setInterval(report, 5000);
+    const tick = setInterval(report, 5000);
     window.addEventListener("blur", report);
     window.addEventListener("focus", report);
     document.addEventListener("visibilitychange", report);
     return () => {
-      clearInterval(t);
+      clearInterval(tick);
       window.removeEventListener("blur", report);
       window.removeEventListener("focus", report);
       document.removeEventListener("visibilitychange", report);
@@ -42,11 +43,11 @@
   <div class="stage">
     {#if src}
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video bind:this={video} {src} controls autoplay onplay={report} onpause={report} onended={report} onerror={() => (error = "This video can't be played in Pako.")}></video>
+      <video bind:this={video} {src} controls autoplay onplay={report} onpause={report} onended={report} onerror={() => (error = t("This video can't be played in Pako."))}></video>
     {:else if error}
       <p class="err">{error}</p>
     {:else}
-      <p class="wait">Opening…</p>
+      <p class="wait">{t("Opening…")}</p>
     {/if}
   </div>
 </Modal>

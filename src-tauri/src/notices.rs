@@ -623,7 +623,7 @@ pub fn start(app: &AppHandle) {
     change(app, |list| {
         let mut any = false;
         for n in list.iter_mut().filter(|n| n.kind == "needs-you" && n.answered.is_none()) {
-            n.answered = Some("Not finished".into());
+            n.answered = Some(tr!("Not finished", "Pas terminé"));
             n.read = true;
             any = true;
         }

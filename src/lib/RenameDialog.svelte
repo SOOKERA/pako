@@ -5,6 +5,7 @@
   import { app } from "./state.svelte";
   import { api, type Download } from "./api";
   import Modal from "./Modal.svelte";
+  import { t } from "./i18n.svelte";
 
   let { d, onclose }: { d: Download; onclose: () => void } = $props();
   let value = $state(untrack(() => d.name));
@@ -40,7 +41,7 @@
           .trim()
           .replace(/[. ]+$/, "");
         const numbered = final !== cleaned && /\s\(\d+\)(\.[^.]*)?$/.test(final);
-        app.toast(numbered ? `A file with that name exists: renamed to "${final}"` : `Saved as "${final}"`);
+        app.toast(numbered ? t('A file with that name exists: renamed to "{name}"', { name: final }) : t('Saved as "{name}"', { name: final }));
       }
       await app.refresh();
       onclose();
@@ -50,10 +51,10 @@
   }
 </script>
 
-<Modal title="Rename" width={460} {onclose}>
-  <input bind:this={input} bind:value class="input" spellcheck="false" aria-label="New name" onkeydown={onEnter} />
+<Modal title={t("Rename")} width={460} {onclose}>
+  <input bind:this={input} bind:value class="input" spellcheck="false" aria-label={t("New name")} onkeydown={onEnter} />
   {#snippet actions()}
-    <button class="btn ghost" onclick={onclose}>Cancel</button>
-    <button class="btn primary" disabled={!value.trim()} onclick={save}>Rename</button>
+    <button class="btn ghost" onclick={onclose}>{t("Cancel")}</button>
+    <button class="btn primary" disabled={!value.trim()} onclick={save}>{t("Rename")}</button>
   {/snippet}
 </Modal>

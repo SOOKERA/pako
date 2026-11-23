@@ -19,7 +19,8 @@
   import DirectDetails from "./DirectDetails.svelte";
   import TransferItems from "./TransferItems.svelte";
   import SegPick from "./SegPick.svelte";
-  import { directExtra, hasList, initial, isLocal, itemsCount, nearbyNote, pathLabel, percent, sortContacts, statusOf, SUGGESTED_TAGS } from "./direct";
+  import { directExtra, hasList, initial, isLocal, itemsCount, nearbyNote, pathLabel, percent, sortContacts, statusOf, suggestedTags } from "./direct";
+  import { around, num, t } from "./i18n.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
   import PanelResizer from "./PanelResizer.svelte";
   import { panelWidths } from "./panelWidth.svelte";
@@ -93,10 +94,10 @@
         .finally(() => (busy = false));
     };
     load();
-    const t = setInterval(load, 4000);
+    const timer = setInterval(load, 4000);
     return () => {
       alive = false;
-      clearInterval(t);
+      clearInterval(timer);
     };
   });
   /** One of that PC's contacts, shaped like this PC's (shown only: nothing to change here). */
@@ -135,7 +136,7 @@
     const q = (search.trim() || app.search.trim()).toLowerCase();
     const list = fromId ? remoteShown : app.directShown;
     if (!q) return list;
-    return list.filter((c) => c.name.toLowerCase().includes(q) || (c.theirName ?? "").toLowerCase().includes(q) || (c.tags ?? []).some((t) => t.toLowerCase().includes(q)));
+    return list.filter((c) => c.name.toLowerCase().includes(q) || (c.theirName ?? "").toLowerCase().includes(q) || (c.tags ?? []).some((tag) => tag.toLowerCase().includes(q)));
   });
   const picked = $derived(fromId ? remotePicked : app.directPicked);
   const current = $derived(contacts.find((c) => c.id === picked) ?? contacts[0] ?? null);
@@ -171,10 +172,10 @@
         .finally(() => (busy = false));
     };
     load();
-    const t = setInterval(load, 2000);
+    const timer = setInterval(load, 2000);
     return () => {
       alive = false;
-      clearInterval(t);
+      clearInterval(timer);
     };
   });
   /** Relays shown in a conversation: sent from this PC through `fromId` (still going, or ended
@@ -224,30 +225,31 @@
   }
   /** A relay on its way, in a few words: both legs ("To Home PC 100% · To Rado 45%"). */
   function relayText(r: DirectRelay) {
-    const pc = r.deviceName || "your other PC";
+    const pc = r.deviceName || t("your other PC");
+    const name = r.toName;
     if (!r.mine) {
-      if (r.state === "receiving") return `Arriving from ${pc} ${percent(r.leg1Done, r.size)}% · then to ${r.toName}`;
-      return `From ${pc} · Waiting for ${r.toName} to be online`;
+      if (r.state === "receiving") return t("Arriving from {pc} {pct}% · then to {name}", { pc, pct: percent(r.leg1Done, r.size), name });
+      return t("From {pc} · Waiting for {name} to be online", { pc, name });
     }
-    const leg1 = `To ${pc} ${r.state === "leg1" ? percent(r.leg1Done, r.size) : 100}%`;
-    const p2 = percent(r.done, r.size);
+    const leg1 = t("To {pc} {pct}%", { pc, pct: r.state === "leg1" ? percent(r.leg1Done, r.size) : 100 });
+    const pct = percent(r.done, r.size);
     switch (r.state) {
       case "leg1":
         return leg1;
       case "waiting":
-        return `${leg1} · Waiting for ${r.toName}`;
+        return t("{leg1} · Waiting for {name}", { leg1, name });
       case "offered":
-        return `${leg1} · Waiting for ${r.toName} to accept…`;
+        return t("{leg1} · Waiting for {name} to accept…", { leg1, name });
       case "sending":
-        return `${leg1} · To ${r.toName} ${p2}%`;
+        return t("{leg1} · To {name} {pct}%", { leg1, name, pct });
       case "paused":
-        return `${leg1} · Waiting for ${r.toName} to continue · ${p2}% done`;
+        return t("{leg1} · Waiting for {name} to continue · {pct}% done", { leg1, name, pct });
       case "expired":
-        return "Expired: not accepted within 7 days";
+        return t("Expired: not accepted within 7 days");
       case "cancelled":
-        return "Cancelled";
+        return t("Cancelled");
       default:
-        return r.message ?? "Didn't go through";
+        return r.message ?? t("Didn't go through");
     }
   }
   /** The bar follows the leg on its way: to the PC first, then to the contact (the last number
@@ -262,8 +264,8 @@
     const size = list.reduce((a, r) => a + r.size, 0);
     const done = list.reduce((a, r) => a + Math.min(first ? r.leg1Done : r.state === "leg1" ? 0 : r.done, r.size), 0);
     const pct = percent(done, size);
-    const where = first ? (list[0].deviceName || "your other PC") : list[0].toName;
-    return { text: `To ${where} ${pct}%`, pct, icon: "up", count: list.length };
+    const where = first ? (list[0].deviceName || t("your other PC")) : list[0].toName;
+    return { text: t("To {pc} {pct}%", { pc: where, pct }), pct, icon: "up", count: list.length };
   }
   // The conversation shown stays connected, and is called at once if it closed for being quiet.
   const shownId = $derived(fromId ? null : (current?.id ?? null));
@@ -273,7 +275,7 @@
   $effect(() => () => {
     api.directShown(null).catch(() => {});
   });
-  const FILTER_TITLES: Record<string, string> = { all: "All contacts", online: "Online", waiting: "Waiting for you", favourites: "Favourites" };
+  const FILTER_TITLES = $derived<Record<string, string>>({ all: t("All contacts"), online: t("Online"), waiting: t("Waiting for you (contacts)"), favourites: t("Favourites") });
   const filterTitle = $derived(FILTER_TITLES[app.directFilter] ?? app.directFilter.replace(/^tag:/, ""));
 
   // ---------- the timeline: history plus what's moving, oldest first ----------
@@ -359,7 +361,7 @@
   /** One file or folder of a received transfer: opened (a program or script is shown in its
    *  folder instead), or shown in its folder. */
   async function openPart(id: string, part: number, reveal: boolean) {
-    if (await api.directOpen(id, reveal, part)) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
+    if (await api.directOpen(id, reveal, part)) app.toast(t("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it."));
   }
   let timeline: HTMLDivElement | undefined = $state();
   /** Whose conversation was last scrolled: a new item glides into view, a new contact opens at the end. */
@@ -381,18 +383,18 @@
 
   // Live speed per transfer, from how much moved since the last update.
   let lastDone: Record<string, { at: number; done: number; speed: number }> = {};
-  function speedOf(t: DirectTransfer) {
+  function speedOf(x: DirectTransfer) {
     const now = performance.now();
-    const prev = lastDone[t.id];
+    const prev = lastDone[x.id];
     if (!prev) {
-      lastDone[t.id] = { at: now, done: t.done, speed: 0 };
+      lastDone[x.id] = { at: now, done: x.done, speed: 0 };
       return 0;
     }
     if (now - prev.at > 400) {
-      const s = ((t.done - prev.done) * 1000) / (now - prev.at);
+      const s = ((x.done - prev.done) * 1000) / (now - prev.at);
       prev.speed = prev.speed ? prev.speed * 0.6 + s * 0.4 : s;
       prev.at = now;
-      prev.done = t.done;
+      prev.done = x.done;
     }
     return prev.speed;
   }
@@ -444,37 +446,37 @@
   }
   /** One contact's transfers together: which way, how far, how fast. */
   function rowMoving(contact: string, list: DirectTransfer[]) {
-    const flowing = list.filter((t) => t.state === "sending" || t.state === "receiving");
-    const out = list.some((t) => t.outgoing);
-    const inn = list.some((t) => !t.outgoing);
-    const verb = out && inn ? "Sending and receiving" : out ? "Sending" : "Receiving";
+    const flowing = list.filter((x) => x.state === "sending" || x.state === "receiving");
+    const out = list.some((x) => x.outgoing);
+    const inn = list.some((x) => !x.outgoing);
     const pct = batchPercent(contact);
     let text: string;
-    if (!flowing.length) text = list.some((t) => t.state === "checking") ? "Checking the files…" : "Getting ready…";
+    if (!flowing.length) text = list.some((x) => x.state === "checking") ? t("Checking the files…") : t("Getting ready…");
     else {
-      const rate = flowing.reduce((a, t) => a + speedOf(t), 0);
-      text = `${verb} ${pct}%${rate > 0 ? " · " + speed(rate) : ""}`;
+      const rate = flowing.reduce((a, x) => a + speedOf(x), 0);
+      const how = out && inn ? t("Sending and receiving {pct}%", { pct }) : out ? t("Sending {pct}%", { pct }) : t("Receiving {pct}%", { pct });
+      text = `${how}${rate > 0 ? " · " + speed(rate) : ""}`;
     }
     return { text, pct, icon: out && !inn ? "up" : !out && inn ? "down" : "send", count: list.length };
   }
 
-  const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  const contactsText = (n: number) => t("{n} contacts", { n: num(n) });
   function resultText(h: DirectHistory) {
-    if (h.result === "done") return h.outgoing ? "Delivered" : "Received";
-    if (h.result === "declined") return "Declined";
-    if (h.result === "cancelled") return "Cancelled";
-    return h.message ?? "Didn't go through";
+    if (h.result === "done") return h.outgoing ? t("Delivered") : t("Received");
+    if (h.result === "declined") return t("Declined");
+    if (h.result === "cancelled") return t("Cancelled");
+    return h.message ?? t("Didn't go through");
   }
   /** Opens a received file; a program or script is shown in its folder instead. */
   async function openReceived(id: string) {
-    if (await api.directOpen(id, false)) app.toast("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it.");
+    if (await api.directOpen(id, false)) app.toast(t("Programs and scripts aren't started from Pako. It's shown in its folder: open it there if you trust it."));
   }
-  function movingText(t: DirectTransfer) {
-    if (t.state === "offered") return "Waiting for them to accept…";
-    if (t.state === "preparing") return "Getting ready…";
-    if (t.state === "checking") return "Checking the files…";
-    if (t.state === "waiting") return `Waiting for ${current?.name ?? "them"} to continue · ${percent(t.done, t.size)}% done`;
-    return `${percent(t.done, t.size)}% · ${bytes(t.done)} of ${bytes(t.size)}`;
+  function movingText(x: DirectTransfer) {
+    if (x.state === "offered") return t("Waiting for them to accept…");
+    if (x.state === "preparing") return t("Getting ready…");
+    if (x.state === "checking") return t("Checking the files…");
+    if (x.state === "waiting") return t("Waiting for {name} to continue · {pct}% done", { name: current?.name ?? t("them"), pct: percent(x.done, x.size) });
+    return t("{pct}% · {done} of {size}", { pct: percent(x.done, x.size), done: bytes(x.done), size: bytes(x.size) });
   }
 
   // ---------- your ID and name ----------
@@ -500,14 +502,14 @@
     await app.run(() => api.directSetName(myName.trim()));
   }
   function copyId() {
-    if (d?.myId) app.run(() => api.copyText(d.myId!)).then(() => app.toast("Your Pako ID is copied. Send it to the people you want to connect with."));
+    if (d?.myId) app.run(() => api.copyText(d.myId!)).then(() => app.toast(t("Your Pako ID is copied. Send it to the people you want to connect with.")));
   }
   /** The ID under "You, sending from": this PC's, or that PC's. */
   function copyShownId() {
     if (!app.directFrom) return copyId();
     const id = book?.me.id;
-    const name = fromChoices.find((c) => c.id === app.directFrom)?.name ?? "That PC";
-    if (id) app.run(() => api.copyText(id)).then(() => app.toast(`${name}'s Pako ID is copied.`));
+    const name = fromChoices.find((c) => c.id === app.directFrom)?.name ?? t("That PC");
+    if (id) app.run(() => api.copyText(id)).then(() => app.toast(t("{name}'s Pako ID is copied.", { name })));
   }
   const shortId = (id: string) => `${id.slice(0, 6)}…${id.slice(-6)}`;
 
@@ -526,6 +528,10 @@
   let newId = $state("");
   let newName = $state("");
   let addError = $state("");
+  /** The add window's note, "You, sending from" in bold mid-sentence. */
+  const askedOnce = $derived(
+    around(t("Asked once: your contacts see this name, so they know who's asking. You can change it later: click it under {place}, at the top of the contact list."), "{place}"),
+  );
   /** No name of yours yet: the add window asks for it first (contacts see it). */
   const nameMissing = $derived(!(d?.myName ?? "").trim());
   /** Add pressed with no name: said under the field, which takes the focus. */
@@ -547,7 +553,7 @@
       app.directAdding = false;
       newId = "";
       newName = "";
-      app.toast("Added. Pako is reaching them now; the first time, they're asked to accept.");
+      app.toast(t("Added. Pako is reaching them now; the first time, they're asked to accept."));
     } catch (e) {
       addError = String(e);
     }
@@ -570,18 +576,18 @@
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
     if (atMouse) e.preventDefault();
     onmenu(atMouse ? e.clientX : b.right - 240, atMouse ? e.clientY : b.bottom + 4, [
-      { label: "Rename…", action: () => ((renaming = c), (renameTo = c.name)) },
-      { label: "Tags…", action: () => openTags(c) },
-      { label: c.favourite ? "Remove from favourites" : "Add to favourites", action: () => app.run(() => api.directSetFavourite(c.id, !c.favourite)) },
-      { label: c.muted ? "Unmute" : "Mute", action: () => app.run(() => api.directSetMuted(c.id, !c.muted)) },
-      ...(c.unchecked ? [{ label: "Check now", action: () => app.run(() => api.directConnect(c.id)) }] : []),
-      ...(c.check !== "often" && c.checkAs !== "often" ? [{ label: "Check often for 1 hour", action: () => app.run(() => api.directSetCheck(c.id, "often", "hour")) }] : []),
+      { label: t("Rename…"), action: () => ((renaming = c), (renameTo = c.name)) },
+      { label: t("Tags…"), action: () => openTags(c) },
+      { label: c.favourite ? t("Remove from favourites") : t("Add to favourites"), action: () => app.run(() => api.directSetFavourite(c.id, !c.favourite)) },
+      { label: c.muted ? t("Unmute") : t("Mute"), action: () => app.run(() => api.directSetMuted(c.id, !c.muted)) },
+      ...(c.unchecked ? [{ label: t("Check now"), action: () => app.run(() => api.directConnect(c.id)) }] : []),
+      ...(c.check !== "often" && c.checkAs !== "often" ? [{ label: t("Check often for 1 hour"), action: () => app.run(() => api.directSetCheck(c.id, "often", "hour")) }] : []),
       { separator: true },
-      { label: "Can send to me without asking", hint: c.autoAccept ? "✓" : "", action: () => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept })) },
-      { label: "Save their files in…", action: () => chooseFolder(c) },
+      { label: t("Can send to me without asking"), hint: c.autoAccept ? "✓" : "", action: () => app.run(() => api.directEditContact(c.id, { autoAccept: !c.autoAccept })) },
+      { label: t("Save their files in…"), action: () => chooseFolder(c) },
       { separator: true },
-      { label: "Clear history…", action: () => (clearing = c) },
-      { label: "Remove contact", danger: true, action: () => (removing = c) },
+      { label: t("Clear history…"), action: () => (clearing = c) },
+      { label: t("Remove contact"), danger: true, action: () => (removing = c) },
     ]);
   }
 
@@ -594,17 +600,17 @@
     ticked = [...(c.tags ?? [])];
     newTag = "";
   }
-  function toggleTag(t: string) {
-    ticked = ticked.some((x) => x.toLowerCase() === t.toLowerCase()) ? ticked.filter((x) => x.toLowerCase() !== t.toLowerCase()) : [...ticked, t];
+  function toggleTag(tag: string) {
+    ticked = ticked.some((x) => x.toLowerCase() === tag.toLowerCase()) ? ticked.filter((x) => x.toLowerCase() !== tag.toLowerCase()) : [...ticked, tag];
   }
-  function addNewTag(t = newTag) {
-    const name = t.trim();
+  function addNewTag(tag = newTag) {
+    const name = tag.trim();
     if (!name) return;
     if (!ticked.some((x) => x.toLowerCase() === name.toLowerCase())) ticked = [...ticked, name];
     newTag = "";
   }
   /** Your tags plus new ones typed here (not saved until Save). */
-  const tagChoices = $derived([...app.directTags, ...ticked.filter((t) => !app.directTags.some((x) => x.toLowerCase() === t.toLowerCase()))]);
+  const tagChoices = $derived([...app.directTags, ...ticked.filter((tag) => !app.directTags.some((x) => x.toLowerCase() === tag.toLowerCase()))]);
   async function saveTags() {
     if (!tagging) return;
     const c = tagging;
@@ -612,7 +618,7 @@
     await app.run(() => api.directSetTags(c.id, ticked));
   }
   async function chooseFolder(c: DirectContact) {
-    const r = await pick({ directory: true, multiple: false, title: `Where ${c.name}'s files go` });
+    const r = await pick({ directory: true, multiple: false, title: t("Where {name}'s files go", { name: c.name }) });
     if (typeof r === "string") await app.run(() => api.directEditContact(c.id, { folder: r }));
   }
 
@@ -663,11 +669,11 @@
     if (fresh.length) setBasket([...basket, ...fresh]);
   }
   async function chooseFiles() {
-    const r = await pick({ multiple: true, directory: false, title: "Choose files to send" });
+    const r = await pick({ multiple: true, directory: false, title: t("Choose files to send") });
     addPaths(Array.isArray(r) ? r : r ? [r] : []);
   }
   async function chooseDir() {
-    const r = await pick({ multiple: true, directory: true, title: "Choose folders to send" });
+    const r = await pick({ multiple: true, directory: true, title: t("Choose folders to send") });
     addPaths(Array.isArray(r) ? r : r ? [r] : []);
   }
   async function send() {
@@ -723,7 +729,7 @@
     const dt = e.dataTransfer!;
     const webview = (window as { chrome?: { webview?: { postMessageWithAdditionalObjects?: (m: string, o: unknown[]) => void } } }).chrome?.webview;
     if (!webview?.postMessageWithAdditionalObjects) {
-      app.toast("Dropping files doesn't work here. Use Choose files.", "error");
+      app.toast(t("Dropping files doesn't work here. Use Choose files."), "error");
       return;
     }
     const files = Array.from(dt.files);
@@ -742,7 +748,7 @@
   $effect(() => {
     const un = listen<{ paths: string[]; detail: string }>("files-dropped", (e) => {
       if (e.payload.paths.length) addPaths(e.payload.paths);
-      else app.toast(`Pako couldn't read what was dropped (${e.payload.detail}).`, "error");
+      else app.toast(t("Pako couldn't read what was dropped ({detail}).", { detail: e.payload.detail }), "error");
     });
     return () => {
       un.then((f) => f());
@@ -751,17 +757,17 @@
 </script>
 
 {#snippet seenBy()}
-  <label class="mlabel" for="seenby">Be visible to Pakos on this network</label>
+  <label class="mlabel" for="seenby">{t("Be visible to Pakos on this network")}</label>
   <select
     id="seenby"
     class="input seenby"
     value={visible}
     onchange={(e) => setVisible(e.currentTarget.value as DirectVisible)}
-    title="Pakos on the same Wi-Fi or cable can find you there, even without the internet. Either way, you still find your contacts there."
+    title={t("Pakos on the same Wi-Fi or cable can find you there, even without the internet. Either way, you still find your contacts there.")}
   >
-    <option value="home">On home networks</option>
-    <option value="always">Always</option>
-    <option value="never">Never</option>
+    <option value="home">{t("On home networks")}</option>
+    <option value="always">{t("Always")}</option>
+    <option value="never">{t("Never")}</option>
   </select>
   {#if hiddenNote}
     <p class="seennote" transition:rowSlide={{ duration: 200 }}>{hiddenNote}</p>
@@ -775,8 +781,8 @@
     class:open={unfolded[key]}
     aria-expanded={!!unfolded[key]}
     aria-controls="items-{key}"
-    aria-label={unfolded[key] ? `Hide what was in ${name}` : `Show what was in ${name}`}
-    title={unfolded[key] ? "Hide the files" : "Show the files"}
+    aria-label={unfolded[key] ? t("Hide what was in {name}", { name }) : t("Show what was in {name}", { name })}
+    title={unfolded[key] ? t("Hide the files") : t("Show the files")}
     onclick={() => (unfolded[key] = !unfolded[key])}><Icon name="chevron" size={12} stroke={2.4} /></button
   >
 {/snippet}
@@ -800,22 +806,22 @@
 <div class="direct" role="presentation" ondragenter={dragEnter} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
   {#if dropping && current}
     <div class="dropzone" aria-hidden="true" transition:fadeIn={{ duration: 120 }}>
-      <div class="dropcard"><Icon name="send" size={22} />Drop files or folders to send them to {current.name}</div>
+      <div class="dropcard"><Icon name="send" size={22} />{t("Drop files or folders to send them to {name}", { name: current.name })}</div>
     </div>
   {/if}
   <div class="toolbar">
-    <h1>Direct</h1>
+    <h1>{t("Direct")}</h1>
     <TutorialButton id="direct" />
-    <span class="dim small sub">Files straight to people you know, PC to PC</span>
+    <span class="dim small sub">{t("Files straight to people you know, PC to PC")}</span>
   </div>
 
   {#if !d}
-    <div class="center dim">Starting…</div>
+    <div class="center dim">{t("Starting…")}</div>
   {:else if !d.ready}
     <div class="center dim">
-      {d.error ?? "Direct is starting…"}
+      {d.error ?? t("Direct is starting…")}
       {#if !d.error && extra.firstStart}
-        <p class="firewall" in:fadeIn={{ duration: 200 }}>Windows may ask whether Pako can use the network. Allow it on private networks, so Pakos on your home network can reach you.</p>
+        <p class="firewall" in:fadeIn={{ duration: 200 }}>{t("Windows may ask whether Pako can use the network. Allow it on private networks, so Pakos on your home network can reach you.")}</p>
       {/if}
     </div>
   {:else}
@@ -826,17 +832,17 @@
       <div class="body solo" transition:fadeIn={{ duration: 220 }}>
         <section class="card welcome" data-tour="direct-welcome">
           <div class="empty-icon"><Icon name="send" size={26} /></div>
-          <h3>Send files straight to people you know</h3>
-          <p class="dim">Files go PC to PC, encrypted, with nothing stored anywhere. Share your Pako ID with a friend, or add theirs: the first time they're asked to accept, then you connect by yourselves.</p>
+          <h3>{t("Send files straight to people you know")}</h3>
+          <p class="dim">{t("Files go PC to PC, encrypted, with nothing stored anywhere. Share your Pako ID with a friend, or add theirs: the first time they're asked to accept, then you connect by yourselves.")}</p>
           <div class="idbox">
-            <span class="mlabel">Your Pako ID</span>
+            <span class="mlabel">{t("Your Pako ID")}</span>
             <div class="idrow">
               <span class="mono idtext" title={d.myId}>{d.myId}</span>
-              <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />Copy</button>
+              <button class="btn small" onclick={copyId}><Icon name="copy" size={12} />{t("Copy")}</button>
             </div>
             {@render seenBy()}
           </div>
-          <button class="btn primary" onclick={() => ((app.directAdding = true), (addError = ""))}><Icon name="plus" size={14} stroke={2.2} />Add contact</button>
+          <button class="btn primary" onclick={() => ((app.directAdding = true), (addError = ""))}><Icon name="plus" size={14} stroke={2.2} />{t("Add contact")}</button>
         </section>
       </div>
     {:else}
@@ -845,7 +851,7 @@
         <!-- You, sending from: your name and the PC, one button (the name renames it, the PC
              part picks another of your PCs to send from), the Pako ID under it. -->
         <div class="from" data-tour="direct-me">
-          <span class="mlabel">You, sending from</span>
+          <span class="mlabel">{t("You, sending from")}</span>
           <div class="fromsel" class:solo={!fromChoices.length} class:remote={!!fromId} bind:this={fromSel}>
             {#if renamingMe}
               <input
@@ -860,20 +866,20 @@
                     (e.currentTarget as HTMLInputElement).blur();
                   }
                 }}
-                placeholder="What your contacts see"
+                placeholder={t("What your contacts see")}
                 maxlength="60"
-                aria-label="Your name"
+                aria-label={t("Your name")}
               />
             {:else}
-              <button class="fname" class:empty={!shownName} disabled={!!fromId} onclick={startRename} title={fromId ? `The name ${from?.name ?? "that PC"}'s contacts see. Change it on ${from?.name ?? "that PC"}.` : "Your name: what your contacts see. Click to change it."}>{shownName || "Your name"}</button>
+              <button class="fname" class:empty={!shownName} disabled={!!fromId} onclick={startRename} title={fromId ? t("The name {pc}'s contacts see. Change it on {pc}.", { pc: from?.name ?? t("that PC") }) : t("Your name: what your contacts see. Click to change it.")}>{shownName || t("Your name")}</button>
             {/if}
             <span class="fsep" aria-hidden="true">·</span>
             {#if fromChoices.length}
-              <button class="fpc" aria-haspopup="menu" aria-expanded={fromMenu} onclick={toggleFromMenu} title="Send from this PC or another of your PCs">
-                <span class="fpcname">{from?.name ?? "This PC"}</span><span class="fchev" class:open={fromMenu}><Icon name="chevron" size={11} stroke={2.4} /></span>
+              <button class="fpc" aria-haspopup="menu" aria-expanded={fromMenu} onclick={toggleFromMenu} title={t("Send from this PC or another of your PCs")}>
+                <span class="fpcname">{from?.name ?? t("This PC")}</span><span class="fchev" class:open={fromMenu}><Icon name="chevron" size={11} stroke={2.4} /></span>
               </button>
             {:else}
-              <span class="fpc still">This PC</span>
+              <span class="fpc still">{t("This PC")}</span>
             {/if}
           </div>
           {#if fromMenu}
@@ -882,45 +888,45 @@
               <button class="fitem" class:on={!fromId} role="menuitemradio" aria-checked={!fromId} onclick={() => pickFrom(null)}>
                 <span class="fic"><Icon name="devices" size={14} /></span>
                 <span class="ftext">
-                  <span class="ftop">This PC</span>
-                  <span class="fsub">Contacts see "{d.myName || "no name yet"}" · {plural(everyone.length, "contact")}</span>
+                  <span class="ftop">{t("This PC")}</span>
+                  <span class="fsub">{t('Contacts see "{name}" · {count}', { name: d.myName || t("no name yet"), count: contactsText(everyone.length) })}</span>
                 </span>
                 {#if !fromId}<span class="fok"><Icon name="check" size={12} stroke={2.6} /></span>{/if}
               </button>
               {#each fromChoices as c (c.id)}
-                <button class="fitem" class:on={fromId === c.id} class:off={!c.online} role="menuitemradio" aria-checked={fromId === c.id} disabled={!c.online} title={c.online ? undefined : `${c.name} is offline`} onclick={() => pickFrom(c.id)}>
+                <button class="fitem" class:on={fromId === c.id} class:off={!c.online} role="menuitemradio" aria-checked={fromId === c.id} disabled={!c.online} title={c.online ? undefined : t("{name} is offline", { name: c.name })} onclick={() => pickFrom(c.id)}>
                   <span class="fic"><Icon name="devices" size={14} /></span>
                   <span class="ftext">
-                    <span class="ftop">{c.name}{#if c.pcName}<span class="fcalls">&nbsp;· calls itself {c.pcName}</span>{/if}</span>
-                    <span class="fsub">{c.online ? "" : "Offline · "}Contacts see "{c.directName || "no name yet"}" · {plural(c.contacts, "contact")}</span>
+                    <span class="ftop">{c.name}{#if c.pcName}<span class="fcalls">&nbsp;· {t("calls itself {name}", { name: c.pcName })}</span>{/if}</span>
+                    <span class="fsub">{c.online ? "" : `${t("Offline")} · `}{t('Contacts see "{name}" · {count}', { name: c.directName || t("no name yet"), count: contactsText(c.contacts) })}</span>
                   </span>
                   {#if fromId === c.id}<span class="fok"><Icon name="check" size={12} stroke={2.6} /></span>{/if}
                 </button>
               {/each}
-              <p class="fnote">Renaming stays in My devices.</p>
+              <p class="fnote">{t("Renaming stays in My devices.")}</p>
             </div>
           {/if}
           <div class="idrow">
             <span class="mono idtext" title={shownIdText}>{shownIdText ? shortId(shownIdText) : "…"}</span>
-            <button class="btn small" disabled={!shownIdText} onclick={copyShownId}><Icon name="copy" size={12} />Copy ID</button>
+            <button class="btn small" disabled={!shownIdText} onclick={copyShownId}><Icon name="copy" size={12} />{t("Copy ID")}</button>
           </div>
         </div>
         <div class="phead">
           <span class="ptitle">{filterTitle}</span>
           <span class="pcount mono">{contacts.length}</span>
           {#if app.directExample}
-            <span class="example" title="Made-up people, only shown during the tutorial" transition:pop={{ duration: 200, from: 0.92, y: 0 }}>Examples</span>
+            <span class="example" title={t("Made-up people, only shown during the tutorial")} transition:pop={{ duration: 200, from: 0.92, y: 0 }}>{t("Examples")}</span>
           {/if}
           <div class="spacer"></div>
           {#if !fromId}
-            <button class="btn small" data-tour="direct-add" onclick={() => ((app.directAdding = true), (addError = ""))} title="Add a contact by their Pako ID"><Icon name="plus" size={12} stroke={2.2} />Add</button>
+            <button class="btn small" data-tour="direct-add" onclick={() => ((app.directAdding = true), (addError = ""))} title={t("Add a contact by their Pako ID")}><Icon name="plus" size={12} stroke={2.2} />{t("Add")}</button>
           {/if}
         </div>
         {#if searching}
           <div class="psearch" transition:rowSlide={{ duration: 200 }}>
             <Icon name="search" size={13} />
-            <input bind:value={search} placeholder="Search contacts" aria-label="Search contacts" spellcheck="false" />
-            {#if search}<button class="clear" aria-label="Clear the search" onclick={() => (search = "")}><Icon name="x" size={11} stroke={2.4} /></button>{/if}
+            <input bind:value={search} placeholder={t("Search contacts")} aria-label={t("Search contacts")} spellcheck="false" />
+            {#if search}<button class="clear" aria-label={t("Clear the search")} onclick={() => (search = "")}><Icon name="x" size={11} stroke={2.4} /></button>{/if}
           </div>
         {/if}
         <div class="plist">
@@ -938,20 +944,20 @@
             >
               <span class="avatar">{initial(c.name)}<span class="dot" class:online={c.online} class:local={isLocal(c)} class:wait={c.waiting}></span></span>
               <span class="ptext">
-                <span class="pname">{c.name}{#if c.favourite}<span class="fav" aria-label="Favourite"><Icon name="star" size={11} stroke={2.2} /></span>{/if}{#if c.muted}<span class="mutedmark" aria-label="Muted" title="Muted: no pop-ups or sounds from {c.name}"><Icon name="bell-off" size={11} stroke={2.2} /></span>{/if}</span>
+                <span class="pname">{c.name}{#if c.favourite}<span class="fav" aria-label={t("Favourite")}><Icon name="star" size={11} stroke={2.2} /></span>{/if}{#if c.muted}<span class="mutedmark" aria-label={t("Muted")} title={t("Muted: no pop-ups or sounds from {name}", { name: c.name })}><Icon name="bell-off" size={11} stroke={2.2} /></span>{/if}</span>
                 {#if m}
-                  <span class="pstat live" title={m.count > 1 ? `${m.count} transfers with ${c.name}` : undefined}><Icon name={m.icon} size={11} stroke={2.4} />{m.text}</span>
+                  <span class="pstat live" title={m.count > 1 ? t("{n} transfers with {name}", { n: num(m.count), name: c.name }) : undefined}><Icon name={m.icon} size={11} stroke={2.4} />{m.text}</span>
                 {:else}
                   <span class="pstat">{statusOf(c, internet)}</span>
                 {/if}
                 {#if c.tags?.length}
                   <span class="ptags">
-                    {#each c.tags.slice(0, 2) as t, i (i)}<span class="tchip">{t}</span>{/each}
+                    {#each c.tags.slice(0, 2) as tag, i (i)}<span class="tchip">{tag}</span>{/each}
                     {#if c.tags.length > 2}<span class="tchip more">+{c.tags.length - 2}</span>{/if}
                   </span>
                 {/if}
               </span>
-              {#if !fromId && app.directWaitingIds.has(c.id)}<span class="badge" title="Waiting for your answer" transition:pop={{ duration: 180, from: 0.92, y: 0 }}>!</span>{/if}
+              {#if !fromId && app.directWaitingIds.has(c.id)}<span class="badge" title={t("Waiting for your answer")} transition:pop={{ duration: 180, from: 0.92, y: 0 }}>!</span>{/if}
               {#if m}
                 <span class="rowbar" aria-hidden="true" transition:fadeIn={{ duration: 200 }}><i style:transform="scaleX({m.pct / 100})"></i></span>
               {/if}
@@ -959,15 +965,15 @@
           {:else}
             <div class="noone">
               {#if search}
-                <p>Nobody matches "{search}".</p>
+                <p>{t('Nobody matches "{q}".', { q: search })}</p>
               {:else if fromId && bookError}
                 <p class="dim">{bookError}</p>
               {:else if fromId && !book}
-                <p class="dim">Reading {from?.name ?? "that PC"}'s contacts…</p>
+                <p class="dim">{t("Reading {pc}'s contacts…", { pc: from?.name ?? t("that PC") })}</p>
               {:else if fromId}
-                <p class="dim">{from?.name ?? "That PC"} has no contacts here.</p>
+                <p class="dim">{t("{pc} has no contacts here.", { pc: from?.name ?? t("That PC") })}</p>
               {:else}
-                <p class="dim">Nobody here right now.</p>
+                <p class="dim">{t("Nobody here right now.")}</p>
               {/if}
             </div>
           {/each}
@@ -980,7 +986,7 @@
       <section class="chat card" data-tour="direct-chat">
         {#if !current}
           <div class="center">
-            <p class="dim">{search ? "Nobody matches your search." : "Nobody under this filter. Pick another one on the left."}</p>
+            <p class="dim">{search ? t("Nobody matches your search.") : t("Nobody under this filter. Pick another one on the left.")}</p>
           </div>
         {:else}
           <header class="chead">
@@ -988,24 +994,24 @@
             <div class="ctext">
               <div class="cname">
                 {current.name}
-                {#if current.muted}<span class="mutedmark" aria-label="Muted" title="Muted: no pop-ups or sounds from {current.name}"><Icon name="bell-off" size={12} stroke={2.2} /></span>{/if}
-                {#if current.theirName && current.theirName !== current.name}<span class="theirs dim">calls themselves "{current.theirName}"</span>{/if}
+                {#if current.muted}<span class="mutedmark" aria-label={t("Muted")} title={t("Muted: no pop-ups or sounds from {name}", { name: current.name })}><Icon name="bell-off" size={12} stroke={2.2} /></span>{/if}
+                {#if current.theirName && current.theirName !== current.name}<span class="theirs dim">{t('calls themselves "{name}"', { name: current.theirName })}</span>{/if}
               </div>
-              <div class="cstat dim">{statusOf(current, internet)}{#if current.autoAccept}{" · can send without asking"}{/if}{#if fromId}{` · a contact of ${from?.name ?? "that PC"}: files go through it`}{/if}</div>
+              <div class="cstat dim">{statusOf(current, internet)}{#if current.autoAccept}{` · ${t("can send without asking")}`}{/if}{#if fromId}{` · ${t("a contact of {pc}: files go through it", { pc: from?.name ?? t("that PC") })}`}{/if}</div>
             </div>
             <div class="spacer"></div>
             {#if fromId}
               <!-- That PC's contact: shown only (it's changed on that PC). -->
             {:else}
             {#if !current.online}
-              <button class="btn small" onclick={() => app.run(() => api.directConnect(current!.id))}><Icon name="retry" size={12} />{current.unchecked ? "Check now" : "Connect"}</button>
+              <button class="btn small" onclick={() => app.run(() => api.directConnect(current!.id))}><Icon name="retry" size={12} />{current.unchecked ? t("Check now") : t("Connect")}</button>
             {/if}
-            <button class="icon-btn" aria-label="More for {current.name}" title="More" onclick={(e) => contactMenu(e, current!)}><Icon name="settings" size={14} /></button>
+            <button class="icon-btn" aria-label={t("More for {name}", { name: current.name })} title={t("More")} onclick={(e) => contactMenu(e, current!)}><Icon name="settings" size={14} /></button>
             <button
               class="icon-btn"
               class:on={app.panelOpen}
-              aria-label={app.panelOpen ? "Hide details (Ctrl+I)" : "Show details (Ctrl+I)"}
-              title={app.panelOpen ? "Hide details (Ctrl+I)" : "Show details (Ctrl+I)"}
+              aria-label={app.panelOpen ? t("Hide details (Ctrl+I)") : t("Show details (Ctrl+I)")}
+              title={app.panelOpen ? t("Hide details (Ctrl+I)") : t("Show details (Ctrl+I)")}
               onclick={() => app.togglePanel()}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
@@ -1022,12 +1028,12 @@
           {:else if current.declined && !current.waiting}
             <div class="safety" transition:rowSlide={{ duration: 220 }}>
               <Icon name="alert" size={14} />
-              <span>{current.name} declined. For 7 days their Pako turns you away without asking them; after that, press Connect to ask again.</span>
+              <span>{t("{name} declined. For 7 days their Pako turns you away without asking them; after that, press Connect to ask again.", { name: current.name })}</span>
             </div>
           {:else if current.waiting || !current.trusted}
             <div class="safety" transition:rowSlide={{ duration: 220 }}>
               <Icon name="alert" size={14} />
-              <span>The first time, {current.name} is asked to accept. Compare this code with theirs once (by voice or chat): <b class="mono">{current.code}</b></span>
+              <span>{t("The first time, {name} is asked to accept. Compare this code with theirs once (by voice or chat):", { name: current.name })} <b class="mono">{current.code}</b></span>
             </div>
           {/if}
 
@@ -1044,20 +1050,20 @@
                 <div class="msg" class:out={h.outgoing} class:bad={h.result !== "done"} in:pop={{ duration: 240, from: 0.98, y: 8, origin: h.outgoing ? "right bottom" : "left bottom" }}>
                   <!-- A group, not a button: it holds buttons of its own (Cancel, Open…), which a button would hide from screen readers. -->
                   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label="{h.outgoing ? 'Sent' : 'Received'}: {h.name}" onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
+                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label={h.outgoing ? t("Sent: {name}", { name: h.name }) : t("Received: {name}", { name: h.name })} onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
                     <div class="mtop">
                       <FileIcon name={h.name} kind={h.files > 1 ? "folder" : undefined} size={18} />
                       <MiddleText text={h.name} class="mname" />
                       {#if hasList(h.items, h.more)}{@render chev(key, h.name)}{/if}
                     </div>
-                    <div class="mmeta">{itemsCount(h.files, h.items, h.more)} · {bytes(h.size)}{#if h.via}<span class="via" title="Sent on for {h.via}">from {h.via}</span>{/if}</div>
+                    <div class="mmeta">{itemsCount(h.files, h.items, h.more)} · {bytes(h.size)}{#if h.via}<span class="via" title={t("Sent on for {name}", { name: h.via })}>{t("from {name}", { name: h.via })}</span>{/if}</div>
                     <div class="mfoot">
                       <span class="res" class:ok={h.result === "done"}>{resultText(h)}</span>
                       <span class="dim">{shortDate(h.date)}{#if h.path}{" · " + pathLabel(h.path)}{/if}</span>
                       {#if !h.outgoing && h.result === "done" && h.savedTo}
                         <span class="acts">
-                          <button class="link" onclick={() => app.run(() => openReceived(h.id))}>Open</button>
-                          <button class="link" onclick={() => app.run(() => api.directOpen(h.id, true))}>Folder</button>
+                          <button class="link" onclick={() => app.run(() => openReceived(h.id))}>{t("Open")}</button>
+                          <button class="link" onclick={() => app.run(() => api.directOpen(h.id, true))}>{t("Folder")}</button>
                         </span>
                       {/if}
                     </div>
@@ -1065,24 +1071,24 @@
                   </div>
                 </div>
               {:else if r.kind === "moving"}
-                {@const t = r.t}
+                {@const tr = r.t}
                 {@const key = cardKey(r)}
-                <div class="msg live" class:out={t.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: t.outgoing ? "right bottom" : "left bottom" }}>
+                <div class="msg live" class:out={tr.outgoing} in:pop={{ duration: 240, from: 0.98, y: 8, origin: tr.outgoing ? "right bottom" : "left bottom" }}>
                   <!-- A group, not a button: it holds buttons of its own (Cancel, Open…), which a button would hide from screen readers. -->
                   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label="{t.outgoing ? 'Sending' : 'Receiving'}: {t.name}" onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
+                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label={tr.outgoing ? t("Sending: {name}", { name: tr.name }) : t("Receiving: {name}", { name: tr.name })} onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
                     <div class="mtop">
-                      <FileIcon name={t.name} kind={t.files > 1 ? "folder" : undefined} size={18} />
-                      <MiddleText text={t.name} class="mname" />
-                      {#if hasList(t.items, t.more)}{@render chev(key, t.name)}{/if}
+                      <FileIcon name={tr.name} kind={tr.files > 1 ? "folder" : undefined} size={18} />
+                      <MiddleText text={tr.name} class="mname" />
+                      {#if hasList(tr.items, tr.more)}{@render chev(key, tr.name)}{/if}
                     </div>
-                    <div class="mmeta">{itemsCount(t.files, t.items, t.more)} · {bytes(t.size)}{#if t.via}<span class="via" title="Sent on for {t.via}">from {t.via}</span>{/if}</div>
-                    <div class="bar" class:waiting={t.state === "waiting"}><i style:width="{Math.min(100, (t.done / Math.max(1, t.size)) * 100)}%"></i></div>
+                    <div class="mmeta">{itemsCount(tr.files, tr.items, tr.more)} · {bytes(tr.size)}{#if tr.via}<span class="via" title={t("Sent on for {name}", { name: tr.via })}>{t("from {name}", { name: tr.via })}</span>{/if}</div>
+                    <div class="bar" class:waiting={tr.state === "waiting"}><i style:width="{Math.min(100, (tr.done / Math.max(1, tr.size)) * 100)}%"></i></div>
                     <div class="mfoot">
-                      <span class="dim">{movingText(t)}{#if t.state === "sending" || t.state === "receiving"}{" · " + speed(speedOf(t))}{/if}{#if t.path}{" · " + pathLabel(t.path)}{/if}</span>
-                      {#if !fromId}<button class="link" onclick={() => app.run(() => api.directCancel(t.id))}>Cancel</button>{/if}
+                      <span class="dim">{movingText(tr)}{#if tr.state === "sending" || tr.state === "receiving"}{" · " + speed(speedOf(tr))}{/if}{#if tr.path}{" · " + pathLabel(tr.path)}{/if}</span>
+                      {#if !fromId}<button class="link" onclick={() => app.run(() => api.directCancel(tr.id))}>{t("Cancel")}</button>{/if}
                     </div>
-                    {@render fold(key, t.items, t.more, null)}
+                    {@render fold(key, tr.items, tr.more, null)}
                   </div>
                 </div>
               {:else if r.kind === "relay"}
@@ -1091,13 +1097,13 @@
                 <div class="msg out" class:live={!x.ended} class:bad={!!x.ended} in:pop={{ duration: 240, from: 0.98, y: 8, origin: "right bottom" }}>
                   <!-- A group, not a button: it holds buttons of its own (Cancel, Open…), which a button would hide from screen readers. -->
                   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label="Sent through {x.deviceName}: {x.name}" onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
+                  <div class="bubble" class:picked={pickedCard === key} role="group" tabindex="0" data-card={key} aria-current={pickedCard === key ? "true" : undefined} aria-label={t("Sent through {pc}: {name}", { pc: x.deviceName, name: x.name })} onclick={() => (pickedCard = key)} onkeydown={(e) => cardKeydown(e, key)}>
                     <div class="mtop">
                       <FileIcon name={x.name} kind={x.files > 1 ? "folder" : undefined} size={18} />
                       <MiddleText text={x.name} class="mname" />
                       {#if hasList(x.items, x.more)}{@render chev(key, x.name)}{/if}
                     </div>
-                    <div class="mmeta">{itemsCount(x.files, x.items, x.more)} · {bytes(x.size)}<span class="via" title={x.mine ? `Through ${x.deviceName}` : `Sent on for ${x.deviceName}`}>{x.mine ? `through ${x.deviceName}` : `from ${x.deviceName}`}</span></div>
+                    <div class="mmeta">{itemsCount(x.files, x.items, x.more)} · {bytes(x.size)}<span class="via" title={x.mine ? t("Through {pc}", { pc: x.deviceName }) : t("Sent on for {name}", { name: x.deviceName })}>{x.mine ? t("through {pc}", { pc: x.deviceName }) : t("from {name}", { name: x.deviceName })}</span></div>
                     {#if !x.ended}
                       <div class="bar" class:waiting={x.state === "paused" || x.state === "waiting"}><i style:width="{relayPct(x)}%"></i></div>
                     {/if}
@@ -1107,7 +1113,7 @@
                         <span class="dim">{shortDate(x.ended)}</span>
                       {:else}
                         <span class="dim">{relayText(x)}</span>
-                        <button class="link" onclick={() => app.run(() => api.directRelayCancel(x.id))}>Cancel</button>
+                        <button class="link" onclick={() => app.run(() => api.directRelayCancel(x.id))}>{t("Cancel")}</button>
                       {/if}
                     </div>
                     {@render fold(key, x.items, x.more, null)}
@@ -1115,7 +1121,7 @@
                 </div>
               {/if}
             {:else}
-              <div class="nothing dim">{fromId && !talk ? `Reading ${from?.name ?? "that PC"}'s history with ${current.name}…` : fromId ? `Nothing sent or received between ${from?.name ?? "that PC"} and ${current.name} yet.` : `Nothing sent or received with ${current.name} yet.`}</div>
+              <div class="nothing dim">{fromId && !talk ? t("Reading {pc}'s history with {name}…", { pc: from?.name ?? t("that PC"), name: current.name }) : fromId ? t("Nothing sent or received between {pc} and {name} yet.", { pc: from?.name ?? t("that PC"), name: current.name }) : t("Nothing sent or received with {name} yet.", { name: current.name })}</div>
             {/each}
           </div>
           {/key}
@@ -1131,40 +1137,40 @@
                 {#each basket as p (p)}
                   {@const nm = nameOf(p)}
                   {@const tail = tailOf(nm)}
-                  <span class="chip" title={p} transition:pop={{ duration: 180, from: 0.9, y: 0 }} animate:flipIf={flipOpts}><FileIcon name={nm} kind={/\.[a-z0-9]{1,5}$/i.test(p) ? undefined : "folder"} size={14} /><span class="cn"><span class="head">{tail ? nm.slice(0, -tail.length) : nm}</span>{#if tail}<span class="tail">{tail}</span>{/if}</span><button aria-label="Remove {nm}" onclick={() => setBasket(basket.filter((x) => x !== p))}><Icon name="x" size={10} stroke={2.4} /></button></span>
+                  <span class="chip" title={p} transition:pop={{ duration: 180, from: 0.9, y: 0 }} animate:flipIf={flipOpts}><FileIcon name={nm} kind={/\.[a-z0-9]{1,5}$/i.test(p) ? undefined : "folder"} size={14} /><span class="cn"><span class="head">{tail ? nm.slice(0, -tail.length) : nm}</span>{#if tail}<span class="tail">{tail}</span>{/if}</span><button aria-label={t("Remove {name}", { name: nm })} onclick={() => setBasket(basket.filter((x) => x !== p))}><Icon name="x" size={10} stroke={2.4} /></button></span>
                 {/each}
               </div>
               <div class="opts">
                 <SegPick
-                  label="Compression"
+                  label={t("Compression")}
                   options={[
-                    { value: "plain", label: "As they are" },
-                    { value: "zip", label: "Compressed ZIP" },
+                    { value: "plain", label: t("As they are") },
+                    { value: "zip", label: t("Compressed ZIP") },
                   ]}
                   value={compress ? "zip" : "plain"}
                   onpick={(v) => (compress = v === "zip")}
                 />
-                <input class="input name" bind:value={sendName} placeholder="Name (optional)" maxlength="120" aria-label="Name of this send" />
+                <input class="input name" bind:value={sendName} placeholder={t("Name (optional)")} maxlength="120" aria-label={t("Name of this send")} />
                 {#if fromId}
-                  <span class="keep" title="Once {current.name} has them, a copy stays on {from?.name ?? 'that PC'} (in its folder for files from this PC). Off: the copy there is deleted.">
-                    <button class="switch" class:on={keepCopy} role="switch" aria-checked={keepCopy} aria-label="Keep a copy on {from?.name ?? 'that PC'}" onclick={() => (keepCopy = !keepCopy)}></button>
-                    <span class="keepl">Keep a copy on {from?.name ?? "that PC"}</span>
+                  <span class="keep" title={t("Once {name} has them, a copy stays on {pc} (in its folder for files from this PC). Off: the copy there is deleted.", { name: current.name, pc: from?.name ?? t("that PC") })}>
+                    <button class="switch" class:on={keepCopy} role="switch" aria-checked={keepCopy} aria-label={t("Keep a copy on {pc}", { pc: from?.name ?? t("that PC") })} onclick={() => (keepCopy = !keepCopy)}></button>
+                    <span class="keepl">{t("Keep a copy on {pc}", { pc: from?.name ?? t("that PC") })}</span>
                   </span>
                 {/if}
                 <!-- Not enough room on one line: the two buttons go to the next one, still on the right. -->
                 <div class="go">
-                  <button class="btn ghost" onclick={() => setBasket([])}>Clear</button>
-                  <button class="btn primary" disabled={!canSend || sending} onclick={send} title={fromId ? `Send to ${current.name} through ${from?.name ?? "that PC"}` : `Send to ${current.name}`}><Icon name="send" size={13} stroke={2.2} /><span class="to">Send to {current.name}</span></button>
+                  <button class="btn ghost" onclick={() => setBasket([])}>{t("Clear")}</button>
+                  <button class="btn primary" disabled={!canSend || sending} onclick={send} title={fromId ? t("Send to {name} through {pc}", { name: current.name, pc: from?.name ?? t("that PC") }) : t("Send to {name}", { name: current.name })}><Icon name="send" size={13} stroke={2.2} /><span class="to">{t("Send to {name}", { name: current.name })}</span></button>
                 </div>
               </div>
               </div>
             {/if}
             <div class="droprow">
               <span class="dim">
-                {#if fromId && !from?.online}{from?.name ?? "That PC"} is offline. Drop files or folders here, or{:else if fromId && (!current.trusted || current.declined)}{current.name} hasn't accepted {from?.name ?? "that PC"} yet. Drop files or folders here, or{:else if fromId && !current.online}{from?.name ?? "That PC"} passes them on once {current.name} is back. Drop files or folders here, or{:else if fromId}Drop files or folders here, or{:else if current.online}Drop files or folders here, or{:else}{current.name} is offline: files go only while you're both online. Drop files or folders here, or{/if}
+                {#if fromId && !from?.online}{t("{pc} is offline. Drop files or folders here, or", { pc: from?.name ?? t("That PC") })}{:else if fromId && (!current.trusted || current.declined)}{t("{name} hasn't accepted {pc} yet. Drop files or folders here, or", { name: current.name, pc: from?.name ?? t("that PC") })}{:else if fromId && !current.online}{t("{pc} passes them on once {name} is back. Drop files or folders here, or", { pc: from?.name ?? t("That PC"), name: current.name })}{:else if fromId}{t("Drop files or folders here, or")}{:else if current.online}{t("Drop files or folders here, or")}{:else}{t("{name} is offline: files go only while you're both online. Drop files or folders here, or", { name: current.name })}{/if}
               </span>
-              <button class="btn small" onclick={chooseFiles}><Icon name="file" size={12} />Choose files</button>
-              <button class="btn small" onclick={chooseDir}><Icon name="folder" size={12} />Choose folder</button>
+              <button class="btn small" onclick={chooseFiles}><Icon name="file" size={12} />{t("Choose files")}</button>
+              <button class="btn small" onclick={chooseDir}><Icon name="folder" size={12} />{t("Choose folder")}</button>
             </div>
           </footer>
         {/if}
@@ -1182,81 +1188,81 @@
 </div>
 
 {#if app.directAdding}
-  <Modal title="Add a contact" width={480} onclose={() => (app.directAdding = false)}>
+  <Modal title={t("Add a contact")} width={480} onclose={() => (app.directAdding = false)}>
     <div class="form">
       {#if nameMissing}
-        <label class="mlabel" for="addmyname">Your name</label>
-        <input id="addmyname" class="input" class:missing={needName} bind:this={nameField} bind:value={myName} placeholder="What your contacts see" maxlength="60" aria-invalid={needName} />
-        {#if needName}<p class="err" role="alert">Fill in your name first: they see it when you add them.</p>{/if}
-        <p class="dim small first">Asked once: your contacts see this name, so they know who's asking. You can change it later: click it under <b>You, sending from</b>, at the top of the contact list.</p>
+        <label class="mlabel" for="addmyname">{t("Your name")}</label>
+        <input id="addmyname" class="input" class:missing={needName} bind:this={nameField} bind:value={myName} placeholder={t("What your contacts see")} maxlength="60" aria-invalid={needName} />
+        {#if needName}<p class="err" role="alert">{t("Fill in your name first: they see it when you add them.")}</p>{/if}
+        <p class="dim small first">{askedOnce[0]}<b>{t("You, sending from")}</b>{askedOnce[1]}</p>
       {/if}
-      <label class="mlabel" for="cid">Their Pako ID</label>
-      <input id="cid" class="input mono" bind:value={newId} placeholder="Paste the ID they sent you" spellcheck="false" />
-      <label class="mlabel" for="cname">Their name</label>
-      <input id="cname" class="input" bind:value={newName} placeholder="What you call them" maxlength="60" onkeydown={(e) => e.key === "Enter" && addContact()} />
+      <label class="mlabel" for="cid">{t("Their Pako ID")}</label>
+      <input id="cid" class="input mono" bind:value={newId} placeholder={t("Paste the ID they sent you")} spellcheck="false" />
+      <label class="mlabel" for="cname">{t("Their name")}</label>
+      <input id="cname" class="input" bind:value={newName} placeholder={t("What you call them")} maxlength="60" onkeydown={(e) => e.key === "Enter" && addContact()} />
       {#if addError}<p class="err">{addError}</p>{/if}
-      <p class="dim small">The first time, they're asked to accept. After that you connect by yourselves whenever both Pakos are open.</p>
+      <p class="dim small">{t("The first time, they're asked to accept. After that you connect by yourselves whenever both Pakos are open.")}</p>
     </div>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (app.directAdding = false)}>Cancel</button>
-      <button class="btn primary" disabled={!newId.trim() || !newName.trim()} onclick={addContact}>Add contact</button>
+      <button class="btn ghost" onclick={() => (app.directAdding = false)}>{t("Cancel")}</button>
+      <button class="btn primary" disabled={!newId.trim() || !newName.trim()} onclick={addContact}>{t("Add contact")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if renaming}
-  <Modal title="Rename {renaming.name}" width={420} onclose={() => (renaming = null)}>
-    <input class="input" bind:value={renameTo} maxlength="60" aria-label="New name" onkeydown={(e) => e.key === "Enter" && rename()} />
+  <Modal title={t("Rename {name}", { name: renaming.name })} width={420} onclose={() => (renaming = null)}>
+    <input class="input" bind:value={renameTo} maxlength="60" aria-label={t("New name")} onkeydown={(e) => e.key === "Enter" && rename()} />
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (renaming = null)}>Cancel</button>
-      <button class="btn primary" disabled={!renameTo.trim()} onclick={rename}>Rename</button>
+      <button class="btn ghost" onclick={() => (renaming = null)}>{t("Cancel")}</button>
+      <button class="btn primary" disabled={!renameTo.trim()} onclick={rename}>{t("Rename")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if tagging}
   {@const tc = tagging}
-  <Modal title="Tags for {tc.name}" width={440} onclose={() => (tagging = null)}>
+  <Modal title={t("Tags for {name}", { name: tc.name })} width={440} onclose={() => (tagging = null)}>
     <div class="tagpick">
-      {#each tagChoices as t, i (i)}
-        {@const on = ticked.some((x) => x.toLowerCase() === t.toLowerCase())}
-        <button class="tagopt" class:on role="checkbox" aria-checked={on} onclick={() => toggleTag(t)}>
-          <span class="tick" aria-hidden="true">{#if on}<Icon name="check" size={11} stroke={3} />{/if}</span>{t}
+      {#each tagChoices as tag, i (i)}
+        {@const on = ticked.some((x) => x.toLowerCase() === tag.toLowerCase())}
+        <button class="tagopt" class:on role="checkbox" aria-checked={on} onclick={() => toggleTag(tag)}>
+          <span class="tick" aria-hidden="true">{#if on}<Icon name="check" size={11} stroke={3} />{/if}</span>{tag}
         </button>
       {/each}
     </div>
     <div class="newrow">
-      <input class="input" bind:value={newTag} maxlength="30" placeholder="New tag" aria-label="New tag" onkeydown={(e) => e.key === "Enter" && addNewTag()} />
-      <button class="btn" disabled={!newTag.trim()} onclick={() => addNewTag()}>Add</button>
+      <input class="input" bind:value={newTag} maxlength="30" placeholder={t("New tag")} aria-label={t("New tag")} onkeydown={(e) => e.key === "Enter" && addNewTag()} />
+      <button class="btn" disabled={!newTag.trim()} onclick={() => addNewTag()}>{t("Add")}</button>
     </div>
     {#if !app.directTags.length}
       <div class="suggest">
-        <span class="dim small">Ideas:</span>
-        {#each SUGGESTED_TAGS as sug (sug)}
+        <span class="dim small">{t("Ideas:")}</span>
+        {#each suggestedTags() as sug (sug)}
           <button class="sugchip" onclick={() => addNewTag(sug)}>{sug}</button>
         {/each}
       </div>
     {/if}
-    <p class="dim small hintline">Tags are only on this PC: {tc.name} never sees them.</p>
+    <p class="dim small hintline">{t("Tags are only on this PC: {name} never sees them.", { name: tc.name })}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (tagging = null)}>Cancel</button>
-      <button class="btn primary" onclick={saveTags}>Save</button>
+      <button class="btn ghost" onclick={() => (tagging = null)}>{t("Cancel")}</button>
+      <button class="btn primary" onclick={saveTags}>{t("Save")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if clearing}
   {@const c = clearing}
-  <Modal title="Clear your history with {c.name}?" width={440} onclose={() => (clearing = null)}>
-    <p class="msgtext">The list of what you sent and received with {c.name} is emptied on this PC and can't be brought back. The files themselves stay where they are, and {c.name} stays in your contacts.</p>
+  <Modal title={t("Clear your history with {name}?", { name: c.name })} width={440} onclose={() => (clearing = null)}>
+    <p class="msgtext">{t("The list of what you sent and received with {name} is emptied on this PC and can't be brought back. The files themselves stay where they are, and {name} stays in your contacts.", { name: c.name })}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (clearing = null)}>Cancel</button>
+      <button class="btn ghost" onclick={() => (clearing = null)}>{t("Cancel")}</button>
       <button
         class="btn danger-fill"
         onclick={() => {
           clearing = null;
           app.run(() => api.directClearHistory(c.id));
-        }}><Icon name="trash" size={13} />Clear history</button
+        }}><Icon name="trash" size={13} />{t("Clear history")}</button
       >
     {/snippet}
   </Modal>
@@ -1264,17 +1270,17 @@
 
 {#if removing}
   {@const r = removing}
-  <Modal title="Remove {r.name}?" width={460} onclose={() => (removing = null)}>
-    <p class="msgtext">You won't be connected any more. For 7 days Pako turns them away without asking you; after that, if they reach you again, you're asked to accept like the first time. Files already received stay on your PC.</p>
+  <Modal title={t("Remove {name}?", { name: r.name })} width={460} onclose={() => (removing = null)}>
+    <p class="msgtext">{t("You won't be connected any more. For 7 days Pako turns them away without asking you; after that, if they reach you again, you're asked to accept like the first time. Files already received stay on your PC.")}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (removing = null)}>Cancel</button>
+      <button class="btn ghost" onclick={() => (removing = null)}>{t("Cancel")}</button>
       <button
         class="btn danger-fill"
         onclick={() => {
           removing = null;
           if (app.directPicked === r.id) app.directPicked = null;
           app.run(() => api.directRemoveContact(r.id));
-        }}><Icon name="trash" size={13} />Remove</button
+        }}><Icon name="trash" size={13} />{t("Remove")}</button
       >
     {/snippet}
   </Modal>

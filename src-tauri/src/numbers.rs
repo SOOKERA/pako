@@ -997,12 +997,12 @@ fn contact_at(conn: &Connection, id: &str) -> rusqlite::Result<ContactNumbers> {
 /// Writes every kept event to a CSV file (opens in Excel). Returns how many rows.
 pub fn export_csv(path: &Path) -> Result<usize, String> {
     let guard = DB.lock().unwrap();
-    let conn = guard.as_ref().ok_or("The numbers aren't open.")?;
+    let conn = guard.as_ref().ok_or_else(|| tr!("The numbers aren't open.", "Les chiffres ne sont pas ouverts."))?;
     let (csv, n) = csv_of(conn)?;
     // A BOM so Excel reads names with accents correctly.
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(csv.as_bytes());
-    std::fs::write(path, bytes).map_err(|e| format!("Couldn't save the file: {e}"))?;
+    std::fs::write(path, bytes).map_err(|e| tr!("Couldn't save the file: {e}", "Impossible d’enregistrer le fichier : {e}"))?;
     Ok(n)
 }
 
@@ -1067,7 +1067,7 @@ pub fn reset() -> Result<(), String> {
         }
     }
     let guard = DB.lock().unwrap();
-    let conn = guard.as_ref().ok_or("Pako couldn't open its numbers. Restart Pako, then try again.")?;
+    let conn = guard.as_ref().ok_or_else(|| tr!("Pako couldn't open its numbers. Restart Pako, then try again.", "Pako n’a pas pu ouvrir ses chiffres. Redémarrez Pako, puis réessayez."))?;
     reset_at(conn).map_err(|e| e.to_string())
 }
 

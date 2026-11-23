@@ -13,7 +13,8 @@
   import Modal from "../Modal.svelte";
   import { fadeIn, flipIf, flipOpts, pop, reduced, rowSlide } from "../motion";
   import { help } from "./help.svelte";
-  import { AREA_LABEL, attached, mailPlan, problemLine, reportText, sendFailText, sentProblems, SUPPORT_EMAIL, when, zone, type ReportParts } from "./report";
+  import { areaLabel, attached, mailPlan, pakoLine, problemLine, reportText, sendFailText, sentProblems, SUPPORT_EMAIL, when, zone, type ReportParts } from "./report";
+  import { around, t } from "../i18n.svelte";
 
   /** Problems shown before "Show all". */
   const FEW = 3;
@@ -31,16 +32,22 @@
 
   const list = $derived(info ? attached(info) : []);
   const shown = $derived(all ? list : list.slice(0, FEW));
-  const look = $derived(`${theme.shown === "light" ? "Light" : "Dark"}${theme.choice === "system" ? " (Match Windows)" : ""}`);
+  const look = $derived.by(() => {
+    const shade = theme.shown === "light" ? t("Light (theme)") : t("Dark (theme)");
+    return theme.choice === "system" ? t("{theme} (Match Windows)", { theme: shade }) : shade;
+  });
   const parts = $derived<ReportParts | null>(info ? { info, look, include } : null);
   const ready = $derived(!!parts && help.reportDraft.trim().length > 0);
+  /** "Say what happened first" on the buttons until something's written. */
+  const first = $derived(ready ? undefined : t("Say what happened first"));
+  const thanks = $derived(around(t("Thank you. Your report's reference is {ref}. If you write to {email} about it, mention it.", { email: SUPPORT_EMAIL }), "{ref}"));
   /** No motion with Windows' "Animation effects" off. */
   const motion = $derived(reduced() ? 0 : 200);
 
   onMount(() => {
     api.reportInfo().then(
       (i) => (info = i),
-      (e) => app.toast(`Couldn't read Pako's details: ${e}`, "error"),
+      (e) => app.toast(t("Couldn't read Pako's details: {why}", { why: String(e) }), "error"),
     );
     // Closed: the next time starts afresh (a report still on its way says how it went).
     return () => {
@@ -67,11 +74,11 @@
       help.reportDraft = "";
       // Closed meanwhile: a toast says it went.
       if (help.report) help.reportSent = ref;
-      else app.toast(`Report sent to Sookera. Its reference is #${ref}.`);
+      else app.toast(t("Report sent to Sookera. Its reference is #{ref}.", { ref }));
     } catch (e) {
       const why = sendFailText(e);
       if (help.report) help.reportFailed = why;
-      else app.toast(`The report wasn't sent. ${why}`, "error");
+      else app.toast(t("The report wasn't sent. {why}", { why }), "error");
     } finally {
       help.reportSending = false;
     }
@@ -95,8 +102,8 @@
       close();
       app.toast(
         plan.clipboard
-          ? "Your email app has the report. Paste the details where it says, check it, then send it."
-          : "Your email app has the report. Check it, then send it.",
+          ? t("Your email app has the report. Paste the details where it says, check it, then send it.")
+          : t("Your email app has the report. Check it, then send it."),
       );
     } catch (e) {
       app.toast(String(e), "error");
@@ -110,7 +117,7 @@
     if (!ready) return nudge();
     try {
       await api.copyText(reportText(help.reportDraft, parts));
-      app.toast(`Details copied. Paste them into an email to ${SUPPORT_EMAIL}.`);
+      app.toast(t("Details copied. Paste them into an email to {email}.", { email: SUPPORT_EMAIL }));
     } catch (e) {
       app.toast(String(e), "error");
     }
@@ -119,18 +126,18 @@
   async function saveAs() {
     if (!parts || busy) return;
     if (!ready) return nudge();
-    if (!inApp) return app.toast("Preview mode: nothing is saved", "error");
+    if (!inApp) return app.toast(t("Preview mode: nothing is saved"), "error");
     const d = new Date();
     const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const path = await saveFile({
-      title: "Save the problem report",
-      defaultPath: `Pako problem report ${stamp}.txt`,
-      filters: [{ name: "Text file", extensions: ["txt"] }],
+      title: t("Save the problem report"),
+      defaultPath: t("Pako problem report {date}.txt", { date: stamp }),
+      filters: [{ name: t("Text file"), extensions: ["txt"] }],
     });
     if (!path) return;
     try {
       await api.reportSave(path, reportText(help.reportDraft, parts));
-      app.toast(`Saved. Attach the file to an email to ${SUPPORT_EMAIL}.`);
+      app.toast(t("Saved. Attach the file to an email to {email}.", { email: SUPPORT_EMAIL }));
     } catch (e) {
       app.toast(String(e), "error");
     }
@@ -147,15 +154,15 @@
 
 <svelte:window onkeydown={key} />
 
-<Modal title="Report a problem" width={580} onclose={close}>
+<Modal title={t("Report a problem")} width={580} onclose={close}>
   {#if sentRef}
   <div class="done" in:pop={{ duration: motion ? 220 : 0, from: 0.96, y: 4 }}>
     <span class="tick" aria-hidden="true"><Icon name="check" size={20} stroke={2.6} /></span>
-    <h3>Sent to Sookera</h3>
-    <p>Thank you. Your report's reference is <strong class="mono">#{sentRef}</strong>. If you write to {SUPPORT_EMAIL} about it, mention it.</p>
+    <h3>{t("Sent to Sookera")}</h3>
+    <p>{thanks[0]}<strong class="mono">#{sentRef}</strong>{thanks[1]}</p>
   </div>
   {:else}
-  <label class="lbl" for="report-what">What happened?</label>
+  <label class="lbl" for="report-what">{t("What happened?")}</label>
   <textarea
     id="report-what"
     class="input"
@@ -163,32 +170,32 @@
     bind:this={field}
     bind:value={help.reportDraft}
     readonly={sending}
-    placeholder="What you did and what you saw. For example: a Google Drive folder stopped at 80% with “Server error (502)”, and Retry didn't help."
+    placeholder={t("What you did and what you saw. For example: a Google Drive folder stopped at 80% with “Server error (502)”, and Retry didn't help.")}
   ></textarea>
 
-  <h3 class="lbl sent">Sent with your report</h3>
-  <section class="card" aria-label="Sent with your report">
+  <h3 class="lbl sent">{t("Sent with your report")}</h3>
+  <section class="card" aria-label={t("Sent with your report")}>
     <dl class="facts">
       <dt>Pako</dt>
-      <dd>{info ? `${info.version} (${info.installed ? "Setup" : "Portable"})` : "…"}</dd>
+      <dd>{info ? pakoLine(info) : "…"}</dd>
       <dt>Windows</dt>
       <dd>{info ? info.windows : "…"}</dd>
-      <dt>Theme</dt>
+      <dt>{t("Theme")}</dt>
       <dd>{look}</dd>
-      <dt>Time zone</dt>
+      <dt>{t("Time zone")}</dt>
       <dd>{zone()}</dd>
     </dl>
 
     <div class="incl">
       <div class="itext">
-        <div class="t" id="report-incl">Include recent problems</div>
+        <div class="t" id="report-incl">{t("Include recent problems")}</div>
         <div class="muted">
           {#if !info}
-            The last problems Pako noted on this PC.
+            {t("The last problems Pako noted on this PC.")}
           {:else if list.length}
-            The last {list.length === 1 ? "problem" : `${list.length} problems`} Pako noted. Links show only their site; file and folder names, IDs and your user name are left out.
+            {t("The last {n} problems Pako noted. Links show only their site; file and folder names, IDs and your user name are left out.", { n: list.length })}
           {:else}
-            Pako hasn't noted any problems on this PC.
+            {t("Pako hasn't noted any problems on this PC.")}
           {/if}
         </div>
       </div>
@@ -200,14 +207,14 @@
         <ol class="problems">
           {#each shown as p (`${p.time}-${p.area}-${p.message}`)}
             <li transition:rowSlide={{ duration: motion }} animate:flipIf={{ ...flipOpts, duration: motion ? flipOpts.duration : 0 }}>
-              <div class="meta"><span class="area">{AREA_LABEL[p.area] ?? AREA_LABEL.other}</span><span class="when mono">{when(p.time)}</span></div>
+              <div class="meta"><span class="area">{areaLabel(p.area)}</span><span class="when mono">{when(p.time)}</span></div>
               <div class="msg">{problemLine(p, info?.version ?? "")}</div>
             </li>
           {/each}
         </ol>
         {#if list.length > FEW}
           <button class="more" aria-expanded={all} onclick={() => (all = !all)}>
-            <Icon name="chevron" size={11} stroke={2.6} />{all ? "Show fewer" : `Show all ${list.length}`}
+            <Icon name="chevron" size={11} stroke={2.6} />{all ? t("Show fewer") : t("Show all {n}", { n: list.length })}
           </button>
         {/if}
       </div>
@@ -217,18 +224,18 @@
   {#if failed}
     <p class="failed" role="alert" in:fadeIn>{failed}</p>
   {:else}
-    <p class="quiet">Send report sends what's shown here to Sookera, kept private and used only to fix Pako. Nothing goes until you click it.</p>
+    <p class="quiet">{t("Send report sends what's shown here to Sookera, kept private and used only to fix Pako. Nothing goes until you click it.")}</p>
   {/if}
   {/if}
 
   {#snippet actions()}
     {#if sentRef}
-      <button class="btn primary" use:focusNow onclick={close}>Close</button>
+      <button class="btn primary" use:focusNow onclick={close}>{t("Close")}</button>
     {:else}
-      <button class="btn ghost left" disabled={!ready} title={ready ? undefined : "Say what happened first"} onclick={saveAs}>Save as a file…</button>
-      <button class="btn ghost" disabled={!ready} title={ready ? undefined : "Say what happened first"} onclick={copy}><Icon name="copy" size={13} stroke={2} />Copy details</button>
-      <button class="btn" disabled={!ready || busy || sending} title={ready ? `Opens your email app, to ${SUPPORT_EMAIL}` : "Say what happened first"} onclick={send}><Icon name="mail" size={14} stroke={2} />Send by email</button>
-      <button class="btn primary" disabled={!ready || sending} title={ready ? "Ctrl+Enter" : "Say what happened first"} onclick={sendReport}><Icon name="send" size={14} stroke={2} />{sending ? "Sending…" : "Send report"}</button>
+      <button class="btn ghost left" disabled={!ready} title={first} onclick={saveAs}>{t("Save as a file…")}</button>
+      <button class="btn ghost" disabled={!ready} title={first} onclick={copy}><Icon name="copy" size={13} stroke={2} />{t("Copy details")}</button>
+      <button class="btn" disabled={!ready || busy || sending} title={first ?? t("Opens your email app, to {email}", { email: SUPPORT_EMAIL })} onclick={send}><Icon name="mail" size={14} stroke={2} />{t("Send by email")}</button>
+      <button class="btn primary" disabled={!ready || sending} title={first ?? t("Ctrl+Enter")} onclick={sendReport}><Icon name="send" size={14} stroke={2} />{sending ? t("Sending…") : t("Send report")}</button>
     {/if}
   {/snippet}
 </Modal>
@@ -256,12 +263,14 @@
   }
   .facts {
     display: grid;
-    grid-template-columns: 76px minmax(0, 1fr);
+    /* The names column fits the longest name (French ones are longer), never under 76px. */
+    grid-template-columns: minmax(76px, max-content) minmax(0, 1fr);
     row-gap: 5px;
     margin: 0;
     font-size: 12.5px;
   }
   .facts dt {
+    padding-right: 12px;
     color: var(--text-3);
   }
   .facts dd {

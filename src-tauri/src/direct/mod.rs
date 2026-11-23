@@ -24,6 +24,7 @@ mod pace;
 mod proto;
 mod resume;
 mod store;
+mod words;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,9 +71,9 @@ impl Direct {
     pub fn node(&self) -> Result<Arc<Node>, String> {
         self.node.lock().unwrap().clone().ok_or_else(|| {
             if !self.started.load(Ordering::SeqCst) {
-                return "Direct isn't running yet. Open the Direct page to start it.".to_string();
+                return words::local("Direct isn't running yet. Open the Direct page to start it.");
             }
-            self.error.lock().unwrap().clone().unwrap_or_else(|| "Direct is still starting. Try again in a moment.".into())
+            words::local(&self.error.lock().unwrap().clone().unwrap_or_else(|| "Direct is still starting. Try again in a moment.".into()))
         })
     }
 
@@ -106,10 +107,11 @@ pub struct View {
     pub state: Option<State>,
 }
 
+/// Direct's view, in this PC's language (see `words.rs`).
 pub fn view(d: &Direct) -> View {
     match d.node.lock().unwrap().clone() {
-        Some(n) => View { ready: true, error: None, first_start: false, nearby: d.nearby.lock().unwrap().as_ref().map(|l| l.status()), state: Some(n.state()) },
-        None => View { ready: false, error: d.error.lock().unwrap().clone(), first_start: d.first.load(Ordering::SeqCst), nearby: None, state: None },
+        Some(n) => View { ready: true, error: None, first_start: false, nearby: d.nearby.lock().unwrap().as_ref().map(|l| l.status()), state: Some(words::in_state(n.state())) },
+        None => View { ready: false, error: d.error.lock().unwrap().as_deref().map(words::local), first_start: d.first.load(Ordering::SeqCst), nearby: None, state: None },
     }
 }
 
@@ -212,6 +214,7 @@ pub fn start_if_used(app: &AppHandle) {
     let direct = Direct::default();
     let _ = direct.app.set(app.clone());
     app.manage(direct);
+    follow_language(app);
     if used_before(crate::paths::data_dir()) {
         // Once the terms of use are accepted (straight away when they already are).
         let app = app.clone();
@@ -225,7 +228,19 @@ pub fn start(app: &AppHandle) {
     let direct = Direct::default();
     let _ = direct.app.set(app.clone());
     app.manage(direct);
+    follow_language(app);
     app.state::<Direct>().wake();
+}
+
+/// Another language: Direct and My devices ask for their views again (each line is worded
+/// when it's shown, see `words.rs`).
+fn follow_language(app: &AppHandle) {
+    use tauri::Listener;
+    let a = app.clone();
+    app.listen("language-changed", move |_| {
+        let _ = a.emit("direct-changed", ());
+        let _ = a.emit("devices-changed", ());
+    });
 }
 
 /// Starts Direct in the background: the window works meanwhile and shows it as starting.
@@ -379,7 +394,8 @@ impl Host for EngineHost {
                 size: d.size.unwrap_or(0),
                 done: d.downloaded,
                 speed: 0,
-                message: d.message.clone(),
+                // In English when it's one of the words that travel (the other PC words it).
+                message: d.message.as_deref().map(crate::model::in_english),
                 priority: devices::priority_word(d.priority),
                 id: d.id,
             })
@@ -399,7 +415,9 @@ impl Host for EngineHost {
                 return out;
             };
             let settings = e.settings();
-            let why = |errors: Vec<String>| errors.into_iter().next().unwrap_or_else(|| "not added".into());
+            // Why a link wasn't added, in English (the PC that sent it words it in its own
+            // language, `words`), without the link the engine puts first (`Added::text` does).
+            let why = |link: &str, errors: Vec<String>| errors.into_iter().next().map_or_else(|| "not added".into(), |e| reason(link, &e));
             // Videos are read by yt-dlp side by side; the answer waits for them up to here
             // (the other PC gives up on an answer after a minute). One still being read then
             // counts as taken: it goes on here.
@@ -431,7 +449,7 @@ impl Host for EngineHost {
                         if r.added + r.skipped > 0 {
                             out.to_links += 1;
                         } else {
-                            out.failed.push((l.link, why(r.errors)));
+                            out.failed.push((l.link.clone(), why(&l.link, r.errors)));
                         }
                     }
                     Route::Video(q) => {
@@ -451,7 +469,7 @@ impl Host for EngineHost {
                             }
                             out.items.push((l.link, made));
                         } else {
-                            out.failed.push((l.link, why(r.errors)));
+                            out.failed.push((l.link.clone(), why(&l.link, r.errors)));
                         }
                     }
                 }
@@ -463,7 +481,10 @@ impl Host for EngineHost {
                         out.downloads += 1;
                         out.items.push((link, vec![have]));
                     }
-                    Ok(Ok(Err(msg))) => out.failed.push((link, msg)),
+                    Ok(Ok(Err(msg))) => {
+                        let msg = reason(&link, &msg);
+                        out.failed.push((link, msg));
+                    }
                     // Still being read: it goes on here, under the id it was given.
                     _ => {
                         out.downloads += 1;
@@ -511,6 +532,15 @@ impl Host for EngineHost {
 const VIDEO_WAIT: Duration = Duration::from_secs(40);
 /// A link not added before then (the others took the time): the PC that sent it keeps it.
 const TOO_SLOW: &str = "Pako there was still busy adding the others: send it again";
+
+/// Why a link another PC sent wasn't added, as it goes back: without the "link: " the engine
+/// puts before a paste's errors (the answer names the link itself), and in English when Pako
+/// knows the words (`model::in_english`; the PC that shows it words it in its language).
+fn reason(link: &str, e: &str) -> String {
+    let short = crate::engine::short(link);
+    let e = [format!("{short}: "), format!("{short}\u{a0}: ")].iter().find_map(|p| e.strip_prefix(p.as_str())).unwrap_or(e);
+    crate::model::in_english(e)
+}
 
 /// Where a link from another of your PCs goes here.
 #[derive(Debug, PartialEq)]
@@ -562,7 +592,7 @@ pub fn parse_check(s: &str, span: Option<&str>) -> Result<(pace::Check, Option<p
         ("often", Some("week")) => Ok((pace::Check::Often, Some(pace::OftenFor::Week))),
         ("auto", _) => Ok((pace::Check::Auto, None)),
         ("ask", _) => Ok((pace::Check::Ask, None)),
-        _ => Err("Unknown choice.".into()),
+        _ => Err(crate::tr!("Unknown choice.", "Choix inconnu.")),
     }
 }
 
@@ -577,7 +607,7 @@ type Dir<'a> = tauri::State<'a, Direct>;
 #[tauri::command]
 pub async fn devices_state(app: AppHandle) -> Result<devices::DevicesState, String> {
     // Built off the window's thread (the tray window asks for it while files move).
-    tauri::async_runtime::spawn_blocking(move || Ok(app.state::<Direct>().node()?.devices_state())).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || Ok(words::in_devices(app.state::<Direct>().node()?.devices_state()))).await.map_err(|e| e.to_string())?
 }
 
 /// The suggested receiving folder for a device named so.
@@ -591,7 +621,7 @@ pub fn devices_default_folder(d: Dir<'_>, name: String) -> Result<String, String
 pub async fn devices_set_pc_name(d: Dir<'_>, name: String) -> Result<String, String> {
     let node = d.node()?;
     off(move || {
-        let kept = node.set_pc_name(&name)?;
+        let kept = node.set_pc_name(&name).map_err(words::say)?;
         save_profile(&Profile { pc_name: kept.clone(), ..load_profile() });
         Ok(kept)
     })
@@ -601,7 +631,7 @@ pub async fn devices_set_pc_name(d: Dir<'_>, name: String) -> Result<String, Str
 /// Saving work (contacts, the profile, the history: written and synced to the disk) is done
 /// off the window's thread, so a click never makes the window wait for the disk.
 async fn off<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?.map_err(words::say)
 }
 
 /// Pairs a PC as yours ("This is my device"), with its receiving folder.
@@ -609,20 +639,20 @@ async fn off<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + '
 pub fn devices_add(d: Dir<'_>, id: String, name: Option<String>, folder: Option<String>) -> Result<(), String> {
     let node = d.node()?;
     if !node.has_pc_name() {
-        return Err("Name this PC first: your other PC sees it.".into());
+        return Err(words::local("Name this PC first: your other PC sees it."));
     }
-    node.add_device(&id, name.as_deref(), folder)
+    node.add_device(&id, name.as_deref(), folder).map_err(words::say)
 }
 
 /// "… wants to pair as your device": answered only in Pako's own window (the safety code).
 #[tauri::command]
 pub fn devices_answer(window: tauri::Window, d: Dir<'_>, peer: String, accept: bool, folder: Option<String>) -> Result<(), String> {
     if window.label() != "main" {
-        return Err("Answer this in Pako's window.".into());
+        return Err(words::local("Answer this in Pako's window."));
     }
     let node = d.node()?;
     if accept && !node.has_pc_name() {
-        return Err("Name this PC first: your other PC sees it.".into());
+        return Err(words::local("Name this PC first: your other PC sees it."));
     }
     node.answer_device_request(&peer, accept, folder);
     Ok(())
@@ -693,10 +723,10 @@ pub async fn devices_download(
 ) -> Result<DownloadThere, String> {
     let links = devices::links_in(&text);
     if links.is_empty() {
-        return Err("No web link in what you pasted.".into());
+        return Err(words::local("No web link in what you pasted."));
     }
-    devices::check_links(&links)?;
-    let folder = devices::send_folder(folder.as_deref())?;
+    devices::check_links(&links).map_err(words::say)?;
+    let folder = devices::send_folder(folder.as_deref()).map_err(words::say)?;
     let node = d.node()?;
     let default_q = engine_of(&app).map(|e| e.settings().video_quality).unwrap_or(1080);
     let (pick, send): (Vec<String>, Vec<String>) = links.into_iter().partition(|l| picked_here(l));
@@ -706,8 +736,8 @@ pub async fn devices_download(
             .into_iter()
             .map(|link| with_quality(LinkOpts { link, quality, priority: priority.clone(), folder: folder.clone() }, default_q))
             .collect();
-        let (text, _) = node.device_add(&id, opts).await?;
-        out.text = Some(text);
+        let (text, _) = node.device_add(&id, opts).await.map_err(words::say)?;
+        out.text = Some(words::local(&text));
     }
     Ok(out)
 }
@@ -722,8 +752,8 @@ pub struct Picked {
 /// or files listed to pick.
 #[tauri::command]
 pub async fn devices_pick(app: AppHandle, link: String) -> Result<Picked, String> {
-    let link = devices::check_links(&[link])?.remove(0);
-    let engine = engine_of(&app).ok_or("Pako is still starting.")?;
+    let link = devices::check_links(&[link]).map_err(words::say)?.remove(0);
+    let engine = engine_of(&app).ok_or_else(|| words::local("Pako is still starting."))?;
     let (title, items) = engine.pick_items(&link).await?;
     Ok(Picked { title, items })
 }
@@ -765,11 +795,11 @@ pub fn devices_choices(app: AppHandle, d: Dir<'_>) -> Vec<crate::engine::DeviceC
 /// Without Direct running, links set to a device stay (noted as offline).
 #[tauri::command]
 pub fn devices_found_split(app: AppHandle, d: Dir<'_>, ids: Vec<String>) -> Result<crate::engine::DeviceSplit, String> {
-    let engine = engine_of(&app).ok_or("Pako is still starting.")?;
+    let engine = engine_of(&app).ok_or_else(|| words::local("Pako is still starting."))?;
     let devices = match d.node() {
         Ok(n) => n.device_choices(),
         // Not running: every device counts as offline (nothing set back to This PC).
-        Err(_) => engine.found().iter().filter_map(|f| f.device.clone()).map(|id| crate::engine::DeviceChoice { name: "That PC".into(), id, online: false }).collect(),
+        Err(_) => engine.found().iter().filter_map(|f| f.device.clone()).map(|id| crate::engine::DeviceChoice { name: crate::tr!("That PC", "Ce PC"), id, online: false }).collect(),
     };
     Ok(engine.found_split(&ids, &devices))
 }
@@ -777,14 +807,14 @@ pub fn devices_found_split(app: AppHandle, d: Dir<'_>, ids: Vec<String>) -> Resu
 /// Links › details › "Download on": None = This PC.
 #[tauri::command]
 pub fn found_set_device(app: AppHandle, ids: Vec<String>, device: Option<String>) -> Result<(), String> {
-    engine_of(&app).ok_or("Pako is still starting.")?.found_set_device(&ids, device);
+    engine_of(&app).ok_or_else(|| words::local("Pako is still starting."))?.found_set_device(&ids, device);
     Ok(())
 }
 
 /// The note on rows a device didn't take (None clears it).
 #[tauri::command]
 pub fn found_device_note(app: AppHandle, ids: Vec<String>, note: Option<String>) -> Result<(), String> {
-    engine_of(&app).ok_or("Pako is still starting.")?.found_device_note(&ids, note);
+    engine_of(&app).ok_or_else(|| words::local("Pako is still starting."))?.found_device_note(&ids, note);
     Ok(())
 }
 
@@ -809,15 +839,15 @@ pub async fn devices_add_links(app: AppHandle, d: Dir<'_>, id: String, links: Ve
     let private = engine_of(&app).map(|e| e.found_private_links()).unwrap_or_default();
     let (held, send): (Vec<LinkOpts>, Vec<LinkOpts>) = links.into_iter().partition(|l| held_why(l.link.trim(), &private).is_some());
     // Trimmed, as the window compares them.
-    let held: Vec<(String, String)> = held.into_iter().map(|l| (l.link.trim().to_string(), held_why(l.link.trim(), &private).unwrap_or_default().to_string())).collect();
+    let held: Vec<(String, String)> = held.into_iter().map(|l| (l.link.trim().to_string(), held_why(l.link.trim(), &private).unwrap_or_default())).collect();
     if send.is_empty() {
-        return Err(held.first().map(|(_, w)| w.clone()).unwrap_or_else(|| "Nothing to send.".into()));
+        return Err(held.first().map(|(_, w)| w.clone()).unwrap_or_else(|| words::local("Nothing to send.")));
     }
     // A folder name the other PC would refuse is refused here, saying why (not silently dropped).
     let send = send
         .into_iter()
         .map(|mut l| {
-            l.folder = devices::send_folder(l.folder.as_deref())?;
+            l.folder = devices::send_folder(l.folder.as_deref()).map_err(words::say)?;
             Ok(with_quality(l, default_q))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -830,12 +860,13 @@ pub async fn devices_add_links(app: AppHandle, d: Dir<'_>, id: String, links: Ve
         match node.device_add_named(&id, part.to_vec(), &names).await {
             Ok((t, f)) => {
                 any_ok = true;
-                texts.push(t);
+                texts.push(words::local(&t));
                 failed.extend(f);
             }
             Err(e) => {
+                let e = words::local(&e);
                 failed.extend(part.iter().map(|l| l.link.trim().to_string()));
-                texts.push(format!("Not taken: {} ({e})", part.len()));
+                texts.push(crate::tr!("Not taken: {} ({e})", "Non accepté : {} ({e})", part.len()));
                 first_err.get_or_insert(e);
             }
         }
@@ -848,9 +879,9 @@ pub async fn devices_add_links(app: AppHandle, d: Dir<'_>, id: String, links: Ve
 
 /// Why a link isn't sent to another PC as it is: opened here first (a playlist, a link page),
 /// or a private window's (`private`: those links in Links). None = it is sent.
-fn held_why(link: &str, private: &std::collections::HashSet<String>) -> Option<&'static str> {
+fn held_why(link: &str, private: &std::collections::HashSet<String>) -> Option<String> {
     if private.contains(link) {
-        return Some(crate::engine::PRIVATE_HERE);
+        return Some(crate::engine::private_here());
     }
     open_here_first(link)
 }
@@ -860,25 +891,26 @@ fn held_why(link: &str, private: &std::collections::HashSet<String>) -> Option<&
 /// quality chosen in the window; it goes as First, like the window's "Download now".
 #[tauri::command]
 pub async fn devices_send_ask(app: AppHandle, d: Dir<'_>, id: String, device: String, quality: Option<u32>) -> Result<String, String> {
-    let engine = engine_of(&app).ok_or("Pako is still starting.")?;
-    let item = engine.find(&id).filter(|x| x.ask).ok_or("This download is no longer waiting.")?;
+    let engine = engine_of(&app).ok_or_else(|| words::local("Pako is still starting."))?;
+    let item = engine.find(&id).filter(|x| x.ask).ok_or_else(|| words::local("This download is no longer waiting."))?;
     // A private window's download stays on this PC.
     if item.private {
-        return Err(crate::engine::PRIVATE_HERE.into());
+        return Err(crate::engine::private_here());
     }
 
     if crate::engine::here_only(&item) {
-        return Err("A video caught on a page downloads on this PC only.".into());
+        return Err(words::local("A video caught on a page downloads on this PC only."));
     }
     if let Some(why) = open_here_first(&item.link) {
-        return Err(why.into());
+        return Err(why);
     }
     let default_q = engine.settings().video_quality;
     // Only the link goes: never its cookies or the browser's headers.
     let quality = quality.filter(|q| crate::extension::VIDEO_QUALITIES.contains(q));
     let link = with_quality(LinkOpts { link: item.link.clone(), quality, priority: Some("first".into()), folder: None }, default_q);
     let names = std::collections::HashMap::from([(item.link.clone(), item.name.clone())]);
-    let (text, _) = d.node()?.device_add_named(&device, vec![link], &names).await?;
+    let (text, _) = d.node()?.device_add_named(&device, vec![link], &names).await.map_err(words::say)?;
+    let text = words::local(&text);
     // It went: whatever happens here now, the window must not say "Not sent". (Answered
     // meanwhile, it stays as it was answered.)
     let _ = crate::ask::answer(crate::model::AskAnswer { id, action: "cancel".into(), stem: String::new(), dir: String::new(), quality: None, alert: None, dont_ask: false, private: false });
@@ -895,9 +927,9 @@ pub async fn devices_item(d: Dir<'_>, id: String, item: String, action: String) 
         "remove" => Order::Remove { item },
         "get" => Order::Get { item },
         "first" | "normal" | "later" => Order::Priority { item, priority: action },
-        _ => return Err("Unknown action.".into()),
+        _ => return Err(words::local("Unknown action.")),
     };
-    d.node()?.device_order(&id, order).await
+    d.node()?.device_order(&id, order).await.map(|t| words::local(&t)).map_err(words::say)
 }
 
 // ---------- Direct relay: sending from another of your PCs ----------
@@ -911,13 +943,13 @@ pub fn direct_from_choices(d: Dir<'_>) -> Vec<RelayChoice> {
 /// That PC's Direct contacts, read live.
 #[tauri::command]
 pub async fn direct_remote_contacts(d: Dir<'_>, device: String) -> Result<RemoteBook, String> {
-    d.node()?.remote_book(&device).await
+    d.node()?.remote_book(&device).await.map_err(words::say)
 }
 
 /// That PC's history with one of its contacts, read live.
 #[tauri::command]
 pub async fn direct_remote_talk(d: Dir<'_>, device: String, contact: String) -> Result<RemoteTalk, String> {
-    d.node()?.remote_talk(&device, &contact).await
+    d.node()?.remote_talk(&device, &contact).await.map(words::in_talk).map_err(words::say)
 }
 
 /// Sends files to one of that PC's contacts, through that PC. `keep`: keep a copy there.
@@ -925,13 +957,13 @@ pub async fn direct_remote_talk(d: Dir<'_>, device: String, contact: String) -> 
 #[allow(clippy::too_many_arguments)]
 pub async fn direct_relay_send(d: Dir<'_>, device: String, contact: String, contact_name: String, paths: Vec<String>, compress: bool, name: Option<String>, keep: bool) -> Result<String, String> {
     let node = d.node()?;
-    node.relay_send(&device, &contact, &contact_name, paths.into_iter().map(PathBuf::from).collect(), compress, name, keep).await
+    node.relay_send(&device, &contact, &contact_name, paths.into_iter().map(PathBuf::from).collect(), compress, name, keep).await.map_err(words::say)
 }
 
 /// Stops a relay this PC asked for.
 #[tauri::command]
 pub fn direct_relay_cancel(d: Dir<'_>, id: String) -> Result<(), String> {
-    d.node()?.relay_cancel(&id)
+    d.node()?.relay_cancel(&id).map_err(words::say)
 }
 
 #[cfg(test)]

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // The tutorials, one per page, plus the quick tour. Steps point at `data-tour="…"` attributes.
-// When a page changes, change its steps in the same commit.
+// When a page changes, change its steps in the same commit (and their French: src/lib/i18n/fr-tours.ts).
 // Keep them short: group what sits together (one step for a whole bar), and order the steps so
 // the spotlight travels around the window in one direction instead of jumping back and forth.
 import { app } from "../state.svelte";
 import type { Step } from "./tour.svelte";
 import { devices, targets } from "../devices.svelte";
 import { priv } from "../private.svelte";
+import type { Key } from "../i18n.svelte";
 
 export type TourId = "downloads" | "found" | "send" | "direct" | "devices" | "dashboard" | "settings" | "private" | "full";
 
@@ -40,9 +41,9 @@ const found: Step[] = [
 
 // Top → centre → down → right.
 const send: Step[] = [
-  { view: "send", target: "send-choose", title: "Upload", text: "Share big files with a link anyone can open. Drag and drop files or folders anywhere on this page, from Explorer or your desktop, or pick them with this button." },
+  { view: "send", target: "send-choose", title: "Upload (page)", text: "Share big files with a link anyone can open. Drag and drop files or folders anywhere on this page, from Explorer or your desktop, or pick them with this button." },
   { view: "send", target: "send-basket", when: () => app.basket.length > 0, optional: true, title: "New upload", text: "Files gather here first: nothing is uploaded until you click Upload. Choose where they go (Gofile needs no account, Google Drive uses your own), when they delete themselves, and how several files are packed. Protect with a password locks them before they leave your PC: people open them with 7-Zip or Pako and that password." },
-  { view: "send", target: "send-uploaded", when: hasUploaded, optional: true, title: "Uploaded", text: "Each upload with where it went, when it deletes itself and how often it was downloaded. Copy its link from here. Drag a column title's edge to resize it, and right-click the titles to show or hide columns." },
+  { view: "send", target: "send-uploaded", when: hasUploaded, optional: true, title: "Uploaded (list)", text: "Each upload with where it went, when it deletes itself and how often it was downloaded. Copy its link from here. Drag a column title's edge to resize it, and right-click the titles to show or hide columns." },
   { view: "send", target: "details", panel: true, title: "Details", text: "Select an upload to see its files, its link as a QR code and how fast it went." },
 ];
 
@@ -87,11 +88,11 @@ const settings: Step[] = [
   { view: "settings", target: "set-updates", title: "Features & updates", text: "Pako's version and its updates. The tools for features like videos fold under What Pako can do. At the bottom of each tab, Advanced holds what most people never change: here, running the first-start setup again." },
   { view: "settings", target: "set-browser", title: "Browser extension", text: "Connect Pako to your browsers, add the extension (each browser says when it's Installed), and choose whether Pako asks before each browser download." },
   { view: "settings", target: "set-accounts", title: "Accounts", text: "Connect your Google Drive for uploads. Downloads never need a sign-in." },
-  { view: "settings", target: "set-window", title: "Window", text: "Light or dark, what minimising and closing do, starting with Windows, and asking before quitting." },
+  { view: "settings", target: "set-window", title: "Window", text: "The language (English or French), light or dark, what minimising and closing do, starting with Windows, and asking before quitting." },
   { view: "settings", target: "set-notices", title: "Notifications", text: "How new downloads tell you they're done (Off, Pop-up or Important) and when they chime, what shows as a pop-up and what the bell keeps, the sounds, and Do not disturb." },
   { view: "settings", target: "set-downloads", title: "Downloads", text: "Speed (how many at once, a speed limit, set hours), saving files (your download folder, split archives), videos, what happens while downloading, and downloads from private windows. Connections per file and other rarely changed ones are under Advanced." },
   { view: "settings", target: "set-private", title: "Private mode", text: "Turn on Private mode to keep downloads from private windows behind a PIN or a password, then choose when it locks, when its list clears, and manage the PIN and recovery code." },
-  { view: "settings", target: "set-upload", title: "Upload", text: "Where uploads go and how several files are packed." },
+  { view: "settings", target: "set-upload", title: "Upload (page)", text: "Where uploads go and how several files are packed." },
 ];
 
 // The first look: short, down the sidebar. The details are in each page's Tutorial.
@@ -119,10 +120,10 @@ export const PREPARE: Partial<Record<TourId, () => Promise<unknown>>> = {
 };
 
 /** The pages with a tutorial, in sidebar order (for Help). */
-export const PAGE_TOURS: { id: Exclude<TourId, "full">; label: string }[] = [
+export const PAGE_TOURS: { id: Exclude<TourId, "full">; label: Key }[] = [
   { id: "downloads", label: "Downloads" },
   { id: "found", label: "Links" },
-  { id: "send", label: "Upload" },
+  { id: "send", label: "Upload (page)" },
   { id: "direct", label: "Direct" },
   { id: "devices", label: "My devices" },
   { id: "dashboard", label: "Dashboard" },

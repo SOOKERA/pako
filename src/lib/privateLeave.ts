@@ -3,6 +3,9 @@
 // Leaving Private mode's screens locks it. Which moves leave, and what the question before
 // leaving says when something is still running there. Plain functions: tested in
 // test/private-leave.test.mjs.
+import type { Key } from "./i18n.svelte.ts";
+import { words, type Params } from "./i18n/core.ts";
+import { en } from "./i18n/en.ts";
 
 export type WorkKind = "send" | "upload" | "decrypt";
 
@@ -26,16 +29,28 @@ export function leaves(from: Where, to: Where): boolean {
   return to.library !== from.library || to.source !== from.source;
 }
 
-const VERB: Record<WorkKind, string> = { send: "sending", upload: "uploading", decrypt: "decrypting" };
+// ---- Words: English here (and in the tests); the window gives its own t() (private.svelte.ts),
+// so they follow the language shown. ----
+
+type Say = (key: Key, params?: Params) => string;
+let say: Say = (key, params) => words(en[key] ?? key, "en", params);
+let locale = () => "en-GB";
+/** The window's words and its locale (for "a, b and c"). */
+export function useWords(fn: Say, loc: () => string) {
+  say = fn;
+  locale = loc;
+}
+
+const DOING: Record<WorkKind, Key> = { send: "sending {what}", upload: "uploading {what}", decrypt: "decrypting {what}" };
 
 /** What leaving stops, in words: "sending Holiday.mp4", "the video", "2 things in progress";
  *  "" when nothing runs (then it locks without asking). */
 export function leaveWords(work: { kind: WorkKind; what: string }[], playing: string | null): string {
   const n = work.length + (playing ? 1 : 0);
   if (n === 0) return "";
-  if (n > 1) return `${n} things in progress`;
-  if (playing) return "the video";
-  return `${VERB[work[0].kind]} ${work[0].what}`;
+  if (n > 1) return say("{n} things in progress", { n });
+  if (playing) return say("the video");
+  return say(DOING[work[0].kind], { what: work[0].what });
 }
 
 /** After Lock stopped something: "Private mode locked. 1 send stopped." (naming nothing
@@ -43,17 +58,16 @@ export function leaveWords(work: { kind: WorkKind; what: string }[], playing: st
 export function lockedNote(kinds: WorkKind[], playing: boolean): string {
   const count = (k: WorkKind) => kinds.filter((x) => x === k).length;
   const parts: string[] = [];
-  const n = (k: number, one: string, many: string) => (k === 1 ? `1 ${one}` : `${k} ${many}`);
-  if (count("send")) parts.push(n(count("send"), "send", "sends"));
-  if (count("upload")) parts.push(n(count("upload"), "upload", "uploads"));
-  if (count("decrypt")) parts.push(n(count("decrypt"), "decrypt", "decrypts"));
-  if (playing) parts.push("the video");
-  if (!parts.length) return "";
-  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  return `Private mode locked. ${list[0].toUpperCase()}${list.slice(1)} stopped.`;
+  if (count("send")) parts.push(say("{n} sends", { n: count("send") }));
+  if (count("upload")) parts.push(say("{n} uploads", { n: count("upload") }));
+  if (count("decrypt")) parts.push(say("{n} decrypts", { n: count("decrypt") }));
+  if (!parts.length) return playing ? say("Private mode locked. The video stopped.") : "";
+  if (playing) parts.push(say("the video"));
+  const list = new Intl.ListFormat(locale(), { type: "conjunction" }).format(parts);
+  return say("Private mode locked. {list} stopped.", { list });
 }
 
 /** The whole question: "Leaving locks Private mode and stops sending Holiday.mp4. Leave anyway?" */
-export function leaveQuestion(words: string): string {
-  return `Leaving locks Private mode and stops ${words}. Leave anyway?`;
+export function leaveQuestion(stops: string): string {
+  return say("Leaving locks Private mode and stops {words}. Leave anyway?", { words: stops });
 }

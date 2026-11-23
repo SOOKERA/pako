@@ -255,8 +255,9 @@ FunctionEnd
   FileOpen $0 "$INSTDIR\.pako-installed" w
   ${If} ${Errors}
     ; Said under the bar, with Close (installer/ui.nsh: PakoFail).
-    !insertmacro PakoFail "$(pakoFailInstall)"
-    Abort "$(pakoFailInstall)"
+    !insertmacro PakoT $PakoTx pakoFailInstall
+    !insertmacro PakoFail $PakoTx
+    Abort $PakoTx
   ${EndIf}
   FileWrite $0 "Installed by Pako Setup. Pako keeps its settings and lists in %LOCALAPPDATA%\Pako.$\r$\n"
   FileClose $0
@@ -278,6 +279,15 @@ FunctionEnd
     ; terms of use", so Pako doesn't ask again at its first start (silent and passive installs
     ; never come here: nobody saw that line).
     StrCpy $1 '"$INSTDIR\${MAINBINARYNAME}.exe" --install-choices --start-with-windows=$PakoStart --browsers=$PakoBrowsers --terms-accepted=1'
+    ; [Pako] --lang=en|fr: the window's language, so Pako starts in it (install.rs). Only when it
+    ; was picked in the window. Nothing picked, Pako keeps the language it has: English for a
+    ; new Pako (its default, the window's first language too), or the one a portable Pako
+    ; already uses over the same data, an update, a reinstall… "Nothing saved yet" doesn't
+    ; mean "chosen": a silent install saves nothing, and a portable copy's data may say French.
+    ; (Pako then notes its own language for the uninstaller: i18n::tell_setup.)
+    ${If} $PakoLangPicked = 1
+      StrCpy $1 '$1 --lang=$PakoLang'
+    ${EndIf}
     ; STARTUPINFOW (68 bytes in a 32-bit Setup, 104 in a 64-bit one), PROCESS_INFORMATION.
     System::Alloc 104
     Pop $2
@@ -360,7 +370,9 @@ Var PakoUnArgs
         ; deleted, also not by Tauri below.
         StrCpy $DeleteAppDataCheckboxState 0
         StrCpy $PakoDeletePrivate 0
-        MessageBox MB_ICONINFORMATION|MB_OK "Another Pako is open, so Pako's settings and lists were kept. To delete them, close that Pako, then delete the Pako folder in %LOCALAPPDATA%." /SD IDOK
+        ; [Pako] The words: English.nsh / French.nsh (pakoOtherOpen).
+        !insertmacro PakoT $PakoTx pakoOtherOpen
+        MessageBox MB_ICONINFORMATION|MB_OK $PakoTx /SD IDOK
       ${ElseIf} $0 <> 0
         StrCpy $PakoDeleteHere 1
       ${EndIf}
@@ -368,8 +380,11 @@ Var PakoUnArgs
     ; This copy's entry is gone by now: one still there is another Pako's (unless Pako.exe
     ; couldn't run).
     ReadRegStr $PakoOtherRun HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Pako"
+    ; Quoted or not, with or without --tray (tauri-plugin-autostart writes it unquoted).
     ${If} $PakoOtherRun == "$\"$INSTDIR\${MAINBINARYNAME}.exe$\""
     ${OrIf} $PakoOtherRun == "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --tray"
+    ${OrIf} $PakoOtherRun == "$INSTDIR\${MAINBINARYNAME}.exe"
+    ${OrIf} $PakoOtherRun == "$INSTDIR\${MAINBINARYNAME}.exe --tray"
       StrCpy $PakoOtherRun ""
     ${EndIf}
   ${EndIf}

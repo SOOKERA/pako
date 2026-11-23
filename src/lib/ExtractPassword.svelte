@@ -8,13 +8,14 @@
   import { app } from "./state.svelte";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
+  import { t, type Words, said } from "./i18n.svelte";
 
   let { d, onclose }: { d: Download; onclose: () => void } = $props();
 
   let password = $state("");
   let show = $state(false);
   let busy = $state(false);
-  let error = $state("");
+  let error = $state<Words>("");
   let input: HTMLInputElement | undefined = $state();
 
   onMount(async () => {
@@ -29,12 +30,12 @@
     try {
       const out = await api.extractNow(d.id, password);
       password = "";
-      app.toast(`${d.name} is extracted.`, "info", { label: "Show", run: () => api.openFolder(out) });
+      app.toast(t("{name} is extracted.", { name: d.name }), "info", { label: t("Show"), run: () => api.openFolder(out) });
       await app.refresh();
       onclose();
     } catch (e) {
       const why = String(e);
-      error = why === "password-wrong" || why === "password-needed" ? "That password isn't right. Check it and try again." : why;
+      error = why === "password-wrong" || why === "password-needed" ? () => t("That password isn't right. Check it and try again.") : why;
       busy = false;
       await tick();
       input?.select();
@@ -42,28 +43,28 @@
   }
 </script>
 
-<Modal title="Password for {d.name}" width={440} onclose={() => !busy && onclose()} outsideCloses={!busy} closable={!busy}>
+<Modal title={t("Password for {name}", { name: d.name })} width={440} onclose={() => !busy && onclose()} outsideCloses={!busy} closable={!busy}>
   <div class="pw">
-    <p class="msg">This archive is locked with a password. Type it to extract the files. Pako hands it to 7-Zip only and doesn't keep it.</p>
+    <p class="msg">{t("This archive is locked with a password. Type it to extract the files. Pako hands it to 7-Zip only and doesn't keep it.")}</p>
     <div class="field">
       <input
         bind:this={input}
         class="input"
         type={show ? "text" : "password"}
-        aria-label="Password"
+        aria-label={t("Password")}
         autocomplete="off"
         spellcheck="false"
         bind:value={password}
         disabled={busy}
         onkeydown={(e) => e.key === "Enter" && go()}
       />
-      <button class="btn small" type="button" aria-label={show ? "Hide the password" : "Show the password"} aria-pressed={show} onclick={() => (show = !show)}>{show ? "Hide" : "Show"}</button>
+      <button class="btn small" type="button" aria-label={show ? t("Hide the password") : t("Show the password")} aria-pressed={show} onclick={() => (show = !show)}>{show ? t("Hide") : t("Show")}</button>
     </div>
-    {#if error}<p class="err" role="alert">{error}</p>{/if}
+    {#if error}<p class="err" role="alert">{said(error)}</p>{/if}
   </div>
   {#snippet actions()}
-    <button class="btn ghost" disabled={busy} onclick={onclose}>Cancel</button>
-    <button class="btn primary" disabled={busy || !password} onclick={go}><Icon name="unlock" size={13} />{busy ? "Extracting…" : "Extract"}</button>
+    <button class="btn ghost" disabled={busy} onclick={onclose}>{t("Cancel")}</button>
+    <button class="btn primary" disabled={busy || !password} onclick={go}><Icon name="unlock" size={13} />{busy ? t("Extracting…") : t("Extract")}</button>
   {/snippet}
 </Modal>
 

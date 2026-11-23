@@ -6,18 +6,21 @@
   // and Help).
   import { openWeb, SITE } from "./web";
   import { help } from "./help/help.svelte";
+  import { around, t } from "./i18n.svelte";
+
+  const by = $derived(around(t("Pako by {studio}"), "{studio}"));
 </script>
 
 <div class="credit">
-  <span>Pako by <button class="lk" onclick={() => openWeb(SITE.studio)} title="sookera.com">Sookera</button></span>
+  <span>{by[0]}<button class="lk" onclick={() => openWeb(SITE.studio)} title="sookera.com">Sookera</button>{by[1]}</span>
   <span class="sep" aria-hidden="true">·</span>
-  <button class="lk" onclick={() => help.show("about")} title="About Pako: copyright, licence, no warranty">Free software (GPL-3.0)</button>
+  <button class="lk" onclick={() => help.show("about")} title={t("About Pako: copyright, licence, no warranty")}>{t("Free software (GPL-3.0)")}</button>
   <span class="sep" aria-hidden="true">·</span>
-  <button class="lk" onclick={() => openWeb(SITE.terms)} title="sookera.com/terms">Terms</button>
+  <button class="lk" onclick={() => openWeb(SITE.terms)} title="sookera.com/terms">{t("Terms")}</button>
   <span class="sep" aria-hidden="true">·</span>
-  <button class="lk" onclick={() => openWeb(SITE.privacy)} title="sookera.com/privacy">Privacy</button>
+  <button class="lk" onclick={() => openWeb(SITE.privacy)} title="sookera.com/privacy">{t("Privacy")}</button>
   <span class="sep" aria-hidden="true">·</span>
-  <button class="lk" onclick={() => openWeb(SITE.help)} title="pako.sookera.com/help">Help online</button>
+  <button class="lk" onclick={() => openWeb(SITE.help)} title="pako.sookera.com/help">{t("Help online")}</button>
 </div>
 
 <style>

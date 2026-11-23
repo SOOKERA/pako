@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
+// First: its `tr!` macro is used by the modules below.
+#[macro_use]
+mod i18n;
 pub mod cli;
 mod components;
 mod drive;
@@ -115,14 +118,16 @@ fn direct_set_name(d: Dir<'_>, name: String) -> Result<(), String> {
 }
 
 /// Contacts see your name: without one, everyone would be "someone" to the other side.
-const NAME_FIRST: &str = "Add your name first: it's what your contacts see.";
+fn name_first() -> String {
+    tr!("Add your name first: it's what your contacts see.", "Ajoutez d’abord votre nom : c’est ce que voient vos contacts.")
+}
 
 #[tauri::command]
 async fn direct_add_contact(d: Dir<'_>, id: String, name: String) -> Result<(), String> {
     // (Off the window's thread: it saves the contacts.)
     let node = d.node()?;
     if !node.has_name() {
-        return Err(NAME_FIRST.into());
+        return Err(name_first());
     }
     tauri::async_runtime::spawn_blocking(move || node.add_contact(&id, &name)).await.map_err(|e| e.to_string())?
 }
@@ -209,11 +214,11 @@ fn direct_shown(d: Dir<'_>, id: Option<String>) -> Result<(), String> {
 #[tauri::command]
 fn direct_answer_request(window: tauri::Window, d: Dir<'_>, peer: String, accept: bool) -> Result<(), String> {
     if window.label() != "main" {
-        return Err("Answer this in Pako's window.".into());
+        return Err(tr!("Answer this in Pako's window.", "Répondez dans la fenêtre de Pako."));
     }
     let node = d.node()?;
     if accept && !node.has_name() {
-        return Err(NAME_FIRST.into());
+        return Err(name_first());
     }
     node.answer_request(&peer, accept);
     Ok(())
@@ -266,10 +271,10 @@ async fn direct_open(app: tauri::AppHandle, id: String, reveal: bool, part: Opti
 
 fn direct_open_now(app: &tauri::AppHandle, id: &str, reveal: bool, part: Option<usize>) -> Result<bool, String> {
     let d = app.state::<direct::Direct>();
-    let item = d.node()?.history_item(id).ok_or("Not in the history any more.")?;
-    let path = item.place_of(part).ok_or("Nothing was saved for this one.")?;
+    let item = d.node()?.history_item(id).ok_or_else(|| tr!("Not in the history any more.", "N’est plus dans l’historique."))?;
+    let path = item.place_of(part).ok_or_else(|| tr!("Nothing was saved for this one.", "Rien n’a été enregistré pour celui-ci."))?;
     if !path.exists() {
-        return Err("It's not there any more (moved or deleted).".into());
+        return Err(tr!("It's not there any more (moved or deleted).", "Il n’est plus là (déplacé ou supprimé)."));
     }
     // One folder of it: Folder shows it where it is.
     if path.is_dir() && part.is_some() && reveal {
@@ -437,9 +442,9 @@ async fn send_measure(sender: Snd<'_>, paths: Vec<String>, mode: Option<String>)
 /// Opens a sent file's download page in the browser.
 #[tauri::command]
 async fn sent_open(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let link = app.state::<Arc<send::Sender>>().link_of(&id).ok_or("Not on the list any more")?;
+    let link = app.state::<Arc<send::Sender>>().link_of(&id).ok_or_else(|| tr!("Not on the list any more", "N’est plus dans la liste"))?;
     if !link.starts_with("https://") {
-        return Err("Not a web link".into());
+        return Err(tr!("Not a web link", "Ce n’est pas un lien web"));
     }
     app.opener().open_url(link, None::<&str>).map_err(|e| e.to_string())
 }
@@ -447,7 +452,7 @@ async fn sent_open(app: tauri::AppHandle, id: String) -> Result<(), String> {
 /// Copies text (a link) to the clipboard.
 #[tauri::command]
 fn copy_text(text: String) -> Result<(), String> {
-    if system::set_clipboard_text(&text) { Ok(()) } else { Err("Couldn't copy: another app is using the clipboard. Try again.".into()) }
+    if system::set_clipboard_text(&text) { Ok(()) } else { Err(tr!("Couldn't copy: another app is using the clipboard. Try again.", "Impossible de copier : une autre appli utilise le presse-papiers. Réessayez.")) }
 }
 
 #[tauri::command]
@@ -671,7 +676,7 @@ async fn components_check() -> Result<Vec<components::Status>, String> {
         }
     }
     if errors.len() == components::ALL.len() {
-        return Err(format!("Couldn't check for new versions: {}", errors[0]));
+        return Err(tr!("Couldn't check for new versions: {}", "Impossible de chercher les nouvelles versions : {}", errors[0]));
     }
     Ok(components_status().await)
 }
@@ -748,9 +753,9 @@ fn preview_url(
     id: String,
     quality: Option<u32>,
 ) -> Result<PreviewInfo, String> {
-    let (source, name) = engine.source_of(&id).ok_or("This item is gone.")?;
+    let (source, name) = engine.source_of(&id).ok_or_else(|| tr!("This item is gone.", "Cet élément n’est plus là."))?;
     if !preview::is_video(&name) {
-        return Err("Only videos can be previewed.".into());
+        return Err(tr!("Only videos can be previewed.", "Seules les vidéos peuvent avoir un aperçu."));
     }
     let quality = quality.unwrap_or(engine.settings().preview_quality).clamp(240, 720);
     // A video-site link: a short clip from the site (yt-dlp + ffmpeg), always 480p or lower.
@@ -766,18 +771,21 @@ fn preview_url(
         let url = preview.register_item(Some(&id), source, name, quality, false);
         return Ok(PreviewInfo { url, converted: false, quality });
     }
-    Err("To preview this kind of video, turn on Preview more video types (Settings › Features & updates).".into())
+    Err(tr!(
+        "To preview this kind of video, turn on Preview more video types (Settings › Features & updates).",
+        "Pour voir l’aperçu de ce type de vidéo, activez Aperçu de plus de types de vidéos (Paramètres › Fonctions et mises à jour)."
+    ))
 }
 
 /// A player address for a video in Private mode (decrypted on the fly, only while it's open).
 #[tauri::command]
 fn private_play(engine: Eng<'_>, preview: State<'_, Arc<preview::Preview>>, id: String, quality: Option<u32>) -> Result<PreviewInfo, String> {
-    let d = engine.find(&id).filter(|d| d.vault && d.status == model::Status::Completed).ok_or("This private file is gone.")?;
+    let d = engine.find(&id).filter(|d| d.vault && d.status == model::Status::Completed).ok_or_else(|| tr!("This private file is gone.", "Ce fichier privé n’est plus là."))?;
     if !vault::get().is_unlocked() {
-        return Err("Private mode is locked.".into());
+        return Err(tr!("Private mode is locked.", "Le mode privé est verrouillé."));
     }
     if !preview::is_video(&d.name) {
-        return Err("Only videos play in Pako.".into());
+        return Err(tr!("Only videos play in Pako.", "Seules les vidéos se lisent dans Pako."));
     }
     let quality = quality.unwrap_or(engine.settings().preview_quality).clamp(240, 720);
     if preview::plays_directly(&d.name) {
@@ -786,7 +794,10 @@ fn private_play(engine: Eng<'_>, preview: State<'_, Arc<preview::Preview>>, id: 
     if components::ffmpeg().is_some() {
         return Ok(PreviewInfo { url: preview.register_vault(d.final_path(), d.name, quality, true), converted: true, quality });
     }
-    Err("Pako plays MP4 and WebM as they are. For this kind, turn on Preview more video types in Settings › Features & updates, or decrypt it and play it in another app.".into())
+    Err(tr!(
+        "Pako plays MP4 and WebM as they are. For this kind, turn on Preview more video types in Settings › Features & updates, or decrypt it and play it in another app.",
+        "Pako lit les MP4 et WebM tels quels. Pour ce type, activez Aperçu de plus de types de vidéos dans Paramètres › Fonctions et mises à jour, ou déchiffrez-la et lisez-la dans une autre appli."
+    ))
 }
 
 /// A video-site preview: asks the site for a small stream first, so the window can say why it can't play.
@@ -939,9 +950,9 @@ async fn parts(app: tauri::AppHandle, id: String) -> Vec<engine::PartView> {
 /// Opens the download's original link in the browser.
 #[tauri::command]
 async fn open_link(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let d = app.state::<Arc<Engine>>().find(&id).ok_or("Download not found")?;
+    let d = app.state::<Arc<Engine>>().find(&id).ok_or_else(|| tr!("Download not found", "Téléchargement introuvable"))?;
     if !(d.link.starts_with("http://") || d.link.starts_with("https://")) {
-        return Err("Not a web link".into());
+        return Err(tr!("Not a web link", "Ce n’est pas un lien web"));
     }
     app.opener().open_url(d.link, None::<&str>).map_err(|e| e.to_string())
 }
@@ -965,13 +976,13 @@ fn open_in_drive(app: tauri::AppHandle, engine: Eng<'_>, id: String) -> Result<(
     let (link, source) = match engine.find(&id) {
         Some(d) => (d.link, d.source),
         None => {
-            let f = engine.found().into_iter().find(|f| f.id == id).ok_or("Not found")?;
+            let f = engine.found().into_iter().find(|f| f.id == id).ok_or_else(|| tr!("Not found", "Introuvable"))?;
             (f.template.link, f.template.source)
         }
     };
     let url = drive_page(&link, &source);
     if !(url.starts_with("https://drive.google.com/") || url.starts_with("https://docs.google.com/")) {
-        return Err("Not a Google Drive link".into());
+        return Err(tr!("Not a Google Drive link", "Ce n’est pas un lien Google Drive"));
     }
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
@@ -1015,7 +1026,7 @@ struct SetupChoices {
 /// be saved (unreadable, or the disk refusing) still let Pako run this time; the error says so.
 #[tauri::command]
 async fn accept_terms(engine: Eng<'_>) -> Result<(), String> {
-    let date = terms::version().ok_or("Pako's terms of use have no date.")?;
+    let date = terms::version().ok_or_else(|| tr!("Pako's terms of use have no date.", "Les conditions d’utilisation de Pako n’ont pas de date."))?;
     let saved = engine.change_settings(|s| s.terms_accepted = Some(date));
     // Off the window's thread: what starts may open windows (the Download with Pako window).
     tauri::async_runtime::spawn_blocking(consent::open).await.map_err(|e| e.to_string())?;
@@ -1109,7 +1120,7 @@ struct AddedToBrowser {
 #[tauri::command]
 async fn add_to_browser(app: tauri::AppHandle, id: String) -> Result<AddedToBrowser, String> {
     let (browser, root) = tauri::async_runtime::spawn_blocking(move || {
-        let browser = system::installed_browsers().into_iter().find(|b| b.id == id).ok_or("That browser isn't installed.")?;
+        let browser = system::installed_browsers().into_iter().find(|b| b.id == id).ok_or_else(|| tr!("That browser isn't installed.", "Ce navigateur n’est pas installé."))?;
         extension::write_files().map(|root| (browser, root))
     })
     .await
@@ -1163,7 +1174,7 @@ fn handle_pako_link(app: &tauri::AppHandle, link: system::PakoLink) {
         system::PakoLink::Connect => {
             let saved = app
                 .try_state::<Arc<Engine>>()
-                .ok_or_else(|| "Pako is still starting. Try again in a moment.".to_string())
+                .ok_or_else(|| tr!("Pako is still starting. Try again in a moment.", "Pako démarre encore. Réessayez dans un instant."))
                 .and_then(|e| e.change_settings(|s| s.browser_connect = true).map_err(|e| e.to_string()));
             let done = saved.and_then(|_| extension::set_registered(true));
             LinkResult { action: "connect", ok: done.is_ok(), error: done.err() }
@@ -1200,7 +1211,7 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
         if !matches!(r.kind.as_str(), "ping" | "videoPrepare" | "videoPrepareCancel" | "follow" | "held") {
             tray::show_main(&app);
         }
-        return Reply::error(consent::NOT_YET);
+        return Reply::error(consent::not_yet());
     }
     if r.kind == "ping" {
         return Reply::ok();
@@ -1224,7 +1235,7 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
         if r.light {
             return Reply::error(extension::LIGHT_REFUSED);
         }
-        let Some(url) = r.urls.first().cloned() else { return Reply::error("Unknown request.") };
+        let Some(url) = r.urls.first().cloned() else { return Reply::error(crate::extension::unknown_request()) };
         return match engine.stream_from_browser(url, r.referrer.clone(), r.filename.clone(), r.site_cookies.clone(), r.private).await {
             Ok(()) => Reply::ok(),
             Err(e) => Reply::error(e),
@@ -1236,7 +1247,7 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
         if r.private {
             return Reply::error(extension::NO_PRIVATE_RECORDING);
         }
-        let checked = r.record.clone().ok_or_else(|| "Unknown request.".to_string()).and_then(|rec| stream::validate_record(rec, r.light));
+        let checked = r.record.clone().ok_or_else(crate::extension::unknown_request).and_then(|rec| stream::validate_record(rec, r.light));
         return match checked.and_then(|rec| engine.record(rec)) {
             Ok(()) => Reply::ok(),
             Err(e) => Reply::error(e),
@@ -1273,7 +1284,7 @@ async fn browser_request(app: tauri::AppHandle, r: extension::Request) -> extens
     }
     if r.kind == "video" || one_video {
         let quality = r.quality.unwrap_or_else(|| engine.settings().video_quality);
-        let Some(url) = r.urls.first().cloned() else { return Reply::error("Unknown request.") };
+        let Some(url) = r.urls.first().cloned() else { return Reply::error(crate::extension::unknown_request()) };
         return match engine.video_from_browser(url, quality, r.site_cookies.clone(), r.private).await {
             Ok(()) => Reply::ok(),
             Err(e) => Reply::error(e),
@@ -1333,7 +1344,7 @@ async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Req
         tauri::async_runtime::spawn_blocking(move || e2.remove(&ids, true))
     };
     let id = match added.len() {
-        0 => return Reply::error("Pako couldn't add this download, so the browser keeps it."),
+        0 => return Reply::error(tr!("Pako couldn't add this download, so the browser keeps it.", "Pako n’a pas pu ajouter ce téléchargement : le navigateur le garde donc.")),
         1 => added[0].clone(),
         // A Drive folder: several files in Pako, one in the browser. They can't be compared, so
         // the browser keeps its download.
@@ -1364,7 +1375,7 @@ async fn take_over(app: tauri::AppHandle, engine: Arc<Engine>, r: extension::Req
         }
         Err(e) => {
             let _ = take_back(vec![id]).await;
-            Reply::error(format!("Pako couldn't start this download ({}), so the browser keeps it.", e.trim_end_matches('.')))
+            Reply::error(tr!("Pako couldn't start this download ({}), so the browser keeps it.", "Pako n’a pas pu lancer ce téléchargement ({}) : le navigateur le garde donc.", e.trim_end_matches('.')))
         }
     }
 }
@@ -1415,7 +1426,13 @@ fn hold_takeover(engine: Arc<Engine>, id: String, asked: extension::Request) -> 
                 ask::started(asked.private);
             }
         }
-        let checked = checked.map_err(|e| format!("Pako couldn't get this download itself ({}), so your browser downloads it and Pako follows it.", e.trim_end_matches('.')));
+        let checked = checked.map_err(|e| {
+            tr!(
+                "Pako couldn't get this download itself ({}), so your browser downloads it and Pako follows it.",
+                "Pako n’a pas pu récupérer ce téléchargement lui-même ({}) : votre navigateur le télécharge donc et Pako le suit.",
+                e.trim_end_matches('.')
+            )
+        });
         if let Some(Err(_)) = extension::HELD.finish(&id, checked) {
             // The row stays (your name and folder), marked "Via browser"; the extension
             // reports the browser's download to it. Unless no extension waits for the result
@@ -1439,7 +1456,7 @@ async fn first_response(engine: &Arc<Engine>, id: &str, asked: &extension::Reque
     const LIMIT: std::time::Duration = std::time::Duration::from_secs(25);
     let mut start = std::time::Instant::now();
     loop {
-        let Some(d) = engine.find(id) else { return Err("it was removed in Pako".into()) };
+        let Some(d) = engine.find(id) else { return Err(tr!("it was removed in Pako", "il a été retiré dans Pako")) };
         if let Some((size, html)) = extension::first_answer(id) {
             return extension::same_as_browser(asked, size, Some(html));
         }
@@ -1454,9 +1471,9 @@ async fn first_response(engine: &Arc<Engine>, id: &str, asked: &extension::Reque
         }
         match d.status {
             Status::Failed | Status::QuotaExceeded | Status::NeedsAccount => {
-                return Err(d.message.unwrap_or_else(|| "the server refused it".into()));
+                return Err(d.message.unwrap_or_else(|| tr!("the server refused it", "le serveur l’a refusé")));
             }
-            Status::Paused => return Err("it was paused in Pako before it started".into()),
+            Status::Paused => return Err(tr!("it was paused in Pako before it started", "il a été mis en pause dans Pako avant de commencer")),
             // In the Download with Pako window: nothing is asked before your answer.
             Status::Queued if d.ask => start = std::time::Instant::now(),
             // Waiting for a free spot or for download hours: Pako asks the server itself now.
@@ -1467,7 +1484,7 @@ async fn first_response(engine: &Arc<Engine>, id: &str, asked: &extension::Reque
             _ => {}
         }
         if start.elapsed() >= LIMIT {
-            return Err("the server didn't answer in time".into());
+            return Err(tr!("the server didn't answer in time", "le serveur n’a pas répondu à temps"));
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -1485,7 +1502,7 @@ async fn probe(engine: &Arc<Engine>, d: &Download) -> Result<(Option<u64>, bool)
             Ok(seen)
         }
         Ok(Err(e)) => Err(e.message()),
-        Err(_) => Err("the server didn't answer in time".into()),
+        Err(_) => Err(tr!("the server didn't answer in time", "le serveur n’a pas répondu à temps")),
     }
 }
 
@@ -1531,10 +1548,10 @@ async fn open_item(app: tauri::AppHandle, id: String, reveal: bool) -> Result<()
 
 fn open_item_now(app: &tauri::AppHandle, id: &str, reveal: bool) -> Result<(), String> {
     let engine = app.state::<Arc<Engine>>();
-    let d = engine.find(id).ok_or("Download not found")?;
+    let d = engine.find(id).ok_or_else(|| tr!("Download not found", "Téléchargement introuvable"))?;
     // Private mode's files only open from the private list (a temporary copy, see private_files).
     if d.vault {
-        return Err("Open it from Private mode.".into());
+        return Err(tr!("Open it from Private mode.", "Ouvrez-le depuis le mode privé."));
     }
     let done = d.status == model::Status::Completed;
     if !done {
@@ -1570,7 +1587,7 @@ async fn open_folder(app: tauri::AppHandle, path: String) -> Result<(), String> 
     off(move || {
         // Only ever opens a folder, never runs a file.
         if !std::path::Path::new(&path).is_dir() {
-            return Err("That folder doesn't exist.".into());
+            return Err(tr!("That folder doesn't exist.", "Ce dossier n’existe pas."));
         }
         app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
     })
@@ -1680,11 +1697,17 @@ fn say_when_pako_stops() {
         // quitting it is noted only: "has to close" on top of a Pako you just closed says nothing.
         if cfg!(not(debug_assertions)) && !QUITTING.load(Ordering::SeqCst) {
             let text = if what.starts_with("Failed to setup app") {
-                "Pako couldn't open its window.\n\nStart Pako again. If its window still doesn't open, install Microsoft Edge WebView2 Runtime (from microsoft.com), then start Pako again."
+                tr!(
+                    "Pako couldn't open its window.\n\nStart Pako again. If its window still doesn't open, install Microsoft Edge WebView2 Runtime (from microsoft.com), then start Pako again.",
+                    "Pako n’a pas pu ouvrir sa fenêtre.\n\nRelancez Pako. Si sa fenêtre ne s’ouvre toujours pas, installez Microsoft Edge WebView2 Runtime (depuis microsoft.com), puis relancez Pako."
+                )
             } else {
-                "Pako ran into a problem it couldn't get past and has to close.\n\nStart Pako again: your downloads carry on. If it happens again, use Help › Report a problem (this problem is in its list)."
+                tr!(
+                    "Pako ran into a problem it couldn't get past and has to close.\n\nStart Pako again: your downloads carry on. If it happens again, use Help › Report a problem (this problem is in its list).",
+                    "Pako a rencontré un problème qu’il n’a pas pu surmonter et doit se fermer.\n\nRelancez Pako : vos téléchargements continuent. Si cela se reproduit, utilisez Aide › Signaler un problème (ce problème est dans sa liste)."
+                )
             };
-            message_box("Pako", text);
+            message_box("Pako", &text);
         }
     }));
 }
@@ -1757,6 +1780,10 @@ pub fn run() {
             private_files::sweep();
             private::sweep_incoming();
             let engine = Engine::new(emit);
+            // Rust's own words (tray, notifications, messages) in the saved language from now on.
+            i18n::apply(&engine.settings().language);
+            // Pako Setup's record of it (the uninstaller and the next Setup speak it), if it differs.
+            i18n::tell_setup(&engine.settings().language);
             engine.start();
             // Video preview: a tiny server on 127.0.0.1 only.
             if let Ok(p) = tauri::async_runtime::block_on(preview::Preview::start(engine.http_client())) {
@@ -1835,8 +1862,8 @@ pub fn run() {
                                 notices::post(
                                     &handle,
                                     "update-ready",
-                                    &format!("Pako {v} is ready"),
-                                    "Restart Pako to start using it. Your downloads and lists stay.",
+                                    &tr!("Pako {v} is ready", "Pako {v} est prêt"),
+                                    &tr!("Restart Pako to start using it. Your downloads and lists stay.", "Redémarrez Pako pour commencer à l’utiliser. Vos téléchargements et vos listes restent."),
                                     notices::Go { page: "update".into(), ..Default::default() },
                                     notices::Pop::Pref,
                                 );
@@ -2015,6 +2042,8 @@ pub fn run() {
             set_folder,
             theme::theme_get,
             theme::theme_set,
+            i18n::language_get,
+            i18n::language_set,
             theme::theme_shown,
             set_extract,
             hide_to_tray,
@@ -2495,7 +2524,7 @@ mod tests {
             let sent: Vec<&String> = split.send.iter().flat_map(|(_, _, rows)| rows).collect();
             assert_eq!(sent, vec![&plain.id], "only the normal window's link goes to the other PC");
             for f in engine.found().iter().filter(|f| f.template.private) {
-                assert_eq!((f.device.as_deref(), f.device_note.as_deref()), (None, Some(crate::engine::PRIVATE_HERE)));
+                assert_eq!((f.device.as_deref(), f.device_note.as_deref()), (None, Some(crate::engine::private_here().as_str())));
             }
             assert!(engine.found_private_links().contains(&private[0].template.link));
             // Downloaded from Links: a private download.

@@ -2,13 +2,14 @@
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
   // Shown once after Pako updates: every version since the one you had, newest first (an update
-  // can skip a few), from docs/help/whats-new.md.
+  // can skip a few), from docs/help/whats-new.md (docs/help/fr/whats-new.md in French).
   import Modal from "../Modal.svelte";
   import type { WhatsNew } from "./content";
   import { help } from "./help.svelte";
   import Markdown from "./Markdown.svelte";
   import { openWeb } from "../web";
   import { plainVersion, whatsNewTitle } from "./versions";
+  import { t } from "../i18n.svelte";
 
   /** `seen`: the version you had (the title says "since" it when several show). */
   let { entries, seen, version, onclose }: { entries: WhatsNew[]; seen: string | null; version: string; onclose: () => void } = $props();
@@ -22,11 +23,11 @@
   }
 </script>
 
-<Modal title={whatsNewTitle(entries.length, seen, version)} width={560} {onclose}>
+<Modal title={whatsNewTitle(entries.length, seen, version, t)} width={560} {onclose}>
   <div class="wn">
     {#each entries as e (e.version)}
       {#if several}
-        <h3 class="ver">Pako {plainVersion(e.version)}</h3>
+        <h3 class="ver">{t("Pako {v}", { v: plainVersion(e.version) })}</h3>
       {/if}
       <Markdown blocks={e.blocks} onlink={link} />
     {/each}
@@ -37,9 +38,9 @@
       onclick={() => {
         onclose();
         help.show();
-      }}>Help and tutorials</button
+      }}>{t("Help and tutorials")}</button
     >
-    <button class="btn primary" onclick={onclose}>Got it</button>
+    <button class="btn primary" onclick={onclose}>{t("Got it")}</button>
   {/snippet}
 </Modal>
 

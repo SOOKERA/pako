@@ -15,21 +15,46 @@
   const UPDATED = "Pako's extension was just updated. Reload this page and try again.";
   const NOT_ANSWERING = "Pako's extension isn't responding. Open the Pako button in the toolbar for details.";
 
+  // Pako's language, as the extension last heard it (lang.js, put in just before this file, and
+  // the extension's storage): the pill and its menu follow it, also when it changes.
+  const WORDS = globalThis.__pakoWords;
+  let lang = "en";
+  /** What follows a change of language (each pill relabels itself). */
+  const onLang = new Set();
+  function tr(key, vars) {
+    if (WORDS) return WORDS.tr(lang, key, vars);
+    return vars ? key.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : key;
+  }
+  function setLang(value) {
+    const next = WORDS ? WORDS.langOf(value) : "en";
+    if (next === lang) return;
+    lang = next;
+    for (const f of onLang) f();
+  }
+  try {
+    Promise.resolve(api.storage.local.get({ pakoLang: "en" })).then((s) => setLang(s?.pakoLang), () => {});
+    api.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes?.pakoLang) setLang(changes.pakoLang.newValue);
+    });
+  } catch {
+    // the extension's storage can't be reached from here: English
+  }
+
   /** The extension's background couldn't be reached (`e`: what the browser said). Only a page
    *  whose script is from before an update hears "just updated"; anything else is said as it
    *  is, kept for the toolbar window (its "!" details) and in the console. */
   function trouble(e) {
     const detail = String(e?.message || e || "No answer");
-    if (/context invalidated/i.test(detail)) return { text: UPDATED, detail };
+    if (/context invalidated/i.test(detail)) return { text: tr(UPDATED), detail };
     console.warn("Pako:", detail);
     try {
       // A private tab's note stays in the browser's memory only, never on disk.
       const store = api.extension?.inIncognitoContext && api.storage.session ? api.storage.session : api.storage.local;
-      Promise.resolve(store.set({ lastError: NOT_ANSWERING, lastDetail: detail })).catch(() => {});
+      Promise.resolve(store.set({ lastError: tr(NOT_ANSWERING), lastDetail: detail })).catch(() => {});
     } catch {
       // the extension's storage can't be reached from here either
     }
-    return { text: NOT_ANSWERING, detail };
+    return { text: tr(NOT_ANSWERING), detail };
   }
   /** Smaller videos (thumbnails, previews) get no pill. */
   const MIN_W = 240;
@@ -244,8 +269,8 @@
       main.type = "button";
       main.setAttribute("aria-haspopup", "menu");
       main.setAttribute("aria-expanded", "false");
-      main.title = "Download with Pako";
-      label = el("span", "", LABEL);
+      main.title = tr("Download with Pako");
+      label = el("span", "", tr(LABEL));
       main.append(icon(), label);
       menu = el("div", "menu");
       menu.setAttribute("role", "menu");
@@ -323,12 +348,12 @@
         list = null;
       }
       if (list && typeof list.then === "function") {
-        fill([{ head: "Download with Pako" }, { info: "…" }]);
+        fill([{ head: tr("Download with Pako") }, { info: "…" }]);
         list.then(
           (l) => mine === opening && menuOpen && fill(l),
           (e) => {
             const t = trouble(e);
-            if (mine === opening && menuOpen) fill([{ head: "Download with Pako" }, { info: t.text, detail: t.detail }]);
+            if (mine === opening && menuOpen) fill([{ head: tr("Download with Pako") }, { info: t.text, detail: t.detail }]);
           },
         );
       } else fill(list);
@@ -458,9 +483,19 @@
 
     // ---------- sending ----------
 
+    /** The label's words now (null: the plain "Download"), said again in a new language. */
+    let labelSaid = null;
     function setLabel(text) {
-      label.textContent = text;
+      labelSaid = text;
+      label.textContent = text ?? tr(LABEL);
     }
+    // Pako's language changed: the pill says its words in it (a menu open now keeps its own
+    // until it opens again).
+    onLang.add(() => {
+      if (!host) return;
+      main.title = tr("Download with Pako");
+      if (labelSaid === null) label.textContent = tr(LABEL);
+    });
 
     async function choose(item) {
       if (busy) return;
@@ -470,7 +505,7 @@
       busy = true;
       clearTimeout(resetTimer);
       main.setAttribute("aria-busy", "true");
-      setLabel("Sending…");
+      setLabel(tr("Sending…"));
       let reply;
       try {
         reply = await pick(item, current);
@@ -481,19 +516,19 @@
       busy = false;
       main.removeAttribute("aria-busy");
       if (reply === null) {
-        setLabel(LABEL);
+        setLabel(null);
         restartIdle();
       } else if (reply?.ok) {
-        setLabel(item.done || SENT);
+        setLabel(item.done || tr(SENT));
         restartIdle();
-        resetTimer = setTimeout(() => setLabel(LABEL), 2500);
+        resetTimer = setTimeout(() => setLabel(null), 2500);
       } else {
-        setLabel(LABEL);
+        setLabel(null);
         if (!shown) show();
         setMenu(true);
         // The browser's own words too, when the line to Pako itself failed.
-        const detail = reply?.detail ? ` (Browser says: ${reply.detail})` : "";
-        setNote((reply?.error || "Couldn't send this video to Pako.") + detail, reply?.why || reply?.detail || "");
+        const detail = reply?.detail ? ` ${tr("(Browser says: {detail})", { detail: reply.detail })}` : "";
+        setNote((reply?.error || tr("Couldn't send this video to Pako.")) + detail, reply?.why || reply?.detail || "");
       }
     }
 
@@ -518,6 +553,6 @@
     };
   }
 
-  globalThis.__pakoPill = { MIN_W, MIN_H, bigEnough, inside, videoAt, make, trouble, api };
+  globalThis.__pakoPill = { MIN_W, MIN_H, bigEnough, inside, videoAt, make, trouble, api, tr };
 
 })();

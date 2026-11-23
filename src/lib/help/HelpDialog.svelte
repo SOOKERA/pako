@@ -12,12 +12,16 @@
   import { fadeIn, pop, reduced } from "../motion";
   import { tour } from "../tour/tour.svelte";
   import { PAGE_TOURS, type TourId } from "../tour/tours";
-  import { guideByFile, guides, licence, notice, search, terms, whatsNew } from "./content";
+  import { guideByFile, guides as guidesShown, licence, notice, search, terms, whatsNew as whatsNewShown } from "./content";
+  import { around, t, tMaybe } from "../i18n.svelte";
   import { help } from "./help.svelte";
   import Markdown from "./Markdown.svelte";
 
   let q = $state("");
   let pane = $state<HTMLDivElement | null>(null);
+  // In the language shown (French guides where there are some): they follow a switch at once.
+  const guides = $derived(guidesShown());
+  const whatsNew = $derived(whatsNewShown());
   const hits = $derived(search(q));
   const page = $derived(help.page);
   const guide = $derived(page.kind === "guide" ? guideByFile(page.file) : undefined);
@@ -38,7 +42,11 @@
   let legal = $state<"use" | "notice" | "licence">("use");
   const pageKey = $derived(q.trim() ? "search" : page.kind === "guide" ? page.file : page.kind);
 
-  const versionLabel = (v: string) => (/^\d/.test(v) ? `Pako ${v}` : v);
+  // Sentences with a key or a link in the middle, in the language shown.
+  const f1 = $derived(around(t("{key} opens Help anywhere in Pako."), "{key}"));
+  const src = $derived(around(t("Pako comes with no warranty. You may share and change it under the GNU GPL version 3 with Sookera's additional terms. Its {source} is on GitHub."), "{source}"));
+
+  const versionLabel = (v: string) => (/^\d/.test(v) ? t("Pako {v}", { v }) : tMaybe(v));
 
   // A guide opened on a section ("?" links, search, links between guides): scroll there and light it up.
   $effect(() => {
@@ -81,7 +89,7 @@
     // Help opened from Settings (its "?" and About links): Settings is still open under it, over
     // the page the tutorial would show. Its own tutorial is fine.
     if (id !== "settings" && app.modals > 1) {
-      app.toast("Close Settings first: this tutorial shows another page.");
+      app.toast(t("Close Settings first: this tutorial shows another page."));
       return;
     }
     help.close();
@@ -100,32 +108,32 @@
   }
 </script>
 
-<Modal title="Help" width={880} onclose={() => help.close()}>
+<Modal title={t("Help")} width={880} onclose={() => help.close()}>
   <div class="help">
-    <nav class="hnav" aria-label="Help">
+    <nav class="hnav" aria-label={t("Help")}>
       <label class="search">
         <Icon name="search" size={13} stroke={2} />
-        <input bind:value={q} placeholder="Search the guides" aria-label="Search the guides" spellcheck="false" onkeydown={searchKey} />
-        {#if q}<button class="clear" aria-label="Clear search" onclick={() => (q = "")}><Icon name="x" size={10} stroke={2.4} /></button>{/if}
+        <input bind:value={q} placeholder={t("Search the guides")} aria-label={t("Search the guides")} spellcheck="false" onkeydown={searchKey} />
+        {#if q}<button class="clear" aria-label={t("Clear search")} onclick={() => (q = "")}><Icon name="x" size={10} stroke={2.4} /></button>{/if}
       </label>
       <div class="list focus-in">
         {#if navIndex >= 0}<span class="lit" style="transform: translateY({navIndex * 34}px)" aria-hidden="true"></span>{/if}
-        <button class:on={navIndex === 0} onclick={() => open()}><Icon name="help" size={15} />Start here</button>
+        <button class:on={navIndex === 0} onclick={() => open()}><Icon name="help" size={15} />{t("Start here")}</button>
         {#each guides as g, i (g.file)}
           <button class:on={navIndex === i + 1} onclick={() => open(g.file)}><Icon name="file" size={15} />{g.title}</button>
         {/each}
-        <button class:on={navIndex === guides.length + 1} onclick={() => open("whats-new")}><Icon name="star" size={15} />What's new</button>
-        <button class:on={navIndex === guides.length + 2} onclick={() => open("about")}><Icon name="file" size={15} />About Pako</button>
-        <button onclick={() => (help.report = true)}><Icon name="chat" size={15} />Report a problem</button>
+        <button class:on={navIndex === guides.length + 1} onclick={() => open("whats-new")}><Icon name="star" size={15} />{t("What's new")}</button>
+        <button class:on={navIndex === guides.length + 2} onclick={() => open("about")}><Icon name="file" size={15} />{t("About Pako")}</button>
+        <button onclick={() => (help.report = true)}><Icon name="chat" size={15} />{t("Report a problem")}</button>
       </div>
-      <p class="f1"><kbd>F1</kbd> opens Help anywhere in Pako.</p>
+      <p class="f1">{f1[0]}<kbd>F1</kbd>{f1[1]}</p>
     </nav>
 
     <div class="pane" bind:this={pane}>
       {#key pageKey}
         <div class="page" in:pop={{ duration: 220, from: 1, y: 6 }}>
           {#if q.trim()}
-            <h2>Search</h2>
+            <h2>{t("Search")}</h2>
             {#if hits.length}
               <div class="hits">
                 {#each hits as h, i (i)}
@@ -136,25 +144,25 @@
                 {/each}
               </div>
             {:else}
-              <p class="none">Nothing in the guides matches "{q.trim()}". Try fewer or other words.</p>
+              <p class="none">{t('Nothing in the guides matches "{q}". Try fewer or other words.', { q: q.trim() })}</p>
             {/if}
           {:else if page.kind === "home"}
             <section class="card tours">
               <div class="thead">
                 <div>
-                  <h2>Tutorials</h2>
-                  <p class="sub">A spotlight walks you through the window. The quick tour shows what each page is for; each page's own tutorial shows its details.</p>
+                  <h2>{t("Tutorials")}</h2>
+                  <p class="sub">{t("A spotlight walks you through the window. The quick tour shows what each page is for; each page's own tutorial shows its details.")}</p>
                 </div>
-                <button class="btn primary" onclick={() => startTour("full")}><Icon name="tour" size={14} stroke={2} />Quick tour</button>
+                <button class="btn primary" onclick={() => startTour("full")}><Icon name="tour" size={14} stroke={2} />{t("Quick tour")}</button>
               </div>
               <div class="pages">
-                {#each PAGE_TOURS as t (t.id)}
-                  <button class="chip" onclick={() => startTour(t.id)}><Icon name="play" size={10} stroke={2.2} />{t.label}</button>
+                {#each PAGE_TOURS as pt (pt.id)}
+                  <button class="chip" onclick={() => startTour(pt.id)}><Icon name="play" size={10} stroke={2.2} />{t(pt.label)}</button>
                 {/each}
               </div>
             </section>
 
-            <h2 class="gtitle">Guides</h2>
+            <h2 class="gtitle">{t("Guides")}</h2>
             <div class="guides">
               {#each guides as g (g.file)}
                 <button class="guide" onclick={() => open(g.file)}>
@@ -166,34 +174,35 @@
 
             <div class="guides extra">
               <button class="guide" onclick={() => open("whats-new")}>
-                <span class="gname"><Icon name="star" size={14} />What's new</span>
-                <span class="gabout">The latest changes in Pako.{app.version ? ` This is Pako ${app.version}.` : ""}</span>
+                <span class="gname"><Icon name="star" size={14} />{t("What's new")}</span>
+                <span class="gabout">{t("The latest changes in Pako.")}{app.version ? " " + t("This is Pako {v}.", { v: app.version }) : ""}</span>
               </button>
               <button class="guide" onclick={() => (help.report = true)}>
-                <span class="gname"><Icon name="chat" size={14} />Report a problem</span>
-                <span class="gabout">Something went wrong? Send Sookera a report in one click, or by email.</span>
+                <span class="gname"><Icon name="chat" size={14} />{t("Report a problem")}</span>
+                <span class="gabout">{t("Something went wrong? Send Sookera a report in one click, or by email.")}</span>
               </button>
             </div>
             <div class="credit-row"><Credit /></div>
           {:else if page.kind === "whatsNew"}
-            <h2>What's new</h2>
+            <h2>{t("What's new")}</h2>
             {#each whatsNew as w, i (w.version)}
               <h3 class="ver" class:first={i === 0}>{versionLabel(w.version)}</h3>
               <Markdown blocks={w.blocks} onlink={link} />
             {/each}
           {:else if page.kind === "about"}
-            <h2>About Pako</h2>
-            <p class="sub about">Pako by <button class="lk" onclick={() => openWeb(SITE.studio)}>Sookera</button>{app.version ? ` · version ${app.version}` : ""}</p>
+            <h2>{t("About Pako")}</h2>
+            {@const by = around(t("Pako by {studio}"), "{studio}")}
+            <p class="sub about">{by[0]}<button class="lk" onclick={() => openWeb(SITE.studio)}>Sookera</button>{by[1]}{app.version ? " · " + t("version {v}", { v: app.version }) : ""}</p>
             <section class="card notice">
               <p class="copy">Copyright (C) 2026 Sookera</p>
-              <p class="warranty">Pako comes with no warranty. You may share and change it under the GNU GPL version 3 with Sookera's additional terms. Its <button class="lk" onclick={() => openWeb(SITE.source)}>source code</button> is on GitHub.</p>
+              <p class="warranty">{src[0]}<button class="lk" onclick={() => openWeb(SITE.source)}>{t("source code")}</button>{src[1]}</p>
               <SegPick
                 small
-                label="Legal text"
+                label={t("Legal text")}
                 options={[
-                  { value: "use", label: "Terms of use" },
-                  { value: "notice", label: "Additional terms" },
-                  { value: "licence", label: "Licence" },
+                  { value: "use", label: t("Terms of use") },
+                  { value: "notice", label: t("Additional terms") },
+                  { value: "licence", label: t("Licence") },
                 ]}
                 value={legal}
                 onpick={(v) => (legal = v)}
@@ -202,12 +211,14 @@
             {#key legal}
               <div class="legal" in:pop={{ duration: 200, from: 1, y: 4 }}>
                 {#if legal === "use"}
-                  <p class="sub">Pako's terms of use, as you accepted them. The newest version is always on <button class="lk" onclick={() => openWeb(SITE.terms)}>sookera.com/terms</button>.</p>
+                  {@const on = around(t("Pako's terms of use, as you accepted them. The newest version is always on {link}."), "{link}")}
+                  <p class="sub">{on[0]}<button class="lk" onclick={() => openWeb(SITE.terms)}>sookera.com/terms</button>{on[1]}</p>
                   <Markdown blocks={terms} onlink={link} />
                 {:else if legal === "notice"}
                   <Markdown blocks={notice} onlink={link} />
                 {:else}
-                  <p class="sub">The GNU General Public License version 3, as it comes with Pako. Also on <button class="lk" onclick={() => openWeb(SITE.licence)}>gnu.org</button>.</p>
+                  {@const on = around(t("The GNU General Public License version 3, as it comes with Pako. Also on {link}."), "{link}")}
+                  <p class="sub">{on[0]}<button class="lk" onclick={() => openWeb(SITE.licence)}>gnu.org</button>{on[1]}</p>
                   <pre class="licence mono">{licence}</pre>
                 {/if}
               </div>
@@ -217,7 +228,7 @@
             <p class="sub about">{guide.about}.</p>
             <Markdown blocks={guide.blocks} onlink={link} />
           {:else}
-            <p class="none" in:fadeIn>This guide isn't here any more.</p>
+            <p class="none" in:fadeIn>{t("This guide isn't here any more.")}</p>
           {/if}
         </div>
       {/key}

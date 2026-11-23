@@ -6,6 +6,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { showcase } from "./showcase";
 import type { MenuItem } from "./menu";
+import { i18n, t } from "./i18n.svelte";
 import { inApp, listen, type DirectContact, type DirectHistory, type DirectRelay, type DirectRequest, type DirectTransfer, type Priority, type Status } from "./api";
 
 export interface Device extends DirectContact {
@@ -222,8 +223,8 @@ export const choices = new Choices();
  *  "Download on …" (when the button itself is only an arrow). */
 export function downloadOnMenu(targets: DownloadTarget[], here: (() => void) | null, pick: (t: DownloadTarget) => void, long = false): MenuItem[] {
   return [
-    ...(here ? [{ label: long ? "Download on this PC" : "This PC", icon: "download", action: here }, { separator: true }] : []),
-    ...targets.map((t) => ({ label: long ? `Download on ${t.name}` : t.name, icon: "devices", action: () => pick(t) })),
+    ...(here ? [{ label: long ? t("Download on this PC") : t("This PC"), icon: "download", action: here }, { separator: true }] : []),
+    ...targets.map((x) => ({ label: long ? t("Download on {name}", { name: x.name }) : x.name, icon: "devices", action: () => pick(x) })),
   ];
 }
 
@@ -318,20 +319,22 @@ const contact = (id: string, name: string, more: Partial<Device>): Device => ({
   ...more,
 });
 let mockDone = 0.42e9;
-let mockLog: DeviceLog[] = [
-  { device: HOME, date: now - 3600_000 * 5, byMe: true, text: "Paired as your device", ok: true },
-  { device: HOME, date: now - 3600_000 * 2, byMe: true, text: "Added 1 link to the downloads", ok: true },
-  { device: HOME, date: now - 3600_000, byMe: true, text: "Paused Holiday video 4K.mp4", ok: true },
-  { device: LAPTOP, date: now - 86400000, byMe: false, text: "Added 2 links to the downloads", ok: true },
+/** The sample's words follow the language shown (Rust says the real ones). */
+type MockLog = Omit<DeviceLog, "text"> & { text: () => string };
+let mockLog: MockLog[] = [
+  { device: HOME, date: now - 3600_000 * 5, byMe: true, text: () => t("Paired as your device"), ok: true },
+  { device: HOME, date: now - 3600_000 * 2, byMe: true, text: () => t("Added {n} links to the downloads", { n: 1 }), ok: true },
+  { device: HOME, date: now - 3600_000, byMe: true, text: () => t("Paused {name}", { name: "Holiday video 4K.mp4" }), ok: true },
+  { device: LAPTOP, date: now - 86400000, byMe: false, text: () => t("Added {n} links to the downloads", { n: 2 }), ok: true },
 ];
 let mockControl: Record<string, boolean> = {};
 /** The sample sends (My devices › Links): one finished, followed live. */
-let mockSent: SentCard[] = [
+let mockSent: (Omit<SentCard, "text"> & { text: () => string })[] = [
   {
     id: "s1",
     device: HOME,
     date: now - 3600_000 * 2,
-    text: "Added 3 links to the downloads",
+    text: () => t("Added {n} links to the downloads", { n: 3 }),
     links: [
       { link: "https://files.example.com/Family%20recipes.pdf", name: "Family recipes.pdf", ids: ["r4"] },
       { link: "https://releases.example.com/ubuntu-26.04-desktop-amd64.iso", name: showcase ? "Photo archive 2025.zip" : "Ubuntu 26.04 desktop amd64.iso", ids: ["r1"] },
@@ -366,8 +369,8 @@ function mockState(): DevicesState {
       { id: "h3", contact: HOME, outgoing: false, name: "Movie night.mkv", files: 1, size: 4.1e9, date: now - 3600_000, path: "local", result: "done", message: null, savedTo: `${DL}\\From Home PC\\Movie night.mkv` },
       { id: "h4", contact: LAPTOP, outgoing: false, name: "Slides final.pptx", files: 1, size: 18e6, date: now - 86400000, path: "direct", result: "done", message: null, savedTo: `${DL}\\From Laptop\\Slides final.pptx` },
     ],
-    log: mockLog,
-    sent: mockSent,
+    log: mockLog.map((l) => ({ ...l, text: l.text() })),
+    sent: mockSent.map((c) => ({ ...c, text: c.text() })),
     remote: {
       [HOME]: {
         at: Date.now(),
@@ -392,15 +395,18 @@ function mockState(): DevicesState {
 function preview<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const id = String(args?.id ?? "");
   if (cmd === "devices_state") return Promise.resolve(mockState() as T);
-  if (cmd === "devices_default_folder") return Promise.resolve(`${DL}\\From ${String(args?.name ?? "").trim() || "my device"}` as T);
+  if (cmd === "devices_default_folder") {
+    const fr = i18n.lang === "fr";
+    return Promise.resolve(`${DL}\\${fr ? "De" : "From"} ${String(args?.name ?? "").trim() || (fr ? "mon appareil" : "my device")}` as T);
+  }
   if (cmd === "devices_set_control") {
     mockControl = { ...mockControl, [id]: !!args?.on };
-    mockLog = [...mockLog, { device: id, date: Date.now(), byMe: true, text: args?.on ? "Allowed to control this Pako" : "No longer allowed to control this Pako", ok: true }];
+    mockLog = [...mockLog, { device: id, date: Date.now(), byMe: true, text: () => (args?.on ? t("Allowed to control this Pako") : t("No longer allowed to control this Pako")), ok: true }];
     return Promise.resolve(undefined as T);
   }
   if (cmd === "devices_set_pc_name") {
     const n = String(args?.name ?? "").trim().slice(0, 60);
-    if (!n) return Promise.reject("Give this PC a name (like Desk PC).");
+    if (!n) return Promise.reject(t("Give this PC a name (like Desk PC)."));
     mockPcName = n;
     return Promise.resolve(n as T);
   }
@@ -435,9 +441,9 @@ function preview<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
         600,
       ),
     );
-  if (cmd === "devices_download" || cmd === "devices_add_links" || cmd === "devices_send_ask") return Promise.reject("Preview mode: nothing is sent to the other PC.");
-  if (cmd === "devices_item") return Promise.reject("Preview mode: nothing is sent to the other PC.");
-  if (cmd === "devices_add" || cmd === "devices_answer") return Promise.reject("Preview mode: nothing is paired.");
+  if (cmd === "devices_download" || cmd === "devices_add_links" || cmd === "devices_send_ask") return Promise.reject(t("Preview mode: nothing is sent to the other PC."));
+  if (cmd === "devices_item") return Promise.reject(t("Preview mode: nothing is sent to the other PC."));
+  if (cmd === "devices_add" || cmd === "devices_answer") return Promise.reject(t("Preview mode: nothing is paired."));
   return Promise.resolve(undefined as T);
 }
 
@@ -450,8 +456,8 @@ let onSent: ((ok: boolean, message: string) => void) | null = null;
 /** Sends files and folders to one of your devices at once (no basket: it's your own PC). */
 export async function sendToDevice(d: Device, paths: string[]): Promise<void> {
   if (!paths.length) return;
-  if (!d.online) throw `${d.name} is offline: files go only while both PCs are on.`;
-  if (!inApp) throw "Preview mode: nothing is sent.";
+  if (!d.online) throw t("{name} is offline: files go only while both PCs are on.", { name: d.name });
+  if (!inApp) throw t("Preview mode: nothing is sent.");
   await tauriInvoke<string>("direct_send", { contact: d.id, paths, compress: false, name: null });
 }
 
@@ -461,7 +467,7 @@ export async function dropOnDevice(e: DragEvent, d: Device, done: (ok: boolean, 
   e.stopPropagation();
   const dt = e.dataTransfer;
   const webview = (window as { chrome?: { webview?: { postMessageWithAdditionalObjects?: (m: string, o: unknown[]) => void } } }).chrome?.webview;
-  if (!dt || !webview?.postMessageWithAdditionalObjects) return done(false, "Dropping files doesn't work here. Use Choose files.");
+  if (!dt || !webview?.postMessageWithAdditionalObjects) return done(false, t("Dropping files doesn't work here. Use Choose files."));
   const files = Array.from(dt.files);
   type WithHandle = DataTransferItem & { getAsFileSystemHandle?: () => Promise<unknown> };
   const asked = Array.from(dt.items)
@@ -482,7 +488,7 @@ export async function dropOnDevice(e: DragEvent, d: Device, done: (ok: boolean, 
     } catch (err) {
       dropTarget = null;
       onSent = null;
-      done(false, `Pako couldn't read what was dropped (${String(err)}). Use Choose files.`);
+      done(false, t("Pako couldn't read what was dropped ({error}). Use Choose files.", { error: String(err) }));
     }
   }
 }
@@ -495,7 +501,7 @@ if (typeof window !== "undefined") {
     dropTarget = null;
     onSent = null;
     if (!d || !done) return; // dropped on another page (Direct, Upload): theirs
-    if (!e.payload.paths.length) return done(false, `Pako couldn't read what was dropped (${e.payload.detail}).`);
+    if (!e.payload.paths.length) return done(false, t("Pako couldn't read what was dropped ({error}).", { error: e.payload.detail }));
     sendToDevice(d, e.payload.paths).then(
       () => done(true, ""),
       (err) => done(false, String(err)),

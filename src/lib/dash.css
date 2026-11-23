@@ -38,6 +38,12 @@
   justify-content: space-between;
   gap: 16px;
 }
+/* A card's picker keeps its choices on one line: the text beside it wraps first (only a very
+   narrow card wraps the choices). */
+.dash .head > .seg {
+  flex: none;
+  max-width: 65%;
+}
 .dash h2 {
   margin: 0;
   font-size: 14px;

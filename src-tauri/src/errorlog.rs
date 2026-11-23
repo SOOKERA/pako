@@ -849,9 +849,9 @@ fn report_path(path: &str) -> Option<PathBuf> {
 /// Saves the report as a text file (Windows line ends, so any editor shows it right).
 #[tauri::command]
 pub fn report_save(path: String, text: String) -> Result<(), String> {
-    let Some(path) = report_path(&path) else { return Err("Couldn't save the file there. Try another folder.".into()) };
+    let Some(path) = report_path(&path) else { return Err(crate::tr!("Couldn't save the file there. Try another folder.", "Impossible d’enregistrer le fichier à cet endroit. Essayez un autre dossier.")) };
     let text = text.replace("\r\n", "\n").replace('\n', "\r\n");
-    std::fs::write(&path, text.as_bytes()).map_err(|e| format!("Couldn't save the file ({e}). Try another folder."))
+    std::fs::write(&path, text.as_bytes()).map_err(|e| crate::tr!("Couldn't save the file ({e}). Try another folder.", "Impossible d’enregistrer le fichier ({e}). Essayez un autre dossier."))
 }
 
 /// The address reports go to.
@@ -894,11 +894,11 @@ fn report_link_ok(url: &str) -> bool {
 pub fn report_mail(app: tauri::AppHandle, url: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     if !report_link_ok(&url) {
-        return Err("Not a report".into());
+        return Err(crate::tr!("Not a report", "Ce n’est pas un rapport"));
     }
     app.opener()
         .open_url(url, None::<&str>)
-        .map_err(|_| "Couldn't open your email app. Use Copy details and paste them into an email to support@sookera.com.".into())
+        .map_err(|_| crate::tr!("Couldn't open your email app. Use Copy details and paste them into an email to support@sookera.com.", "Impossible d’ouvrir votre messagerie. Utilisez Copier et collez les détails dans un e-mail à support@sookera.com."))
 }
 
 // ---------- Send report: one click, to Sookera's report service ----------
@@ -984,24 +984,24 @@ fn is_version(v: &str) -> bool {
 /// The JSON the service gets: what the window showed, checked again here (a message is trimmed
 /// again, in case it didn't come from the problem list; trimming twice changes nothing).
 fn report_body(description: &str, theme: &str, problems: &[SentProblem], version: &str, installed: bool, windows: &str) -> Result<String, SendFail> {
-    let refused = |m: &str| SendFail::Refused { message: m.into() };
+    let refused = |m: String| SendFail::Refused { message: m };
     let description = description.trim();
     if description.is_empty() {
-        return Err(refused("Say what happened first."));
+        return Err(refused(crate::tr!("Say what happened first.", "Dites d’abord ce qui s’est passé.")));
     }
     if description.chars().count() > DESCRIPTION_MAX {
-        return Err(refused("What happened is too long: keep it under 5000 characters."));
+        return Err(refused(crate::tr!("What happened is too long: keep it under 5000 characters.", "Ce qui s’est passé est trop long : restez sous 5000 caractères.")));
     }
     if !matches!(theme, "dark" | "light" | "system") {
-        return Err(refused("Pako couldn't tell its theme. Try again."));
+        return Err(refused(crate::tr!("Pako couldn't tell its theme. Try again.", "Pako n’a pas pu dire quel est son thème. Réessayez.")));
     }
     if problems.len() > REPORT_PROBLEMS {
-        return Err(refused("Too many problems attached. Try again."));
+        return Err(refused(crate::tr!("Too many problems attached. Try again.", "Trop de problèmes joints. Réessayez.")));
     }
     let mut list = Vec::with_capacity(problems.len());
     for p in problems {
         if !is_time(&p.time) || !is_version(&p.version) {
-            return Err(refused("A problem in the list can't be sent. Turn off Include recent problems, then try again."));
+            return Err(refused(crate::tr!("A problem in the list can't be sent. Turn off Include recent problems, then try again.", "Un problème de la liste ne peut pas être envoyé. Désactivez Joindre les problèmes récents, puis réessayez.")));
         }
         list.push(serde_json::json!({
             "time": p.time,
@@ -1021,7 +1021,7 @@ fn report_body(description: &str, theme: &str, problems: &[SentProblem], version
     })
     .to_string();
     if body.len() > REPORT_MAX {
-        return Err(refused("The report is too long. Shorten what happened, or turn off Include recent problems."));
+        return Err(refused(crate::tr!("The report is too long. Shorten what happened, or turn off Include recent problems.", "Le rapport est trop long. Raccourcissez ce qui s’est passé, ou désactivez Joindre les problèmes récents.")));
     }
     Ok(body)
 }
@@ -1041,8 +1041,8 @@ fn service_answer(status: u16, retry_header: Option<u64>, body: &str) -> Result<
             if json["ok"] == serde_json::Value::Bool(true) && plain { Ok(r) } else { Err(SendFail::Server) }
         }
         429 => Err(SendFail::Busy { retry_after: json["retryAfter"].as_u64().or(retry_header).unwrap_or(3600).clamp(30, 86_400) }),
-        413 => Err(SendFail::Refused { message: "The report is too long. Shorten what happened, or turn off Include recent problems.".into() }),
-        400 => Err(SendFail::Refused { message: "Sookera's report service didn't accept this report. Use Send by email instead.".into() }),
+        413 => Err(SendFail::Refused { message: crate::tr!("The report is too long. Shorten what happened, or turn off Include recent problems.", "Le rapport est trop long. Raccourcissez ce qui s’est passé, ou désactivez Joindre les problèmes récents.") }),
+        400 => Err(SendFail::Refused { message: crate::tr!("Sookera's report service didn't accept this report. Use Send by email instead.", "Le service de rapports de Sookera n’a pas accepté ce rapport. Utilisez plutôt Par e-mail.") }),
         _ => Err(SendFail::Server),
     }
 }

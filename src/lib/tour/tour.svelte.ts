@@ -5,6 +5,7 @@ import { SvelteSet } from "svelte/reactivity";
 import { api } from "../api";
 import { app, type View } from "../state.svelte";
 import { PREPARE, TOURS, type TourId } from "./tours";
+import type { Key } from "../i18n.svelte";
 
 export interface Step {
   /** The page this step is on ("settings" opens the Settings window); none = whatever page is shown. */
@@ -12,8 +13,9 @@ export interface Step {
   /** `data-tour` of what to show (several: one spotlight around all of them, e.g. a whole bar);
    *  none = a bubble in the middle of the window. */
   target?: string | string[];
-  title: string;
-  text: string;
+  /** In English, as a key: the bubble shows it in the language of the moment (t()). */
+  title: Key;
+  text: Key;
   /** Opens the details panel for this step (closed again when the tour ends, if it was closed). */
   panel?: boolean;
   /** Whether this step is part of the tour, read from what Pako knows (contacts, uploads, your

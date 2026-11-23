@@ -360,7 +360,7 @@ impl Node {
             let c = inner.contacts.iter().find(|c| c.id == device && c.device).ok_or("Device not found.")?;
             if !can_relay_through(c) {
                 let name = c.name.clone();
-                return Err(format!("{name} doesn't let this PC see its Direct contacts. On {name}, turn on \"This device can control my Pako\" for this PC (and update Pako there)."));
+                return Err(format!("{name} doesn't let this PC see its Direct contacts. On {name}, turn on \"… can control my Pako\" for this PC (and update Pako there)."));
             }
         }
         self.look_raw(device, look).await
@@ -587,7 +587,7 @@ impl Node {
             let inner = self.inner.lock().unwrap();
             let c = inner.contacts.iter().find(|c| c.id == device && c.device).ok_or("Device not found.")?;
             if !can_relay_through(c) {
-                return Err(format!("{} doesn't let this PC send from it. Turn on \"This device can control my Pako\" there for this PC.", c.name));
+                return Err(format!("{} doesn't let this PC send from it. Turn on \"… can control my Pako\" there for this PC.", c.name));
             }
             if to == device || to == self.my_id() {
                 return Err("That contact can't be reached this way.".into());
@@ -962,7 +962,7 @@ impl Node {
     fn relay_delivered(&self, r: &Relay) {
         let known = self.inner.lock().unwrap().contacts.iter().any(|c| c.id == r.to && !c.device);
         let go = if known { crate::notices::Go::item("direct", &r.to) } else { crate::notices::Go::item("devices", &r.device) };
-        self.tell(&r.device, "direct-sent", "Files delivered", &format!("{} has received {}.", r.to_name, r.name), go);
+        self.tell(&r.device, "direct-sent", &crate::tr!("Files delivered", "Fichiers livrés"), &crate::tr!("{} has received {}.", "{} a reçu {}.", crate::direct::words::who(&r.to_name), r.name), go);
     }
 
     /// Deletes a relay's copy (only inside the relay folder), or moves what's in it to `keep_in`.

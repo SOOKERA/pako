@@ -11,12 +11,33 @@
 (() => {
   const api = globalThis.chrome;
   const how = globalThis.performance?.getEntriesByType?.("navigation")?.[0]?.type;
+  // Pako's language, as the extension last heard it (lang.js and the extension's storage): the
+  // page's own words in it. (What the extension tells it to say comes in that language already.)
+  const WORDS = globalThis.__pakoWords;
+  let saidOwn = false;
+  const own = () => {
+    try {
+      api.storage.local.get({ pakoLang: "en" }, (s) => {
+        void api.runtime.lastError;
+        const lang = WORDS?.langOf(s?.pakoLang) ?? "en";
+        if (lang === "en") return;
+        document.title = WORDS.tr(lang, "Sent to Pako");
+        const p = document.getElementById("said");
+        if (p && saidOwn) p.textContent = WORDS.tr(lang, "This download went to Pako.");
+        document.documentElement.lang = lang;
+      });
+    } catch {
+      // the extension's storage can't be reached: English
+    }
+  };
   const say = (text) => {
     const show = () => {
       const p = document.getElementById("said");
       if (!p) return;
       if (typeof text === "string" && text) p.textContent = text;
+      else saidOwn = true;
       p.hidden = false;
+      own();
     };
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", show);
     else show();

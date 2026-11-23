@@ -168,7 +168,7 @@ fn save_into(v: &vault::Vault, copy: &Path, target: &Path) -> std::io::Result<u6
     // Its private file was deleted meanwhile (Delete, Clear the private list, Reset): never a
     // new file with no list entry, that nothing could open or delete.
     if !target.exists() {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "this private file was deleted"));
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, crate::tr!("this private file was deleted", "ce fichier privé a été supprimé")));
     }
     let mut tmp = target.as_os_str().to_owned();
     tmp.push(".new");
@@ -176,14 +176,14 @@ fn save_into(v: &vault::Vault, copy: &Path, target: &Path) -> std::io::Result<u6
     let size = crate::engine::encrypt_into(v, copy, &tmp).inspect_err(|_| crate::vault::blocks::remove(&tmp))?;
     if !target.exists() {
         crate::vault::blocks::remove(&tmp);
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "this private file was deleted"));
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, crate::tr!("this private file was deleted", "ce fichier privé a été supprimé")));
     }
     std::fs::rename(&tmp, target).inspect_err(|_| crate::vault::blocks::remove(&tmp))?;
     Ok(size)
 }
 
 fn save_back(engine: Option<&Engine>, c: &Copy) -> Result<(), String> {
-    let size = save_into(vault::get(), &c.path, &c.target).map_err(|e| format!("Couldn't save your changes into Private mode: {e}"))?;
+    let size = save_into(vault::get(), &c.path, &c.target).map_err(|e| crate::tr!("Couldn't save your changes into Private mode: {e}", "Impossible d’enregistrer vos modifications dans le mode privé : {e}"))?;
     if let Some(e) = engine {
         e.private_changed_size(&c.id, size);
     }
@@ -342,14 +342,14 @@ fn watch(app: &tauri::AppHandle) {
 /// Opens a private file in its usual app, from a temporary copy.
 #[tauri::command]
 pub async fn private_open(app: tauri::AppHandle, engine: Eng<'_>, id: String) -> Result<(), String> {
-    let d = engine.find(&id).filter(|d| d.vault && d.status == Status::Completed).ok_or("This private file is gone.")?;
+    let d = engine.find(&id).filter(|d| d.vault && d.status == Status::Completed).ok_or_else(|| crate::tr!("This private file is gone.", "Ce fichier privé n’est plus là."))?;
     let real = engine.settings().private_real_names;
     let root = open_dir();
-    crate::video::make_private_dir(&root).map_err(|e| format!("Couldn't open it: {e}"))?;
+    crate::video::make_private_dir(&root).map_err(|e| crate::tr!("Couldn't open it: {e}", "Impossible de l’ouvrir : {e}"))?;
     let taken = |n: &str| std::fs::read_dir(&root).map(|it| it.flatten().any(|e| e.path().join(n).exists())).unwrap_or(false);
     let name = temp_name(&d.name, d.finished_at.unwrap_or(d.date / 1000), real, taken);
     let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't open it: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| crate::tr!("Couldn't open it: {e}", "Impossible de l’ouvrir : {e}"))?;
     let out = dir.join(name);
     let src = d.final_path();
     let out2 = out.clone();
@@ -361,15 +361,15 @@ pub async fn private_open(app: tauri::AppHandle, engine: Eng<'_>, id: String) ->
         use std::io::Write;
         f.flush()?;
         if !vault::get().is_unlocked() {
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Private mode locked"));
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::tr!("Private mode locked", "Mode privé verrouillé")));
         }
         Ok(())
     })
     .await
-    .map_err(|_| "Couldn't open it.".to_string())?;
+    .map_err(|_| crate::tr!("Couldn't open it.", "Impossible de l’ouvrir."))?;
     if let Err(e) = written {
         wipe_dir(&dir);
-        return Err(format!("Couldn't open it: {e}"));
+        return Err(crate::tr!("Couldn't open it: {e}", "Impossible de l’ouvrir : {e}"));
     }
     mark_zone(&out);
     let st = stamp(&out);
@@ -385,7 +385,7 @@ pub async fn private_open(app: tauri::AppHandle, engine: Eng<'_>, id: String) ->
     if !vault::get().is_unlocked() {
         drop(live);
         wipe_dir(&dir);
-        return Err("Private mode locked: open it, then open the file again.".into());
+        return Err(crate::tr!("Private mode locked: open it, then open the file again.", "Le mode privé s’est verrouillé : ouvrez-le, puis ouvrez à nouveau le fichier."));
     }
     live.push(Copy { path: out.clone(), id, target: d.final_path(), opened: Instant::now(), stamp: st, wiped: false, asked: false, retry_at: None });
     drop(live);

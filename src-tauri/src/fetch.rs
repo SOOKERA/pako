@@ -46,11 +46,34 @@ pub enum FetchError {
     Fatal(String),
 }
 
-pub const BLOCKED_MESSAGE: &str =
-    "Google only gives this file to people it's shared with. Open it in your browser and download it there: Pako catches the download.";
+// The words below are compared again later (to know what happened), in either language: see
+// `crate::model::Said`.
+pub const BLOCKED_MESSAGE: crate::model::Said = [
+    "Google only gives this file to people it's shared with. Open it in your browser and download it there: Pako catches the download.",
+    "Google ne donne ce fichier qu’aux personnes avec qui il est partagé. Ouvrez-le dans votre navigateur et téléchargez-le là : Pako récupère le téléchargement.",
+];
 
 /// Google's daily download limit for a shared file (what the row says).
-pub const QUOTA_MESSAGE: &str = "Google's download limit for this shared file is reached for today.";
+pub const QUOTA_MESSAGE: crate::model::Said = [
+    "Google's download limit for this shared file is reached for today.",
+    "La limite de téléchargement de Google pour ce fichier partagé est atteinte pour aujourd’hui.",
+];
+
+/// The file isn't there (404, 410): the start of what the row says.
+pub const NOT_FOUND: crate::model::Said = [
+    "File not found on the server",
+    "Fichier introuvable sur le serveur",
+];
+/// The server refused (401, 403): the start of what the row says.
+pub const REFUSED: crate::model::Said = [
+    "The server refused access",
+    "Le serveur a refusé l’accès",
+];
+/// Another final answer: the start of what the row says.
+pub const ANSWERED: crate::model::Said = [
+    "The server answered",
+    "Le serveur a répondu",
+];
 
 impl FetchError {
     pub fn message(&self) -> String {
@@ -82,7 +105,9 @@ pub struct Fetcher {
 }
 
 /// What a download sent by another PC says when its link leads to this PC itself.
-pub const THIS_PC_MESSAGE: &str = "Links to the PC itself (localhost) aren't taken from another PC.";
+pub fn this_pc_message() -> String {
+    tr!("Links to the PC itself (localhost) aren't taken from another PC.", "Les liens vers le PC lui-même (localhost) ne sont pas acceptés depuis un autre PC.")
+}
 
 /// A link to the PC it's opened on: localhost, 127.x, ::1, 0.0.0.0 (as the link reader writes
 /// them: "http://127.1" and "http://0x7f000001" are 127.0.0.1 too).
@@ -267,7 +292,7 @@ impl Fetcher {
             .await
             .map_err(|e| send_error(&e))?;
         if self.not_this_pc && self.answered_by_this_pc(&resp).await {
-            return Err(FetchError::Fatal(THIS_PC_MESSAGE.into()));
+            return Err(FetchError::Fatal(this_pc_message()));
         }
         self.check(resp).await
     }
@@ -330,19 +355,21 @@ impl Fetcher {
         Err(match status {
             StatusCode::TOO_MANY_REQUESTS => FetchError::Throttled(
                 match retry_after {
-                    Some(s) => format!("The server asked to slow down for {s}s (429)"),
-                    None => "The server asked to slow down (429)".into(),
+                    Some(s) => tr!("The server asked to slow down for {s}s (429)", "Le serveur a demandé de ralentir pendant {s} s (429)"),
+                    None => tr!("The server asked to slow down (429)", "Le serveur a demandé de ralentir (429)"),
                 },
                 wait,
             ),
-            StatusCode::REQUEST_TIMEOUT => FetchError::Retry(format!("Server busy ({})", status.as_u16())),
-            s if s.is_server_error() => FetchError::Retry(format!("Server error ({})", s.as_u16())),
-            StatusCode::NOT_FOUND | StatusCode::GONE => FetchError::Fatal("File not found on the server (404).".into()),
-            StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED => FetchError::Fatal(format!(
-                "The server refused access ({}). The link may have expired.",
+            StatusCode::REQUEST_TIMEOUT => FetchError::Retry(tr!("Server busy ({})", "Serveur occupé ({})", status.as_u16())),
+            s if s.is_server_error() => FetchError::Retry(tr!("Server error ({})", "Erreur du serveur ({})", s.as_u16())),
+            StatusCode::NOT_FOUND | StatusCode::GONE => FetchError::Fatal(format!("{} (404).", crate::model::say(NOT_FOUND))),
+            StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED => FetchError::Fatal(tr!(
+                "{} ({}). The link may have expired.",
+                "{} ({}). Le lien a peut-être expiré.",
+                crate::model::say(REFUSED),
                 status.as_u16()
             )),
-            s => FetchError::Fatal(format!("The server answered {}", s.as_u16())),
+            s => FetchError::Fatal(format!("{} {}", crate::model::say(ANSWERED), s.as_u16())),
         })
     }
 }
@@ -350,9 +377,9 @@ impl Fetcher {
 /// What a Drive refusal page means: today's download limit, or a file only some people get.
 fn drive_page_error(lower_body: &str) -> FetchError {
     if lower_body.contains("quota") || lower_body.contains("too many users") {
-        FetchError::Quota(QUOTA_MESSAGE.into())
+        FetchError::Quota(crate::model::say(QUOTA_MESSAGE))
     } else {
-        FetchError::Blocked(BLOCKED_MESSAGE.into())
+        FetchError::Blocked(crate::model::say(BLOCKED_MESSAGE))
     }
 }
 
@@ -366,9 +393,14 @@ pub fn is_html(resp: &Response) -> bool {
 
 /// The server's name isn't known (a misspelled or gone site): said plainly, and the engine stops
 /// trying once the internet is known to work (`engine.rs` resolve).
-pub const NAME_NOT_FOUND: &str = "The server's name wasn't found. Check the link";
+pub const NAME_NOT_FOUND: crate::model::Said = [
+    "The server's name wasn't found. Check the link",
+    "Le nom du serveur est introuvable. Vérifiez le lien",
+];
 /// The site's security certificate was refused (expired, for another site, not trusted).
-pub const BAD_CERTIFICATE: &str = "The site's security certificate isn't valid, so Pako didn't connect";
+pub fn bad_certificate() -> String {
+    tr!("The site's security certificate isn't valid, so Pako didn't connect", "Le certificat de sécurité du site n’est pas valide : Pako ne s’est donc pas connecté")
+}
 
 /// What went wrong sending a request, from the whole chain of causes (reqwest says "connect" for
 /// a name that can't be found and for a refused certificate too).
@@ -404,24 +436,24 @@ fn chain_of(e: &reqwest::Error) -> Vec<String> {
 /// found is retried with its own words (it may be the internet that's down: the engine decides).
 fn send_error(e: &reqwest::Error) -> FetchError {
     match cause_of(&chain_of(e)) {
-        Cause::BadCertificate => FetchError::Fatal(BAD_CERTIFICATE.into()),
-        Cause::NameNotFound => FetchError::Retry(NAME_NOT_FOUND.into()),
+        Cause::BadCertificate => FetchError::Fatal(bad_certificate()),
+        Cause::NameNotFound => FetchError::Retry(crate::model::say(NAME_NOT_FOUND)),
         Cause::Other => FetchError::Retry(network_message(e)),
     }
 }
 
 pub fn network_message(e: &reqwest::Error) -> String {
     match cause_of(&chain_of(e)) {
-        Cause::BadCertificate => return BAD_CERTIFICATE.into(),
-        Cause::NameNotFound => return NAME_NOT_FOUND.into(),
+        Cause::BadCertificate => return bad_certificate(),
+        Cause::NameNotFound => return crate::model::say(NAME_NOT_FOUND),
         Cause::Other => {}
     }
     if e.is_timeout() {
-        "Connection timed out".into()
+        tr!("Connection timed out", "La connexion a expiré")
     } else if e.is_connect() {
-        "No connection to the server".into()
+        tr!("No connection to the server", "Pas de connexion au serveur")
     } else {
-        "Connection interrupted".into()
+        tr!("Connection interrupted", "Connexion interrompue")
     }
 }
 
@@ -555,7 +587,7 @@ mod tests {
             assert!(f.get(0, None).await.is_ok(), "{path}: asked for here");
             f.refuse_this_pc(true);
             match f.get(0, None).await {
-                Err(FetchError::Fatal(m)) => assert_eq!(m, THIS_PC_MESSAGE),
+                Err(FetchError::Fatal(m)) => assert_eq!(m, this_pc_message()),
                 other => panic!("{path}: {:?}", other.map(|r| r.status())),
             }
         }
@@ -604,5 +636,20 @@ mod tests {
         assert!(!second.contains("s3cret"), "the link's token went on: {second}");
         assert!(!second.contains("sid=42"), "the cookie went on: {second}");
         assert!(second.contains("referer: http://page.example/"), "{second}");
+    }
+
+    /// Messages compared later are known in both languages; French ones are said in French.
+    #[test]
+    fn words_in_french() {
+        crate::i18n::test_french(true);
+        assert_eq!(crate::model::say(NAME_NOT_FOUND), "Le nom du serveur est introuvable. Vérifiez le lien");
+        assert!(crate::model::is_said(NAME_NOT_FOUND[0], NAME_NOT_FOUND), "an English one made before a switch");
+        let offline = crate::video::friendly_error("ERROR: Unable to download webpage: timed out").0;
+        assert_eq!(offline, "Pas de connexion au site.");
+        assert!(crate::video::is_network(&offline));
+        assert!(crate::video::worth_new_links("Fichier introuvable sur le serveur (404)."));
+        assert!(crate::video::worth_new_links(crate::engine::RESUME_STOPPED[1]));
+        crate::i18n::test_french(false);
+        assert!(crate::video::is_network("Pas de connexion au site."), "a French one after switching back");
     }
 }

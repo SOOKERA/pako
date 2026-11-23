@@ -28,6 +28,11 @@ pub const REASK_IF_ACCEPTED_BEFORE: Option<&str> = None;
 /// What a request gets while the terms wait (the browser extension, and the window's commands).
 pub const NOT_YET: &str = "Pako needs you to accept its terms first.";
 
+/// `NOT_YET` in the language of the moment (the command line keeps the English).
+pub fn not_yet() -> String {
+    tr!("Pako needs you to accept its terms first.", "Pako a besoin que vous acceptiez d’abord ses conditions.")
+}
+
 /// These settings still have to accept the terms. Only a missing (or blank) date asks: never
 /// Pako's version, never the date of the TERMS.md this Pako carries.
 pub fn needed(s: &Settings) -> bool {
@@ -87,7 +92,7 @@ pub fn ok() -> bool {
 
 /// For a command the window can call: refused while the terms wait.
 pub fn check() -> Result<(), String> {
-    if ok() { Ok(()) } else { Err(NOT_YET.into()) }
+    if ok() { Ok(()) } else { Err(not_yet()) }
 }
 
 /// Starts `f` once the terms are accepted (now if they already are).

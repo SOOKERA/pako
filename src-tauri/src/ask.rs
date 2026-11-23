@@ -118,7 +118,7 @@ pub fn current() -> Option<AskView> {
 
 /// The window's answer; then the next one, or the window closes.
 pub fn answer(a: AskAnswer) -> Result<(), String> {
-    let engine = engine().ok_or("Pako is still starting.")?;
+    let engine = engine().ok_or_else(|| tr!("Pako is still starting.", "Pako démarre encore."))?;
     let action = a.action.clone();
     let id = a.id.clone();
     // Cancel for a download the browser handed over (it waits for Pako's answer): it isn't
@@ -156,7 +156,7 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
         return Some(w);
     }
     WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("ask".into()))
-        .title("Download with Pako")
+        .title(tr!("Download with Pako", "Télécharger avec Pako"))
         .inner_size(WIDTH, HEIGHT)
         .decorations(false)
         .resizable(false)
@@ -184,6 +184,8 @@ fn show() {}
 fn show() {
     let Some(app) = APP.get() else { return };
     let Some(w) = window(app) else { return };
+    // The window is made once and kept: its title follows a language switch made since.
+    let _ = w.set_title(&tr!("Download with Pako", "Télécharger avec Pako"));
     let showing = w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false);
     let placed = if w.is_visible().unwrap_or(false) {
         None

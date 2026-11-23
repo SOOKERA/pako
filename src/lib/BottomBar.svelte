@@ -5,12 +5,13 @@
   import { app } from "./state.svelte";
   import { scheduleOpen, speed, hhmm } from "./format";
   import type { WhenDone } from "./api";
+  import { t } from "./i18n.svelte";
 
-  const WHEN: { v: WhenDone; label: string }[] = [
-    { v: "nothing", label: "Do nothing" },
-    { v: "sleep", label: "Sleep" },
-    { v: "shutDown", label: "Shut down" },
-  ];
+  const WHEN = $derived<{ v: WhenDone; label: string; armed: string }[]>([
+    { v: "nothing", label: t("Do nothing"), armed: "" },
+    { v: "sleep", label: t("Sleep"), armed: t("Sleep when done") },
+    { v: "shutDown", label: t("Shut down"), armed: t("Shut down when done") },
+  ]);
   let whenOpen = $state(false);
   // The menu floats above the bar (the bar itself clips what sticks out of it).
   let whenBtn: HTMLButtonElement | undefined = $state();
@@ -44,12 +45,12 @@
       closeWhen(false);
     }
   }
-  const whenLabel = $derived(WHEN.find((w) => w.v === app.whenDone)?.label ?? "Do nothing");
+  const whenLabel = $derived(WHEN.find((w) => w.v === app.whenDone)?.armed ?? "");
   // Re-checked every minute so the "scheduled" note follows the clock.
   let now = $state(new Date());
   $effect(() => {
-    const t = setInterval(() => (now = new Date()), 30_000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => (now = new Date()), 30_000);
+    return () => clearInterval(timer);
   });
   const scheduledOff = $derived(!scheduleOpen(app.settings, now));
 
@@ -60,17 +61,17 @@
 <footer>
   <span class="speed mono" class:idle={app.totalSpeed === 0}>
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 4v14M6 12l6 6 6-6" /></svg>
-    {app.totalSpeed > 0 ? speed(app.totalSpeed) : "0 B/s"}
+    {speed(app.totalSpeed > 0 ? app.totalSpeed : 0)}
   </span>
 
   <span class="when" data-tour="when-done">
-    <button bind:this={whenBtn} class="whenbtn" class:set={app.whenDone !== "nothing"} aria-haspopup="menu" aria-expanded={whenOpen} title="What Pako does when every download has finished" onclick={toggleWhen}>
+    <button bind:this={whenBtn} class="whenbtn" class:set={app.whenDone !== "nothing"} aria-haspopup="menu" aria-expanded={whenOpen} title={t("What Pako does when every download has finished")} onclick={toggleWhen}>
       <svg class="pw" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 3v9M6.3 7.2a8 8 0 1 0 11.4 0" /></svg>
-      {#if app.whenDone === "nothing"}<span class="wtext">When done</span>{:else}<b>{whenLabel} when done</b>{/if}
+      {#if app.whenDone === "nothing"}<span class="wtext">{t("When done")}</span>{:else}<b>{whenLabel}</b>{/if}
       <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 6.5L5 3.5l3 3" fill="none" stroke="currentColor" stroke-width="1.6" /></svg>
     </button>
     {#if whenOpen}
-      <button class="scrim" aria-label="Close" tabindex="-1" onclick={() => closeWhen(false)}></button>
+      <button class="scrim" aria-label={t("Close")} tabindex="-1" onclick={() => closeWhen(false)}></button>
       <div class="whenmenu" role="menu" tabindex="-1" bind:this={menuEl} onkeydown={menuKey} style="left: {menuAt.left}px; bottom: {menuAt.bottom}px">
         {#each WHEN as w (w.v)}
           <button
@@ -85,15 +86,15 @@
             <span class="tick">{#if app.whenDone === w.v}<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>{/if}</span>{w.label}
           </button>
         {/each}
-        <div class="whennote">Back to "Do nothing" after it happens, and each time Pako starts.</div>
+        <div class="whennote">{t('Back to "Do nothing" after it happens, and each time Pako starts.')}</div>
       </div>
     {/if}
   </span>
 
   <span class="group" data-tour="at-once">
-    <span class="atonce">At once</span>
+    <span class="atonce">{t("At once")}</span>
     <span class="stepper">
-      <button aria-label="Run fewer downloads at once" disabled={max <= 1} onclick={() => app.setMaxActive(max - 1)}>
+      <button aria-label={t("Run fewer downloads at once")} disabled={max <= 1} onclick={() => app.setMaxActive(max - 1)}>
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 5h7" stroke="currentColor" stroke-width="1.6" /></svg>
       </button>
       <span class="val">
@@ -102,18 +103,18 @@
         </span>
         <span class="mono n">{max}</span>
       </span>
-      <button aria-label="Run more downloads at once" disabled={max >= 20} onclick={() => app.setMaxActive(max + 1)}>
+      <button aria-label={t("Run more downloads at once")} disabled={max >= 20} onclick={() => app.setMaxActive(max + 1)}>
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 5h7M5 1.5v7" stroke="currentColor" stroke-width="1.6" /></svg>
       </button>
     </span>
-    <span class="running">{app.runningCount} running</span>
+    <span class="running">{t("{n} running", { n: app.runningCount })}</span>
   </span>
 
-  {#if app.waitingCount}<span class="waiting">{app.waitingCount} waiting</span>{/if}
-  {#if scheduledOff && app.settings}<span class="sched" title="Settings › Downloads › Only download at set hours">Downloads start at {hhmm(app.settings.scheduleStart)}</span>{/if}
-  {#if app.counts.problems}<span class="bad">{app.counts.problems} {app.counts.problems === 1 ? "problem" : "problems"}</span>{/if}
+  {#if app.waitingCount}<span class="waiting">{t("{n} waiting", { n: app.waitingCount })}</span>{/if}
+  {#if scheduledOff && app.settings}<span class="sched" title={t("Settings › Downloads › Only download at set hours")}>{t("Downloads start at {time}", { time: hhmm(app.settings.scheduleStart) })}</span>{/if}
+  {#if app.counts.problems}<span class="bad">{t("{n} problems", { n: app.counts.problems })}</span>{/if}
 
-  <span class="hint">Ctrl+V anywhere to paste links</span>
+  <span class="hint">{t("Ctrl+V anywhere to paste links")}</span>
 
 </footer>
 

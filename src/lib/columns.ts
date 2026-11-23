@@ -9,7 +9,10 @@
 
 export interface ColDef {
   key: string;
-  label: string;
+  /** Its title in the language shown (read live: the English `name` through `columnWords`). */
+  readonly label: string;
+  /** Its title in English (the dictionary's key). */
+  name: string;
   /** First width, and the smallest and largest it can be made (px). */
   def: number;
   min: number;
@@ -49,7 +52,34 @@ export const EMPTY: ListState = { w: {}, hidden: [] };
 export const STEP = 8;
 export const BIG_STEP = 40;
 
-const col = (key: string, label: string, def: number, min: number, max: number, drop: number): ColDef => ({ key, label, def, min, max, drop });
+/** Puts a column's English title in the language shown (columns.svelte.ts sets it: t()). This file
+ *  has no window, so its tests see the English. */
+let words = (name: string) => name;
+/** French is shown (its dates and words are longer: some columns start wider). */
+let french = () => false;
+export function columnWords(fn: (name: string) => string, isFrench: () => boolean = () => false) {
+  words = fn;
+  french = isFrench;
+}
+
+/** `fr`: px added to the first width while French is shown ("Aujourd’hui à 14:05", "14 nov. 20:05");
+ *  `frMin`: the same for the narrowest width (a small window with the details panel open), so
+ *  French dates still show whole there. */
+const col = (key: string, name: string, def: number, min: number, max: number, drop: number, fr = 0, frMin = 0): ColDef => ({
+  key,
+  name,
+  get label() {
+    return words(name);
+  },
+  get def() {
+    return def + (fr && french() ? fr : 0);
+  },
+  get min() {
+    return min + (frMin && french() ? frMin : 0);
+  },
+  max,
+  drop,
+});
 
 /** The lists with columns. */
 export const LISTS: Record<string, ListDef> = {
@@ -60,8 +90,8 @@ export const LISTS: Record<string, ListDef> = {
       col("source", "Source", 128, 70, 420, 1),
       col("progress", "Progress", 156, 110, 420, 0),
       col("speed", "Speed", 92, 70, 420, 3),
-      col("status", "Status", 122, 80, 420, 4),
-      col("date", "Date", 112, 80, 420, 2),
+      col("status", "Status", 122, 80, 420, 4, 12),
+      col("date", "Date", 112, 80, 420, 2, 28, 46),
     ],
     pre: ["30px", "46px"],
     prePx: [30, 46],
@@ -76,7 +106,7 @@ export const LISTS: Record<string, ListDef> = {
   },
   found: {
     id: "found",
-    cols: [col("source", "Source", 140, 80, 300, 1), col("size", "Size", 96, 64, 180, 3), col("link", "Link", 36, 32, 56, 4), col("date", "Added on", 112, 80, 200, 2)],
+    cols: [col("source", "Source", 140, 80, 300, 1), col("size", "Size", 96, 64, 180, 3), col("link", "Link", 36, 32, 56, 4), col("date", "Added on", 112, 80, 200, 2, 28, 46)],
     pre: ["30px", "46px"],
     prePx: [30, 46],
     post: ["24px"],
@@ -90,7 +120,7 @@ export const LISTS: Record<string, ListDef> = {
     id: "private",
     // "Downloaded" also says how a file is doing (downloading, failed, decrypting…): it never
     // steps aside by itself.
-    cols: [col("size", "Size", 112, 70, 200, 1), col("date", "Downloaded", 116, 90, 220, 0)],
+    cols: [col("size", "Size", 112, 70, 200, 1), col("date", "Downloaded", 116, 90, 220, 0, 24)],
     pre: ["18px", "24px"],
     prePx: [18, 24],
     post: ["112px"],

@@ -9,12 +9,13 @@
   import FileIcon from "./FileIcon.svelte";
   import MiddleText from "./MiddleText.svelte";
   import Icon from "./Icon.svelte";
+  import { num, t } from "./i18n.svelte";
 
   let {
     items,
     more = 0,
     id,
-    label = "Files and folders in it",
+    label,
     open = null,
     compact = false,
   }: {
@@ -29,12 +30,12 @@
     compact?: boolean;
   } = $props();
 
-  const count = (n: number) => `${n.toLocaleString()} ${n === 1 ? "file" : "files"}`;
+  const count = (n: number) => t("{n} files", { n: num(n) });
   /** Pako knows where this one went (a single file is the transfer itself). */
   const canOpen = (it: DirectItem) => !!open && (!!it.at || (items.length === 1 && !it.dir));
 </script>
 
-<ul class="tis" {id} aria-label={label}>
+<ul class="tis" {id} aria-label={label ?? t("Files and folders in it")}>
   {#each items as it, i (i)}
     <li class="ti">
       <FileIcon name={it.name} kind={it.dir ? "folder" : undefined} size={14} />
@@ -43,18 +44,18 @@
       {#if canOpen(it)}
         <span class="tia" class:compact>
           {#if compact}
-            <button class="ib" aria-label="Open {it.name}" title="Open" onclick={() => open?.(i, false)}><Icon name="open" size={12} /></button>
-            <button class="ib" aria-label="Show {it.name} in its folder" title="Show in its folder" onclick={() => open?.(i, true)}><Icon name="folder" size={12} /></button>
+            <button class="ib" aria-label={t("Open {name}", { name: it.name })} title={t("Open")} onclick={() => open?.(i, false)}><Icon name="open" size={12} /></button>
+            <button class="ib" aria-label={t("Show {name} in its folder", { name: it.name })} title={t("Show in its folder")} onclick={() => open?.(i, true)}><Icon name="folder" size={12} /></button>
           {:else}
-            <button class="link" aria-label="Open {it.name}" onclick={() => open?.(i, false)}>Open</button>
-            <button class="link" aria-label="Show {it.name} in its folder" onclick={() => open?.(i, true)}>Folder</button>
+            <button class="link" aria-label={t("Open {name}", { name: it.name })} onclick={() => open?.(i, false)}>{t("Open")}</button>
+            <button class="link" aria-label={t("Show {name} in its folder", { name: it.name })} onclick={() => open?.(i, true)}>{t("Folder")}</button>
           {/if}
         </span>
       {/if}
     </li>
   {/each}
   {#if more}
-    <li class="timore">and {more.toLocaleString()} more not listed</li>
+    <li class="timore">{t("and {n} more not listed", { n: num(more) })}</li>
   {/if}
 </ul>
 

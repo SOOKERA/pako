@@ -29,7 +29,7 @@ static SENDING: LazyLock<Mutex<HashMap<PathBuf, Sending>>> = LazyLock::new(Defau
 static LOCKS: AtomicU64 = AtomicU64::new(0);
 
 fn locked() -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, "Private mode is locked")
+    io::Error::new(io::ErrorKind::PermissionDenied, crate::tr!("Private mode is locked", "Le mode privé est verrouillé"))
 }
 
 /// Pako's vault (a vault of its own in tests: never the real data folder's).

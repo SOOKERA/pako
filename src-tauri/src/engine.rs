@@ -38,15 +38,17 @@ use crate::paths::{data_dir, write_atomic};
 mod found;
 pub use found::{DeviceChoice, DeviceSplit, DeviceVideo, PickItem};
 pub use found::MirrorView;
-pub use found::PRIVATE_HERE;
+pub(crate) use found::{private_here, NEEDS_VIDEO_TOOLS, NO_ANSWER, SPLICE_FAILED};
 
 /// Smallest part worth giving its own connection.
 const MIN_SPLIT: u64 = 1024 * 1024;
 /// Write to disk in blocks of this size.
 const FLUSH_AT: usize = 512 * 1024;
 const MAX_CONNECTIONS: u32 = 32;
-const FILE_CHANGED: &str =
-    "The file on the server changed since this download started. Use Start over to download it again.";
+pub(crate) const FILE_CHANGED: crate::model::Said = [
+    "The file on the server changed since this download started. Use Start over to download it again.",
+    "Le fichier a changé sur le serveur depuis le début de ce téléchargement. Cliquez sur Recommencer pour le télécharger à nouveau.",
+];
 
 /// Uploads (Send) running right now. Send counts them up and down; while one runs, "when all
 /// downloads finish" waits, and the PC is kept awake (when that setting is on).
@@ -87,8 +89,14 @@ static LIST_SAVER: std::sync::LazyLock<crate::paths::Saver> =
 /// Longest wait for a save to reach the disk ("save now", closing Pako).
 const SAVE_WAIT: Duration = Duration::from_secs(15);
 
-const SETTINGS_UNREAD: &str = "Pako couldn't read your settings when it started, so it won't save over them. \
-     This change lasts until Pako closes. Restart Pako to get your settings back.";
+fn settings_unread() -> String {
+    tr!(
+        "Pako couldn't read your settings when it started, so it won't save over them. \
+         This change lasts until Pako closes. Restart Pako to get your settings back.",
+        "Pako n’a pas pu lire vos paramètres au démarrage : il ne les remplacera donc pas. \
+         Ce changement dure jusqu’à la fermeture de Pako. Redémarrez Pako pour retrouver vos paramètres."
+    )
+}
 
 /// Disk work (writing, flushing) from async code: other tasks on this thread carry on meanwhile
 /// instead of waiting for a slow disk.
@@ -610,30 +618,51 @@ fn list_path() -> PathBuf {
 fn list_note<T>(what: &str, path: &PathBuf, read: &Result<crate::paths::ListRead<T>, String>) -> Option<(String, String)> {
     match read {
         Err(_) => Some((
-            format!("Pako couldn't read your {what}"),
-            format!("So it won't save over it. Your list is kept in {}. Restart Pako to try again.", path.display()),
+            tr!("Pako couldn't read your {what}", "Pako n’a pas pu lire votre {what}"),
+            tr!(
+                "So it won't save over it. Your list is kept in {}. Restart Pako to try again.",
+                "Il ne l’écrasera donc pas. Votre liste est gardée dans {}. Redémarrez Pako pour réessayer.",
+                path.display()
+            ),
         )),
         Ok(r) => {
             let kept = r.kept_in.as_ref()?;
             Some(if r.unread > 0 {
-                let items = if r.unread == 1 { "1 item".to_string() } else { format!("{} items", r.unread) };
+                let n = r.unread;
                 (
-                    format!("Pako couldn't read part of your {what}"),
-                    format!(
-                        "{items} couldn't be read (maybe saved by a newer Pako) and {} left out. The list as it was is kept in {}.",
-                        if r.unread == 1 { "is" } else { "are" },
-                        kept.display()
-                    ),
+                    tr!("Pako couldn't read part of your {what}", "Pako n’a pas pu lire une partie de votre {what}"),
+                    match (n, crate::i18n::is_fr()) {
+                        (1, false) => format!(
+                            "1 item couldn't be read (maybe saved by a newer Pako) and is left out. The list as it was is kept in {}.",
+                            kept.display()
+                        ),
+                        (_, false) => format!(
+                            "{n} items couldn't be read (maybe saved by a newer Pako) and are left out. The list as it was is kept in {}.",
+                            kept.display()
+                        ),
+                        (1, true) => format!(
+                            "1 élément n’a pas pu être lu (peut-être enregistré par un Pako plus récent) et a été laissé de côté. La liste telle qu’elle était est gardée dans {}.",
+                            kept.display()
+                        ),
+                        (_, true) => format!(
+                            "{n} éléments n’ont pas pu être lus (peut-être enregistrés par un Pako plus récent) et ont été laissés de côté. La liste telle qu’elle était est gardée dans {}.",
+                            kept.display()
+                        ),
+                    },
                 )
             } else if r.from_backup {
                 (
-                    format!("Your {what} was damaged"),
-                    format!("Pako used its backup copy. The damaged file is kept in {}.", kept.display()),
+                    tr!("Your {what} was damaged", "Votre {what} était endommagée"),
+                    tr!("Pako used its backup copy. The damaged file is kept in {}.", "Pako a utilisé sa copie de secours. Le fichier endommagé est gardé dans {}.", kept.display()),
                 )
             } else {
                 (
-                    format!("Your {what} was damaged"),
-                    format!("Pako couldn't read it and starts with an empty list. The damaged file is kept in {}.", kept.display()),
+                    tr!("Your {what} was damaged", "Votre {what} était endommagée"),
+                    tr!(
+                        "Pako couldn't read it and starts with an empty list. The damaged file is kept in {}.",
+                        "Pako n’a pas pu la lire et démarre avec une liste vide. Le fichier endommagé est gardé dans {}.",
+                        kept.display()
+                    ),
                 )
             })
         }
@@ -648,7 +677,7 @@ fn settings_path() -> PathBuf {
 pub fn change_saved_settings(f: impl FnOnce(&mut Settings)) -> Result<()> {
     let path = settings_path();
     let mut s = crate::paths::read_json_checked::<Settings>(&path)
-        .map_err(|_| anyhow!(SETTINGS_UNREAD))?
+        .map_err(|_| anyhow!(settings_unread()))?
         .unwrap_or_default();
     // Settled before writing, as Pako does: an older Pako's choices that are read but never
     // written again (the window's "Notify me" off) are kept in their new form.
@@ -671,9 +700,10 @@ impl Engine {
             Ok(Some(s)) => (s, true),
             Ok(None) if had_settings && !settings_path().exists() => {
                 start_notes.push((
-                    "Pako couldn't read your settings".to_string(),
-                    format!(
+                    tr!("Pako couldn't read your settings", "Pako n’a pas pu lire vos paramètres"),
+                    tr!(
                         "They were damaged, so Pako starts with the usual settings. The damaged file is kept in {}.",
+                        "Ils étaient endommagés : Pako démarre donc avec les paramètres habituels. Le fichier endommagé est gardé dans {}.",
                         crate::paths::data_dir().display()
                     ),
                 ));
@@ -693,9 +723,10 @@ impl Engine {
             Ok(None) => (Settings::default(), true),
             Err(_) => {
                 start_notes.push((
-                    "Pako couldn't read your settings".to_string(),
-                    format!(
+                    tr!("Pako couldn't read your settings", "Pako n’a pas pu lire vos paramètres"),
+                    tr!(
                         "So it won't save over them, and uses the usual settings until it closes. Your settings are kept in {}. Restart Pako to use them again.",
+                        "Il ne les écrasera donc pas et utilise les paramètres habituels jusqu’à sa fermeture. Vos paramètres sont gardés dans {}. Redémarrez Pako pour les retrouver.",
                         settings_path().display()
                     ),
                 ));
@@ -714,6 +745,8 @@ impl Engine {
             }
         };
         settings.settle_notify();
+        // Rust's own words (start-up notes, messages) in the saved language from here on.
+        crate::i18n::apply(&settings.language);
         // Kept within what Settings allows (a file edited by hand, or by another version, could
         // say 0 downloads at once: nothing would ever start, with no word why).
         settings.connections = settings.connections.clamp(1, MAX_CONNECTIONS);
@@ -725,7 +758,7 @@ impl Engine {
         // unfinished files go, since nothing else knows them.
         clean_private_parts(&private_parts_path());
         let loaded = crate::paths::read_list_checked::<Download>(&list_path());
-        start_notes.extend(list_note("download list", &list_path(), &loaded));
+        start_notes.extend(list_note(&tr!("download list", "liste de téléchargements"), &list_path(), &loaded));
         let loaded_ok = loaded.is_ok();
         let mut downloads: Vec<Download> = loaded.map(|r| r.items).unwrap_or_default();
         let (found, found_ok, found_note) = found::load();
@@ -811,17 +844,19 @@ impl Engine {
         if free >= left.saturating_add(others).saturating_add(SPARE) {
             return None;
         }
-        let place = if drive.is_empty() { "the drive".to_string() } else { drive };
+        let place = if drive.is_empty() { tr!("the drive", "le disque") } else { drive };
         Some(if others > 0 {
-            format!(
+            tr!(
                 "Not enough free space on {place}: this needs {} and the other downloads there {} more, {} is free. Free some space, then click Try again.",
+                "Pas assez d’espace libre sur {place} : il faut {} pour celui-ci et {} de plus pour les autres téléchargements, {} libres. Libérez de l’espace, puis cliquez sur Réessayer.",
                 human_size(left),
                 human_size(others),
                 human_size(free)
             )
         } else {
-            format!(
+            tr!(
                 "Not enough free space on {place}: this needs {}, {} is free. Free some space, then click Try again.",
+                "Pas assez d’espace libre sur {place} : il faut {}, {} libres. Libérez de l’espace, puis cliquez sur Réessayer.",
                 human_size(left),
                 human_size(free)
             )
@@ -906,11 +941,17 @@ impl Engine {
             if woke && inner.when_done_at.take().is_some() {
                 events.push(("when-done", serde_json::json!({ "phase": "cancelled" })));
                 let body = if inner.when_done == WhenDone::Sleep {
-                    "The PC was asleep during the countdown, so Pako won't put it to sleep now."
+                    tr!(
+                        "The PC was asleep during the countdown, so Pako won't put it to sleep now.",
+                        "Le PC était en veille pendant le compte à rebours : Pako ne le mettra donc pas en veille maintenant."
+                    )
                 } else {
-                    "The PC was asleep during the countdown, so Pako won't shut it down now."
+                    tr!(
+                        "The PC was asleep during the countdown, so Pako won't shut it down now.",
+                        "Le PC était en veille pendant le compte à rebours : Pako ne l’éteindra donc pas maintenant."
+                    )
                 };
-                events.push(("notify", notices::payload("power", "Countdown stopped", body, &Go::none(), Pop::Pref)));
+                events.push(("notify", notices::payload("power", &tr!("Countdown stopped", "Compte à rebours arrêté"), &body, &Go::none(), Pop::Pref)));
             }
             let Inner { had_work, done_any, .. } = &mut *inner;
             if all_done_now(had_work, done_any, busy) {
@@ -919,12 +960,13 @@ impl Engine {
                     let what = inner.when_done.name();
                     events.push(("show-main", serde_json::Value::Null));
                     events.push(("when-done", serde_json::json!({ "phase": "countdown", "action": what, "seconds": WHEN_DONE_SECS })));
-                    let (title, body) = if inner.when_done == WhenDone::Sleep {
-                        ("All downloads are done", "The PC goes to sleep in 1 minute. Open Pako to cancel.")
+                    let title = tr!("All downloads are done", "Tous les téléchargements sont terminés");
+                    let body = if inner.when_done == WhenDone::Sleep {
+                        tr!("The PC goes to sleep in 1 minute. Open Pako to cancel.", "Le PC se met en veille dans 1 minute. Ouvrez Pako pour annuler.")
                     } else {
-                        ("All downloads are done", "The PC shuts down in 1 minute. Open Pako to cancel.")
+                        tr!("The PC shuts down in 1 minute. Open Pako to cancel.", "Le PC s’éteint dans 1 minute. Ouvrez Pako pour annuler.")
                     };
-                    events.push(("notify", notices::payload("power", title, body, &Go::page("downloads"), Pop::Pref)));
+                    events.push(("notify", notices::payload("power", &title, &body, &Go::page("downloads"), Pop::Pref)));
                 }
             }
             if inner.when_done_at.is_some_and(|at| Instant::now() >= at) {
@@ -947,13 +989,23 @@ impl Engine {
             Some(WhenDone::Sleep) => {
                 self.save_now();
                 if !crate::system::sleep_now() {
-                    self.notify("power", "The PC didn't go to sleep", "Windows refused to put it to sleep. Your downloads are done.", Go::page("downloads"));
+                    self.notify(
+                        "power",
+                        &tr!("The PC didn't go to sleep", "Le PC ne s’est pas mis en veille"),
+                        &tr!("Windows refused to put it to sleep. Your downloads are done.", "Windows a refusé de le mettre en veille. Vos téléchargements sont terminés."),
+                        Go::page("downloads"),
+                    );
                 }
             }
             Some(WhenDone::ShutDown) => {
                 self.save_now();
                 if !crate::system::shut_down_now() {
-                    self.notify("power", "The PC didn't shut down", "Windows refused to shut it down. Your downloads are done.", Go::page("downloads"));
+                    self.notify(
+                        "power",
+                        &tr!("The PC didn't shut down", "Le PC ne s’est pas éteint"),
+                        &tr!("Windows refused to shut it down. Your downloads are done.", "Windows a refusé de l’éteindre. Vos téléchargements sont terminés."),
+                        Go::page("downloads"),
+                    );
                 }
             }
             _ => {}
@@ -1046,7 +1098,7 @@ impl Engine {
             return Err(Stop::Cancelled);
         };
         let Some(tools) = crate::video::tools() else {
-            return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
+            return Err(Stop::Fail(Status::Failed, crate::model::say(crate::video::NEEDS_TOOLS)));
         };
         if let Some(dir) = recording {
             return self.finish_recording(job, &d, &tools, dir).await;
@@ -1122,10 +1174,10 @@ impl Engine {
         referrer: Option<&str>,
         msg: &str,
     ) -> Result<(), Stop> {
-        if msg == crate::video::DRM {
-            return Err(Stop::Fail(Status::Failed, crate::hls::PROTECTED.into()));
+        if crate::model::is_said(msg, crate::video::DRM) {
+            return Err(Stop::Fail(Status::Failed, crate::hls::protected()));
         }
-        if msg == crate::video::NEEDS_TOOLS {
+        if crate::model::is_said(msg, crate::video::NEEDS_TOOLS) {
             return Err(Stop::Fail(Status::Failed, msg.into()));
         }
         // Pieces of yt-dlp's (or of Pako's own stream download) are of no use now.
@@ -1155,7 +1207,7 @@ impl Engine {
         referrer: Option<&str>,
     ) -> Result<(), Stop> {
         if tools.ffmpeg.is_none() {
-            return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
+            return Err(Stop::Fail(Status::Failed, crate::model::say(crate::video::NEEDS_TOOLS)));
         }
         let work = crate::hls::work_dir(&d.dest_dir, &d.name, &d.id);
         let ctx = crate::hls::Ctx {
@@ -1185,7 +1237,7 @@ impl Engine {
             match crate::hls::download(&ctx, url, quality, audio.is_some(), &work, &progress).await {
                 Ok(t) => break t,
                 Err(crate::hls::Error::Cancelled) => return Err(Stop::Cancelled),
-                Err(crate::hls::Error::Net(_)) if attempt < 30 => match job.wait_before_retry(&self.net, attempt, "No connection to the video", 0).await {
+                Err(crate::hls::Error::Net(_)) if attempt < 30 => match job.wait_before_retry(&self.net, attempt, &tr!("No connection to the video", "Pas de connexion à la vidéo"), 0).await {
                     None => return Err(Stop::Cancelled),
                     Some(_) => attempt += 1,
                 },
@@ -1225,9 +1277,9 @@ impl Engine {
             }
             let Some((temp, ext)) = made else {
                 let msg = if why.is_empty() {
-                    "Couldn't join picture and sound. Click Try again.".to_string()
+                    tr!("Couldn't join picture and sound. Click Try again.", "Impossible d’assembler l’image et le son. Cliquez sur Réessayer.")
                 } else {
-                    format!("Couldn't join picture and sound ({why}). Click Try again.")
+                    tr!("Couldn't join picture and sound ({why}). Click Try again.", "Impossible d’assembler l’image et le son ({why}). Cliquez sur Réessayer.")
                 };
                 return Err(Stop::Fail(Status::Failed, msg));
             };
@@ -1257,7 +1309,7 @@ impl Engine {
         std::fs::write(&list, crate::stream::parts_list(files.iter().copied())).map_err(|e| Stop::Fail(Status::Failed, disk_message(&e)))?;
         if let Err(why) = self.run_ffmpeg(job, tools, crate::stream::rejoin_args(&list, has_video, has_audio, size, &out), &out).await? {
             let why = if why.is_empty() { String::new() } else { format!(" ({why})") };
-            return Err(Stop::Fail(Status::Failed, format!("Couldn't join the video's parts{why}. Click Try again.")));
+            return Err(Stop::Fail(Status::Failed, tr!("Couldn't join the video's parts{why}. Click Try again.", "Impossible d’assembler les parties de la vidéo{why}. Cliquez sur Réessayer.")));
         }
         Ok(out)
     }
@@ -1266,7 +1318,7 @@ impl Engine {
     /// recording's folder goes once it's done.
     async fn finish_recording(self: &Arc<Self>, job: &Arc<Job>, d: &Download, tools: &crate::video::Tools, dir: &std::path::Path) -> Result<(), Stop> {
         let Some(tracks) = crate::stream::recorded_tracks(dir) else {
-            return Err(Stop::Fail(Status::Failed, "The recording is gone. Record the video again.".into()));
+            return Err(Stop::Fail(Status::Failed, tr!("The recording is gone. Record the video again.", "L’enregistrement a disparu. Enregistrez à nouveau la vidéo.")));
         };
         let mut pieces: Vec<crate::video::Piece> = Vec::new();
         for t in &tracks {
@@ -1313,7 +1365,7 @@ impl Engine {
                         self.update_video_tool();
                     }
                     // An answer Pako can't read: yt-dlp may still download it the usual way.
-                    if msg.starts_with("The video tool gave an answer") {
+                    if crate::model::is_said(&msg, crate::video::UNREADABLE) {
                         return Ok(crate::video::Plan::Fragments);
                     }
                     if crate::video::is_network(&msg) && attempt < 30 {
@@ -1346,7 +1398,7 @@ impl Engine {
                     drop(resp);
                     return Ok(match info.size {
                         Some(size) if info.resumable && size > 0 => Ok(size),
-                        _ => Err("The server doesn't send this video in parts".into()),
+                        _ => Err(tr!("The server doesn't send this video in parts", "Le serveur n’envoie pas cette vidéo en plusieurs parties")),
                     });
                 }
                 Err(FetchError::Retry(msg) | FetchError::Throttled(msg, _)) if attempt < 8 => {
@@ -1631,7 +1683,7 @@ impl Engine {
             return Err(f);
         }
         if state.iter().any(|s| s.segments.iter().any(|g| g.remaining() > 0)) {
-            return Err(Stop::Fail(Status::Failed, "Download stopped before the end. Click Retry.".into()));
+            return Err(Stop::Fail(Status::Failed, tr!("Download stopped before the end. Click Retry.", "Le téléchargement s’est arrêté avant la fin. Cliquez sur Réessayer.")));
         }
         Ok(state)
     }
@@ -1665,11 +1717,13 @@ impl Engine {
             }
             Some(args) => {
                 if let Err(why) = self.run_ffmpeg(job, tools, args, &temp).await? {
-                    let what = if audio.is_some() { "convert the sound" } else { "join picture and sound" };
-                    return Err(Stop::Fail(
-                        Status::Failed,
-                        if why.is_empty() { format!("Couldn't {what}. Click Try again.") } else { format!("Couldn't {what} ({why}). Click Try again.") },
-                    ));
+                    let what = if audio.is_some() {
+                        tr!("Couldn't convert the sound", "Impossible de convertir le son")
+                    } else {
+                        tr!("Couldn't join picture and sound", "Impossible d’assembler l’image et le son")
+                    };
+                    let why = if why.is_empty() { String::new() } else { format!(" ({why})") };
+                    return Err(Stop::Fail(Status::Failed, tr!("{what}{why}. Click Try again.", "{what}{why}. Cliquez sur Réessayer.")));
                 }
                 temp.clone()
             }
@@ -1682,13 +1736,13 @@ impl Engine {
     /// words (the half-made file is deleted).
     async fn run_ffmpeg(&self, job: &Arc<Job>, tools: &crate::video::Tools, args: Vec<std::ffi::OsString>, temp: &std::path::Path) -> Result<Result<(), String>, Stop> {
         let Some(ff) = tools.ffmpeg.clone() else {
-            return Err(Stop::Fail(Status::Failed, crate::video::NEEDS_TOOLS.into()));
+            return Err(Stop::Fail(Status::Failed, crate::model::say(crate::video::NEEDS_TOOLS)));
         };
         let mut cmd = tokio::process::Command::new(&ff);
         cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
         crate::components::in_own_folder_async(&mut cmd, &ff);
         cmd.kill_on_drop(true);
-        let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't start ffmpeg: {e}")))?;
+        let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, tr!("Couldn't start ffmpeg: {e}", "Impossible de lancer ffmpeg : {e}")))?;
         let pid = child.id();
         let stderr = child.stderr.take();
         let err_task = tauri::async_runtime::spawn(async move {
@@ -1763,7 +1817,7 @@ impl Engine {
                     }
                 }
                 Err(e) => {
-                    return Err(Stop::Fail(Status::Failed, format!("Downloaded, but couldn't rename the file: {e}. Click Try again.")));
+                    return Err(Stop::Fail(Status::Failed, tr!("Downloaded, but couldn't rename the file: {e}. Click Try again.", "Téléchargé, mais impossible de renommer le fichier : {e}. Cliquez sur Réessayer.")));
                 }
             }
         }
@@ -1822,7 +1876,7 @@ impl Engine {
             let jar = crate::video::cookie_file_for(&d.id);
             let (fragments, rate) = self.ytdlp_budget(fragments);
             let mut cmd = crate::video::download_command(tools, url, quality, audio, &d.dest_dir, &d.name, fragments, jar.as_ref().map(|j| j.path()), rate, referrer);
-            let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't start the video tool: {e}")))?;
+            let mut child = crate::video::spawn(&mut cmd).map_err(|e| Stop::Fail(Status::Failed, tr!("Couldn't start the video tool: {e}", "Impossible de lancer l’outil vidéo : {e}")))?;
             let pid = child.id();
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -2182,24 +2236,24 @@ impl Engine {
     pub async fn move_to_private(self: &Arc<Self>, id: &str) -> Result<Option<String>, String> {
         let v = crate::vault::get();
         if !v.is_on() {
-            return Err("Turn on Private mode first (Settings › Private mode).".into());
+            return Err(tr!("Turn on Private mode first (Settings › Private mode).", "Activez d’abord le mode privé (Paramètres › Mode privé)."));
         }
-        let d = self.find(id).ok_or("This download is no longer in Pako.")?;
+        let d = self.find(id).ok_or_else(|| tr!("This download is no longer in Pako.", "Ce téléchargement n’est plus dans Pako."))?;
         if d.vault {
             return Ok(None);
         }
         if d.status != Status::Completed || d.group.is_some() {
-            return Err("Only a finished file can go to Private mode.".into());
+            return Err(tr!("Only a finished file can go to Private mode.", "Seul un fichier terminé peut aller dans le mode privé."));
         }
         let plain = d.final_path();
         if !plain.is_file() {
-            return Err("The file isn't there any more.".into());
+            return Err(tr!("The file isn't there any more.", "Le fichier n’est plus là."));
         }
         let target = v.file_path(&d.id);
         let (size, warn) = tokio::task::spawn_blocking(move || seal_file(&plain, &target))
             .await
-            .map_err(|_| "Couldn't put it in Private mode.".to_string())?
-            .map_err(|e| format!("Couldn't put it in Private mode: {e}"))?;
+            .map_err(|_| tr!("Couldn't put it in Private mode.", "Impossible de le mettre dans le mode privé."))?
+            .map_err(|e| tr!("Couldn't put it in Private mode: {e}", "Impossible de le mettre dans le mode privé : {e}"))?;
         {
             let mut inner = self.inner.lock().unwrap();
             if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == id) {
@@ -2244,11 +2298,11 @@ impl Engine {
         progress: impl Fn(u64, u64) + Send + 'static,
     ) -> Result<PathBuf, String> {
         if !matches!(then, "leave" | "off" | "downloads") {
-            return Err("Pick what happens to the private copy.".into());
+            return Err(tr!("Pick what happens to the private copy.", "Choisissez ce que devient la copie privée."));
         }
-        let d = self.find(id).filter(|d| d.vault && d.status == Status::Completed).ok_or("This private file is gone.")?;
+        let d = self.find(id).filter(|d| d.vault && d.status == Status::Completed).ok_or_else(|| tr!("This private file is gone.", "Ce fichier privé n’est plus là."))?;
         if !dir.is_absolute() {
-            return Err("Pick a folder.".into());
+            return Err(tr!("Pick a folder.", "Choisissez un dossier."));
         }
         // A whole folder decrypted: each file goes back to its place inside that folder.
         let dir = match d.vault_folder.as_deref().filter(|_| with_folder) {
@@ -2259,7 +2313,7 @@ impl Engine {
                 .fold(dir, |at, p| at.join(p)),
             None => dir,
         };
-        std::fs::create_dir_all(&dir).map_err(|_| "Can't use that folder. Pick another one.".to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|_| tr!("Can't use that folder. Pick another one.", "Impossible d’utiliser ce dossier. Choisissez-en un autre."))?;
         let name = {
             let inner = self.inner.lock().unwrap();
             names::unique_final(&dir, &names::sanitize(&d.name), &taken_paths(&inner.downloads, None))
@@ -2290,13 +2344,15 @@ impl Engine {
             f.into_inner().map_err(|e| e.into_error())?.sync_all()
         })
         .await
-        .map_err(|_| "Decrypting stopped unexpectedly.".to_string())?;
+        .map_err(|_| tr!("Decrypting stopped unexpectedly.", "Le déchiffrement s’est arrêté de façon inattendue."))?;
         if let Err(e) = written {
             let _ = std::fs::remove_file(&out);
             return Err(match e.kind() {
-                std::io::ErrorKind::PermissionDenied if !crate::vault::get().is_unlocked() => "Private mode locked while decrypting. Open it and try again.".into(),
-                std::io::ErrorKind::StorageFull => "That drive is full. Free some space, or pick another folder.".into(),
-                _ => format!("Couldn't decrypt it: {e}. The private copy is unchanged."),
+                std::io::ErrorKind::PermissionDenied if !crate::vault::get().is_unlocked() => {
+                    tr!("Private mode locked while decrypting. Open it and try again.", "Le mode privé s’est verrouillé pendant le déchiffrement. Ouvrez-le et réessayez.")
+                }
+                std::io::ErrorKind::StorageFull => tr!("That drive is full. Free some space, or pick another folder.", "Ce disque est plein. Libérez de l’espace ou choisissez un autre dossier."),
+                _ => tr!("Couldn't decrypt it: {e}. The private copy is unchanged.", "Impossible de le déchiffrer : {e}. La copie privée n’a pas changé."),
             });
         }
         crate::private_files::mark_zone(&out);
@@ -2305,7 +2361,7 @@ impl Engine {
         // the private file stays as it was.
         if then != "leave" && (!crate::vault::get().is_unlocked() || self.find(id).is_none_or(|x| !x.vault)) {
             let _ = std::fs::remove_file(&out);
-            return Err("Private mode locked while decrypting. Open it and try again.".into());
+            return Err(tr!("Private mode locked while decrypting. Open it and try again.", "Le mode privé s’est verrouillé pendant le déchiffrement. Ouvrez-le et réessayez."));
         }
         match then {
             "off" => {
@@ -2371,7 +2427,7 @@ impl Engine {
             s.send_part_mb = crate::send::PART_DEFAULT_MB;
         }
         std::fs::create_dir_all(&s.download_dir)
-            .map_err(|_| anyhow!("Can't use that folder for downloads."))?;
+            .map_err(|_| anyhow!(tr!("Can't use that folder for downloads.", "Impossible d’utiliser ce dossier pour les téléchargements.")))?;
         self.limiter.set_rate(s.speed_limit_kb.saturating_mul(1024));
         let saved = {
             // Saved in turn with `change_settings`: two saves at once reach the disk in the order
@@ -2390,6 +2446,8 @@ impl Engine {
             s.tours_done = inner.settings.tours_done.clone();
             // Kept by the theme switch (`theme::theme_set`), so an older copy can't undo it.
             s.theme = inner.settings.theme.clone();
+            // Kept by the language switch (`i18n::language_set`), for the same reason.
+            s.language = inner.settings.language.clone();
             // Kept by Links (the hosts picked for files on several hosts).
             s.mirror_hosts = inner.settings.mirror_hosts.clone();
             // Kept by the terms of use step (`accept_terms`): an older copy can't undo it.
@@ -2406,7 +2464,7 @@ impl Engine {
             } else {
                 crate::notices::use_settings(&s);
                 inner.settings = s;
-                Err(anyhow!(SETTINGS_UNREAD))
+                Err(anyhow!(settings_unread()))
             }
         };
         self.schedule();
@@ -2426,7 +2484,7 @@ impl Engine {
             inner.settings.settle_notify();
             crate::notices::use_settings(&inner.settings);
             if !inner.settings_ok {
-                bail!(SETTINGS_UNREAD);
+                bail!(settings_unread());
             }
             serde_json::to_vec_pretty(&inner.settings)?
         };
@@ -2509,12 +2567,12 @@ impl Engine {
     /// quality and notification, or take it off the list.
     pub fn answer_ask(self: &Arc<Self>, a: AskAnswer) -> Result<()> {
         if !matches!(a.action.as_str(), "now" | "queue" | "cancel") {
-            bail!("Pako didn't understand that answer.");
+            bail!(tr!("Pako didn't understand that answer.", "Pako n’a pas compris cette réponse."));
         }
         // Only a download that is waiting for this window can be answered (and only then can
         // Cancel delete its file): anything else in the list is left alone.
         if !self.inner.lock().unwrap().downloads.iter().any(|d| d.id == a.id && d.ask) {
-            bail!("This download is no longer waiting.");
+            bail!(tr!("This download is no longer waiting.", "Ce téléchargement n’attend plus."));
         }
         if a.action == "cancel" {
             crate::extension::forget_headers(&a.id);
@@ -2523,16 +2581,16 @@ impl Engine {
         }
         let dir = PathBuf::from(a.dir.trim());
         if a.dir.trim().is_empty() || !dir.is_absolute() {
-            bail!("Pick a folder to save to.");
+            bail!(tr!("Pick a folder to save to.", "Choisissez un dossier où enregistrer."));
         }
-        std::fs::create_dir_all(&dir).map_err(|_| anyhow!("Can't use that folder. Pick another one."))?;
+        std::fs::create_dir_all(&dir).map_err(|_| anyhow!(tr!("Can't use that folder. Pick another one.", "Impossible d’utiliser ce dossier. Choisissez-en un autre.")))?;
         let mut inner = self.inner.lock().unwrap();
         if inner.jobs.contains_key(&a.id) {
-            bail!("Pako is still pausing this download. Try again in a moment.");
+            bail!(tr!("Pako is still pausing this download. Try again in a moment.", "Pako met encore ce téléchargement en pause. Réessayez dans un instant."));
         }
         let running = inner.jobs.len();
         let taken = taken_paths(&inner.downloads, Some(&a.id));
-        let d = inner.downloads.iter_mut().find(|d| d.id == a.id && d.ask).ok_or_else(|| anyhow!("This download is no longer in Pako."))?;
+        let d = inner.downloads.iter_mut().find(|d| d.id == a.id && d.ask).ok_or_else(|| anyhow!(tr!("This download is no longer in Pako.", "Ce téléchargement n’est plus dans Pako.")))?;
         let video = matches!(d.source, Source::Video { .. });
         if let Source::Video { quality, audio, options, audio_size, .. } = &mut d.source {
             if let Some(q) = a.quality.filter(|q| crate::extension::VIDEO_QUALITIES.contains(q)) {
@@ -2640,7 +2698,7 @@ impl Engine {
         for link in extract_links(text) {
             match self.add_one_as(&link, &dest, from_device).await {
                 Ok(n) => added += n,
-                Err(e) => errors.push(format!("{}: {e}", short(&link))),
+                Err(e) => errors.push(tr!("{}: {e}", "{} : {e}", short(&link))),
             }
         }
         if added > 0 {
@@ -2662,8 +2720,13 @@ impl Engine {
                 self.notify_as(
                     r.private,
                     "browser",
-                    "Links added",
-                    &format!("{} from your browser, ready to pick in Links.", if res.added == 1 { "1 link".to_string() } else { format!("{} links", res.added) }),
+                    &tr!("Links added", "Liens ajoutés"),
+                    &match (res.added, crate::i18n::is_fr()) {
+                        (1, false) => "1 link from your browser, ready to pick in Links.".to_string(),
+                        (n, false) => format!("{n} links from your browser, ready to pick in Links."),
+                        (1, true) => "1 lien de votre navigateur, prêt à choisir dans Liens.".to_string(),
+                        (n, true) => format!("{n} liens de votre navigateur, prêts à choisir dans Liens."),
+                    },
                     Go::page("found"),
                 );
             }
@@ -2720,15 +2783,21 @@ impl Engine {
             self.list_changed();
             self.schedule();
             if held.is_empty() {
-                let body = if added.len() == 1 { added[0].clone() } else { format!("{} files", added.len()) };
+                let body = if added.len() == 1 { added[0].clone() } else { tr!("{} files", "{} fichiers", added.len()) };
                 let one = (added.len() == 1 && added_ids.len() == 1).then(|| added_ids[0].clone());
                 if r.private && crate::vault::get().is_on() {
                     // Into Private mode: nothing about it on screen.
-                    (self.emit)("notify", notices::payload_private("browser", "Downloading in Pako", "A private download started.", &Go::page("downloads"), Pop::Pref));
+                    (self.emit)("notify", notices::payload_private(
+                            "browser",
+                            &tr!("Downloading in Pako", "Téléchargement dans Pako"),
+                            &tr!("A private download started.", "Un téléchargement privé a commencé."),
+                            &Go::page("downloads"),
+                            Pop::Pref,
+                        ));
                 } else if r.private {
-                    (self.emit)("notify", notices::payload_private("browser", "Downloading in Pako", &body, &Go::maybe("downloads", one), Pop::Pref));
+                    (self.emit)("notify", notices::payload_private("browser", &tr!("Downloading in Pako", "Téléchargement dans Pako"), &body, &Go::maybe("downloads", one), Pop::Pref));
                 } else {
-                    self.notify("browser", "Downloading in Pako", &body, Go::maybe("downloads", one));
+                    self.notify("browser", &tr!("Downloading in Pako", "Téléchargement dans Pako"), &body, Go::maybe("downloads", one));
                 }
                 if !r.takeover {
                     crate::ask::started(r.private);
@@ -2743,7 +2812,13 @@ impl Engine {
         }
         if !videos.is_empty() {
             self.found_add_browser(&videos.join("\n"), false, r.private).await;
-            self.notify_as(r.private, "browser", "Video sent to Pako", "Pick the quality in Links, then press Download.", Go::page("found"));
+            self.notify_as(
+                r.private,
+                "browser",
+                &tr!("Video sent to Pako", "Vidéo envoyée à Pako"),
+                &tr!("Pick the quality in Links, then press Download.", "Choisissez la qualité dans Liens, puis cliquez sur Télécharger."),
+                Go::page("found"),
+            );
             return BrowserAdded { open_links: true, ids: added_ids };
         }
         BrowserAdded { open_links: false, ids: added_ids }
@@ -2757,9 +2832,9 @@ impl Engine {
         if let Some(dl) = drive::parse_link(link) {
             return self.add_drive(link, dl, dest).await;
         }
-        let url = url::Url::parse(link).map_err(|_| anyhow!("not a web link"))?;
+        let url = url::Url::parse(link).map_err(|_| anyhow!(say(NOT_WEB_LINK)))?;
         if !matches!(url.scheme(), "http" | "https") {
-            bail!("only http and https links are supported");
+            bail!(say(ONLY_HTTP));
         }
         let name = names::from_url(link);
         let mut d = new_download(link, Source::Http { url: link.into() }, name, dest.clone(), None);
@@ -2777,7 +2852,7 @@ impl Engine {
         };
         let Some(key) = drive::api_key() else {
             if dl.kind == LinkKind::Folder {
-                bail!(drive::NO_KEY);
+                bail!(drive::no_key());
             }
             self.push(plain(dl));
             return Ok(1);
@@ -2806,7 +2881,7 @@ impl Engine {
                     None => e,
                 })?;
             if files.is_empty() {
-                bail!("the folder is empty");
+                bail!(say(FOLDER_EMPTY));
             }
             let root = dest.join(&folder_name);
             let mut count = 0;
@@ -2819,7 +2894,7 @@ impl Engine {
             return Ok(count);
         }
         let d = drive_download(link, &meta, dest.clone(), None)
-            .ok_or_else(|| anyhow!("this kind of Google file (form, site...) can't be downloaded"))?;
+            .ok_or_else(|| anyhow!(say(GOOGLE_KIND)))?;
         self.push(d);
         Ok(1)
     }
@@ -3134,20 +3209,22 @@ impl Engine {
                 let result = tauri::async_runtime::spawn_blocking(move || match extract_archive(&first, &out, None) {
                     Ok(()) => Ok(()),
                     // Locked with a password: noted on the set, asked in the window.
-                    Err(Extract::NeedsPassword | Extract::WrongPassword) => Err(NEEDS_PASSWORD.to_string()),
+                    Err(Extract::NeedsPassword | Extract::WrongPassword) => Err(crate::model::say(NEEDS_PASSWORD)),
                     Err(Extract::Failed(e)) => Err(e),
                 })
                 .await
-                .unwrap_or_else(|_| Err("Extracting crashed".into()));
+                .unwrap_or_else(|_| Err(tr!("Extracting crashed", "L’extraction a planté")));
                 EXTRACTING.lock().unwrap().remove(&names::path_key(first_path));
                 if let Err(e) = &result {
-                    failures.push(format!("{base}: {e}"));
+                    let locked = crate::model::is_said(e, NEEDS_PASSWORD);
+                    let why = if locked { tr!("needs its password", "il faut son mot de passe") } else { e.clone() };
+                    failures.push((tr!("{base}: {why}", "{base} : {why}"), locked));
                 }
                 {
                     let mut inner = me.inner.lock().unwrap();
                     if let Some(d) = inner.downloads.iter_mut().find(|d| &d.id == first_id) {
                         d.message = Some(match &result {
-                            Ok(()) => "Extracted".into(),
+                            Ok(()) => crate::model::say(EXTRACTED),
                             Err(e) => e.clone(),
                         });
                     }
@@ -3162,13 +3239,18 @@ impl Engine {
             let names: Vec<&str> = jobs.iter().map(|(_, _, b)| b.as_str()).collect();
             let ok = failures.is_empty();
             let (kind, title, body) = if ok {
-                ("download-done", "Downloaded and extracted".to_string(), names.join(", "))
+                ("download-done", tr!("Downloaded and extracted", "Téléchargé et extrait"), names.join(", "))
             } else {
-                if failures.iter().all(|f| f.ends_with(NEEDS_PASSWORD)) {
+                if failures.iter().all(|f| f.1) {
                     // Locked with a password: type it in Pako (its row offers it).
-                    ("download-failed", "Password needed".to_string(), format!("{}: type its password in Pako to extract it.", names.join(", ")))
+                    (
+                        "download-failed",
+                        tr!("Password needed", "Mot de passe nécessaire"),
+                        tr!("{}: type its password in Pako to extract it.", "{} : saisissez son mot de passe dans Pako pour l’extraire.", names.join(", ")),
+                    )
                 } else {
-                    ("download-failed", "Couldn't extract everything".to_string(), failures.join("; "))
+                    let all: Vec<&str> = failures.iter().map(|f| f.0.as_str()).collect();
+                    ("download-failed", tr!("Couldn't extract everything", "Impossible de tout extraire"), all.join(&tr!("; ", " ; ")))
                 }
             };
             let first = jobs.first().map(|(id, _, _)| id.clone());
@@ -3187,11 +3269,11 @@ impl Engine {
     /// known there under their real names ("Trip/Maps/Route.gpx" for a folder's file).
     pub fn private_hand_over(&self, ids: &[String]) -> Result<Vec<String>, String> {
         if !crate::vault::get().is_unlocked() {
-            return Err("Open Private mode first.".into());
+            return Err(tr!("Open Private mode first.", "Ouvrez d’abord le mode privé."));
         }
         let mut out = Vec::new();
         for id in ids {
-            let d = self.find(id).filter(|d| d.vault && d.status == Status::Completed).ok_or("Only finished private files can be sent.")?;
+            let d = self.find(id).filter(|d| d.vault && d.status == Status::Completed).ok_or_else(|| tr!("Only finished private files can be sent.", "Seuls les fichiers privés terminés peuvent être envoyés."))?;
             let path = d.final_path();
             crate::private_send::register(&path, &private_send_name(&d), d.size.unwrap_or(d.downloaded));
             out.push(path.display().to_string());
@@ -3203,7 +3285,7 @@ impl Engine {
     /// first part (into its own folder, as when it extracts by itself), or a single .zip/.7z/.rar
     /// (into a folder named after it, next to it). The password is only handed to 7-Zip.
     pub async fn extract_now(self: &Arc<Self>, id: &str, password: Option<zeroize::Zeroizing<String>>) -> Result<PathBuf, String> {
-        let d = self.find(id).filter(|d| d.status == Status::Completed && !d.vault).ok_or("This download is no longer in the list.")?;
+        let d = self.find(id).filter(|d| d.status == Status::Completed && !d.vault).ok_or_else(|| tr!("This download is no longer in the list.", "Ce téléchargement n’est plus dans la liste."))?;
         let path = d.final_path();
         // The first part of a split set among its folder's files: extracted where the set is,
         // as when it extracts by itself. Anything else: into a folder named after it.
@@ -3214,11 +3296,11 @@ impl Engine {
             crate::split::find_sets(&names).iter().any(|set| files[set.first].id == d.id)
         };
         if !in_set && !is_archive(&d.name) {
-            return Err("Pako extracts .zip, .7z and .rar files.".into());
+            return Err(tr!("Pako extracts .zip, .7z and .rar files.", "Pako extrait les fichiers .zip, .7z et .rar."));
         }
         // Another part of a split set: its first part extracts the whole set.
         if !in_set && crate::split::part(&d.name).is_some_and(|p| p.family != crate::split::Family::Zip && p.index > 1) {
-            return Err("Extract the set from its first part.".into());
+            return Err(tr!("Extract the set from its first part.", "Extrayez l’ensemble depuis sa première partie."));
         }
         let out = if in_set {
             d.dest_dir.clone()
@@ -3228,12 +3310,12 @@ impl Engine {
         };
         let key = names::path_key(&path);
         if !EXTRACTING.lock().unwrap().insert(key.clone()) {
-            return Err("It's being extracted already.".into());
+            return Err(tr!("It's being extracted already.", "Il est déjà en cours d’extraction."));
         }
         let (p2, o2) = (path.clone(), out.clone());
         let done = tauri::async_runtime::spawn_blocking(move || extract_archive(&p2, &o2, password.as_ref().map(|p| p.as_str())))
             .await
-            .unwrap_or_else(|_| Err(Extract::Failed("Extracting crashed".into())));
+            .unwrap_or_else(|_| Err(Extract::Failed(tr!("Extracting crashed", "L’extraction a planté"))));
         EXTRACTING.lock().unwrap().remove(&key);
         let result = match done {
             Ok(()) => Ok(out.clone()),
@@ -3245,8 +3327,8 @@ impl Engine {
             let mut inner = self.inner.lock().unwrap();
             if let Some(x) = inner.downloads.iter_mut().find(|x| x.id == id) {
                 x.message = Some(match &result {
-                    Ok(_) => "Extracted".into(),
-                    Err(e) if e == PASSWORD_NEEDED || e == PASSWORD_WRONG => NEEDS_PASSWORD.into(),
+                    Ok(_) => crate::model::say(EXTRACTED),
+                    Err(e) if e == PASSWORD_NEEDED || e == PASSWORD_WRONG => crate::model::say(NEEDS_PASSWORD),
                     Err(e) => e.clone(),
                 });
             }
@@ -3327,7 +3409,7 @@ impl Engine {
     /// A new save folder for downloads that haven't started writing yet (once a file is
     /// being written, it stays where it is).
     pub fn set_folder(&self, ids: &[String], dir: PathBuf) -> Result<()> {
-        std::fs::create_dir_all(&dir).map_err(|_| anyhow!("Can't use that folder."))?;
+        std::fs::create_dir_all(&dir).map_err(|_| anyhow!(tr!("Can't use that folder.", "Impossible d’utiliser ce dossier.")))?;
         let mut inner = self.inner.lock().unwrap();
         let mut moved = 0;
         for id in ids {
@@ -3349,7 +3431,7 @@ impl Engine {
         self.save_now();
         self.list_changed();
         if moved == 0 && !ids.is_empty() {
-            bail!("Already started: a download stays in the folder it began in.");
+            bail!(tr!("Already started: a download stays in the folder it began in.", "Déjà commencé : un téléchargement reste dans le dossier où il a commencé."));
         }
         Ok(())
     }
@@ -3425,14 +3507,14 @@ impl Engine {
     pub fn rename(&self, id: &str, new_name: &str) -> Result<String> {
         let mut inner = self.inner.lock().unwrap();
         if inner.jobs.contains_key(id) {
-            bail!("Pause the download first, then rename it.");
+            bail!(tr!("Pause the download first, then rename it.", "Mettez d’abord le téléchargement en pause, puis renommez-le."));
         }
         let taken = taken_paths(&inner.downloads, Some(id));
         let others = {
-            let d = inner.downloads.iter().find(|d| d.id == id).ok_or_else(|| anyhow!("Download not found"))?;
+            let d = inner.downloads.iter().find(|d| d.id == id).ok_or_else(|| anyhow!(tr!("Download not found", "Téléchargement introuvable")))?;
             other_names(&inner.downloads, &d.dest_dir, &d.name)
         };
-        let d = inner.downloads.iter_mut().find(|d| d.id == id).ok_or_else(|| anyhow!("Download not found"))?;
+        let d = inner.downloads.iter_mut().find(|d| d.id == id).ok_or_else(|| anyhow!(tr!("Download not found", "Téléchargement introuvable")))?;
         let wanted = names::sanitize(new_name.trim());
         if wanted == d.name {
             return Ok(wanted);
@@ -3442,7 +3524,7 @@ impl Engine {
         let name = if wanted.to_lowercase() == d.name.to_lowercase() { wanted.clone() } else { names::unique(&d.dest_dir, &wanted, &taken) };
         if d.status == Status::Completed {
             std::fs::rename(d.final_path(), d.dest_dir.join(&name))
-                .map_err(|e| anyhow!("Couldn't rename the file: {e}"))?;
+                .map_err(|e| anyhow!(tr!("Couldn't rename the file: {e}", "Impossible de renommer le fichier : {e}")))?;
         } else if d.via_browser.is_some() {
             // The browser's file takes this name when it comes in (Pako has no file of it yet).
             d.named = true;
@@ -3457,7 +3539,7 @@ impl Engine {
             d.adopt_old_part();
             let from = [d.part_path(), d.old_part_path()].into_iter().find(|p| p.exists());
             if let Some(from) = from {
-                std::fs::rename(from, names::part_of(&d.dest_dir, &name)).map_err(|e| anyhow!("Couldn't rename the file: {e}"))?;
+                std::fs::rename(from, names::part_of(&d.dest_dir, &name)).map_err(|e| anyhow!(tr!("Couldn't rename the file: {e}", "Impossible de renommer le fichier : {e}")))?;
             }
         }
         d.name = name.clone();
@@ -3720,10 +3802,13 @@ impl Engine {
                     if !wanted || (stuck == 0 && set_will_extract(&files)) {
                         return;
                     }
-                    let body = match (done, stuck) {
-                        (1, 0) => "1 file done".to_string(),
-                        (n, 0) => format!("{n} files done"),
-                        (n, s) => format!("{n} done, {s} need you"),
+                    let body = match (done, stuck, crate::i18n::is_fr()) {
+                        (1, 0, false) => "1 file done".to_string(),
+                        (n, 0, false) => format!("{n} files done"),
+                        (n, s, false) => format!("{n} done, {s} need you"),
+                        (1, 0, true) => "1 fichier terminé".to_string(),
+                        (n, 0, true) => format!("{n} fichiers terminés"),
+                                                (n, s, true) => format!("{n} terminé{}, {s} {} besoin de vous", if n > 1 { "s" } else { "" }, if s > 1 { "ont" } else { "a" }),
                     };
                     Note {
                         title: g.clone(),
@@ -3739,7 +3824,7 @@ impl Engine {
                     }
                 }
                 None => Note {
-                    title: "Download finished".to_string(),
+                    title: tr!("Download finished", "Téléchargement terminé"),
                     body: d.name.clone(),
                     name: d.name.clone(),
                     stopped: false,
@@ -3772,7 +3857,7 @@ impl Engine {
         let Some((name, private, vault)) = found else { return };
         let mut notes = self.notes.lock().unwrap();
         notes.0.push(Note {
-            title: format!("Download stopped: {name}"),
+            title: tr!("Download stopped: {name}", "Téléchargement arrêté : {name}"),
             body: msg.to_string(),
             name,
             stopped: true,
@@ -3808,13 +3893,18 @@ impl Engine {
             let these: Vec<&Note> = vault.iter().filter(|n| n.stopped == stopped).collect();
             let Some(alert) = these.iter().map(|n| n.alert).max() else { continue };
             let kind = if stopped { "download-failed" } else { "download-done" };
-            let title = match (these.len(), stopped) {
-                (1, false) => "A private download finished".to_string(),
-                (n, false) => format!("{n} private downloads finished"),
-                (1, true) => "A private download stopped".to_string(),
-                (n, true) => format!("{n} private downloads stopped"),
+            let title = match (these.len(), stopped, crate::i18n::is_fr()) {
+                (1, false, false) => "A private download finished".to_string(),
+                (n, false, false) => format!("{n} private downloads finished"),
+                (1, true, false) => "A private download stopped".to_string(),
+                (n, true, false) => format!("{n} private downloads stopped"),
+                (1, false, true) => "Un téléchargement privé est terminé".to_string(),
+                (n, false, true) => format!("{n} téléchargements privés sont terminés"),
+                (1, true, true) => "Un téléchargement privé s’est arrêté".to_string(),
+                (n, true, true) => format!("{n} téléchargements privés se sont arrêtés"),
             };
-            (self.emit)("notify", notices::payload(kind, &title, "Open Private mode to see it.", &Go::page("downloads"), note_pop(stopped, alert)));
+            let body = if these.len() == 1 { tr!("Open Private mode to see it.", "Ouvrez le mode privé pour le voir.") } else { tr!("Open Private mode to see them.", "Ouvrez le mode privé pour les voir.") };
+            (self.emit)("notify", notices::payload(kind, &title, &body, &Go::page("downloads"), note_pop(stopped, alert)));
         }
         // A private window's downloads: each said on its own, never kept in the bell.
         let (private, ready): (Vec<Note>, Vec<Note>) = ready.into_iter().partition(|n| n.private);
@@ -3844,11 +3934,11 @@ impl Engine {
                 (n.title, n.body, n.id)
             } else {
                 let names: Vec<&str> = group.iter().take(3).map(|n| n.name.as_str()).collect();
-                let more = if group.len() > 3 { format!(" and {} more", group.len() - 3) } else { String::new() };
+                let more = if group.len() > 3 { and_more(group.len() - 3) } else { String::new() };
                 let title = if kind == "download-done" {
-                    format!("{} downloads finished", group.len())
+                    tr!("{} downloads finished", "{} téléchargements terminés", group.len())
                 } else {
-                    format!("{} downloads stopped", group.len())
+                    tr!("{} downloads stopped", "{} téléchargements arrêtés", group.len())
                 };
                 (title, format!("{}{more}", names.join(", ")), None)
             };
@@ -3869,9 +3959,10 @@ impl Engine {
         };
         let one_folder = dirs.len() == 1 && notes.iter().all(|n| n.id.is_some());
         let names: Vec<&str> = notes.iter().take(3).map(|n| n.name.as_str()).collect();
-        let more = if notes.len() > 3 { format!(" and {} more", notes.len() - 3) } else { String::new() };
+        let more = if notes.len() > 3 { and_more(notes.len() - 3) } else { String::new() };
         let go = Go::maybe("downloads", if one_folder { first.id.clone() } else { None });
-        let mut p = notices::payload("download-done", &format!("{} downloads finished", notes.len()), &format!("{}{more}", names.join(", ")), &go, Pop::Important);
+        let title = tr!("{} downloads finished", "{} téléchargements terminés", notes.len());
+        let mut p = notices::payload("download-done", &title, &format!("{}{more}", names.join(", ")), &go, Pop::Important);
         p["many"] = serde_json::json!(notes.len());
         Some(p)
     }
@@ -4172,7 +4263,7 @@ impl Engine {
                                 d.message = None;
                             }
                         }
-                        Err(Stop::Fail(_, msg)) if msg == found::SPLICE_FAILED => {
+                        Err(Stop::Fail(_, msg)) if crate::model::is_said(&msg, found::SPLICE_FAILED) => {
                             // Continued from another host's bytes, and the whole file failed
                             // its checksum: the mixed file goes, and it starts over from zero
                             // on this host (once: the next file is from this host alone).
@@ -4325,13 +4416,13 @@ impl Engine {
                     Err(found::SpotFail::Odd(why)) => {
                         odd += 1;
                         if odd > 6 {
-                            break Err("answered a sample oddly".into());
+                            break Err(tr!("answered a sample oddly", "a répondu bizarrement à un échantillon"));
                         }
                         (why, 0)
                     }
                     Err(found::SpotFail::Again(why, wait)) => (why, wait),
                 };
-                let note = format!("Comparing a few samples from {to_host}: {}", why.trim_end_matches('.'));
+                let note = tr!("Comparing a few samples from {to_host}: {}", "Comparaison de quelques échantillons de {to_host} : {}", why.trim_end_matches('.'));
                 match job.wait_before_retry(&self.net, attempt, &note, wait).await {
                     None => return Err(Stop::Cancelled),
                     Some(true) => attempt = 0,
@@ -4345,7 +4436,7 @@ impl Engine {
             {
                 let mut inner = self.inner.lock().unwrap();
                 let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) else { return Err(Stop::Cancelled) };
-                let from = dd.tried.last().map(|m| found::host_label(&m.link, &m.source)).unwrap_or_else(|| "the host before".into());
+                let from = dd.tried.last().map(|m| found::host_label(&m.link, &m.source)).unwrap_or_else(|| tr!("the host before", "l’hébergeur précédent"));
                 let to = found::host_label(&dd.link, &dd.source);
                 let note = found::spot_note(&dd.name, &to, &from, &checked);
                 dd.spot_check = false;
@@ -4412,12 +4503,12 @@ impl Engine {
                 }
                 // Its key isn't here (Private mode was locked since): never wiped for that.
                 Some(Err(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    return Err(Stop::Fail(Status::Failed, "Open Private mode, then Resume this download.".into()));
+                    return Err(Stop::Fail(Status::Failed, tr!("Open Private mode, then Resume this download.", "Ouvrez le mode privé, puis reprenez ce téléchargement.")));
                 }
                 // New, or its pieces can't be read: a fresh private file.
                 _ => {
                     segments.clear();
-                    let w = v.create_file(&part, None).map_err(|e| Stop::Fail(Status::Failed, format!("Can't create the file: {e}")))?;
+                    let w = v.create_file(&part, None).map_err(|e| Stop::Fail(Status::Failed, tr!("Can't create the file: {e}", "Impossible de créer le fichier : {e}")))?;
                     (Sink::Vault(w), 0)
                 }
             }
@@ -4429,7 +4520,7 @@ impl Engine {
                 .create(true)
                 .truncate(false)
                 .open(&part)
-                .map_err(|e| Stop::Fail(Status::Failed, format!("Can't create the file: {e}")))?;
+                .map_err(|e| Stop::Fail(Status::Failed, tr!("Can't create the file: {e}", "Impossible de créer le fichier : {e}")))?;
             let len = file.metadata().map(|m| m.len()).unwrap_or(0);
             (Sink::Plain(file), len)
         };
@@ -4484,7 +4575,7 @@ impl Engine {
         self.run_workers(job, fetcher.clone(), file.clone(), d.size, resumable, None).await?;
         let complete = job.slots.lock().unwrap().iter().all(|s| s.seg.remaining() == 0);
         if !complete {
-            return Err(Stop::Fail(Status::Failed, "Download stopped before the end. Click Retry.".into()));
+            return Err(Stop::Fail(Status::Failed, tr!("Download stopped before the end. Click Retry.", "Le téléchargement s’est arrêté avant la fin. Cliquez sur Réessayer.")));
         }
         // Unknown size: the final size is what we received. Cut any leftover bytes
         // (e.g. a restarted download that came out shorter).
@@ -4509,7 +4600,7 @@ impl Engine {
                 let vault = d.vault;
                 let actual = tokio::task::spawn_blocking(move || if vault { md5_vault(&path, &cancel) } else { md5_file(&path, &cancel) })
                     .await
-                    .map_err(|_| Stop::Fail(Status::Failed, "Checksum check crashed".into()))?;
+                    .map_err(|_| Stop::Fail(Status::Failed, tr!("Checksum check crashed", "La vérification de la somme de contrôle a planté")))?;
                 match actual {
                     None => return Err(Stop::Cancelled),
                     Some(Err(e)) => return Err(Stop::Fail(Status::Failed, disk_message(&e))),
@@ -4526,12 +4617,14 @@ impl Engine {
                         // Bytes from two hosts that don't add up: never kept, never stopped
                         // on; it starts over from zero on this host (see `job_ended`).
                         if d.spliced {
-                            return Err(Stop::Fail(Status::Failed, found::SPLICE_FAILED.into()));
+                            return Err(Stop::Fail(Status::Failed, crate::model::say(found::SPLICE_FAILED)));
                         }
                         return Err(Stop::Fail(
                             Status::Failed,
-                            "The file came out damaged (checksum doesn't match). Click Retry to download it again."
-                                .into(),
+                            tr!(
+                                "The file came out damaged (checksum doesn't match). Click Retry to download it again.",
+                                "Le fichier est arrivé endommagé (la somme de contrôle ne correspond pas). Cliquez sur Réessayer pour le télécharger à nouveau."
+                            ),
                         ));
                     }
                     Some(Ok(_)) => {}
@@ -4582,7 +4675,7 @@ impl Engine {
                     }
                 }
                 Err(e) => {
-                    return Err(Stop::Fail(Status::Failed, format!("Downloaded, but couldn't rename the file: {e}. Click Try again.")));
+                    return Err(Stop::Fail(Status::Failed, tr!("Downloaded, but couldn't rename the file: {e}. Click Try again.", "Téléchargé, mais impossible de renommer le fichier : {e}. Cliquez sur Réessayer.")));
                 }
             }
         }
@@ -4782,7 +4875,7 @@ impl Engine {
                 Err(FetchError::Retry(msg)) => {
                     // A server name that can't be found while the internet works: the link is
                     // wrong (or the site gone). Trying again forever changes nothing.
-                    if msg == crate::fetch::NAME_NOT_FOUND && self.net.online().await {
+                    if crate::model::is_said(&msg, crate::fetch::NAME_NOT_FOUND) && self.net.online().await {
                         return Err(Stop::Fail(Status::Failed, msg));
                     }
                     match job.wait_before_retry(&self.net, attempt, &msg, 0).await {
@@ -4810,7 +4903,7 @@ impl Engine {
         let expected = self.find(&job.id).map(|d| d.name).unwrap_or_default();
         if web_page_instead(&expected, page, info.name.is_some()) {
             job.first.lock().unwrap().take();
-            return Err(Stop::Fail(Status::Failed, WEB_PAGE.into()));
+            return Err(Stop::Fail(Status::Failed, crate::model::say(WEB_PAGE)));
         }
 
         let mut inner = self.inner.lock().unwrap();
@@ -4886,19 +4979,19 @@ impl Job {
     /// The host gave no answer with data for 5 minutes and the download has backups: this run
     /// ends so it can go on from the next host (`job_ended`).
     fn host_silent(&self) -> Option<Stop> {
-        self.answers.lock().unwrap().silent(Instant::now()).then(|| Stop::Fail(Status::Failed, found::NO_ANSWER.into()))
+        self.answers.lock().unwrap().silent(Instant::now()).then(|| Stop::Fail(Status::Failed, crate::model::say(found::NO_ANSWER)))
     }
 
     fn live_status(&self) -> (Status, Option<String>) {
         let phase = *self.phase.lock().unwrap();
         if phase == Phase::Verifying {
-            return (Status::Verifying, Some("Checking the file".into()));
+            return (Status::Verifying, Some(tr!("Checking the file", "Vérification du fichier")));
         }
         if phase == Phase::Joining {
-            return (Status::Verifying, Some("Joining picture and sound".into()));
+            return (Status::Verifying, Some(tr!("Joining picture and sound", "Assemblage de l’image et du son")));
         }
         if phase == Phase::Converting {
-            return (Status::Verifying, Some("Converting".into()));
+            return (Status::Verifying, Some(tr!("Converting", "Conversion")));
         }
         let note = self.host_note.lock().unwrap().clone();
         let recent = self.last_data.lock().unwrap().map(|t| t.elapsed() < Duration::from_secs(4)).unwrap_or(false);
@@ -4928,7 +5021,7 @@ impl Job {
     async fn wait_before_retry_on(&self, net: &Net, attempt: u32, msg: &str, min_wait: u64, stop: &CancellationToken) -> Option<bool> {
         self.disturbed.store(true, Ordering::Relaxed);
         if !net.online().await {
-            *self.retry_msg.lock().unwrap() = Some("No internet connection. Waiting for it to come back".into());
+            *self.retry_msg.lock().unwrap() = Some(tr!("No internet connection. Waiting for it to come back", "Pas d’internet. En attente de son retour"));
             // No internet here isn't the host's fault: its 5 minutes start again.
             self.host_answered();
             // Wait for it a minute at most, then try the server anyway with the normal
@@ -4936,7 +5029,7 @@ impl Job {
             let back = net.wait_online(stop, OFFLINE_WAIT).await?;
             self.host_answered();
             if back {
-                *self.retry_msg.lock().unwrap() = Some("Internet is back. Reconnecting".into());
+                *self.retry_msg.lock().unwrap() = Some(tr!("Internet is back. Reconnecting", "Internet est revenu. Reconnexion"));
                 let jitter = rand::random::<u64>() % 800;
                 tokio::select! {
                     _ = stop.cancelled() => return None,
@@ -4951,7 +5044,7 @@ impl Job {
             secs = secs.min(left.as_secs() + 1);
         }
         let jitter = rand::random::<u64>() % 1000;
-        *self.retry_msg.lock().unwrap() = Some(format!("{msg}. Trying again in {secs}s"));
+        *self.retry_msg.lock().unwrap() = Some(tr!("{msg}. Trying again in {secs}s", "{msg}. Nouvel essai dans {secs} s"));
         tokio::select! {
             _ = stop.cancelled() => None,
             _ = tokio::time::sleep(Duration::from_millis(secs * 1000 + jitter)) => Some(false),
@@ -5128,8 +5221,10 @@ impl Worker {
                     if blocked_tries > BLOCKED_TRIES {
                         return Err(FetchError::Blocked(msg).into());
                     }
-                    let note =
-                        format!("Google sent a page instead of the file. Trying again ({blocked_tries} of {BLOCKED_TRIES})");
+                    let note = tr!(
+                        "Google sent a page instead of the file. Trying again ({blocked_tries} of {BLOCKED_TRIES})",
+                        "Google a envoyé une page au lieu du fichier. Nouvel essai ({blocked_tries} sur {BLOCKED_TRIES})"
+                    );
                     match self.job.wait_before_retry_on(&self.net, attempt, &note, 0, &self.abort).await {
                         None => return Ok(()),
                         Some(true) => attempt = 0,
@@ -5162,11 +5257,14 @@ impl Worker {
                     if odd_tries > 6 {
                         return Err(Stop::Fail(
                             Status::Failed,
-                            "Google keeps answering oddly for this file. Click Try again later: nothing downloaded so far is lost.".into(),
+                            tr!(
+                                "Google keeps answering oddly for this file. Click Try again later: nothing downloaded so far is lost.",
+                                "Google répond toujours bizarrement pour ce fichier. Cliquez sur Réessayer plus tard : rien de ce qui est déjà téléchargé n’est perdu."
+                            ),
                         ));
                     }
-                    let note = "Google sent an unexpected answer";
-                    match self.job.wait_before_retry_on(&self.net, attempt, note, 0, &self.abort).await {
+                    let note = tr!("Google sent an unexpected answer", "Google a envoyé une réponse inattendue");
+                    match self.job.wait_before_retry_on(&self.net, attempt, &note, 0, &self.abort).await {
                         None => return Ok(()),
                         Some(true) => attempt = 0,
                         Some(false) => attempt += 1,
@@ -5181,7 +5279,7 @@ impl Worker {
                 if let Some((start, total)) = crate::fetch::content_range(&resp) {
                     let size_changed = matches!((total, self.size), (Some(t), Some(s)) if t != s);
                     if start != pos || size_changed {
-                        return Err(Stop::Fail(Status::Failed, FILE_CHANGED.into()));
+                        return Err(Stop::Fail(Status::Failed, crate::model::say(FILE_CHANGED)));
                     }
                 }
             }
@@ -5192,7 +5290,7 @@ impl Worker {
                 // it didn't match: the file was replaced.
                 let other_size = matches!((resp.content_length(), self.size), (Some(l), Some(s)) if l != s);
                 if self.fetcher.sends_version() || other_size {
-                    return Err(Stop::Fail(Status::Failed, FILE_CHANGED.into()));
+                    return Err(Stop::Fail(Status::Failed, crate::model::say(FILE_CHANGED)));
                 }
             }
             if pos > 0 && !partial {
@@ -5201,7 +5299,7 @@ impl Worker {
                     // (If-Range didn't match) or its setup changed: either way start over.
                     return Err(Stop::Fail(
                         Status::Failed,
-                        "The server stopped allowing resumed downloads: the file may have changed on the server. Use Start over to download it again.".into(),
+                        crate::model::say(RESUME_STOPPED),
                     ));
                 }
                 // Single connection without resume support: start again from zero.
@@ -5272,7 +5370,7 @@ impl Worker {
                         if to.is_some_and(|t| cur > t) && self.chunk.is_some() {
                             break None;
                         }
-                        break Some("The server closed the connection early".into());
+                        break Some(tr!("The server closed the connection early", "Le serveur a fermé la connexion trop tôt"));
                     }
                 }
             };
@@ -5454,7 +5552,14 @@ fn seal_file(plain: &std::path::Path, target: &std::path::Path) -> std::io::Resu
         // Antivirus or the indexer may hold a just-finished file for a moment.
         std::thread::sleep(Duration::from_millis(250));
     }
-    Ok((at, Some(format!("It's in Private mode, but Pako couldn't delete the readable copy at {}. Delete it yourself.", plain.display()))))
+    Ok((
+        at,
+        Some(tr!(
+            "It's in Private mode, but Pako couldn't delete the readable copy at {}. Delete it yourself.",
+            "Il est dans le mode privé, mais Pako n’a pas pu supprimer la copie lisible dans {}. Supprimez-la vous-même.",
+            plain.display()
+        )),
+    ))
 }
 
 /// The MD5 of a private file Pako just finished writing (decrypted as it's read).
@@ -5542,9 +5647,9 @@ fn make_sparse(file: &File) {
 
 fn disk_message(e: &std::io::Error) -> String {
     if e.raw_os_error() == Some(112) {
-        "The disk is full. Free some space, then click Retry.".into()
+        tr!("The disk is full. Free some space, then click Retry.", "Le disque est plein. Libérez de l’espace, puis cliquez sur Réessayer.")
     } else {
-        format!("Couldn't write to the disk: {e}")
+        tr!("Couldn't write to the disk: {e}", "Impossible d’écrire sur le disque : {e}")
     }
 }
 
@@ -5637,7 +5742,17 @@ fn browser_name(given: &str, url: &str, several: bool) -> String {
 }
 
 /// Said when a link to a file answers with a web page instead.
-const WEB_PAGE: &str = "The server sent a web page instead of the file: the link may have expired, or it needs you to sign in. Open it in your browser and download it there: Pako catches the download.";
+pub(crate) const WEB_PAGE: crate::model::Said = [
+    "The server sent a web page instead of the file: the link may have expired, or it needs you to sign in. Open it in your browser and download it there: Pako catches the download.",
+    "Le serveur a envoyé une page web au lieu du fichier : le lien a peut-être expiré, ou il faut vous connecter. Ouvrez-le dans votre navigateur et téléchargez-le là : Pako récupère le téléchargement.",
+];
+
+/// Said when a server that let a download resume stops letting it (`video::worth_new_links`
+/// knows it by its words).
+pub(crate) const RESUME_STOPPED: crate::model::Said = [
+    "The server stopped allowing resumed downloads: the file may have changed on the server. Use Start over to download it again.",
+    "Le serveur n’accepte plus de reprendre le téléchargement : le fichier a peut-être changé sur le serveur. Cliquez sur Recommencer pour le télécharger à nouveau.",
+];
 
 /// The first answer for `name` is a web page (`html`) without a file name of its own
 /// (`named`), while the name says it is a file a web page never is (an archive, a video, a
@@ -5690,18 +5805,27 @@ pub fn private_keep_for(choice: &str) -> Option<Duration> {
 /// Plain words for the browser's reasons a download stopped.
 fn browser_stop(error: &str) -> String {
     let why = match error {
-        "USER_CANCELED" => return "Cancelled in the browser.".into(),
-        "NETWORK_FAILED" | "NETWORK_TIMEOUT" | "NETWORK_DISCONNECTED" => "the connection was lost",
-        "NETWORK_SERVER_DOWN" | "SERVER_FAILED" | "SERVER_BAD_CONTENT" | "SERVER_NO_RANGE" => "the server stopped sending it",
-        "SERVER_UNAUTHORIZED" | "SERVER_FORBIDDEN" | "SERVER_CERT_PROBLEM" => "the server refused it",
-        "FILE_NO_SPACE" | "FILE_TOO_LARGE" => "the drive is full",
-        "FILE_ACCESS_DENIED" | "FILE_NAME_TOO_LONG" | "FILE_FAILED" | "FILE_BLOCKED" => "it couldn't be saved",
-        "FILE_VIRUS_INFECTED" | "FILE_SECURITY_CHECK_FAILED" => "your browser's safety check blocked it",
+        "USER_CANCELED" => return tr!("Cancelled in the browser.", "Annulé dans le navigateur."),
+        "NETWORK_FAILED" | "NETWORK_TIMEOUT" | "NETWORK_DISCONNECTED" => tr!("the connection was lost", "la connexion a été perdue"),
+        "NETWORK_SERVER_DOWN" | "SERVER_FAILED" | "SERVER_BAD_CONTENT" | "SERVER_NO_RANGE" => tr!("the server stopped sending it", "le serveur a cessé de l’envoyer"),
+        "SERVER_UNAUTHORIZED" | "SERVER_FORBIDDEN" | "SERVER_CERT_PROBLEM" => tr!("the server refused it", "le serveur l’a refusé"),
+        "FILE_NO_SPACE" | "FILE_TOO_LARGE" => tr!("the drive is full", "le disque est plein"),
+        "FILE_ACCESS_DENIED" | "FILE_NAME_TOO_LONG" | "FILE_FAILED" | "FILE_BLOCKED" => tr!("it couldn't be saved", "il n’a pas pu être enregistré"),
+        "FILE_VIRUS_INFECTED" | "FILE_SECURITY_CHECK_FAILED" => tr!("your browser's safety check blocked it", "la vérification de sécurité de votre navigateur l’a bloqué"),
         // Pako couldn't get it and the browser couldn't either: never lost without a word.
-        "RESTART_FAILED" => return "Pako couldn't get it, and your browser couldn't start it again. Download it once more from the page.".into(),
-        _ => "",
+        "RESTART_FAILED" => {
+            return tr!(
+                "Pako couldn't get it, and your browser couldn't start it again. Download it once more from the page.",
+                "Pako n’a pas pu le récupérer, et votre navigateur n’a pas pu le relancer. Téléchargez-le à nouveau depuis la page."
+            );
+        }
+        _ => String::new(),
     };
-    if why.is_empty() { "The browser stopped this download.".into() } else { format!("The browser stopped this download: {why}.") }
+    if why.is_empty() {
+        tr!("The browser stopped this download.", "Le navigateur a arrêté ce téléchargement.")
+    } else {
+        tr!("The browser stopped this download: {why}.", "Le navigateur a arrêté ce téléchargement : {why}.")
+    }
 }
 
 impl Engine {
@@ -5753,7 +5877,7 @@ impl Engine {
     /// asked for it meanwhile (pause, resume, cancel).
     pub fn follow(self: &Arc<Self>, r: &crate::extension::Request) -> crate::extension::Reply {
         use crate::extension::Reply;
-        let Some(f) = r.follow.clone() else { return Reply::error("Unknown request.") };
+        let Some(f) = r.follow.clone() else { return Reply::error(crate::extension::unknown_request()) };
         let url = r.urls.first().cloned().unwrap_or_default();
         let known = |d: &Download| {
             d.via_browser.as_ref().is_some_and(|v| (!f.pako.is_empty() && d.id == f.pako) || (f.browser_id >= 0 && v.browser_id == f.browser_id && d.link == url))
@@ -5864,8 +5988,8 @@ impl Engine {
         *job.phase.lock().unwrap() = Phase::Verifying;
         let sealed = tokio::task::spawn_blocking(move || seal_file(&plain, &target))
             .await
-            .map_err(|_| Stop::Fail(Status::Failed, "Putting it in Private mode crashed".into()))?;
-        let (total, warn) = sealed.map_err(|e| Stop::Fail(Status::Failed, format!("Couldn't put it in Private mode: {e}")))?;
+            .map_err(|_| Stop::Fail(Status::Failed, tr!("Putting it in Private mode crashed", "La mise dans le mode privé a planté")))?;
+        let (total, warn) = sealed.map_err(|e| Stop::Fail(Status::Failed, tr!("Couldn't put it in Private mode: {e}", "Impossible de le mettre dans le mode privé : {e}")))?;
         let mut inner = self.inner.lock().unwrap();
         if let Some(dd) = inner.downloads.iter_mut().find(|x| x.id == job.id) {
             dd.size = Some(total);
@@ -5885,8 +6009,11 @@ impl Engine {
         std::thread::spawn(move || {
             let target = crate::vault::get().file_path(&id);
             let sealed = match from {
-                Some(f) => seal_file(&f, &target).map_err(|e| format!("Couldn't put it in Private mode: {e}")),
-                None => Err("The browser finished it, but Pako couldn't find the file to put it in Private mode.".into()),
+                Some(f) => seal_file(&f, &target).map_err(|e| tr!("Couldn't put it in Private mode: {e}", "Impossible de le mettre dans le mode privé : {e}")),
+                None => Err(tr!(
+                    "The browser finished it, but Pako couldn't find the file to put it in Private mode.",
+                    "Le navigateur l’a terminé, mais Pako n’a pas trouvé le fichier pour le mettre dans le mode privé."
+                )),
             };
             {
                 let mut inner = me.inner.lock().unwrap();
@@ -5934,7 +6061,10 @@ impl Engine {
                     Err((from.clone(), why))
                 }
             },
-            None => Err((PathBuf::from(path), "The browser finished it, but Pako couldn't find the file to move it.".into())),
+            None => Err((
+                PathBuf::from(path),
+                tr!("The browser finished it, but Pako couldn't find the file to move it.", "Le navigateur l’a terminé, mais Pako n’a pas trouvé le fichier pour le déplacer."),
+            )),
         };
         let mut finished_note = None;
         let private;
@@ -6239,7 +6369,10 @@ fn private_send_name(d: &Download) -> String {
 
 /// A split set that needs its password: what its first part says (the window offers to type
 /// it there).
-pub const NEEDS_PASSWORD: &str = "Needs its password to extract";
+// The window knows these two by their words (src/lib/extract.svelte.ts), in either language.
+pub const NEEDS_PASSWORD: crate::model::Said = ["Needs its password to extract", "Mot de passe nécessaire pour extraire"];
+/// What a split set's first part (or an archive extracted from the window) says once extracted.
+pub const EXTRACTED: crate::model::Said = ["Extracted", "Extrait"];
 /// `extract_now`'s answers the window turns into the password question.
 pub const PASSWORD_NEEDED: &str = "password-needed";
 pub const PASSWORD_WRONG: &str = "password-wrong";
@@ -6281,7 +6414,7 @@ fn seven_zip(exe: &std::path::Path, args: &[std::ffi::OsString], password: Optio
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // no console window
     }
-    let mut child = cmd.spawn().map_err(|e| format!("Couldn't start 7-Zip: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| tr!("Couldn't start 7-Zip: {e}", "Impossible de lancer 7-Zip : {e}"))?;
     if let Some(mut input) = child.stdin.take() {
         if let Some(p) = password {
             let typed = zeroize::Zeroizing::new(format!("{p}\n"));
@@ -6289,7 +6422,7 @@ fn seven_zip(exe: &std::path::Path, args: &[std::ffi::OsString], password: Optio
         }
         drop(input);
     }
-    child.wait_with_output().map_err(|e| format!("Couldn't run 7-Zip: {e}"))
+    child.wait_with_output().map_err(|e| tr!("Couldn't run 7-Zip: {e}", "Impossible d’exécuter 7-Zip : {e}"))
 }
 
 /// Whether 7-Zip's answer means a password is missing or wrong.
@@ -6305,7 +6438,7 @@ fn password_trouble(o: &std::process::Output) -> bool {
 /// mark. -aou: a file of the same name already in the folder is never written over (the
 /// extracted one gets a new name, "readme_1.txt").
 pub fn extract_archive(archive: &std::path::Path, out: &std::path::Path, password: Option<&str>) -> Result<(), Extract> {
-    let exe = crate::components::seven_zip().ok_or_else(|| Extract::Failed("Extracting needs 7-Zip: install it in Settings › Features & updates.".into()))?;
+    let exe = crate::components::seven_zip().ok_or_else(|| Extract::Failed(tr!("Extracting needs 7-Zip: install it in Settings › Features & updates.", "L’extraction a besoin de 7-Zip : installez-le dans Paramètres › Fonctions et mises à jour.")))?;
     extract_with(&exe, archive, out, password)
 }
 
@@ -6342,15 +6475,21 @@ fn extract_with(exe: &std::path::Path, archive: &std::path::Path, out: &std::pat
 /// 7-Zip's first error line, plainly.
 fn seven_line(o: &std::process::Output) -> String {
     let err = String::from_utf8_lossy(&o.stderr);
-    let line = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("7-Zip stopped with an error");
-    format!("Couldn't extract: {line}")
+    let line = err.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string).unwrap_or_else(|| tr!("7-Zip stopped with an error", "7-Zip s’est arrêté sur une erreur"));
+    tr!("Couldn't extract: {line}", "Impossible d’extraire : {line}")
 }
 
 fn via_not_placed(from: &std::path::Path, dest: &std::path::Path, e: &str) -> String {
     let name = from.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     match from.parent() {
-        Some(dir) if crate::via::same_folder(dir, dest) => format!("Pako couldn't give it its name ({e}): it's in your folder as {name}."),
-        dir => format!("Pako couldn't move it to your folder ({e}), so it's still in {}.", dir.map(|p| p.display().to_string()).unwrap_or_default()),
+        Some(dir) if crate::via::same_folder(dir, dest) => {
+            tr!("Pako couldn't give it its name ({e}): it's in your folder as {name}.", "Pako n’a pas pu lui donner son nom ({e}) : il est dans votre dossier sous le nom {name}.")
+        }
+        dir => tr!(
+            "Pako couldn't move it to your folder ({e}), so it's still in {}.",
+            "Pako n’a pas pu le déplacer dans votre dossier ({e}) : il est donc toujours dans {}.",
+            dir.map(|p| p.display().to_string()).unwrap_or_default()
+        ),
     }
 }
 
@@ -6946,12 +7085,28 @@ mod tests {
     }
 }
 
-fn human_size(n: u64) -> String {
-    let gb = n as f64 / 1_073_741_824.0;
-    if gb >= 1.0 { format!("{gb:.1} GB") } else { format!("{:.0} MB", n as f64 / 1_048_576.0) }
+/// " and 2 more" after a few names (French: " et 1 autre", " et 2 autres").
+fn and_more(n: usize) -> String {
+    match (n, crate::i18n::is_fr()) {
+        (_, false) => format!(" and {n} more"),
+        (1, true) => " et 1 autre".to_string(),
+        (_, true) => format!(" et {n} autres"),
+    }
 }
 
-fn short(link: &str) -> String {
+fn human_size(n: u64) -> String {
+    let gb = n as f64 / 1_073_741_824.0;
+    if crate::i18n::is_fr() {
+        // French: a decimal comma, and Go / Mo.
+        if gb >= 1.0 { format!("{gb:.1} Go").replace('.', ",") } else { format!("{:.0} Mo", n as f64 / 1_048_576.0) }
+    } else if gb >= 1.0 {
+        format!("{gb:.1} GB")
+    } else {
+        format!("{:.0} MB", n as f64 / 1_048_576.0)
+    }
+}
+
+pub(crate) fn short(link: &str) -> String {
     if link.chars().count() > 60 { format!("{}…", link.chars().take(60).collect::<String>()) } else { link.to_string() }
 }
 

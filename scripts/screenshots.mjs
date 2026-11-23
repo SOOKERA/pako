@@ -4,7 +4,7 @@
 //
 //   1. npm run dev                       (the window's design preview on http://localhost:1420)
 //   2. node extension/build.mjs          (only for the Pako Light popup: its copy is in the store zip)
-//   3. node scripts/screenshots.mjs [--light] [name ...]   (no names = all of them)
+//   3. node scripts/screenshots.mjs [--light] [--fr] [name ...]   (no names = all of them)
 //
 // video-preview-site also needs ffmpeg (on the PATH, in FFMPEG, or the copy Pako installed in
 // %LOCALAPPDATA%\Pako\components\ffmpeg): it makes a short sample clip to play.
@@ -12,7 +12,9 @@
 // Writes docs/screenshots/<name>.png at 2× and docs/screenshots/1x/<name>.png at 1×. With --light,
 // the same pictures in Pako's light theme, as <name>-light.png (the window's saved choice
 // "pako.theme" in its storage, src/lib/theme.svelte.ts; the extension popups follow the browser's
-// light mode). Starts nothing
+// light mode). With --fr, the window in French (its saved choice "pako.lang",
+// src/lib/i18n.svelte.ts) in docs/screenshots/fr/ (and fr/1x/), same names; made for the pictures
+// Pako Setup's French slides use (scripts/installer-art.mjs). Starts nothing
 // itself. Pages open with "?showcase"; motion is off (prefers-reduced-motion) and the script waits
 // for numbers and bars to settle, so nothing is caught mid-animation.
 import { chromium } from "playwright";
@@ -27,8 +29,28 @@ const args = process.argv.slice(2);
 /** "dark" (Pako's first look) or "light" (--light). */
 const THEME = args.includes("--light") ? "light" : "dark";
 const SUFFIX = THEME === "light" ? "-light" : "";
+/** The window's language: "en", or "fr" (--fr). */
+const LANG = args.includes("--fr") ? "fr" : "en";
 const BASE = (process.env.PAKO_URL ?? "http://localhost:1420").replace(/\/$/, "");
-const OUT = join(root, "docs", "screenshots");
+const OUT = join(root, "docs", "screenshots", ...(LANG === "fr" ? ["fr"] : []));
+/** The window's words the steps below click, in the language shown (src/lib/i18n/fr-*.ts). */
+const FR = { Upload: "Envoi", Clear: "Vider", "Copy link": "Copier le lien", "My devices": "Mes appareils", Downloads: "Téléchargements" };
+const L = (words) => (LANG === "fr" ? (FR[words] ?? words) : words);
+/** Sample words the preview writes in English where the real Pako's Rust side gives them in the
+ *  language shown (src-tauri/src/send.rs): swapped on the page before a French picture. */
+const FR_SAMPLE = {
+  "Gofile keeps files while people download them. After 10 days without a download, they may be removed.":
+    "Gofile garde les fichiers tant qu’on les télécharge. Après 10 jours sans téléchargement, ils peuvent être supprimés.",
+};
+async function frenchSamples(page) {
+  await page.evaluate((map) => {
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const t = n.nodeValue.trim();
+      if (map[t]) n.nodeValue = n.nodeValue.replace(t, map[t]);
+    }
+  }, FR_SAMPLE);
+}
 const SCALES = [
   { scale: 2, dir: OUT },
   { scale: 1, dir: join(OUT, "1x") },
@@ -47,7 +69,7 @@ async function open(browser, scale, path, viewport, before, columns) {
   const context = await browser.newContext({
     viewport,
     deviceScaleFactor: scale,
-    locale: "en-GB",
+    locale: LANG === "fr" ? "fr-FR" : "en-GB",
     timezoneId: "UTC",
     colorScheme: THEME,
     reducedMotion: "reduce",
@@ -58,6 +80,12 @@ async function open(browser, scale, path, viewport, before, columns) {
       localStorage.setItem("pako.theme", t);
     } catch {}
   }, THEME);
+  // The language the window speaks (src/lib/i18n.svelte.ts reads it).
+  await context.addInitScript((l) => {
+    try {
+      localStorage.setItem("pako.lang", l);
+    } catch {}
+  }, LANG);
   // The list's columns as a person set them (only for pictures that need room for names).
   if (columns)
     await context.addInitScript((c) => {
@@ -80,7 +108,7 @@ const settle = (page, ms = 1600) => page.waitForTimeout(ms);
 const park = (page, x = 2, y = 899) => page.mouse.move(x, y);
 
 async function sidebar(page, label) {
-  await page.locator(".sidebar, nav, aside").getByText(label, { exact: true }).first().click();
+  await page.locator(".sidebar, nav, aside").getByText(L(label), { exact: true }).first().click();
   await settle(page, 700);
 }
 async function clickRow(page, text) {
@@ -221,11 +249,11 @@ const SHOTS = {
     async run(page) {
       await sidebar(page, "Upload");
       // The upload just made: the basket is empty again, its link was copied.
-      await page.getByRole("button", { name: "Clear", exact: true }).first().click();
+      await page.getByRole("button", { name: L("Clear"), exact: true }).first().click();
       await settle(page, 600);
       await clickRow(page, "Wedding");
       await settle(page, 900);
-      await page.locator(".panel").getByRole("button", { name: "Copy link" }).first().click();
+      await page.locator(".panel").getByRole("button", { name: L("Copy link") }).first().click();
       await park(page, 2, SHARE_LINK.height - 1);
       await settle(page, 900);
       // The details panel from its top: its title, link, QR code and "Deletes in 7 days".
@@ -558,7 +586,7 @@ const SHOTS = {
       await sidebar(page, "My devices");
       await clickRow(page, "Home PC");
       await settle(page, 600);
-      await page.locator(".tabs").getByText("Downloads", { exact: true }).first().click();
+      await page.locator(".tabs").getByText(L("Downloads"), { exact: true }).first().click();
       await park(page, 700, 880);
       await settle(page, 3000);
     },
@@ -907,6 +935,7 @@ async function shoot(browser, name, shot) {
   for (const { scale, dir } of SCALES) {
     const { context, page } = await open(browser, scale, shot.path, shot.viewport, shot.before, shot.columns);
     await shot.run(page);
+    if (LANG === "fr") await frenchSamples(page);
     if (shot.css) await page.addStyleTag({ content: shot.css });
     const file = join(dir, `${name}${SUFFIX}.png`);
     if (shot.clip) {

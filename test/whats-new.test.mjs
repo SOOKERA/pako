@@ -65,3 +65,18 @@ test("whats-new.md: every section is 'Next version' or a plain version, once, ne
   const parts = versions.map((h) => versionParts(h));
   for (let i = 1; i < parts.length; i++) assert.ok(compareVersions(parts[i - 1], parts[i]) > 0, `'## ${versions[i]}' is out of order or twice`);
 });
+
+// ---------- French (docs/help/fr/whats-new.md, once there is one) ----------
+import { existsSync } from "node:fs";
+
+const headsOf = (text) => [...text.matchAll(/^##\s+(.+?)\s*$/gm)].map((m) => m[1]);
+
+test("fr/whats-new.md: the same version headings as the English, in the same order", (t) => {
+  const fr = new URL("../docs/help/fr/whats-new.md", import.meta.url);
+  if (!existsSync(fr)) return t.skip("no French What's new yet");
+  const english = headsOf(readFileSync(new URL("../docs/help/whats-new.md", import.meta.url), "utf8"));
+  const french = headsOf(readFileSync(fr, "utf8"));
+  // The same words exactly ("## Next version" stays in English: Pako shows it in French), so each
+  // version shows in French after an update, and the release renames both.
+  assert.deepEqual(french, english, "docs/help/fr/whats-new.md: '## Next version' and '## 1.2.3' headings, the same as docs/help/whats-new.md");
+});

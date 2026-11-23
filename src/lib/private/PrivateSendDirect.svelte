@@ -11,6 +11,7 @@
   import { priv } from "../private.svelte";
   import Modal from "../Modal.svelte";
   import Icon from "../Icon.svelte";
+  import { t, type Words } from "../i18n.svelte";
 
   let { items, title = null, onclose }: { items: Download[]; title?: string | null; onclose: () => void } = $props();
 
@@ -35,7 +36,9 @@
     const q = find.trim().toLowerCase();
     return all.filter((w) => !q || w.name.toLowerCase().includes(q)).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
   });
-  const what = $derived(title ?? (items.length === 1 ? items[0].name : `${items.length} files`));
+  /** What's sent, in words that follow a language switch (its progress row keeps them). */
+  const whatOf = (): Words => title ?? (items.length === 1 ? items[0].name : () => t("{n} files", { n: items.length }));
+  const what = $derived(title ?? (items.length === 1 ? items[0].name : t("{n} files", { n: items.length })));
 
   async function send(w: Who) {
     if (busy) return;
@@ -45,8 +48,8 @@
       const paths = await api.privateHandOver(items.map((d) => d.id));
       const job = await api.directSend(w.id, paths, false, title);
       // You stay in Private mode: its progress shows on the files' rows and in the details panel.
-      priv.sending(items, what, w.name, job, w.device);
-      priv.say(`Sending ${what} to ${w.name}. Its progress shows here, in Private mode.`);
+      priv.sending(items, whatOf(), w.name, job, w.device);
+      priv.say(t("Sending {what} to {who}. Its progress shows here, in Private mode.", { what, who: w.name }));
       onclose();
     } catch (e) {
       error = String(e);
@@ -55,25 +58,29 @@
   }
 </script>
 
-<Modal title="Send {what} with Direct" width={440} onclose={() => !busy && onclose()} outsideCloses={!busy} closable={!busy}>
+<Modal title={t("Send {what} with Direct", { what })} width={440} onclose={() => !busy && onclose()} outsideCloses={!busy} closable={!busy}>
   <div class="pick">
-    <p class="msg">Pako reads {items.length === 1 ? "it" : "them"} decrypted as {items.length === 1 ? "it goes" : "they go"}: no readable copy is made on this PC. The other side gets normal files, and the send shows in Direct's history. You stay here: its progress shows on {items.length === 1 ? "its row" : "their rows"}, and leaving Private mode stops it.</p>
-    <input class="input" placeholder="Find a contact or one of your PCs" aria-label="Find a contact" bind:value={find} />
-    <div class="list" role="listbox" aria-label="Send to">
+    <p class="msg">
+      {items.length === 1
+        ? t("Pako reads it decrypted as it goes: no readable copy is made on this PC. The other side gets normal files, and the send shows in Direct's history. You stay here: its progress shows on its row, and leaving Private mode stops it.")
+        : t("Pako reads them decrypted as they go: no readable copy is made on this PC. The other side gets normal files, and the send shows in Direct's history. You stay here: its progress shows on their rows, and leaving Private mode stops it.")}
+    </p>
+    <input class="input" placeholder={t("Find a contact or one of your PCs")} aria-label={t("Find a contact")} bind:value={find} />
+    <div class="list" role="listbox" aria-label={t("Send to")}>
       {#each people as w (w.id)}
         <button class="who" role="option" aria-selected="false" disabled={busy} onclick={() => send(w)}>
           <span class="badge">{#if w.device}<Icon name="devices" size={13} />{:else}{w.name.slice(0, 1).toUpperCase()}{/if}</span>
           <span class="nm">{w.name}</span>
-          <span class="st" class:on={w.online}>{w.online ? "Online" : "Offline"}</span>
+          <span class="st" class:on={w.online}>{w.online ? t("Online") : t("Offline")}</span>
         </button>
       {:else}
-        <p class="none">{find ? "Nobody by that name." : "No contacts yet: add someone in Direct first."}</p>
+        <p class="none">{find ? t("Nobody by that name.") : t("No contacts yet: add someone in Direct first.")}</p>
       {/each}
     </div>
     {#if error}<p class="err" role="alert">{error}</p>{/if}
   </div>
   {#snippet actions()}
-    <button class="btn ghost" disabled={busy} onclick={onclose}>Cancel</button>
+    <button class="btn ghost" disabled={busy} onclick={onclose}>{t("Cancel")}</button>
   {/snippet}
 </Modal>
 

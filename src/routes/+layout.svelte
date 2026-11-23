@@ -4,10 +4,12 @@
   import "../app.css";
   import { onMount } from "svelte";
   import { theme } from "#lib/theme.svelte.ts";
+  import { i18n } from "#lib/i18n.svelte.ts";
   import { prewarm } from "#lib/prewarm.ts";
   let { children } = $props();
-  // Light or dark, in every window.
+  // Light or dark, English or French, in every window.
   onMount(() => theme.start());
+  onMount(() => i18n.start());
   // First opens as smooth as later ones (fonts' other letter sets, in idle time).
   onMount(prewarm);
 

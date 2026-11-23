@@ -17,11 +17,13 @@
   import SegPick from "./SegPick.svelte";
   import EaseNum from "./EaseNum.svelte";
   import { fadeIn, flipIf, flipOpts, pop, rowSlide } from "./motion";
+  import { num, t, tMaybe, type Key } from "./i18n.svelte";
   import "./dash.css";
 
   let { onmenu }: { onmenu: (x: number, y: number, items: MenuItem[]) => void } = $props();
 
-  const PERIODS: { id: NumbersPeriod; label: string }[] = [
+  /** Labels are keys, shown with t() (so they follow a language switch). */
+  const PERIODS: { id: NumbersPeriod; label: Key }[] = [
     { id: "today", label: "Today" },
     { id: "week", label: "This week" },
     { id: "month", label: "This month" },
@@ -46,14 +48,16 @@
   });
   onMount(() => {
     // Numbers change when a transfer finishes: a quiet refresh now and then is enough.
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
   });
 
   /** Nothing was ever counted. */
   const empty = $derived(v !== null && v.since === null);
-  const when = $derived({ today: "today", week: "this week", month: "this month", all: "yet" }[period]);
-  const plural = (n: number, one: string, many = one + "s") => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  /** The end of "Nothing moved today", "… this week", "… yet". */
+  const when = $derived(t(({ today: "today", week: "this week", month: "this month", all: "yet (all time)" } as const)[period]));
+  /** A number as the language writes it, for a plural ("1,234 files" / "1 234 fichiers"). */
+  const n = (x: number) => num(x);
 
   // ---------- the four totals ----------
   /** How often people downloaded the links you sent in this period (Gofile's last count). */
@@ -99,10 +103,11 @@
 
   // ---------- speed over time ----------
   type SpeedKind = "download" | "upload" | "direct";
-  const SPEEDS: Record<SpeedKind, { label: string; color: string; none: string }> = {
-    download: { label: "Downloads", color: "var(--c-down)", none: "No downloads" },
-    upload: { label: "Uploads", color: "var(--c-up)", none: "No uploads" },
-    direct: { label: "Direct", color: "var(--c-sent)", none: "No Direct transfers" },
+  /** Keys, shown with t(). `none`: the whole sentence, ending with the period ({when}). */
+  const SPEEDS: Record<SpeedKind, { label: Key; color: string; none: Key; aria: Key }> = {
+    download: { label: "Downloads", color: "var(--c-down)", none: "No downloads with a measured speed {when}.", aria: "Downloads speed, {range}" },
+    upload: { label: "Uploads", color: "var(--c-up)", none: "No uploads with a measured speed {when}.", aria: "Uploads speed, {range}" },
+    direct: { label: "Direct", color: "var(--c-sent)", none: "No Direct transfers with a measured speed {when}.", aria: "Direct speed, {range}" },
   };
   let speedKind = $state<SpeedKind>("download");
   const speedOf = (b: NumbersBucket, k: SpeedKind) =>
@@ -138,6 +143,8 @@
   }
 
   // ---------- which way is fastest ----------
+  // Names are keys (shown with tMaybe: a route Pako doesn't know yet shows as it is); the unit
+  // counts its transfers ("3 links").
   const UPLOAD_NAMES: Record<string, [string, string]> = {
     gofile: ["Gofile link", "link"],
     drive: ["Google Drive link", "link"],
@@ -170,7 +177,17 @@
   const scaleOf = (rows: NumbersRoute[]) => Math.max(1, ...rows.map((r) => Math.max(r.peak, r.avg ?? 0)));
 
   // ---------- people ----------
-  const nameOf = (id: string) => app.directContacts.find((c) => c.id === id)?.name ?? "Removed contact";
+  const nameOf = (id: string) => app.directContacts.find((c) => c.id === id)?.name ?? t("Removed contact");
+  /** "3 links", "1 send"… for a route's unit. */
+  function units(unit: string, count: number) {
+    const at = { n: n(count) };
+    if (unit === "link") return t("{n} links", at);
+    if (unit === "send") return t("{n} sends", at);
+    if (unit === "file") return t("{n} files", at);
+    if (unit === "video") return t("{n} videos", at);
+    if (unit === "day") return t("{n} days", at);
+    return t("{n} transfers", at);
+  }
   const peopleMax = $derived(Math.max(1, ...(v?.people ?? []).map((p) => p.sent + p.received)));
   function openPerson(id: string) {
     if (!app.directContacts.some((c) => c.id === id)) return;
@@ -188,23 +205,23 @@
   function more(e: MouseEvent) {
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
     onmenu(b.right - 250, b.bottom + 4, [
-      { label: "Save the details as a CSV file…", icon: "download", disabled: empty, action: exportCsv },
+      { label: t("Save the details as a CSV file…"), icon: "download", disabled: empty, action: exportCsv },
       { separator: true },
-      { label: "Reset statistics…", icon: "trash", danger: true, disabled: empty, action: () => (resetting = true) },
+      { label: t("Reset statistics…"), icon: "trash", danger: true, disabled: empty, action: () => (resetting = true) },
     ]);
   }
   async function exportCsv() {
     if (!inApp) {
-      app.toast("Preview mode: nothing is saved");
+      app.toast(t("Preview mode: nothing is saved"));
       return;
     }
     const today = new Date();
     const stamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    const path = await saveFile({ title: "Save Pako's numbers", defaultPath: `Pako numbers ${stamp}.csv`, filters: [{ name: "CSV (opens in Excel)", extensions: ["csv"] }] });
+    const path = await saveFile({ title: t("Save Pako's numbers"), defaultPath: t("Pako numbers {date}.csv", { date: stamp }), filters: [{ name: t("CSV (opens in Excel)"), extensions: ["csv"] }] });
     if (!path) return;
     try {
-      const n = await api.numbersExport(path);
-      app.toast(`Saved ${plural(n, "transfer")} to the file.`);
+      const count = await api.numbersExport(path);
+      app.toast(t("Saved {n} transfers to the file.", { n: num(count) }));
     } catch (err) {
       app.toast(String(err), "error");
     }
@@ -214,7 +231,7 @@
     try {
       await api.numbersReset();
       await load();
-      app.toast("Statistics reset.");
+      app.toast(t("Statistics reset."));
     } catch (err) {
       app.toast(String(err), "error");
     }
@@ -222,57 +239,58 @@
 
   const rangeText = $derived.by(() => {
     if (!v) return "";
-    if (period === "today") return "Today, hour by hour";
-    const by = step === "month" ? "month by month" : "day by day";
-    if (period === "all") return `Since ${dayLabel(v.from)}, ${by}`;
-    return `${dayLabel(v.from)} to ${dayLabel(v.to)}, ${by}`;
+    if (period === "today") return t("Today, hour by hour");
+    const monthly = step === "month";
+    if (period === "all") return monthly ? t("Since {date}, month by month", { date: dayLabel(v.from) }) : t("Since {date}, day by day", { date: dayLabel(v.from) });
+    const range = { from: dayLabel(v.from), to: dayLabel(v.to) };
+    return monthly ? t("{from} to {to}, month by month", range) : t("{from} to {to}, day by day", range);
   });
 </script>
 
 <div class="dash">
   <div class="toolbar">
-    <h1>Dashboard</h1>
+    <h1>{t("Dashboard")}</h1>
     <TutorialButton id="dashboard" />
     <div class="spacer"></div>
-    <span class="period" data-tour="dash-period"><SegPick label="Period" options={PERIODS.map((p) => ({ value: p.id, label: p.label }))} value={period} onpick={(p) => (period = p)} /></span>
-    <button class="icon-btn" data-tour="dash-more" aria-label="More" title="Save or reset the numbers" onclick={more}><Icon name="settings" size={14} /></button>
+    <span class="period" data-tour="dash-period"><SegPick label={t("Period")} options={PERIODS.map((p) => ({ value: p.id, label: t(p.label) }))} value={period} onpick={(p) => (period = p)} /></span>
+    <button class="icon-btn" data-tour="dash-more" aria-label={t("More")} title={t("Save or reset the numbers")} onclick={more}><Icon name="settings" size={14} /></button>
   </div>
 
   <div class="body">
     {#if empty}
       <section class="card emptycard" data-tour="dash-empty" in:pop={{ duration: 260, from: 0.98, y: 8 }}>
         <div class="emptyicon"><Icon name="chart" size={22} /></div>
-        <h2>Your numbers show up as you use Pako</h2>
-        <p>Downloads, uploads and Direct transfers are counted here as they finish: how much, how fast, and with whom. Only on this PC.</p>
+        <h2>{t("Your numbers show up as you use Pako")}</h2>
+        <p>{t("Downloads, uploads and Direct transfers are counted here as they finish: how much, how fast, and with whom. Only on this PC.")}</p>
       </section>
     {:else if v}
       <!-- The four totals -->
       <div class="tiles" data-tour="dash-totals" in:pop={{ duration: 260, from: 0.99, y: 8 }}>
         <div class="tile">
-          <span class="k"><i style="background: var(--c-down)"></i>Downloaded</span>
+          <span class="k"><i style="background: var(--c-down)"></i>{t("Downloaded")}</span>
           <span class="v mono"><EaseNum value={v.download.bytes} format={bytes} /></span>
           <span class="d">
-            {plural(v.download.files, "file")}{#if v.download.failed}<span class="bad" title="Stopped with an error">&ensp;·&ensp;{v.download.failed} stopped</span>{/if}
+            {t("{n} files", { n: n(v.download.files) })}{#if v.download.failed}<span class="bad" title={t("Stopped with an error")}>&ensp;·&ensp;{t("{n} stopped", { n: n(v.download.failed) })}</span>{/if}
           </span>
         </div>
         <div class="tile">
-          <span class="k"><i style="background: var(--c-up)"></i>Uploaded</span>
+          <span class="k"><i style="background: var(--c-up)"></i>{t("Uploaded")}</span>
           <span class="v mono"><EaseNum value={v.upload.bytes} format={bytes} /></span>
           <span class="d">
-            {plural(v.upload.count, "link")}{#if v.upload.count}<span title="People downloaded these links {plural(fetchedByOthers, 'time')} (as Gofile last said)">&ensp;·&ensp;{plural(fetchedByOthers, "download")}</span>{/if}
+            {t("{n} links", { n: n(v.upload.count) })}{#if v.upload.count}<span title={t("People downloaded these links {n} times (as Gofile last said)", { n: n(fetchedByOthers) })}>&ensp;·&ensp;{t("{n} downloads", { n: n(fetchedByOthers) })}</span>{/if}
           </span>
         </div>
         <div class="tile">
-          <span class="k"><i style="background: var(--c-sent)"></i>Sent direct</span>
+          <span class="k"><i style="background: var(--c-sent)"></i>{t("Sent direct")}</span>
           <span class="v mono"><EaseNum value={v.sent.bytes} format={bytes} /></span>
           <span class="d">
-            to {plural(v.sent.people, "person", "people")}{#if directShare !== null}<span title="{directShare}% went straight from your PC to theirs, the rest through a relay">&ensp;·&ensp;{directShare}% direct</span>{/if}
+            {t("to {n} people", { n: n(v.sent.people) })}{#if directShare !== null}<span title={t("{n}% went straight from your PC to theirs, the rest through a relay", { n: directShare })}>&ensp;·&ensp;{t("{n}% direct", { n: directShare })}</span>{/if}
           </span>
         </div>
         <div class="tile">
-          <span class="k"><i style="background: var(--c-recv)"></i>Received direct</span>
+          <span class="k"><i style="background: var(--c-recv)"></i>{t("Received direct")}</span>
           <span class="v mono"><EaseNum value={v.received.bytes} format={bytes} /></span>
-          <span class="d">from {plural(v.received.people, "person", "people")}&ensp;·&ensp;{plural(v.received.count, "transfer")}</span>
+          <span class="d">{t("from {n} people", { n: n(v.received.people) })}&ensp;·&ensp;{t("{n} transfers", { n: n(v.received.count) })}</span>
         </div>
       </div>
 
@@ -280,19 +298,19 @@
       <section class="card" data-tour="dash-activity" in:pop={{ duration: 260, from: 0.99, y: 8, delay: 40 }}>
         <div class="head">
           <div>
-            <h2>Activity</h2>
+            <h2>{t("Activity")}</h2>
             <div class="sub">{rangeText}</div>
           </div>
         </div>
         <div class="legend">
-          {#each KINDS as k (k.k)}<span><i style="background: {k.color}"></i>{k.label}</span>{/each}
+          {#each KINDS as k (k.k)}<span><i style="background: {k.color}"></i>{t(k.label)}</span>{/each}
         </div>
         <div class="chart" bind:clientWidth={aw}>
           {#if !hasActivity}
-            <div class="nodata" in:fadeIn={{ duration: 160 }}>Nothing moved {when}.</div>
+            <div class="nodata" in:fadeIn={{ duration: 160 }}>{t("Nothing moved {when}.", { when })}</div>
           {:else}
             {#key v.period}
-            <svg width={aw} height={AH} role="img" aria-label="What Pako moved, {rangeText.toLowerCase()}" onpointerleave={() => (aHover = null)} in:fadeIn={{ duration: 160 }}>
+            <svg width={aw} height={AH} role="img" aria-label={t("What Pako moved, {range}", { range: rangeText.toLowerCase() })} onpointerleave={() => (aHover = null)} in:fadeIn={{ duration: 160 }}>
               {#each [0, 0.5, 1] as f (f)}
                 <line x1={apad.l} x2={aw - apad.r} y1={ay(aMax * f)} y2={ay(aMax * f)} class="grid" />
                 <text x={apad.l - 10} y={ay(aMax * f) + 4} class="ax" text-anchor="end">{bytes(aMax * f)}</text>
@@ -318,9 +336,9 @@
               <div class="tip glide" style="transform: translateX({bx + aBand + 228 > aw ? Math.max(0, bx - 222) : bx + aBand + 8}px)" in:fadeIn={{ duration: 120 }}>
                 <div class="tt">{bucketTitle(b.key, step)}</div>
                 {#each KINDS as k (k.k)}
-                  <div class="tr"><i style="background: {k.color}"></i><span>{k.label}</span><b class="mono">{bytes(b[k.k])}</b></div>
+                  <div class="tr"><i style="background: {k.color}"></i><span>{t(k.label)}</span><b class="mono">{bytes(b[k.k])}</b></div>
                 {/each}
-                <div class="tr total"><i class="hollow"></i><span>In all</span><b class="mono">{bytes(sum(b))}</b></div>
+                <div class="tr total"><i class="hollow"></i><span>{t("In all")}</span><b class="mono">{bytes(sum(b))}</b></div>
               </div>
             {/if}
           {/if}
@@ -331,27 +349,27 @@
       <section class="card" data-tour="dash-speed" in:pop={{ duration: 260, from: 0.99, y: 8, delay: 80 }}>
         <div class="head">
           <div>
-            <h2>Speed</h2>
-            <div class="sub">Average speed while moving, and the top speed reached.</div>
+            <h2>{t("Speed")}</h2>
+            <div class="sub">{t("Average speed while moving, and the top speed reached.")}</div>
           </div>
           <SegPick
             small
-            label="Which speed"
-            options={(Object.keys(SPEEDS) as SpeedKind[]).map((k) => ({ value: k, label: SPEEDS[k].label }))}
+            label={t("Which speed")}
+            options={(Object.keys(SPEEDS) as SpeedKind[]).map((k) => ({ value: k, label: t(SPEEDS[k].label) }))}
             value={speedKind}
             onpick={(k) => (speedKind = k)}
           />
         </div>
         <div class="legend">
-          <span><i style="background: {SPEEDS[speedKind].color}"></i>Average</span>
-          <span><i class="range" style="--c: {SPEEDS[speedKind].color}"></i>Up to the top speed</span>
+          <span><i style="background: {SPEEDS[speedKind].color}"></i>{t("Average")}</span>
+          <span><i class="range" style="--c: {SPEEDS[speedKind].color}"></i>{t("Up to the top speed")}</span>
         </div>
         <div class="chart" bind:clientWidth={sw}>
           {#if !sPoints.length}
-            <div class="nodata" in:fadeIn={{ duration: 160 }}>{SPEEDS[speedKind].none} with a measured speed {when}.</div>
+            <div class="nodata" in:fadeIn={{ duration: 160 }}>{t(SPEEDS[speedKind].none, { when })}</div>
           {:else}
             {#key `${v.period}|${speedKind}`}
-            <svg width={sw} height={SH} role="img" aria-label="{SPEEDS[speedKind].label} speed, {rangeText.toLowerCase()}" onpointermove={onSpeedMove} onpointerleave={() => (sHover = null)} in:fadeIn={{ duration: 160 }}>
+            <svg width={sw} height={SH} role="img" aria-label={t(SPEEDS[speedKind].aria, { range: rangeText.toLowerCase() })} onpointermove={onSpeedMove} onpointerleave={() => (sHover = null)} in:fadeIn={{ duration: 160 }}>
               {#each [0, 0.5, 1] as f (f)}
                 <line x1={spad.l} x2={sw - spad.r} y1={sy(sMax * f)} y2={sy(sMax * f)} class="grid" />
                 <text x={spad.l - 10} y={sy(sMax * f) + 4} class="ax" text-anchor="end">{speed(sMax * f)}</text>
@@ -375,7 +393,7 @@
                 {@const tx = sx(topPoint.i)}
                 {@const anchor = tx < spad.l + 70 ? "start" : tx > sw - 80 ? "end" : "middle"}
                 <circle cx={tx} cy={sy(topPoint.peak)} r="4" class="top appear" />
-                <text x={anchor === "start" ? tx - 4 : anchor === "end" ? tx + 4 : tx} y={sy(topPoint.peak) - 9} class="toplabel appear" text-anchor={anchor}>Top {speed(topPoint.peak)}</text>
+                <text x={anchor === "start" ? tx - 4 : anchor === "end" ? tx + 4 : tx} y={sy(topPoint.peak) - 9} class="toplabel appear" text-anchor={anchor}>{t("Top {speed}", { speed: speed(topPoint.peak) })}</text>
               {/if}
             </svg>
             {/key}
@@ -384,9 +402,9 @@
               {@const px = sx(p.i)}
               <div class="tip glide" style="transform: translateX({px + 228 > sw ? Math.max(0, px - 222) : px + 12}px)" in:fadeIn={{ duration: 120 }}>
                 <div class="tt">{bucketTitle(p.key, step)}</div>
-                <div class="tr"><i style="background: {SPEEDS[speedKind].color}"></i><span>Average</span><b class="mono">{p.avg === null ? "Not measured" : speed(p.avg)}</b></div>
-                <div class="tr"><i class="hollow"></i><span>Top speed</span><b class="mono">{p.peak ? speed(p.peak) : "Not measured"}</b></div>
-                <div class="tr total"><i class="hollow"></i><span>Moved</span><b class="mono">{bytes(p.amount)}</b></div>
+                <div class="tr"><i style="background: {SPEEDS[speedKind].color}"></i><span>{t("Average")}</span><b class="mono">{p.avg === null ? t("Not measured") : speed(p.avg)}</b></div>
+                <div class="tr"><i class="hollow"></i><span>{t("Top speed")}</span><b class="mono">{p.peak ? speed(p.peak) : t("Not measured")}</b></div>
+                <div class="tr total"><i class="hollow"></i><span>{t("Moved")}</span><b class="mono">{bytes(p.amount)}</b></div>
               </div>
             {/if}
           {/if}
@@ -395,7 +413,7 @@
 
       <!-- Which way is fastest -->
       <div class="pair" data-tour="dash-routes" in:pop={{ duration: 260, from: 0.99, y: 8, delay: 120 }}>
-        {#each [{ title: "Sending files", sub: "Average upload speed, by the way you sent them.", rows: v.uploadRoutes, names: UPLOAD_NAMES, color: "var(--c-up)" }, { title: "Getting files", sub: "Average download speed, by where they came from.", rows: v.downloadSources, names: SOURCE_NAMES, color: "var(--c-down)" }] as card (card.title)}
+        {#each [{ id: "up", title: t("Sending files"), sub: t("Average upload speed, by the way you sent them."), rows: v.uploadRoutes, names: UPLOAD_NAMES, color: "var(--c-up)" }, { id: "down", title: t("Getting files"), sub: t("Average download speed, by where they came from."), rows: v.downloadSources, names: SOURCE_NAMES, color: "var(--c-down)" }] as card (card.id)}
           {@const scale = scaleOf(card.rows)}
           {@const best = fastest(card.rows)}
           <section class="card routes">
@@ -406,19 +424,19 @@
                 {@const [name, unit] = card.names[r.route] ?? [r.route, "transfer"]}
                 <div class="route" class:unused={!r.count}>
                   <div class="rname">
-                    <span>{name}</span>
-                    {#if best === r.route}<span class="badge">Fastest</span>{/if}
+                    <span>{tMaybe(name)}</span>
+                    {#if best === r.route}<span class="badge">{t("Fastest")}</span>{/if}
                   </div>
-                  <div class="rvalue mono" title={r.avg === null ? "" : `Average ${speed(r.avg)} while moving`}>{#if r.avg === null}—{:else}<EaseNum value={r.avg} format={speed} />{/if}</div>
+                  <div class="rvalue mono" title={r.avg === null ? "" : t("Average {speed} while moving", { speed: speed(r.avg) })}>{#if r.avg === null}—{:else}<EaseNum value={r.avg} format={speed} />{/if}</div>
                   <div class="track" aria-hidden="true">
                     {#if r.avg !== null}<i class="fill" style="width: {(r.avg / scale) * 100}%; background: {card.color}"></i>{/if}
-                    {#if r.peak}<i class="peak" style="left: {(r.peak / scale) * 100}%" title="Top speed {speed(r.peak)}"></i>{/if}
+                    {#if r.peak}<i class="peak" style="left: {(r.peak / scale) * 100}%" title={t("Top speed {speed}", { speed: speed(r.peak) })}></i>{/if}
                   </div>
                   <div class="rsub">
                     {#if r.count}
-                      {plural(r.count, unit)} · {bytes(r.bytes)}{#if r.peak}<span title="The top speed reached">&ensp;·&ensp;top {speed(r.peak)}</span>{/if}
+                      {units(unit, r.count)} · {bytes(r.bytes)}{#if r.peak}<span title={t("The top speed reached")}>&ensp;·&ensp;{t("top {speed}", { speed: speed(r.peak) })}</span>{/if}
                     {:else}
-                      Not used {when}
+                      {t("Not used {when}", { when })}
                     {/if}
                   </div>
                 </div>
@@ -431,16 +449,16 @@
       <!-- People and sources -->
       <div class="pair wide" in:pop={{ duration: 260, from: 0.99, y: 8, delay: 160 }}>
         <section class="card people" data-tour="dash-people">
-          <h2>Your people</h2>
-          <div class="sub">Who you exchanged the most with in Direct.</div>
+          <h2>{t("Your people")}</h2>
+          <div class="sub">{t("Who you exchanged the most with in Direct.")}</div>
           {#if !v.people.length}
-            <div class="nodata small" in:fadeIn={{ duration: 160 }}>No Direct transfers {when}.</div>
+            <div class="nodata small" in:fadeIn={{ duration: 160 }}>{t("No Direct transfers {when}.", { when })}</div>
           {:else}
             <div class="plist">
               {#each v.people as p, i (p.contact)}
                 {@const name = nameOf(p.contact)}
                 {@const total = p.sent + p.received}
-                <button class="person" onclick={() => openPerson(p.contact)} title="Open {name} in Direct" transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
+                <button class="person" onclick={() => openPerson(p.contact)} title={t("Open {name} in Direct", { name })} transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
                   <span class="rank mono">{i + 1}</span>
                   <span class="avatar">{name.slice(0, 1).toUpperCase()}</span>
                   <span class="who">
@@ -451,15 +469,15 @@
                   </span>
                   <span class="amounts">
                     <span class="mono">
-                      <span title="Sent to {name}: {bytes(p.sent)}" class:zero={!p.sent}><b class="up">↑</b> {bytes(p.sent)}</span>
+                      <span title={t("Sent to {name}: {size}", { name, size: bytes(p.sent) })} class:zero={!p.sent}><b class="up">↑</b> {bytes(p.sent)}</span>
                       <span class="sep">·</span>
-                      <span title="Received from {name}: {bytes(p.received)}" class:zero={!p.received}><b class="down">↓</b> {bytes(p.received)}</span>
+                      <span title={t("Received from {name}: {size}", { name, size: bytes(p.received) })} class:zero={!p.received}><b class="down">↓</b> {bytes(p.received)}</span>
                     </span>
                     <span class="fast mono">
-                      {#if p.peakSent}<span title="Fastest send to {name}: {speed(p.peakSent)}">↑ {speed(p.peakSent)}</span>{/if}
+                      {#if p.peakSent}<span title={t("Fastest send to {name}: {speed}", { name, speed: speed(p.peakSent) })}>↑ {speed(p.peakSent)}</span>{/if}
                       {#if p.peakSent && p.peakReceived}<span class="sep">·</span>{/if}
-                      {#if p.peakReceived}<span title="Fastest from {name}: {speed(p.peakReceived)}">↓ {speed(p.peakReceived)}</span>{/if}
-                      {#if !p.peakSent && !p.peakReceived}<span title="{plural(p.count, 'transfer')} with {name}, {bytes(total)} in all">{plural(p.count, "transfer")}</span>{/if}
+                      {#if p.peakReceived}<span title={t("Fastest from {name}: {speed}", { name, speed: speed(p.peakReceived) })}>↓ {speed(p.peakReceived)}</span>{/if}
+                      {#if !p.peakSent && !p.peakReceived}<span title={t("{n} transfers with {name}, {size} in all", { n: n(p.count), name, size: bytes(total) })}>{t("{n} transfers", { n: n(p.count) })}</span>{/if}
                     </span>
                   </span>
                 </button>
@@ -469,31 +487,31 @@
         </section>
 
         <section class="card sources">
-          <h2>Where files came from</h2>
-          <div class="sub">Everything you got, by source.</div>
+          <h2>{t("Where files came from")}</h2>
+          <div class="sub">{t("Everything you got, by source.")}</div>
           {#if !downloadedTotal}
-            <div class="nodata small" in:fadeIn={{ duration: 160 }}>Nothing downloaded or received {when}.</div>
+            <div class="nodata small" in:fadeIn={{ duration: 160 }}>{t("Nothing downloaded or received {when}.", { when })}</div>
           {:else}
-            <div class="share" role="img" aria-label="Share of what you got, by source">
+            <div class="share" role="img" aria-label={t("Share of what you got, by source")}>
               {#each v.downloadSources.filter((r) => r.bytes) as r (r.route)}
-                <i style="flex: {r.bytes}; background: {SOURCE_COLORS[r.route]}" title="{SOURCE_NAMES[r.route]?.[0] ?? r.route}: {bytes(r.bytes)} ({pct(r.bytes, downloadedTotal)}%)"></i>
+                <i style="flex: {r.bytes}; background: {SOURCE_COLORS[r.route]}" title={t("{name}: {size} ({n}%)", { name: tMaybe(SOURCE_NAMES[r.route]?.[0] ?? r.route), size: bytes(r.bytes), n: pct(r.bytes, downloadedTotal) })}></i>
               {/each}
             </div>
             <div class="slist">
               {#each v.downloadSources.filter((r) => r.bytes) as r (r.route)}
                 <div class="srow" transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
                   <i style="background: {SOURCE_COLORS[r.route]}"></i>
-                  <span class="sname">{SOURCE_NAMES[r.route]?.[0] ?? r.route}</span>
-                  <span class="mono dim">{pct(r.bytes, downloadedTotal)}%</span>
+                  <span class="sname">{tMaybe(SOURCE_NAMES[r.route]?.[0] ?? r.route)}</span>
+                  <span class="mono dim">{t("{n}%", { n: pct(r.bytes, downloadedTotal) })}</span>
                   <span class="mono">{bytes(r.bytes)}</span>
                 </div>
               {/each}
             </div>
             {#if v.sites.length}
-              <div class="sitehead">Top sites</div>
+              <div class="sitehead">{t("Top sites")}</div>
               <div class="sites">
                 {#each v.sites as s (s.site)}
-                  <div class="site" title="{s.site}: {plural(s.count, 'download')}, {bytes(s.bytes)}" transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
+                  <div class="site" title={t("{site}: {n} downloads, {size}", { site: s.site, n: n(s.count), size: bytes(s.bytes) })} transition:rowSlide={{ duration: 200 }} animate:flipIf={flipOpts}>
                     <span class="sname">{s.site}</span>
                     <span class="sbar"><i style="width: {(s.bytes / sitesMax) * 100}%"></i></span>
                     <span class="mono">{bytes(s.bytes)}</span>
@@ -509,32 +527,32 @@
       <div class="records" data-tour="dash-records" in:pop={{ duration: 260, from: 0.99, y: 8, delay: 200 }}>
         <div class="record">
           <span class="ricon" style="color: var(--c-down)"><Icon name="bolt" size={16} /></span>
-          <span class="k">Fastest download</span>
+          <span class="k">{t("Fastest download")}</span>
           {#if v.records.fastest}
             <span class="rv mono"><EaseNum value={v.records.fastest.value} format={speed} /></span>
-            <span class="d" title={v.records.fastest.name}>{v.records.fastest.name} · {dayLabel(v.records.fastest.day)}</span>
+            <span class="d" title={tMaybe(v.records.fastest.name)}>{tMaybe(v.records.fastest.name)} · {dayLabel(v.records.fastest.day)}</span>
           {:else}
-            <span class="rv dim">—</span><span class="d">No measured download {when}</span>
+            <span class="rv dim">—</span><span class="d">{t("No measured download {when}", { when })}</span>
           {/if}
         </div>
         <div class="record">
           <span class="ricon" style="color: var(--c-recv)"><Icon name="file" size={16} /></span>
-          <span class="k">Biggest file</span>
+          <span class="k">{t("Biggest file")}</span>
           {#if v.records.biggest}
             <span class="rv mono"><EaseNum value={v.records.biggest.value} format={bytes} /></span>
-            <span class="d" title={v.records.biggest.name}>{v.records.biggest.name} · {dayLabel(v.records.biggest.day)}</span>
+            <span class="d" title={tMaybe(v.records.biggest.name)}>{tMaybe(v.records.biggest.name)} · {dayLabel(v.records.biggest.day)}</span>
           {:else}
-            <span class="rv dim">—</span><span class="d">No file {when}</span>
+            <span class="rv dim">—</span><span class="d">{t("No file {when}", { when })}</span>
           {/if}
         </div>
         <div class="record">
           <span class="ricon" style="color: var(--c-up)"><Icon name="clock" size={16} /></span>
-          <span class="k">Busiest day</span>
+          <span class="k">{t("Busiest day")}</span>
           {#if v.records.busiest}
             <span class="rv mono"><EaseNum value={v.records.busiest.value} format={bytes} /></span>
             <span class="d">{bucketTitle(v.records.busiest.day, "day")}</span>
           {:else}
-            <span class="rv dim">—</span><span class="d">Nothing moved {when}</span>
+            <span class="rv dim">—</span><span class="d">{t("Nothing moved {when}", { when })}</span>
           {/if}
         </div>
       </div>
@@ -545,11 +563,11 @@
 </div>
 
 {#if resetting}
-  <Modal title="Reset statistics?" width={440} onclose={() => (resetting = false)}>
-    <p class="msg">Every number on the Dashboard starts again from zero, including the speed history. Your files, downloads, uploads and contacts stay as they are. This can't be undone.</p>
+  <Modal title={t("Reset statistics?")} width={440} onclose={() => (resetting = false)}>
+    <p class="msg">{t("Every number on the Dashboard starts again from zero, including the speed history. Your files, downloads, uploads and contacts stay as they are. This can't be undone.")}</p>
     {#snippet actions()}
-      <button class="btn ghost" onclick={() => (resetting = false)}>Cancel</button>
-      <button class="btn danger-fill" onclick={doReset}>Reset</button>
+      <button class="btn ghost" onclick={() => (resetting = false)}>{t("Cancel")}</button>
+      <button class="btn danger-fill" onclick={doReset}>{t("Reset")}</button>
     {/snippet}
   </Modal>
 {/if}

@@ -15,10 +15,15 @@ export const LIGHT_ID = "cojnnpgiilnbkblckkjnheigiodkdlpl";
 /** The extension's version (its manifest's), which its script says too. */
 export const MANIFEST_VERSION = JSON.parse(readFileSync(join(here, "..", "manifest.chromium.json"), "utf8")).version;
 
+/** One of the extension's files, as that edition ships it. */
+export function edited(name, light) {
+  const src = readFileSync(join(here, "..", name), "utf8");
+  return light ? toLight(name, src) : src;
+}
+
 /** The background script of one edition, as that edition ships it. */
 export function backgroundSource(light) {
-  const src = readFileSync(join(here, "..", "background.js"), "utf8");
-  return light ? toLight("background.js", src) : src;
+  return edited("background.js", light);
 }
 
 /** Messages between extensions in one fake browser profile (by extension ID). */
@@ -72,12 +77,23 @@ export function browserProfile() {
  *   runs an older script than the folder's)
  * - `firefox`: the browser is Firefox (its API is `browser`, with getBrowserInfo, and answers
  *   with promises)
+ * - `lang`: Pako's language ("en" or "fr"): said in every answer and to the "language" request;
+ *   null = an older Pako (says no language, answers "language" with "Unknown request.")
+ * - `background`: the background script's text (default: the edition's own)
  */
-export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false, sessionRules = [], firefox = false } = {}) {
+export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false, tabs = {}, links = [], profile = browserProfile(), downloadsOnCreated, reply = () => ({ ok: true }), fetch, videos = [], closedFrames = [], naming = false, restartFails = false, privateAllowed = false, privateTabs = [], stored = {}, sessionStored = {}, dnr = false, vivaldi = false, alias = false, sessionRules = [], firefox = false, lang = "en", background } = {}) {
   const id = light ? LIGHT_ID : FULL_ID;
   const who = light ? "light" : "full";
   const sent = [];
   const pings = [];
+  /** The "language" requests (asked of Pako's helper alone, apart from `sent` and `pings`). */
+  const langAsks = [];
+  /** Pako's answer to `m`, with its language as a Pako that knows it says it. */
+  const answer = (m) => {
+    if (m?.kind === "language") return lang === null ? { ok: false, error: "Unknown request.", holds: true } : { ok: true, holds: true, lang };
+    const r = reply(m);
+    return lang !== null && r && typeof r === "object" && !("lang" in r) ? { ...r, lang } : r;
+  };
   /** How many times the extension reloaded itself (runtime.reload). */
   const reloads = [];
   const menus = new Map();
@@ -120,10 +136,11 @@ export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false,
       // A "ping" only checks the line (the extension says hello when installed): kept apart, so
       // `sent` holds what was really asked of Pako.
       if (m?.kind === "ping") pings.push(plain(m));
+      else if (m?.kind === "language") langAsks.push(plain(m));
       else sent.push(plain(m));
       // (Firefox answers with a promise.)
-      if (typeof cb !== "function") return new Promise((resolve) => setTimeout(() => resolve(reply(m)), 2));
-      setTimeout(() => cb(reply(m)), 2);
+      if (typeof cb !== "function") return new Promise((resolve) => setTimeout(() => resolve(answer(m)), 2));
+      setTimeout(() => cb(answer(m)), 2);
     },
     ...(firefox ? { getBrowserInfo: async () => ({ name: "Firefox" }) } : {}),
     sendMessage: (toId, msg, cb) => profile.send(id, toId, msg, cb, runtime),
@@ -137,7 +154,7 @@ export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false,
         onDisconnect: { addListener() {} },
         postMessage: (m) => {
           port.push(plain(m));
-          setTimeout(() => onMessage.forEach((f) => f(reply(m))), 2);
+          setTimeout(() => onMessage.forEach((f) => f(answer(m))), 2);
         },
         disconnect() {},
       };
@@ -261,8 +278,13 @@ export function loadEdition({ manifestVersion = MANIFEST_VERSION, light = false,
   };
   const context = { chrome, console, URL, setTimeout, clearTimeout, AbortController, fetch: fakeFetch, crypto: globalThis.crypto };
   if (alias || firefox) context.browser = chrome;
-  vm.runInContext(backgroundSource(light), vm.createContext(context), { filename: `${who}/background.js` });
-  const edition = { id, who, rules, navigated, sent, pings, reloads, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, restarted, items, cookieStores, chrome };
+  vm.createContext(context);
+  // The extension's words (lang.js): Firefox loads it before the background script (its
+  // manifest); Chromium's service worker takes it with importScripts.
+  if (firefox) vm.runInContext(edited("lang.js", light), context, { filename: `${who}/lang.js` });
+  else context.importScripts = (...files) => files.forEach((f) => vm.runInContext(edited(f, light), context, { filename: `${who}/${f}` }));
+  vm.runInContext(background ?? backgroundSource(light), context, { filename: `${who}/background.js` });
+  const edition = { id, who, rules, navigated, sent, pings, langAsks, reloads, menus, updates, listeners, log, storage, session, badges, fetched, fetchedWith, registered, port, injected, restarted, items, cookieStores, chrome };
   profile.installed.set(id, edition);
   return edition;
 }

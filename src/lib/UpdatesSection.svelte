@@ -13,10 +13,12 @@
   import Collapse from "./Collapse.svelte";
   import AdvancedFold from "./AdvancedFold.svelte";
   import SetGroup from "./SetGroup.svelte";
+  import { t, tMaybe, type Key } from "./i18n.svelte";
 
   let { autoUpdate = $bindable(), onsetup }: { autoUpdate: boolean; onsetup: () => void } = $props();
 
-  type Feature = { id: string; name: string; what: string; kinds: ComponentKind[]; soon?: boolean; removes: ComponentKind[] };
+  /** `name` and `what` are keys, shown with t(). */
+  type Feature = { id: string; name: Key; what: Key; kinds: ComponentKind[]; soon?: boolean; removes: ComponentKind[] };
   const FEATURES: Feature[] = [
     {
       id: "archives",
@@ -112,7 +114,7 @@
       // All of the feature's tools together: if one is in use, none is removed.
       const kinds = f.removes.filter((k) => tool(k)?.installed);
       if (kinds.length) await api.componentsRemove(kinds);
-      app.toast(`${f.name}: removed`);
+      app.toast(t("{feature}: removed", { feature: t(f.name) }));
       await app.refresh();
     } catch (e) {
       app.toast(String(e), "error");
@@ -143,36 +145,36 @@
 </script>
 
 <section data-tour="set-updates">
-  <h3>Features &amp; updates</h3>
+  <h3>{t("Features & updates")}</h3>
 
   <SetGroup title="Pako">
   <div class="line">
     <div>
-      <div class="t">Pako <span class="ver mono">{app.version}</span><span class="kind">· {app.installed ? "Installed" : "Portable"}</span></div>
+      <div class="t">Pako <span class="ver mono">{app.version}</span><span class="kind">· {app.installed ? t("Installed") : t("Portable")}</span></div>
       <div class="muted">
         {#if u?.busy}
-          Checking…
+          {t("Checking…")}
         {:else if u?.ready}
-          Pako {u.latest} is ready. Restart to start using it.
+          {t("Pako {version} is ready. Restart to start using it.", { version: u.latest ?? "" })}
         {:else if u?.latest}
-          Pako {u.latest} is available.{u.notes ? ` ${u.notes}` : ""}
+          {t("Pako {version} is available.", { version: u.latest })}{u.notes ? ` ${u.notes}` : ""}
           {#if u.error}<span class="err">{u.error}</span>{/if}
         {:else if u?.error}
           {u.error}
         {:else if u?.checked}
-          You have the latest version.
+          {t("You have the latest version.")}
         {:else}
-          Pako looks for a new version once a day, also while it stays open in the tray.
+          {t("Pako looks for a new version once a day, also while it stays open in the tray.")}
         {/if}
       </div>
     </div>
     <div class="ctrl">
       {#if u?.ready}
-        <button class="btn primary" onclick={() => app.restartForUpdate()}>Restart now</button>
+        <button class="btn primary" onclick={() => app.restartForUpdate()}>{t("Restart now")}</button>
       {:else if u?.latest}
-        <button class="btn primary" disabled={u.busy} onclick={() => checkPako(true)}>Update</button>
+        <button class="btn primary" disabled={u.busy} onclick={() => checkPako(true)}>{t("Update")}</button>
       {:else}
-        <button class="btn" disabled={u?.busy} onclick={() => checkPako(autoUpdate)}>Check for updates</button>
+        <button class="btn" disabled={u?.busy} onclick={() => checkPako(autoUpdate)}>{t("Check for updates")}</button>
       {/if}
     </div>
   </div>
@@ -180,32 +182,32 @@
   <div class="by attached"><Credit /></div>
   <div class="line">
     <div>
-      <div class="t">Update Pako and its tools automatically</div>
-      <div class="muted">Once a day, also while Pako stays open in the tray. Tools update quietly; a new Pako waits for you to restart.</div>
+      <div class="t">{t("Update Pako and its tools automatically")}</div>
+      <div class="muted">{t("Once a day, also while Pako stays open in the tray. Tools update quietly; a new Pako waits for you to restart.")}</div>
     </div>
     <div class="ctrl">
-      <button class="switch" class:on={autoUpdate} role="switch" aria-checked={autoUpdate} aria-label="Update Pako and its tools automatically" onclick={() => (autoUpdate = !autoUpdate)}></button>
+      <button class="switch" class:on={autoUpdate} role="switch" aria-checked={autoUpdate} aria-label={t("Update Pako and its tools automatically")} onclick={() => (autoUpdate = !autoUpdate)}></button>
     </div>
   </div>
   </SetGroup>
 
-  <SetGroup title="Features">
+  <SetGroup title={t("Features")}>
   <div data-fold>
   <div class="fhead">
     <button class="fold" data-fold-toggle aria-expanded={toolsOpen} aria-controls="set-tools" onclick={() => (toolsOpen = !toolsOpen)}>
       <span class="chev" class:on={toolsOpen}><Icon name="chevron" size={12} stroke={2.6} /></span>
       <span>
-        <span class="t">What Pako can do</span>
+        <span class="t">{t("What Pako can do")}</span>
         <span class="muted sum">
-          {#if loaded}{readyCount} of {FEATURES.filter((f) => !f.soon).length} ready{:else}&nbsp;{/if}{#if updateCount}<span class="upd">{" · "}{updateCount} {updateCount === 1 ? "update" : "updates"}</span>{/if}
+          {#if loaded}{t("{n} of {total} ready", { n: readyCount, total: FEATURES.filter((f) => !f.soon).length })}{:else}&nbsp;{/if}{#if updateCount}<span class="upd">{" · "}{t("{n} updates", { n: updateCount })}</span>{/if}
         </span>
       </span>
     </button>
-    <button class="btn" disabled={checking} onclick={checkTools}>{checking ? "Checking…" : "Check for new versions"}</button>
+    <button class="btn" disabled={checking} onclick={checkTools}>{checking ? t("Checking…") : t("Check for new versions")}</button>
   </div>
 
   <Collapse open={toolsOpen} id="set-tools">
-  <div class="muted fnote">Some features use free tools that Pako downloads from their official sources and checks that each one arrived intact.</div>
+  <div class="muted fnote">{t("Some features use free tools that Pako downloads from their official sources and checks that each one arrived intact.")}</div>
   <div class="feats">
     {#each FEATURES as f (f.id)}
       {@const st = featureState(f)}
@@ -214,25 +216,25 @@
         <div class="frow">
           <div class="finfo">
             <div class="fname">
-              {f.name}
-              {#if f.soon}<span class="pill">Coming soon</span>{/if}
+              {t(f.name)}
+              {#if f.soon}<span class="pill">{t("Coming soon")}</span>{/if}
             </div>
-            <div class="muted">{f.what}</div>
+            <div class="muted">{t(f.what)}</div>
           </div>
           <div class="fstate" class:ok={st === "installed"} class:upd={st === "update"}>
-            {#if st === "installed"}<Icon name="check" size={12} stroke={2.6} />Ready
-            {:else if st === "update"}Update available
-            {:else if st === "partly" && !f.soon}Partly installed
-            {:else if st === "none"}Not installed{/if}
+            {#if st === "installed"}<Icon name="check" size={12} stroke={2.6} />{t("Ready (feature)")}
+            {:else if st === "update"}{t("Update available")}
+            {:else if st === "partly" && !f.soon}{t("Partly installed")}
+            {:else if st === "none"}{t("Not installed")}{/if}
           </div>
           <div class="factions">
             {#if !f.soon && (st === "none" || st === "partly")}
-              <button class="btn" disabled={!!b} onclick={() => installOrUpdate(f)}>{b ? "Working…" : "Install"}</button>
+              <button class="btn" disabled={!!b} onclick={() => installOrUpdate(f)}>{b ? t("Working…") : t("Install")}</button>
             {:else if st === "update"}
-              <button class="btn" disabled={!!b} onclick={() => installOrUpdate(f)}>{b ? "Working…" : "Update"}</button>
+              <button class="btn" disabled={!!b} onclick={() => installOrUpdate(f)}>{b ? t("Working…") : t("Update")}</button>
             {/if}
             {#if f.removes.some((k) => tool(k)?.installed)}
-              <button class="btn ghost danger" disabled={!!b || removing === f.id} onclick={() => remove(f)}>{removing === f.id ? "Removing…" : "Remove"}</button>
+              <button class="btn ghost danger" disabled={!!b || removing === f.id} onclick={() => remove(f)}>{removing === f.id ? t("Removing…") : t("Remove")}</button>
             {/if}
           </div>
         </div>
@@ -240,12 +242,12 @@
           <div class="reveal" transition:rowSlide={{ duration: 200 }}>
           <div class="prog">
             <div class="bar"><div class="fill" style="width: {b.total ? (b.done / b.total) * 100 : 8}%"></div></div>
-            <span class="mono">{b.name} · {b.stage}{b.total ? ` · ${bytes(b.done)} of ${bytes(b.total)}` : ""}</span>
+            <span class="mono">{b.name} · {tMaybe(b.stage)}{b.total ? ` · ${t("{done} of {total} (bytes)", { done: bytes(b.done), total: bytes(b.total) })}` : ""}</span>
           </div>
           </div>
         {/if}
         <button class="more" aria-expanded={!!open[f.id]} onclick={() => (open = { ...open, [f.id]: !open[f.id] })}>
-          <Icon name="chevron" size={11} stroke={2.6} />Details
+          <Icon name="chevron" size={11} stroke={2.6} />{t("Details")}
         </button>
         {#if open[f.id]}
           <div class="reveal" transition:rowSlide={{ duration: 220 }}>
@@ -255,7 +257,7 @@
               {#if c}
                 <div class="drow">
                   <span class="dname">{c.name}</span>
-                  <span class="mono">{c.installed ? `version ${c.installed}` : "not installed"}{c.latest && (c.update || !c.installed) ? ` · latest ${c.latest}` : ""}</span>
+                  <span class="mono">{c.installed ? t("version {version}", { version: c.installed }) : t("not installed")}{c.latest && (c.update || !c.installed) ? ` · ${t("latest {version}", { version: c.latest })}` : ""}</span>
                   <span class="mono">{c.size ? bytes(c.size) : ""}</span>
                   <span class="src">{c.source}</span>
                 </div>
@@ -271,15 +273,15 @@
   </div>
   </SetGroup>
 
-  <AdvancedFold tab="updates" hint="Setup: run the first-start setup again">
-    <SetGroup title="Setup">
+  <AdvancedFold tab="updates" hint={t("Setup: run the first-start setup again")}>
+    <SetGroup title={t("Setup")}>
       <div class="line">
         <div>
-          <div class="t">First-start setup</div>
-          <div class="muted">Go through the welcome questions again.</div>
+          <div class="t">{t("First-start setup")}</div>
+          <div class="muted">{t("Go through the welcome questions again.")}</div>
         </div>
         <div class="ctrl">
-          <button class="btn" onclick={onsetup}>Run setup again</button>
+          <button class="btn" onclick={onsetup}>{t("Run setup again")}</button>
         </div>
       </div>
     </SetGroup>

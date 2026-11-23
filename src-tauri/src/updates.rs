@@ -94,7 +94,7 @@ pub fn verify(m: &Manifest) -> Result<()> {
 }
 
 fn verify_with(key: &VerifyingKey, m: &Manifest) -> Result<()> {
-    let refused = || anyhow!("This update isn't signed by Pako's publisher, so it wasn't installed.");
+    let refused = || anyhow!(tr!("This update isn't signed by Pako's publisher, so it wasn't installed.", "Cette mise à jour n’est pas signée par l’éditeur de Pako : elle n’a donc pas été installée."));
     // A plain version and a real checksum (both end up in file names and links).
     if parse_version(&m.version).is_none() || m.sha256.len() != 64 || !m.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(refused());
@@ -291,7 +291,7 @@ fn forget_old_put_back_note() {
 
 /// Pako's folder accepts new files (a copy in Program Files or on a read-only drive doesn't).
 fn folder_writable() -> Result<()> {
-    let dir = exe().and_then(|e| e.parent().map(Path::to_path_buf)).ok_or_else(|| anyhow!("Can't find where Pako is"))?;
+    let dir = exe().and_then(|e| e.parent().map(Path::to_path_buf)).ok_or_else(|| anyhow!(tr!("Can't find where Pako is", "Impossible de trouver où est Pako")))?;
     let test = dir.join(format!(".pako-write-test-{}", uuid::Uuid::new_v4().simple()));
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&test) {
         Ok(f) => {
@@ -299,10 +299,11 @@ fn folder_writable() -> Result<()> {
             let _ = std::fs::remove_file(&test);
             Ok(())
         }
-        Err(_) => bail!(
+        Err(_) => bail!(tr!(
             "Pako can't save the update in its folder ({}): Windows doesn't allow changes there. Move the Pako folder somewhere you can change files, such as Documents, then try again.",
+            "Pako ne peut pas enregistrer la mise à jour dans son dossier ({}) : Windows n’y autorise pas de changements. Déplacez le dossier de Pako là où vous pouvez modifier des fichiers, comme Documents, puis réessayez.",
             dir.display()
-        ),
+        )),
     }
 }
 
@@ -326,7 +327,7 @@ pub struct View {
 static STATE: Mutex<Option<View>> = Mutex::new(None);
 
 fn first_view() -> View {
-    let error = rolled_back_version().map(|v| format!("Pako {v} didn't start properly, so Pako {} was put back.", current()));
+    let error = rolled_back_version().map(|v| tr!("Pako {v} didn't start properly, so Pako {} was put back.", "Pako {v} n’a pas démarré correctement : Pako {} a donc été remis.", current()));
     View { current: current().into(), error, ..Default::default() }
 }
 
@@ -354,7 +355,7 @@ struct Unreachable;
 
 impl std::fmt::Display for Unreachable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Couldn't reach Pako's update page")
+        f.write_str(&tr!("Couldn't reach Pako's update page", "Impossible de joindre la page des mises à jour de Pako"))
     }
 }
 
@@ -368,15 +369,15 @@ async fn fetch_manifest(http: &reqwest::Client) -> Result<Manifest> {
         .await
         .map_err(|_| Unreachable)?;
     if r.status().as_u16() == 404 {
-        bail!("No Pako release is published yet.");
+        bail!(tr!("No Pako release is published yet.", "Aucune version de Pako n’est encore publiée."));
     }
     if r.status().is_server_error() {
-        return Err(anyhow::Error::new(Unreachable).context(format!("Pako's update page answered {}", r.status().as_u16())));
+        return Err(anyhow::Error::new(Unreachable).context(tr!("Pako's update page answered {}", "La page des mises à jour de Pako a répondu {}", r.status().as_u16())));
     }
     if !r.status().is_success() {
-        bail!("Pako's update page answered {}", r.status().as_u16());
+        bail!(tr!("Pako's update page answered {}", "La page des mises à jour de Pako a répondu {}", r.status().as_u16()));
     }
-    let m: Manifest = r.json().await.context("Pako's update page sent something unexpected")?;
+    let m: Manifest = r.json().await.context(tr!("Pako's update page sent something unexpected", "La page des mises à jour de Pako a envoyé quelque chose d’inattendu"))?;
     verify(&m)?;
     Ok(m)
 }
@@ -407,7 +408,7 @@ fn remove_old_parts() {
 }
 
 async fn download(http: &reqwest::Client, m: &Manifest) -> Result<()> {
-    let (Some(dest), Some(mark)) = (new_exe(), marker()) else { bail!("Can't find where Pako is") };
+    let (Some(dest), Some(mark)) = (new_exe(), marker()) else { bail!(tr!("Can't find where Pako is", "Impossible de trouver où est Pako")) };
     folder_writable()?;
     remove_old_parts();
     // A name of its own: nothing else can write into this file.
@@ -418,18 +419,18 @@ async fn download(http: &reqwest::Client, m: &Manifest) -> Result<()> {
         .header(reqwest::header::USER_AGENT, "Pako")
         .send()
         .await
-        .context("Couldn't download the update")?;
+        .context(tr!("Couldn't download the update", "Impossible de télécharger la mise à jour"))?;
     if !r.status().is_success() {
-        bail!("The update download answered {}", r.status().as_u16());
+        bail!(tr!("The update download answered {}", "Le téléchargement de la mise à jour a répondu {}", r.status().as_u16()));
     }
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&part)?;
     let mut size = 0u64;
     let mut stream = r.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("The update download was cut")?;
+        let chunk = chunk.context(tr!("The update download was cut", "Le téléchargement de la mise à jour a été coupé"))?;
         size += chunk.len() as u64;
         if size > m.size {
-            bail!("The update download is bigger than its signed size, so it was stopped.");
+            bail!(tr!("The update download is bigger than its signed size, so it was stopped.", "Le téléchargement de la mise à jour dépasse sa taille signée : il a donc été arrêté."));
         }
         file.write_all(&chunk)?;
     }
@@ -437,7 +438,7 @@ async fn download(http: &reqwest::Client, m: &Manifest) -> Result<()> {
     drop(file);
     // The checksum of what is really on disk, not of what was received.
     if size != m.size || sha256_file(&part)? != m.sha256 {
-        bail!("The downloaded update doesn't match its signed checksum, so it wasn't kept.");
+        bail!(tr!("The downloaded update doesn't match its signed checksum, so it wasn't kept.", "La mise à jour téléchargée ne correspond pas à sa somme de contrôle signée : elle n’a donc pas été gardée."));
     }
     let _ = std::fs::remove_file(&dest);
     std::fs::rename(&part, &dest)?;
@@ -1100,8 +1101,8 @@ fn restart_args(pid: u32, tray: bool) -> Vec<String> {
 /// "Restart now": starts this exe again, told to wait until this process has quit (the update is
 /// put in place then). The caller quits right after.
 pub fn restart(tray: bool) -> Result<()> {
-    let exe = exe().ok_or_else(|| anyhow!("Can't find where Pako is"))?;
-    std::process::Command::new(exe).args(restart_args(std::process::id(), tray)).spawn().context("Couldn't restart Pako")?;
+    let exe = exe().ok_or_else(|| anyhow!(tr!("Can't find where Pako is", "Impossible de trouver où est Pako")))?;
+    std::process::Command::new(exe).args(restart_args(std::process::id(), tray)).spawn().context(tr!("Couldn't restart Pako", "Impossible de redémarrer Pako"))?;
     Ok(())
 }
 

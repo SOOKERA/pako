@@ -5,7 +5,7 @@
   import { app, hostName, hostSwitch, type Row, type SortKey } from "./state.svelte";
   import { api, inApp, isActive, type Download } from "./api";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
-  import { bytes, bytesOf, downloadLook, extension, sourceOf, speed, statusLook, timeLeft, shortDate, dateTitle } from "./format";
+  import { bytes, bytesOf, downloadLook, extension, sourceOf, speed, statusLook, timeLeft, shortDate, dateTitle, NO_NET } from "./format";
   import { flipIf, flipOpts, rowSlide } from "./motion";
   import { VIRTUAL_MIN, layout, reveal, visible } from "./virtual";
   import Icon from "./Icon.svelte";
@@ -20,6 +20,8 @@
   import { listColumns } from "./columns.svelte";
   import { LISTS, gridTemplate, shownColumns } from "./columns";
   import type { MenuItem } from "./menu";
+  import { around, t, tMaybe, type Key } from "./i18n.svelte";
+  import type { Status } from "./api";
 
   let {
     oncontext,
@@ -63,8 +65,8 @@
     if (!paths.length) {
       app.toast(
         folder
-          ? "This folder can't be dragged out: some of its files aren't finished, or it isn't on the disk any more."
-          : "This file isn't on the disk any more (moved or deleted).",
+          ? t("This folder can't be dragged out: some of its files aren't finished, or it isn't on the disk any more.")
+          : t("This file isn't on the disk any more (moved or deleted)."),
         "error",
       );
       return;
@@ -218,7 +220,7 @@
   function sizeText(d: Download) {
     if (d.status === "completed") return bytes(d.size ?? d.downloaded);
     if (d.size) return bytesOf(d.downloaded, d.size);
-    return d.downloaded > 0 ? bytes(d.downloaded) : "size unknown";
+    return d.downloaded > 0 ? bytes(d.downloaded) : t("size unknown");
   }
   function speedLine(d: Download) {
     const p = app.live[d.id];
@@ -229,13 +231,38 @@
     const p = app.live[d.id];
     if (d.status === "downloading" && p && d.size) return timeLeft(d.size - d.downloaded, p.speed);
     if (d.status === "retrying") {
-      if (d.message?.startsWith("No internet")) return "waiting for internet";
-      const m = d.message?.match(/in (\d+)s/);
-      return m ? `retry in ${m[1]}s` : "";
+      // Rust's words, in English or French (a message kept from before a switch stays as it was).
+      if (d.message && NO_NET.test(d.message)) return t("waiting for internet");
+      const m = d.message?.match(/(\d+)[\s  ]?s$/);
+      return m ? t("retry in {n}s", { n: m[1] }) : "";
     }
-    if (d.status === "verifying") return "checking";
+    if (d.status === "verifying") return t("checking");
     return "";
   }
+
+  /** A folder's status with how many of its files have it ("3 paused"). */
+  const FOLDER_COUNT: Record<Exclude<Status, "completed">, Key> = {
+    downloading: "{n} downloading",
+    starting: "{n} starting",
+    verifying: "{n} checking file",
+    retrying: "{n} reconnecting",
+    queued: "{n} waiting its turn",
+    paused: "{n} paused",
+    failed: "{n} failed",
+    quotaExceeded: "{n} google limit",
+    needsAccount: "{n} only in the browser",
+  };
+  /** "Sort by speed", and what screen readers hear ("Speed, sorted lowest first. Sort by speed"). */
+  function sortWords(label: string, key: string, az: boolean) {
+    const sort = t("Sort by {column}", { column: label.toLowerCase() });
+    const s = app.sortDownloads;
+    if (s?.key !== key) return { title: sort, aria: `${label}. ${sort}` };
+    const k: Key = az ? (s.dir > 0 ? "{column}, sorted A to Z. {sort}" : "{column}, sorted Z to A. {sort}") : s.dir > 0 ? "{column}, sorted lowest first. {sort}" : "{column}, sorted highest first. {sort}";
+    return { title: sort, aria: t(k, { column: label, sort }) };
+  }
+  const nameSort = $derived(sortWords(t("Name"), "name", true));
+  const tipKeys = $derived(around(t("Tip: press {keys} anywhere to paste links."), "{keys}"));
+  const pinTip = $derived(around(t("Want to keep these behind a PIN? {mode}, in Settings."), "{mode}"));
 
   function folderInfo(files: Download[]) {
     const size = files.reduce((s, f) => s + (f.size ?? 0), 0);
@@ -246,8 +273,8 @@
     const look = statusLook(status);
     const n = files.filter((f) => f.status === status).length;
     let label = look.label;
-    if (status === "completed") label = "Done";
-    else if (n > 1 || files.length > 1) label = `${n} ${look.label.toLowerCase()}`;
+    if (status === "completed") label = t("Done");
+    else if (n > 1 || files.length > 1) label = t(FOLDER_COUNT[status], { n });
     return {
       size,
       done,
@@ -318,7 +345,7 @@
         class:some={allState === "some"}
         role="checkbox"
         aria-checked={allState === "some" ? "mixed" : allState === "all"}
-        aria-label={allState === "all" ? "Unselect all" : "Select all"}
+        aria-label={allState === "all" ? t("Unselect all") : t("Select all")}
         onclick={() => (allState === "all" ? app.clearSelection() : app.selectAll())}
       >
         {#if allState === "some"}
@@ -328,14 +355,15 @@
         {/if}
       </button>
     </div>
-    <div class="cell">Type</div>
-    <button class="cell sorter" class:sorted={app.sortDownloads?.key === "name"} onclick={() => app.toggleSort("downloads", "name")} title="Sort by name" aria-label="Name{app.sortDownloads?.key === 'name' ? (app.sortDownloads.dir > 0 ? ', sorted A to Z' : ', sorted Z to A') : ''}. Sort by name">
-      Name{#if app.sortDownloads?.key === "name"}<Icon name={app.sortDownloads.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
+    <div class="cell">{t("Type")}</div>
+    <button class="cell sorter" class:sorted={app.sortDownloads?.key === "name"} onclick={() => app.toggleSort("downloads", "name")} title={nameSort.title} aria-label={nameSort.aria}>
+      {t("Name")}{#if app.sortDownloads?.key === "name"}<Icon name={app.sortDownloads.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
     </button>
     {#each LIST.cols as c (c.key)}
+      {@const sw = sortWords(c.label, c.key, false)}
       <div class="cell resizable c-{c.key}">
         <ColumnGrip list="downloads" col={c} keys={shown.keys} tight={shown.tight} avail={headW} />
-        <button class="sorter" class:sorted={app.sortDownloads?.key === c.key} onclick={() => app.toggleSort("downloads", c.key as SortKey)} title="Sort by {c.label.toLowerCase()}" aria-label="{c.label}{app.sortDownloads?.key === c.key ? (app.sortDownloads.dir > 0 ? ', sorted lowest first' : ', sorted highest first') : ''}. Sort by {c.label.toLowerCase()}">
+        <button class="sorter" class:sorted={app.sortDownloads?.key === c.key} onclick={() => app.toggleSort("downloads", c.key as SortKey)} title={sw.title} aria-label={sw.aria}>
           {c.label}{#if app.sortDownloads?.key === c.key}<Icon name={app.sortDownloads.dir === 1 ? "up" : "down"} size={10} stroke={2.6} />{/if}
         </button>
       </div>
@@ -347,7 +375,7 @@
     class="body"
     role="grid"
     tabindex="-1"
-    aria-label="Downloads"
+    aria-label={t("Downloads")}
     aria-multiselectable="true"
     aria-rowcount={app.rows.length}
     aria-activedescendant={app.focus ? "drow-" + app.focus : undefined}
@@ -363,13 +391,13 @@
     {:else if app.downloads.length === 0}
       <div class="empty">
         <div class="empty-icon"><Icon name="download" size={26} /></div>
-        <h3>No downloads yet</h3>
-        <p>Paste a web link, or a Google Drive file or folder link.</p>
-        <button class="btn primary" onclick={onadd}><Icon name="plus" size={14} stroke={2.4} />Add links</button>
-        <p class="hint">Tip: press <kbd>Ctrl</kbd> + <kbd>V</kbd> anywhere to paste links.</p>
+        <h3>{t("No downloads yet")}</h3>
+        <p>{t("Paste a web link, or a Google Drive file or folder link.")}</p>
+        <button class="btn primary" onclick={onadd}><Icon name="plus" size={14} stroke={2.4} />{t("Add links")}</button>
+        <p class="hint">{tipKeys[0]}<kbd>Ctrl</kbd> + <kbd>V</kbd>{tipKeys[1]}</p>
       </div>
     {:else if app.rows.length === 0}
-      <div class="empty small"><p>Nothing here{app.search ? ` for "${app.search}"` : ""}.</p></div>
+      <div class="empty small"><p>{app.search ? t('Nothing here for "{search}".', { search: app.search }) : t("Nothing here.")}</p></div>
     {:else}
       {#if isVirtual}<div class="vpad" style="height: {win.padTop}px"></div>{/if}
       {#each shownRows as r (rowKey(r))}
@@ -403,7 +431,7 @@
                   class:some={!f.allSelected && f.someSelected}
                   role="checkbox"
                   aria-checked={!f.allSelected && f.someSelected ? "mixed" : f.allSelected}
-                  aria-label="Select all files in {r.name}"
+                  aria-label={t("Select all files in {name}", { name: r.name })}
                   onclick={(e) => {
                     e.stopPropagation();
                     app.toggleFolder(r.files);
@@ -421,7 +449,7 @@
                 <button
                   class="chev"
                   ondblclick={(e) => e.stopPropagation()}
-                  aria-label={r.open ? "Collapse folder" : "Expand folder"}
+                  aria-label={r.open ? t("Collapse folder") : t("Expand folder")}
                   aria-expanded={r.open}
                   onclick={(e) => {
                     e.stopPropagation();
@@ -431,7 +459,7 @@
                   <Icon name="chevron" size={14} stroke={2.6} />
                 </button>
                 <span class="fname">{r.name}</span>
-                <span class="chip">{r.files.length} {r.files.length === 1 ? "file" : "files"}{f.finished ? ` · ${f.finished} done` : ""}</span>
+                <span class="chip">{t("{n} files", { n: r.files.length })}{f.finished ? ` · ${t("{n} done", { n: f.finished })}` : ""}</span>
               </div>
               <div class="cell src c-source">
                 <span class="dot" style="background: {sourceOf(r.files[0]).color}"></span>
@@ -440,14 +468,14 @@
               <div class="cell prog c-progress">
                 <div class="barline">
                   <div class="bar"><div class="fill" style="width: {f.pct}%; background: {f.look.color}"></div></div>
-                  <span class="pct mono">{Math.floor(f.pct)}%</span>
+                  <span class="pct mono">{t("{pct}%", { pct: Math.floor(f.pct) })}</span>
                 </div>
                 <span class="sub mono">{f.size ? bytesOf(f.done, f.size) : bytes(f.done)}</span>
               </div>
               <div class="cell spd mono c-speed">
                 <span>{f.speed > 0 ? speed(f.speed) : "—"}</span>
               </div>
-              <div class="cell status c-status" style="color: {f.look.text}">{f.label}</div>
+              <div class="cell status c-status" style="color: {f.look.text}" title={f.label}><span class="ell">{f.label}</span></div>
               <div class="cell date mono c-date" title={dateTitle(newestOf(r.files), null)}>{shortDate(newestOf(r.files))}</div>
             </div>
           {:else}
@@ -472,7 +500,7 @@
               data-key={d.id}
               draggable={canReorder && d.status !== "completed"}
               onpointerdown={(e) => d.status === "completed" && outDown(e, outIds(d), false)}
-              title={d.status === "completed" ? "Drag to put the file in a folder or another app" : undefined}
+              title={d.status === "completed" ? t("Drag to put the file in a folder or another app") : undefined}
               ondragstart={(e) => dragStart(e, d)}
               ondragover={(e) => dragOver(e, d)}
               ondragleave={() => dropTarget === d.id && (dropTarget = null)}
@@ -489,7 +517,7 @@
                   class:on={app.selected.has(d.id)}
                   role="checkbox"
                   aria-checked={app.selected.has(d.id)}
-                  aria-label="Select {d.name}"
+                  aria-label={t("Select {name}", { name: d.name })}
                   onclick={(e) => {
                     e.stopPropagation();
                     app.toggle(d.id);
@@ -509,15 +537,15 @@
                 {#if r.kind === "child"}<span class="rail" class:end={r.last}></span>{/if}
                 <MiddleText text={d.name} class="nm" />
                 {#if d.viaBrowser}
-                  <span class="vb" title="This site only lets your browser download this file: the browser downloads it (no multi-part speed) and Pako follows it.">Via browser</span>
+                  <span class="vb" title={t("This site only lets your browser download this file: the browser downloads it (no multi-part speed) and Pako follows it.")}>{t("Via browser")}</span>
                 {/if}
                 {#if hostSwitch(d)}
-                  <span class="via" title={hostSwitch(d)}>from {hostName(d)}</span>
+                  <span class="via" title={hostSwitch(d)}>{t("from {host}", { host: hostName(d) })}</span>
                 {/if}
                 {#if d.priority === "first"}
-                  <span class="prio first" title="Priority: First (starts before the others)"><Icon name="up" size={11} stroke={2.6} /></span>
+                  <span class="prio first" title={t("Priority: First (starts before the others)")}><Icon name="up" size={11} stroke={2.6} /></span>
                 {:else if d.priority === "later"}
-                  <span class="prio later" title="Priority: Later (runs when nothing else waits)"><Icon name="down" size={11} stroke={2.6} /></span>
+                  <span class="prio later" title={t("Priority: Later (runs when nothing else waits)")}><Icon name="down" size={11} stroke={2.6} /></span>
                 {/if}
                 {#if d.status !== "completed"}
                   {@const level = alertOf(d, doneAlert(app.settings))}
@@ -525,8 +553,8 @@
                        usual) shows only while pointed at; Off and Important always show. -->
                   <button
                     class="bell {level}"
-                    title="Notify when done: {alertLabel(level)} (click to change)"
-                    aria-label="Notify when done: {alertLabel(level)}"
+                    title={t("Notify when done: {level} (click to change)", { level: alertLabel(level) })}
+                    aria-label={t("Notify when done: {level}", { level: alertLabel(level) })}
                     tabindex="-1"
                     draggable="false"
                     onpointerdown={(e) => e.stopPropagation()}
@@ -548,7 +576,7 @@
               <div class="cell prog c-progress">
                 <div class="barline">
                   <div class="bar"><div class="fill" class:pulse={d.status === "verifying"} style="width: {pct(d)}%; background: {look.color}"></div></div>
-                  <span class="pct mono">{d.size || d.status === "completed" ? `${Math.floor(pct(d))}%` : ""}</span>
+                  <span class="pct mono">{d.size || d.status === "completed" ? t("{pct}%", { pct: Math.floor(pct(d)) }) : ""}</span>
                 </div>
                 <span class="sub mono">{sizeText(d)}</span>
               </div>
@@ -556,15 +584,15 @@
                 <span>{speedLine(d)}</span>
                 {#if sub}<span class="sub">{sub}</span>{/if}
               </div>
-              <div class="cell status c-status" style="color: {look.text}" title={d.message ?? ""}>
-                <span class="ell">{look.label}{d.status === "completed" && d.md5 && app.settings?.verifyChecksum ? " · checked" : ""}</span>
+              <div class="cell status c-status" style="color: {look.text}" title={tMaybe(d.message ?? "")}>
+                <span class="ell">{look.label}{d.status === "completed" && d.md5 && app.settings?.verifyChecksum ? ` · ${t("checked")}` : ""}</span>
                 {#if isActive(d.status) && d.status === "downloading"}<span class="live"></span>{/if}
                 {#if d.status === "completed" && d.private}
                   <!-- A private window's finished download: off the list now (the file stays). -->
                   <button
                     class="icon-btn forget"
-                    aria-label="Remove {d.name} from the list"
-                    title="Remove from the list (the file stays)"
+                    aria-label={t("Remove {name} from the list", { name: d.name })}
+                    title={t("Remove from the list (the file stays)")}
                     onpointerdown={(e) => e.stopPropagation()}
                     ondblclick={(e) => e.stopPropagation()}
                     onclick={(e) => {
@@ -584,9 +612,9 @@
               <div class="tip" role="note" transition:rowSlide={{ duration: 240 }} {@attach () => priv.tipShown()}>
                 <span class="tip-in">
                   <Icon name="lock" size={13} />
-                  <span class="tip-t" title="Want to keep these behind a PIN? Private mode, in Settings.">Want to keep these behind a PIN? <b>Private mode</b>, in Settings.</span>
-                  <button class="btn small tip-go" onclick={() => { priv.closeTip(); priv.setupOpen = true; }}>Turn on…</button>
-                  <button class="icon-btn" aria-label="Close this tip" title="Close" onclick={() => priv.closeTip()}><Icon name="x" size={12} /></button>
+                  <span class="tip-t" title={t("Want to keep these behind a PIN? Private mode, in Settings.")}>{pinTip[0]}<b>{t("Private mode")}</b>{pinTip[1]}</span>
+                  <button class="btn small tip-go" onclick={() => { priv.closeTip(); priv.setupOpen = true; }}>{t("Turn on…")}</button>
+                  <button class="icon-btn" aria-label={t("Close this tip")} title={t("Close")} onclick={() => priv.closeTip()}><Icon name="x" size={12} /></button>
                 </span>
               </div>
             {/if}

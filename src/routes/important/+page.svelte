@@ -14,6 +14,7 @@
   import type { PopupCard } from "#lib/notices.ts";
   import Icon from "#lib/Icon.svelte";
   import { pop, reduced, rowSlide } from "#lib/motion.ts";
+  import { t } from "#lib/i18n.svelte.ts";
 
   /** The see-through margin around the card (holds its shadow), as in the window's width. */
   const PAD = 16;
@@ -78,8 +79,8 @@
   // hides it until that ends; then it comes back (without chiming again).
   $effect(() => {
     if (!inApp || !card) return;
-    const t = setInterval(fit, WAIT_CHECK);
-    return () => clearInterval(t);
+    const tick = setInterval(fit, WAIT_CHECK);
+    return () => clearInterval(tick);
   });
   $effect(() => {
     void card?.id;
@@ -141,7 +142,7 @@
   /** Leaving: a quick fade as it settles back a little. */
   function cardOut(_node: Element, { duration = 180 }: { duration?: number } = {}): TransitionConfig {
     if (reduced()) return { duration: 0 };
-    return { duration, easing: cubicIn, css: (t) => `opacity:${t};transform:scale(${0.97 + 0.03 * t})` };
+    return { duration, easing: cubicIn, css: (k) => `opacity:${k};transform:scale(${0.97 + 0.03 * k})` };
   }
 </script>
 
@@ -162,24 +163,24 @@
             <div class="name">{error || card.body}</div>
             <div class="acts">
               {#if card.go.id && !card.many}
-                <button class="btn primary" disabled={busy} onclick={(e) => (e.stopPropagation(), act(() => api.openItem(card.go.id!, false)))}>Open</button>
-                <button class="btn" disabled={busy} onclick={(e) => (e.stopPropagation(), act(() => api.openItem(card.go.id!, true)))}>Show in folder</button>
+                <button class="btn primary" disabled={busy} onclick={(e) => (e.stopPropagation(), act(() => api.openItem(card.go.id!, false)))}>{t("Open")}</button>
+                <button class="btn" disabled={busy} onclick={(e) => (e.stopPropagation(), act(() => api.openItem(card.go.id!, true)))}>{t("Show in folder")}</button>
               {:else if card.go.id}
                 <!-- Several, all in one folder: that folder (one of them shown in it). -->
-                <button class="btn primary" disabled={busy} onclick={(e) => (e.stopPropagation(), act(() => api.openItem(card.go.id!, true)))}>Show in folder</button>
-                <button class="btn" disabled={busy} onclick={(e) => (e.stopPropagation(), openPako())}>Open Pako</button>
+                <button class="btn primary" disabled={busy} onclick={(e) => (e.stopPropagation(), act(() => api.openItem(card.go.id!, true)))}>{t("Show in folder")}</button>
+                <button class="btn" disabled={busy} onclick={(e) => (e.stopPropagation(), openPako())}>{t("Open Pako")}</button>
               {:else}
-                <button class="btn primary" disabled={busy} onclick={(e) => (e.stopPropagation(), openPako())}>Open Pako</button>
+                <button class="btn primary" disabled={busy} onclick={(e) => (e.stopPropagation(), openPako())}>{t("Open Pako")}</button>
               {/if}
             </div>
             {#if cards.length > 1}
               <div class="queue" transition:rowSlide>
-                <span class="more">{cards.length - 1} more after this</span>
-                <button class="link" onclick={(e) => (e.stopPropagation(), closeAll())}>Close all</button>
+                <span class="more">{t("{n} more after this", { n: cards.length - 1 })}</span>
+                <button class="link" onclick={(e) => (e.stopPropagation(), closeAll())}>{t("Close all")}</button>
               </div>
             {/if}
           </div>
-          <button class="close" aria-label="Close" title="Close" onclick={(e) => (e.stopPropagation(), dismiss())}><Icon name="x" size={13} stroke={2.2} /></button>
+          <button class="close" aria-label={t("Close")} title={t("Close")} onclick={(e) => (e.stopPropagation(), dismiss())}><Icon name="x" size={13} stroke={2.2} /></button>
         </div>
       </div>
     {/key}

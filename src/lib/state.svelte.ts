@@ -4,6 +4,7 @@
 import { untrack } from "svelte";
 import { api, canDownload, isActive, isProblem, listen, type ComponentKind, type Download, type FoundItem, type MirrorView, type Progress, type SetView, type Settings, type Status, type UpdateView, type WhenDone, type SendJob, type SentItem, type SendMode, type SendHost, type PathSize, type DirectState, inApp } from "./api";
 import { mostUrgent, sourceOf } from "./format";
+import { i18n, list as listOf, t, type Words } from "./i18n.svelte";
 import { matchesFilter, sortContacts, type DirectFilter } from "./direct";
 import { devices } from "./devices.svelte";
 import type { Go, Notice } from "./notices";
@@ -43,14 +44,15 @@ export function hostSwitch(d: Download): string | null {
   const tried = d.tried ?? [];
   if (!tried.length || d.status === "failed" || d.status === "completed") return null;
   const from = tried.map(hostName).join(", ");
-  return `${d.name}: continuing from ${hostName(d)} (${from} didn't work)`;
+  return t("{name}: continuing from {host} ({tried} didn't work)", { name: d.name, host: hostName(d), tried: from });
 }
 
-/** One host's row of a file on several hosts, in the host list's words. */
-export function hostLook(f: FoundItem): { label: "Ready" | "Checking" | "Broken"; color: string } {
-  if (f.state === "ready") return { label: "Ready", color: "var(--st-done-text)" };
-  if (f.state === "checking" || f.state === "opening") return { label: "Checking", color: "var(--st-check-text)" };
-  return { label: "Broken", color: "var(--st-fail-text)" };
+/** One host's row of a file on several hosts, in the host list's words: `label` says which
+ *  (always in English, to compare), `word` is what to show. */
+export function hostLook(f: FoundItem): { label: "Ready" | "Checking" | "Broken"; word: string; color: string } {
+  if (f.state === "ready") return { label: "Ready", word: t("Ready"), color: "var(--st-done-text)" };
+  if (f.state === "checking" || f.state === "opening") return { label: "Checking", word: t("Checking"), color: "var(--st-check-text)" };
+  return { label: "Broken", word: t("Broken"), color: "var(--st-fail-text)" };
 }
 
 function matchesFound(f: FoundItem, filter: FoundFilter) {
@@ -76,10 +78,11 @@ export type Row =
 
 export interface Toast {
   id: number;
-  text: string;
+  /** A function: words that follow a language switch while the toast shows. */
+  text: Words;
   kind: "info" | "error";
   /** A button in the toast (e.g. Undo). */
-  action?: { label: string; run: () => void };
+  action?: { label: Words; run: () => void };
 }
 
 /** Columns a list can be sorted by (click the header; again to reverse; a third time = queue order). */
@@ -150,9 +153,7 @@ function matchesLibrary(s: Status, lib: Library) {
 
 /** What happens to running uploads when Pako quits or restarts: they don't continue. */
 export function uploadsStopNote(u: number) {
-  return u === 1
-    ? "An upload is running. It stops and doesn't continue after Pako closes: upload it again from Upload. One file or a ZIP starts over from the beginning; of several files, the ones already up stay on Gofile."
-    : `${u} uploads are running. They stop and don't continue after Pako closes: upload them again from Upload. One file or a ZIP starts over from the beginning; of several files, the ones already up stay on Gofile.`;
+  return t("{n} uploads are running. They stop and don't continue after Pako closes: upload them again from Upload. One file or a ZIP starts over from the beginning; of several files, the ones already up stay on Gofile.", { n: u });
 }
 
 /** One file or folder in the Send basket. `size` / `files` are null until measured. */
@@ -236,7 +237,7 @@ class AppState {
   directCounts = $derived.by(() => {
     const list = this.directContacts;
     const tags: Record<string, number> = {};
-    for (const t of this.directTags) tags[t] = list.filter((c) => matchesFilter(c, `tag:${t}`, this.directWaitingIds)).length;
+    for (const tag of this.directTags) tags[tag] = list.filter((c) => matchesFilter(c, `tag:${tag}`, this.directWaitingIds)).length;
     return {
       all: list.length,
       online: list.filter((c) => c.online).length,
@@ -363,7 +364,8 @@ class AppState {
       await this.run(async () => {
         await api.sentSetExpiry(s.id, at);
         await this.refreshSends();
-        this.toast(at ? `"${s.name}" will be deleted on ${new Date(at).toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" })}` : `"${s.name}" is kept until you delete it`);
+        const day = () => new Date(at ?? 0).toLocaleDateString(i18n.dates, { weekday: "long", day: "numeric", month: "long" });
+        this.toast(() => (at ? t('"{name}" will be deleted on {date}', { name: s.name, date: day() }) : t('"{name}" is kept until you delete it', { name: s.name })));
       });
     } finally {
       this.changingSent = this.changingSent.filter((id) => id !== s.id);
@@ -430,7 +432,7 @@ class AppState {
   async copyLink(link: string) {
     try {
       await api.copyText(link);
-      this.toast("Link copied");
+      this.toast(() => t("Link copied"));
     } catch (e) {
       this.toast(String(e), "error");
     }
@@ -492,7 +494,7 @@ class AppState {
     const map = new Map<string, { key: string; label: string; color: string; count: number }>();
     for (const d of this.downloads) {
       const s = sourceOf(d);
-      const e = map.get(s.key) ?? { key: s.key, label: s.key === "web" ? "Web links" : s.label, color: s.color, count: 0 };
+      const e = map.get(s.key) ?? { key: s.key, label: s.key === "web" ? t("Web links") : s.label, color: s.color, count: 0 };
       e.count++;
       map.set(s.key, e);
     }
@@ -561,7 +563,7 @@ class AppState {
       }
       const files = folders.get(item)!;
       const open = !this.collapsed.has(item);
-      rows.push({ kind: "folder", key: item, name: files[0].group ?? "Folder", files, open });
+      rows.push({ kind: "folder", key: item, name: files[0].group ?? t("Folder"), files, open });
       if (open) {
         files.forEach((d, i) =>
           rows.push({ kind: "child", d, inFolder: true, folderKey: item, last: i === files.length - 1 }),
@@ -724,7 +726,7 @@ class AppState {
       const items = members.map((m) => m.f);
       const open = !this.foundCollapsed.has(item);
       const set = missingOf.get(item);
-      const name = set ? (this.foundSets.find((s) => s.key === item)?.base ?? "Archive") : (items[0].folder ?? "Folder");
+      const name = set ? (this.foundSets.find((s) => s.key === item)?.base ?? t("Archive")) : (items[0].folder ?? t("Folder"));
       rows.push({ kind: "folder", key: item, name, items, open, set: set ? { missing: set } : undefined });
       if (open) members.forEach((m, i) => rows.push({ kind: "child", f: m.f, folderKey: item, last: i === members.length - 1, mirror: m.mirror }));
     }
@@ -831,9 +833,10 @@ class AppState {
       for (const e of r.errors.slice(0, 3)) this.toast(e, "error");
       if (r.errors.length > 3) {
         const more = r.errors.length - 3;
-        this.toast(more === 1 ? "1 more link couldn't be added" : `${more} more links couldn't be added`, "error");
+        this.toast(() => t("{n} more links couldn't be added", { n: more }), "error");
       }
-      if (r.skipped) this.toast(r.skipped === 1 ? "1 link was already in Links" : `${r.skipped} links were already in Links`);
+      const skipped = r.skipped;
+      if (skipped) this.toast(() => t("{n} links were already in Links", { n: skipped }));
       await this.refresh();
       // New links land at the end of the list: show the first one.
       const first = this.foundRows.find((row) => (row.kind === "folder" ? row.items : [row.f]).some((f) => !before.has(f.id)));
@@ -943,15 +946,16 @@ class AppState {
     // Once a day at start: the tools updated themselves, and/or a new Pako is ready.
     const u4 = listen<string[]>("tools-updated", (e) => {
       const n = e.payload;
-      this.toast(`Updated ${n.length === 1 ? n[0] : n.slice(0, -1).join(", ") + " and " + n[n.length - 1]}`);
+      this.toast(() => t("Updated {tools}", { tools: listOf(n) }));
     });
     const u5 = listen<UpdateView>("update-status", (e) => {
       const before = this.update;
       this.update = e.payload;
       const u = e.payload;
       if (u.latest && !(before?.latest === u.latest && before?.ready === u.ready)) {
-        if (u.ready) this.toast(`Pako ${u.latest} is ready`, "info", { label: "Restart now", run: () => this.restartForUpdate() });
-        else this.toast(`Pako ${u.latest} is available (Settings › Features & updates)`);
+        const version = u.latest;
+        if (u.ready) this.toast(() => t("Pako {version} is ready", { version }), "info", { label: () => t("Restart now"), run: () => this.restartForUpdate() });
+        else this.toast(() => t("Pako {version} is available (Settings › Features & updates)", { version }));
       }
     });
     api.updateStatus().then((u) => (this.update = u)).catch(() => {});
@@ -981,8 +985,9 @@ class AppState {
     const u10 = listen<{ name: string; link: string }>("send-done", (e) => {
       this.refreshSends();
       if (location.pathname.startsWith("/mini")) return;
-      this.toast(`${e.payload.name}: link copied. Paste it to anyone.`, "info", {
-        label: "Show",
+      const name = e.payload.name;
+      this.toast(() => t("{name}: link copied. Paste it to anyone.", { name }), "info", {
+        label: () => t("Show (toast)"),
         run: () => (this.view = "send"),
       });
     });
@@ -990,10 +995,10 @@ class AppState {
       const n = e.payload.added;
       const more = e.payload.skipped ?? 0;
       this.refreshSoon();
-      const caught = n === 1 ? "1 link caught from the clipboard" : `${n} links caught from the clipboard`;
-      const skipped = more > 0 ? (more === 1 ? ". 1 more link was skipped (too many at once)" : `. ${more} more links were skipped (too many at once)`) : "";
-      this.toast(caught + skipped, "info", {
-        label: "Show",
+      const caught = () => t("{n} links caught from the clipboard", { n });
+      const skipped = () => (more > 0 ? ". " + t("{n} more links were skipped (too many at once)", { n: more }) : "");
+      this.toast(() => caught() + skipped(), "info", {
+        label: () => t("Show (toast)"),
         run: () => (this.view = "found"),
       });
     });
@@ -1136,8 +1141,9 @@ class AppState {
    *  so say why and offer the queue order. */
   queueHint() {
     if (!this.sortDownloads) return;
-    this.toast("Done. The list is sorted by " + this.sortDownloads.key + ", so the queue order isn't shown.", "info", {
-      label: "Show queue order",
+    const key = this.sortDownloads.key;
+    this.toast(() => t("Done. The list is sorted by {column}, so the queue order isn't shown.", { column: sortWord(key) }), "info", {
+      label: () => t("Show queue order"),
       run: () => {
         this.sortDownloads = null;
         LS.set("sortDownloads", null);
@@ -1148,7 +1154,7 @@ class AppState {
   // ---------- undo ----------
 
   /** Removes Found links (Remove, Delete, Clear broken, right-click) and offers Undo. */
-  async removeFound(ids: string[], what?: string) {
+  async removeFound(ids: string[], what?: Words) {
     const gone = new Set(ids);
     const items = this.found.filter((f) => gone.has(f.id));
     if (!items.length) return;
@@ -1157,7 +1163,7 @@ class AppState {
     await this.refresh();
     if (this.foundFocus && (gone.has(this.foundFocus) || this.foundFocusItems.length === 0)) this.foundFocus = null;
     const n = items.length;
-    this.offerUndo(what ?? (n === 1 ? "1 link removed" : `${n} links removed`), () => api.foundRestore(items, at));
+    this.offerUndo(what ?? (() => t("{n} links removed", { n })), () => api.foundRestore(items, at));
   }
 
   /** Things that can still be undone (removing Found links, or finished downloads from the
@@ -1165,9 +1171,9 @@ class AppState {
   private undos: { toast: number; run: () => Promise<unknown>; until: number; view: View }[] = [];
 
   /** Offers Undo for a few seconds, in a toast (that undoes this action) and with Ctrl+Z. */
-  offerUndo(text: string, run: () => Promise<unknown>) {
+  offerUndo(text: Words, run: () => Promise<unknown>) {
     const until = Date.now() + 8000;
-    const toast = this.toast(text, "info", { label: "Undo", run: () => this.undoOne(toast) });
+    const toast = this.toast(text, "info", { label: () => t("Undo"), run: () => this.undoOne(toast) });
     this.undos = [...this.undos.filter((u) => u.until > Date.now()), { toast, run, until, view: this.view }];
   }
 
@@ -1180,7 +1186,7 @@ class AppState {
   private async undoOne(toast: number) {
     const u = this.undos.find((x) => x.toast === toast);
     this.undos = this.undos.filter((x) => x.toast !== toast && x.until > Date.now());
-    this.toasts = this.toasts.filter((t) => t.id !== toast);
+    this.toasts = this.toasts.filter((m) => m.id !== toast);
     if (!u || Date.now() > u.until) return;
     await this.run(async () => {
       await u.run();
@@ -1259,7 +1265,7 @@ class AppState {
     this.whenDone = a;
     await this.run(() => api.setWhenDone(a));
     if (a !== "nothing" && this.runningCount === 0 && this.waitingCount === 0) {
-      this.toast(a === "sleep" ? "The PC will sleep after the next downloads finish" : "The PC will shut down after the next downloads finish");
+      this.toast(() => (a === "sleep" ? t("The PC will sleep after the next downloads finish") : t("The PC will shut down after the next downloads finish")));
     }
   }
 
@@ -1422,10 +1428,10 @@ class AppState {
     const d = this.directMoving;
     if (n || u || d) {
       const lines: string[] = [];
-      if (n) lines.push(`${n === 1 ? "A download is" : `${n} downloads are`} running. ${n === 1 ? "It continues" : "They continue"} where ${n === 1 ? "it" : "they"} left off after the restart.`);
+      if (n) lines.push(t("{n} downloads are running. They continue where they left off after the restart.", { n }));
       if (u) lines.push(uploadsStopNote(u));
-      if (d) lines.push(`Files going to or from your contacts in Direct stop${n || u ? " too" : ""}: they have to be sent again.`);
-      if (!(await askFirst("Restart Pako?", `${lines.join("\n\n")}\n\nRestart now?`))) return;
+      if (d) lines.push(n || u ? t("Files going to or from your contacts in Direct stop too: they have to be sent again.") : t("Files going to or from your contacts in Direct stop: they have to be sent again."));
+      if (!(await askFirst(t("Restart Pako?"), `${lines.join("\n\n")}\n\n${t("Restart now?")}`))) return;
     }
     await this.run(() => api.updateRestart());
   }
@@ -1456,10 +1462,10 @@ class AppState {
     this.componentBusy = { ...this.componentBusy, [kind]: { stage: "Starting", done: 0, total: null } };
     try {
       const v = await api.componentInstall(kind);
-      this.toast(`${name} ${v} installed`);
+      this.toast(() => t("{name} {version} installed", { name, version: v }));
       await this.refresh();
     } catch (e) {
-      this.toast(`${name}: ${e}`, "error");
+      this.toast(t("{name}: {error}", { name, error: String(e) }), "error");
     } finally {
       const next = { ...this.componentBusy };
       delete next[kind];
@@ -1501,7 +1507,9 @@ class AppState {
   }
 
   /** Shows a toast; returns its id. */
-  toast(text: string, kind: "info" | "error" = "info", action?: Toast["action"]) {
+  /** `text`: plain words (a message from Rust, a name), or a function for Pako's own words, so
+   *  they follow a language switch while the toast shows. */
+  toast(text: Words, kind: "info" | "error" = "info", action?: Toast["action"]) {
     const id = ++this.toastSeq;
     // The newest few: a burst never covers the window (an Undo that scrolled away still works
     // with Ctrl+Z).
@@ -1513,7 +1521,7 @@ class AppState {
         setTimeout(end, 500);
         return;
       }
-      this.toasts = this.toasts.filter((t) => t.id !== id);
+      this.toasts = this.toasts.filter((m) => m.id !== id);
     };
     setTimeout(end, kind === "error" ? 9000 : action ? 8000 : 3500);
     return id;
@@ -1529,6 +1537,21 @@ class AppState {
 }
 
 export const app = new AppState();
+
+/** A column the list is sorted by, in a sentence ("sorted by size"). */
+function sortWord(key: SortKey): string {
+  const words: Record<SortKey, () => string> = {
+    name: () => t("name (sorted by)"),
+    source: () => t("source (sorted by)"),
+    size: () => t("size (sorted by)"),
+    progress: () => t("progress (sorted by)"),
+    speed: () => t("speed (sorted by)"),
+    status: () => t("status (sorted by)"),
+    link: () => t("link (sorted by)"),
+    date: () => t("date (sorted by)"),
+  };
+  return words[key]();
+}
 
 /** A yes / no question in Windows' own message box, named "Pako" (the web view's own box would
  *  say "tauri.localhost says"). */
@@ -1551,23 +1574,24 @@ function exampleDirect(real: DirectState, downloadDir: string): DirectState {
   const sam = id("b");
   const jo = id("c");
   // `\\` is one backslash in the text (`\F` alone would lose it: "…DownloadsFrom Alex").
-  const into = (name: string) => `${downloadDir || "Downloads"}\\From ${name}`;
+  // Named as Rust names a new one (direct/node.rs from_folder): "From Alex", « De Alex ».
+  const into = (name: string) => `${downloadDir || "Downloads"}\\${i18n.lang === "fr" ? "De" : "From"} ${name}`;
   const base = { trusted: true, saveFolder: null, waiting: false, code: "0000 0000 0000 0000 0000", note: null, theirName: null, declined: false };
   return {
     ...real,
-    tags: ["Friends", "Work", "Family"],
+    tags: [t("Friends"), t("Work"), t("Family")],
     contacts: [
-      { ...base, id: alex, name: "Alex", autoAccept: true, lastSeen: now, added: now - 86400000 * 12, online: true, path: "direct", folder: into("Alex"), tags: ["Friends"], favourite: true },
-      { ...base, id: sam, name: "Sam", autoAccept: false, lastSeen: now, added: now - 86400000 * 30, online: true, path: "relay", folder: into("Sam"), tags: ["Work"], favourite: false },
-      { ...base, id: jo, name: "Jo", autoAccept: false, lastSeen: now - 3600000 * 26, added: now - 86400000 * 4, online: false, path: null, folder: into("Jo"), tags: ["Family"], favourite: false },
+      { ...base, id: alex, name: "Alex", autoAccept: true, lastSeen: now, added: now - 86400000 * 12, online: true, path: "direct", folder: into("Alex"), tags: [t("Friends")], favourite: true },
+      { ...base, id: sam, name: "Sam", autoAccept: false, lastSeen: now, added: now - 86400000 * 30, online: true, path: "relay", folder: into("Sam"), tags: [t("Work")], favourite: false },
+      { ...base, id: jo, name: "Jo", autoAccept: false, lastSeen: now - 3600000 * 26, added: now - 86400000 * 4, online: false, path: null, folder: into("Jo"), tags: [t("Family")], favourite: false },
     ],
     requests: [],
     offers: [],
-    transfers: [{ id: "ex-t1", contact: alex, outgoing: true, name: "Holiday video.mp4", files: 1, size: 1.8e9, done: 0.7e9, state: "sending", path: "direct", message: null }],
+    transfers: [{ id: "ex-t1", contact: alex, outgoing: true, name: t("Holiday video.mp4"), files: 1, size: 1.8e9, done: 0.7e9, state: "sending", path: "direct", message: null }],
     history: [
-      { id: "ex-h1", contact: alex, outgoing: false, name: "Photos from Saturday", files: 48, size: 412e6, date: now - 86400000 * 2, path: "direct", result: "done", message: null, savedTo: into("Alex"), durationMs: 9000, avgSpeed: 45e6 },
+      { id: "ex-h1", contact: alex, outgoing: false, name: t("Photos from Saturday"), files: 48, size: 412e6, date: now - 86400000 * 2, path: "direct", result: "done", message: null, savedTo: into("Alex"), durationMs: 9000, avgSpeed: 45e6 },
       { id: "ex-h2", contact: alex, outgoing: true, name: "Slides.pdf", files: 1, size: 6.2e6, date: now - 3600000 * 5, path: "direct", result: "done", message: null, savedTo: null, durationMs: 300, avgSpeed: 20e6 },
-      { id: "ex-h3", contact: sam, outgoing: true, name: "Report Q3.xlsx", files: 1, size: 1.4e6, date: now - 86400000, path: "relay", result: "done", message: null, savedTo: null, durationMs: 900, avgSpeed: 1.5e6 },
+      { id: "ex-h3", contact: sam, outgoing: true, name: t("Report Q3.xlsx"), files: 1, size: 1.4e6, date: now - 86400000, path: "relay", result: "done", message: null, savedTo: null, durationMs: 900, avgSpeed: 1.5e6 },
     ],
   };
 }

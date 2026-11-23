@@ -12,10 +12,16 @@
   import Modal from "../Modal.svelte";
   import SendBasket from "../SendBasket.svelte";
   import DriveRoom from "../DriveRoom.svelte";
+  import { said, t, type Words } from "../i18n.svelte";
 
   let { items, title = null, onclose }: { items: Download[]; title?: string | null; onclose: () => void } = $props();
 
-  const what = untrack(() => title ?? (items.length === 1 ? items[0].name : `${items.length} files`));
+  /** What's uploaded, in words that follow a language switch (its progress row keeps them). */
+  const whatW: Words = untrack(() => {
+    const n = items.length;
+    return title ?? (n === 1 ? items[0].name : () => t("{n} files", { n }));
+  });
+  const what = $derived(said(whatW));
   let basket = $state<BasketItem[]>([]);
   /** Each handed-over path's private file (the rows its progress shows on). */
   let fileOf = new Map<string, Download>();
@@ -44,8 +50,9 @@
     if (!paths.length) return;
     const files = paths.map((p) => fileOf.get(p)).filter((d): d is Download => !!d);
     try {
-      await priv.upload(files, files.length === items.length ? what : files.length === 1 ? files[0].name : `${files.length} files`, paths, mode, name, days, partMb, password);
-      priv.say(`Uploading ${what}. Its progress shows here, in Private mode.`);
+      const n = files.length;
+      await priv.upload(files, n === items.length ? whatW : n === 1 ? files[0].name : () => t("{n} files", { n }), paths, mode, name, days, partMb, password);
+      priv.say(t("Uploading {what}. Its progress shows here, in Private mode.", { what }));
       onclose();
     } catch (e) {
       error = String(e);
@@ -53,8 +60,12 @@
   }
 </script>
 
-<Modal title="Upload {what}" width={560} onclose={onclose}>
-  <p class="msg">Pako reads {items.length === 1 ? "it" : "them"} decrypted as {items.length === 1 ? "it goes" : "they go"} up. You stay in Private mode: the upload's progress shows on {items.length === 1 ? "its row" : "their rows"}. Leaving Private mode stops it.</p>
+<Modal title={t("Upload {what}", { what })} width={560} onclose={onclose}>
+  <p class="msg">
+    {items.length === 1
+      ? t("Pako reads it decrypted as it goes up. You stay in Private mode: the upload's progress shows on its row. Leaving Private mode stops it.")
+      : t("Pako reads them decrypted as they go up. You stay in Private mode: the upload's progress shows on their rows. Leaving Private mode stops it.")}
+  </p>
   {#if error}<p class="err">{error}</p>{/if}
   {#if basket.length}
     <div class="wrap">

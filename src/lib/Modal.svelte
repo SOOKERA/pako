@@ -9,13 +9,14 @@
   import { onMount, type Snippet } from "svelte";
   import { fadeIn, pop } from "./motion";
   import { app } from "./state.svelte";
+  import { t } from "./i18n.svelte";
 
   let {
     title,
     width = 480,
     onclose,
     autofocus = true,
-    closeLabel = "Close",
+    closeLabel,
     outsideCloses = true,
     closable = true,
     onuncover,
@@ -27,7 +28,8 @@
     onclose: () => void;
     /** Put the cursor in the dialog's first field when it opens (off for long forms like Settings). */
     autofocus?: boolean;
-    /** What the × (and Esc) does, when it's more than closing: "Decline". Shown as its tooltip. */
+    /** What the × (and Esc) does, when it's more than closing: "Decline". Shown as its tooltip
+     *  (none: "Close", no tooltip). */
     closeLabel?: string;
     /** A click beside the dialog closes it (off where that would answer for you: first-start setup). */
     outsideCloses?: boolean;
@@ -120,7 +122,7 @@
     <header class:line={above} class:bare={!closable}>
       <h2>{title}</h2>
       {#if closable}
-        <button class="icon-btn" aria-label={closeLabel} title={closeLabel === "Close" ? undefined : closeLabel} onclick={onclose}>
+        <button class="icon-btn" aria-label={closeLabel ?? t("Close")} title={closeLabel} onclick={onclose}>
           <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.5" /></svg>
         </button>
       {/if}

@@ -2,24 +2,65 @@
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 // How a finished download tells you: Off · Pop-up · Important (Rust: model::Alert). Each download
 // has its own choice; new ones start at Settings › Notifications › New downloads.
+import { say } from "./format.ts";
 
 export type Alert = "off" | "pop" | "important";
 /** Settings › Notifications › "Chime when a download finishes". */
 export type DoneChime = "all" | "important" | "never";
 
-export const ALERTS: { id: Alert; label: string; hint: string }[] = [
-  { id: "off", label: "Off", hint: "No pop-up and no sound when it finishes" },
-  { id: "pop", label: "Pop-up", hint: "A pop-up at the bottom right and a chime when it finishes" },
-  { id: "important", label: "Important", hint: "A big pop-up in the middle of the screen that stays until you click it, and a chime" },
+// The words are read when shown (getters), so they follow a language switch.
+export const ALERTS: { readonly id: Alert; readonly label: string; readonly hint: string }[] = [
+  {
+    id: "off",
+    get label() {
+      return say("Off (notify)");
+    },
+    get hint() {
+      return say("No pop-up and no sound when it finishes");
+    },
+  },
+  {
+    id: "pop",
+    get label() {
+      return say("Pop-up (notify)");
+    },
+    get hint() {
+      return say("A pop-up at the bottom right and a chime when it finishes");
+    },
+  },
+  {
+    id: "important",
+    get label() {
+      return say("Important (notify)");
+    },
+    get hint() {
+      return say("A big pop-up in the middle of the screen that stays until you click it, and a chime");
+    },
+  },
 ];
 
-export const CHIMES: { id: DoneChime; label: string }[] = [
-  { id: "all", label: "Pop-up and Important" },
-  { id: "important", label: "Important only" },
-  { id: "never", label: "Never" },
+export const CHIMES: { readonly id: DoneChime; readonly label: string }[] = [
+  {
+    id: "all",
+    get label() {
+      return say("Pop-up and Important");
+    },
+  },
+  {
+    id: "important",
+    get label() {
+      return say("Important only");
+    },
+  },
+  {
+    id: "never",
+    get label() {
+      return say("Never");
+    },
+  },
 ];
 
-export const alertLabel = (a: Alert) => ALERTS.find((x) => x.id === a)?.label ?? "Pop-up";
+export const alertLabel = (a: Alert) => (ALERTS.find((x) => x.id === a) ?? ALERTS[1]).label;
 
 /** "New downloads": as chosen, else from the older Download finished pop-up switch. */
 export function doneAlert(s: { doneAlert?: Alert | null; notifyDone?: boolean } | null | undefined): Alert {
@@ -56,5 +97,5 @@ export function sharedAlert(levels: Alert[]): Alert | null {
  *  the current one ticked (`now` null: several set differently, none ticked). */
 export function alertMenu(now: Alert | null, pick: (a: Alert) => void): { label: string; icon: string; hint: string; action: () => void }[] {
   const icons: Record<Alert, string> = { off: "bell-off", pop: "bell", important: "bell" };
-  return ALERTS.map((a) => ({ label: `Notify: ${a.label}`, icon: icons[a.id], hint: now === a.id ? "✓" : "", action: () => pick(a.id) }));
+  return ALERTS.map((a) => ({ label: say("Notify: {level}", { level: a.label }), icon: icons[a.id], hint: now === a.id ? "✓" : "", action: () => pick(a.id) }));
 }

@@ -6,6 +6,7 @@
   import Icon from "../Icon.svelte";
   import { app } from "../state.svelte";
   import { tour, type TourId } from "./tour.svelte";
+  import { t } from "../i18n.svelte";
 
   let { id }: { id: TourId } = $props();
   const fresh = $derived(!!app.settings && !tour.done(id));
@@ -15,10 +16,10 @@
   class="tut"
   class:fresh
   data-tour="tutorial"
-  title={fresh ? "A short tour of this page (not seen yet)" : "A short tour of this page"}
+  title={fresh ? t("A short tour of this page (not seen yet)") : t("A short tour of this page")}
   onclick={() => tour.start(id)}
 >
-  <Icon name="tour" size={12} stroke={2} /><span class="lbl">Tutorial</span>
+  <Icon name="tour" size={12} stroke={2} /><span class="lbl">{t("Tutorial")}</span>
   <span class="dot" aria-hidden="true"></span>
 </button>
 

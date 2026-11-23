@@ -7,6 +7,7 @@
   // The width is remembered per page (panelWidth.svelte.ts).
   import { panelWidths } from "./panelWidth.svelte";
   import { draggedWidth, keyedWidth, LIST_MIN, PANEL_MAX, PANEL_MIN } from "./panelSize";
+  import { t } from "./i18n.svelte";
 
   let {
     page,
@@ -76,11 +77,11 @@
   class:on={!!drag}
   role="separator"
   aria-orientation="vertical"
-  aria-label="Resize details panel"
+  aria-label={t("Resize details panel")}
   aria-valuemin={PANEL_MIN}
   aria-valuemax={PANEL_MAX}
   aria-valuenow={width}
-  title="Drag to resize · double-click for the first width"
+  title={t("Drag to resize · double-click for the first width")}
   tabindex="0"
   onpointerdown={down}
   onpointermove={move}

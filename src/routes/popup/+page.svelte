@@ -15,6 +15,7 @@
   import { showcase, showcaseCards } from "#lib/showcase.ts";
   import Icon from "#lib/Icon.svelte";
   import { flipIf, flipOpts, reduced, toastIn } from "#lib/motion.ts";
+  import { t } from "#lib/i18n.svelte.ts";
 
   const SHOWN = 3;
   /** How long a card stays (ms), and at least this long again after the mouse leaves it. */
@@ -118,8 +119,8 @@
   const anyCards = $derived(cards.length > 0);
   $effect(() => {
     if (!inApp || !anyCards) return;
-    const t = setInterval(checkQuiet, 5000);
-    return () => clearInterval(t);
+    const tick = setInterval(checkQuiet, 5000);
+    return () => clearInterval(tick);
   });
 
   // The last card gone (closed under a still mouse, the window then hidden): no mouseleave may
@@ -220,7 +221,7 @@
   /** Leaving: slides off to the right while it fades (the cards above then move down). */
   function cardOut(_node: Element, { duration = 220 }: { duration?: number } = {}): TransitionConfig {
     if (reduced()) return { duration: 0 };
-    return { duration, easing: cubicIn, css: (t) => `opacity:${t};transform:translateX(${(1 - t) * 48}px)` };
+    return { duration, easing: cubicIn, css: (k) => `opacity:${k};transform:translateX(${(1 - k) * 48}px)` };
   }
   const flipNow = $derived({ ...flipOpts, duration: reduced() ? 0 : flipOpts.duration });
 
@@ -237,7 +238,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="stack" bind:this={stack} onmouseenter={enter} onmouseleave={leave}>
     {#if more}
-      <div class="more">{more} more waiting</div>
+      <div class="more">{t("{n} more waiting", { n: more })}</div>
     {/if}
     {#each visible as c (c.id)}
       {@const k = kindInfo(c.kind)}
@@ -255,31 +256,31 @@
             <div class="body">{errors[c.id] ?? c.body}</div>
             {#if c.kind === "download-done" && c.go.id}
               <div class="acts">
-                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, false)))}>Open</button>
-                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, true)))}>Show in folder</button>
+                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, false)))}>{t("Open")}</button>
+                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.openItem(c.go.id!, true)))}>{t("Show in folder")}</button>
               </div>
             {:else if c.kind === "direct-offer" && c.go.offer}
               <div class="acts">
-                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.directAnswerOffer(c.go.offer!, false)))}>Decline</button>
+                <button class="btn small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.directAnswerOffer(c.go.offer!, false)))}>{t("Decline")}</button>
                 <button class="btn primary small" disabled={busy[c.id]} onclick={(e) => (e.stopPropagation(), act(c, () => api.directAnswerOffer(c.go.offer!, true)))}
-                  ><Icon name="download" size={12} stroke={2.2} />Accept</button
+                  ><Icon name="download" size={12} stroke={2.2} />{t("Accept")}</button
                 >
               </div>
             {:else if c.kind === "direct-request"}
               <div class="acts">
-                <button class="btn small" onclick={(e) => (e.stopPropagation(), open(c.go.page === "devices" ? c : { ...c, go: { page: "direct" } }))}>Review</button>
+                <button class="btn small" onclick={(e) => (e.stopPropagation(), open(c.go.page === "devices" ? c : { ...c, go: { page: "direct" } }))}>{t("Review")}</button>
               </div>
             {:else if c.kind === "update-ready"}
               <div class="acts">
-                <button class="btn primary small" onclick={(e) => (e.stopPropagation(), open(c))}>Restart now</button>
+                <button class="btn primary small" onclick={(e) => (e.stopPropagation(), open(c))}>{t("Restart now")}</button>
               </div>
             {:else if c.kind === "upload-done" && c.go.id}
               <div class="acts">
-                <button class="btn small" onclick={(e) => (e.stopPropagation(), open(c))}>Show in Upload</button>
+                <button class="btn small" onclick={(e) => (e.stopPropagation(), open(c))}>{t("Show in Upload")}</button>
               </div>
             {/if}
           </div>
-          <button class="close" aria-label="Close" title="Close" onclick={(e) => (e.stopPropagation(), dismiss(c.id))}><Icon name="x" size={11} stroke={2.2} /></button>
+          <button class="close" aria-label={t("Close")} title={t("Close")} onclick={(e) => (e.stopPropagation(), dismiss(c.id))}><Icon name="x" size={11} stroke={2.2} /></button>
         </div>
       </div>
     {/each}
