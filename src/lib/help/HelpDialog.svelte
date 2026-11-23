@@ -8,7 +8,7 @@
   import Icon from "../Icon.svelte";
   import Modal from "../Modal.svelte";
   import SegPick from "../SegPick.svelte";
-  import { openLink, openWeb, SITE } from "../web";
+  import { bare, openLink, openWeb, SITE } from "../web";
   import { fadeIn, pop, reduced } from "../motion";
   import { tour } from "../tour/tour.svelte";
   import { PAGE_TOURS, type TourId } from "../tour/tours";
@@ -212,8 +212,8 @@
               <div class="legal" in:pop={{ duration: 200, from: 1, y: 4 }}>
                 {#if legal === "use"}
                   {@const on = around(t("Pako's terms of use, as you accepted them. The newest version is always on {link}."), "{link}")}
-                  <p class="sub">{on[0]}<button class="lk" onclick={() => openWeb(SITE.terms)}>sookera.com/terms</button>{on[1]}</p>
-                  <Markdown blocks={terms} onlink={link} />
+                  <p class="sub">{on[0]}<button class="lk" onclick={() => openWeb(SITE.terms)}>{bare(SITE.terms)}</button>{on[1]}</p>
+                  <Markdown blocks={terms()} onlink={link} />
                 {:else if legal === "notice"}
                   <Markdown blocks={notice} onlink={link} />
                 {:else}

@@ -99,7 +99,10 @@ pub async fn language_set(app: AppHandle, lang: String) -> Result<(), String> {
 // Only the copy Setup installed and its key points at (a portable Pako never writes it).
 
 /// Pako Setup's key for Pako (installer.nsi: MANUPRODUCTKEY, Software\<publisher>\<product>).
+/// (Not read in tests, which write nothing to the registry.)
+#[cfg_attr(test, allow(dead_code))]
 const SETUP_KEY: &str = r"Software\Sookera\Pako";
+#[cfg_attr(test, allow(dead_code))]
 const SETUP_VALUE: &str = "Installer Language";
 
 /// The value for a language: 1036 for French, 1033 for English.

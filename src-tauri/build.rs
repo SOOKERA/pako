@@ -44,6 +44,13 @@ fn terms_page() {
     if terms::version_of(&md).is_none() {
         panic!("TERMS.md has no \"Last updated <day> <month> <year>\" line: Pako saves that date when the terms are accepted.");
     }
+    // The French terms (shown in French) are the same version: the same date.
+    let fr = manifest.join("..").join("TERMS.fr.md");
+    println!("cargo:rerun-if-changed={}", fr.display());
+    let fr_md = std::fs::read_to_string(&fr).unwrap_or_else(|_| panic!("{} is missing: Pako needs its terms of use in French.", fr.display()));
+    if terms::version_of(&fr_md) != terms::version_of(&md) {
+        panic!("TERMS.fr.md doesn't carry the same date as TERMS.md: copy both from the website (node scripts/copy-terms.mjs).");
+    }
     let text = terms::plain_text(&md);
     let out = manifest.join("gen").join("terms.txt");
     // Written only when it changes (tauri dev would see a new file each time otherwise). A text

@@ -50,7 +50,7 @@ const slides = [
     title: "Downloads go straight to Pako",
     desc: "Click a download in your browser: Pako takes it at once, before any Save as, and downloads it faster.",
     fr: {
-      title: "Les téléchargements vont droit dans Pako",
+      title: "Vos téléchargements filent droit dans Pako",
       desc: "Cliquez sur un téléchargement dans votre navigateur : Pako le prend aussitôt, avant tout « Enregistrer sous », et le télécharge plus vite.",
     },
     main: (k, l) => ({ src: shot("browser-handoff", k, l) }),
@@ -70,7 +70,7 @@ const slides = [
     desc: "Drop files in Upload: Pako zips them, uploads them and copies the link. Pick when they're deleted.",
     fr: {
       title: "Partagez des fichiers avec un lien",
-      desc: "Déposez des fichiers dans Envoi : Pako les compresse, les met en ligne et copie le lien. Choisissez quand ils sont supprimés.",
+      desc: "Déposez des fichiers dans Envoi : Pako les compresse, les met en ligne et copie le lien. Choisissez quand ils disparaissent.",
     },
     main: (k, l) => ({ src: shot("share-step-link", k, l) }),
   },
@@ -87,8 +87,8 @@ const slides = [
     title: "Your PCs work together",
     desc: "Send files between your own PCs, and from your laptop make your home PC download for you. Follow it all live.",
     fr: {
-      title: "Vos PC travaillent ensemble",
-      desc: "Envoyez des fichiers entre vos PC et, depuis votre portable, faites télécharger votre PC de la maison. Suivez tout en direct.",
+      title: "Vos PC font équipe",
+      desc: "Envoyez des fichiers d’un PC à l’autre et, depuis votre portable, lancez des téléchargements sur le PC de la maison. Suivez tout en direct.",
     },
     main: (k, l) => ({ src: shot("devices-files", k, l) }),
     card: (k, l) => ({ src: shot("devices-downloads", k, l), side: "right", width: 56 }),

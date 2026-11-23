@@ -48,7 +48,7 @@
     "Pako didn't start in time. Open Pako, then try again.": "Pako n’a pas démarré à temps. Ouvrez Pako, puis réessayez.",
     "Pako closed before it finished checking this download.": "Pako s’est fermé avant d’avoir fini de vérifier ce téléchargement.",
     "Pako isn't running.": "Pako n’est pas lancé.",
-    "Something other than your Pako answered, so nothing was sent.": "Autre chose que votre Pako a répondu, donc rien n’a été envoyé.",
+    "Something other than your Pako answered, so nothing was sent.": "Ce n’est pas votre Pako qui a répondu : rien n’a été envoyé.",
     "Unknown request.": "Demande inconnue.",
     "Unreadable request.": "Demande illisible.",
     "Too many links at once. Pako takes up to about 1 MB of links per request.":
@@ -71,7 +71,7 @@
     "Couldn't open Pako. Open it yourself: Settings › Browser extension › Connect Pako to your browsers.":
       "Impossible d’ouvrir Pako. Ouvrez-le vous-même : Paramètres › Extension de navigateur › Connecter Pako à vos navigateurs.",
     "No Pako on this PC yet?": "Pas encore de Pako sur ce PC ?",
-    "Get it at pako.sookera.com": "Obtenez-le sur pako.sookera.com",
+    "Get it at pako.sookera.com": "Téléchargez-le sur pako.sookera.com",
     "This Pako is too old for this extension": "Ce Pako est trop ancien pour cette extension",
     "Update Pako (Settings › Features & updates), then open this again.": "Mettez Pako à jour (Paramètres › Fonctions et mises à jour), puis rouvrez ceci.",
     "The full Pako extension is on in this browser": "L’extension Pako complète est activée dans ce navigateur",
@@ -80,7 +80,7 @@
     "Sent to Pako ✓": "Envoyé à Pako ✓",
     "Couldn't send this page.": "Impossible d’envoyer cette page.",
     "Pako asks where to save it, unless you turned that off in Pako.": "Pako demande où l’enregistrer, sauf si vous avez désactivé cela dans Pako.",
-    "Let Pako take over downloads": "Laisser Pako prendre les téléchargements",
+    "Let Pako take over downloads": "Confier les téléchargements à Pako",
     "Files over 2 MB you download in this browser go to Pako instead.": "Les fichiers de plus de 2 Mo que vous téléchargez dans ce navigateur vont à Pako à la place.",
     "Private windows:": "Fenêtres privées :",
     "on": "activé",
@@ -98,7 +98,7 @@
     "Videos on this page": "Vidéos de cette page",
     "Pako asks where to save it (and the quality, for videos), unless you turned that off in Pako.":
       "Pako demande où l’enregistrer (et la qualité, pour les vidéos), sauf si vous avez désactivé cela dans Pako.",
-    "Catch download links on pages": "Attraper les liens de téléchargement des pages",
+    "Catch download links on pages": "Récupérer les liens de téléchargement des pages",
     "Your browser asks before each download. With this on, download links on pages go straight to Pako, without that question.":
       "Votre navigateur demande avant chaque téléchargement. Avec ceci activé, les liens de téléchargement des pages vont directement à Pako, sans cette question.",
     "Download button on videos": "Bouton Télécharger sur les vidéos",
@@ -112,7 +112,7 @@
     "Recording: {mb} MB. Keep this tab open: the video has to play to the end (sped up and muted when the page allows).":
       "Enregistrement : {mb} Mo. Gardez cet onglet ouvert : la vidéo doit être lue jusqu’au bout (accélérée et muette quand la page le permet).",
     "Sending the recording to Pako…": "Envoi de l’enregistrement à Pako…",
-    "Sent to Pako: it makes the video in Downloads.": "Envoyé à Pako : il crée la vidéo dans Téléchargements.",
+    "Sent to Pako: it makes the video in Downloads.": "Envoyé à Pako : il assemble la vidéo dans Téléchargements.",
     "The last resort when Pako can't get it: Pako records the video while it plays. The page reloads, and the video has to play to the end.":
       "Le dernier recours quand Pako ne peut pas l’obtenir : Pako enregistre la vidéo pendant sa lecture. La page se recharge, et la vidéo doit être lue jusqu’au bout.",
 

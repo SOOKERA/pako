@@ -90,7 +90,7 @@ Il en va de même pour un dossier que Google ne veut pas lister : ouvrez-le dan
 
 ## Avant qu’un téléchargement démarre {#before-a-download-starts}
 
-- **Déjà téléchargé ?** Si un fichier est déjà dans vos téléchargements ou dans son dossier, Pako demande d’abord. **Télécharger à nouveau** garde l’ancien fichier et enregistre une deuxième copie sous un nouveau nom. Quand seuls certains liens sont déjà téléchargés, **Le passer** (ou **Les passer**) télécharge seulement les autres. **Annuler** ne télécharge rien.
+- **Déjà téléchargé ?** Si un fichier est déjà dans vos téléchargements ou dans son dossier, Pako demande d’abord. **Télécharger à nouveau** garde l’ancien fichier et enregistre une deuxième copie sous un nouveau nom. Quand seuls certains liens sont déjà téléchargés, **L’ignorer** (ou **Les ignorer**) télécharge seulement les autres. **Annuler** ne télécharge rien.
 - **Espace disque.** Si le lecteur est trop plein, le téléchargement s’arrête avec un message qui dit combien il lui faut et combien il reste de libre. Libérez de la place, puis cliquez sur **Réessayer**.
 
 ## Clic droit sur un téléchargement {#right-click-a-download}

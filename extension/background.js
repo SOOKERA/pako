@@ -37,7 +37,7 @@ const NOT_CONNECTED = "Pako isn't connected. Click the Pako button in the toolba
  *  browser can keep running the background script it took when the extension was added, after
  *  Pako wrote a newer one in the folder, even across restarts (seen in Vivaldi 8.3): it then
  *  reads the new manifest but runs the old script. Told apart by this, the extension reloads. */
-const SCRIPT_VERSION = "1.3.0";
+const SCRIPT_VERSION = "1.3.1";
 
 // The toolbar window and the pages ask through here. Registered first, at
 // once, so nothing else that runs at start-up (or fails there) can keep it from answering.

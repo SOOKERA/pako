@@ -24,7 +24,7 @@ Avant le téléchargement (ou pendant), vous pouvez lire quelques secondes de la
 2. Sous **Aperçu**, dans les détails à droite, cliquez sur le bouton de lecture.
 3. Après un instant, environ 20 secondes se lisent en 480p ou moins, quelques secondes après le début de la vidéo.
 
-Rien n’est récupéré sur le site tant que vous ne cliquez pas sur lecture. L’extrait s’arrête quand vous choisissez un autre élément ou masquez les détails. Il a besoin des outils vidéo. Les directs ne peuvent pas avoir d’aperçu, et une vidéo privée, soumise à une limite d’âge ou protégée (DRM) indique **Cette vidéo ne peut pas avoir d’aperçu** et pourquoi.
+Rien n’est récupéré sur le site tant que vous ne cliquez pas sur lecture. L’extrait s’arrête quand vous choisissez un autre élément ou masquez les détails. Il a besoin des outils vidéo. Les directs ne peuvent pas avoir d’aperçu, et une vidéo privée, soumise à une limite d’âge ou protégée (DRM) indique **Pas d’aperçu possible pour cette vidéo** et pourquoi.
 
 ## Qualité et audio {#quality-and-audio}
 

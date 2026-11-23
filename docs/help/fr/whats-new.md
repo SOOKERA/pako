@@ -1,5 +1,13 @@
 # Nouveautés
 
+## 1.4.1
+
+### Langue
+
+- Les conditions d’utilisation existent aussi en français : en français, Pako montre les conditions en français et ses liens ouvrent les pages françaises de sookera.com et de pako.sookera.com (conditions, confidentialité, aide), ceux de Pako Setup aussi.
+- Le premier écran des conditions d’un Pako portable (ou d’une installation silencieuse) a **English | Français**, pour les lire en français dès le début.
+- Le français de Pako est plus naturel à bien des endroits : Pako Setup et ses diapositives, la visite, les Paramètres, les notifications et l’extension de navigateur.
+
 ## 1.4.0
 
 ### Langue

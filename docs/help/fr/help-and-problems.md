@@ -12,7 +12,7 @@ L’Aide parle la langue de Pako (voyez [Anglais ou français](downloading.md#en
 
 - **Rechercher un réglage**, en haut, trouve un réglage par son nom ou son explication dans tous les onglets, et un groupe par son titre. Choisissez-en un : Pako ouvre son onglet, y défile et le met en lumière, avec le clavier sur son interrupteur ou sa case pour que vous puissiez le changer tout de suite. **Échap** efface la recherche.
 - **Avancé**, en bas d’un onglet, contient ce que la plupart des gens ne changent jamais (comme **Connexions par fichier**), sous les mêmes titres de groupe que le reste de l’onglet. Cliquez dessus pour l’ouvrir ; Pako retient s’il est ouvert, pour chaque onglet.
-- **Enregistrer** garde vos modifications dans tous les onglets à la fois, et **Annuler** laisse tout comme c’était. Un point à côté du nom d’un onglet signale des modifications pas encore enregistrées. Un clic à côté des Paramètres ne les ferme pas ; avec des modifications non enregistrées, **×** ou **Échap** demande **Enregistrer les modifications ?** avec **Enregistrer**, **Abandonner** ou **Continuer à modifier**.
+- **Enregistrer** garde vos modifications dans tous les onglets à la fois, et **Annuler** laisse tout comme c’était. Un point à côté du nom d’un onglet signale des modifications pas encore enregistrées. Un clic à côté des Paramètres ne les ferme pas ; avec des modifications non enregistrées, **×** ou **Échap** demande **Enregistrer les modifications ?** avec **Enregistrer**, **Ne pas enregistrer** ou **Continuer à modifier**.
 
 ## Signaler un problème {#report-a-problem}
 

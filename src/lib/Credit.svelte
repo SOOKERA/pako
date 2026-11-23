@@ -4,7 +4,7 @@
   // "Pako by Sookera" with the licence (Help › About Pako: copyright, no warranty, the licence and
   // its additional terms), the terms of use and privacy pages and the help on the web (Settings
   // and Help).
-  import { openWeb, SITE } from "./web";
+  import { bare, openWeb, SITE } from "./web";
   import { help } from "./help/help.svelte";
   import { around, t } from "./i18n.svelte";
 
@@ -12,15 +12,15 @@
 </script>
 
 <div class="credit">
-  <span>{by[0]}<button class="lk" onclick={() => openWeb(SITE.studio)} title="sookera.com">Sookera</button>{by[1]}</span>
+  <span>{by[0]}<button class="lk" onclick={() => openWeb(SITE.studio)} title={bare(SITE.studio)}>Sookera</button>{by[1]}</span>
   <span class="sep" aria-hidden="true">·</span>
   <button class="lk" onclick={() => help.show("about")} title={t("About Pako: copyright, licence, no warranty")}>{t("Free software (GPL-3.0)")}</button>
   <span class="sep" aria-hidden="true">·</span>
-  <button class="lk" onclick={() => openWeb(SITE.terms)} title="sookera.com/terms">{t("Terms")}</button>
+  <button class="lk" onclick={() => openWeb(SITE.terms)} title={bare(SITE.terms)}>{t("Terms")}</button>
   <span class="sep" aria-hidden="true">·</span>
-  <button class="lk" onclick={() => openWeb(SITE.privacy)} title="sookera.com/privacy">{t("Privacy")}</button>
+  <button class="lk" onclick={() => openWeb(SITE.privacy)} title={bare(SITE.privacy)}>{t("Privacy")}</button>
   <span class="sep" aria-hidden="true">·</span>
-  <button class="lk" onclick={() => openWeb(SITE.help)} title="pako.sookera.com/help">{t("Help online")}</button>
+  <button class="lk" onclick={() => openWeb(SITE.help)} title={bare(SITE.help)}>{t("Help online")}</button>
 </div>
 
 <style>

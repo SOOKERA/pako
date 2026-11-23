@@ -2265,8 +2265,13 @@ FunctionEnd
 
 Function PakoOpenTerms
   Pop $0
+  ; [Pako] The terms in the language shown (sookera.com/fr/terms in French).
+  StrCpy $0 "https://sookera.com/terms"
+  ${If} $PakoLang == "fr"
+    StrCpy $0 "https://sookera.com/fr/terms"
+  ${EndIf}
   ; As the Windows user, never with Setup's rights (Setup may run as administrator).
-  nsis_tauri_utils::RunAsUser "https://sookera.com/terms" ""
+  nsis_tauri_utils::RunAsUser $0 ""
 FunctionEnd
 
 Function PakoChangeFolder

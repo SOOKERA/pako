@@ -196,7 +196,7 @@ export const upload = {
   // ---- your Google Drive (SendDriveBar, DriveRoom) ----
   "Google Drive connected ({email})": "Google Drive connecté ({email})",
   "Google Drive connected": "Google Drive connecté",
-  "Asking Google Drive…": "Interrogation de Google Drive…",
+  "Asking Google Drive…": "Demande à Google Drive…",
   "Gofile still works.": "Gofile fonctionne toujours.",
   "{connect} to upload to your own Drive": "{connect} pour mettre en ligne sur votre propre Drive",
   "Pako only sees the files it uploads, nothing else in your Drive.": "Pako ne voit que les fichiers qu’il met en ligne, rien d’autre dans votre Drive.",

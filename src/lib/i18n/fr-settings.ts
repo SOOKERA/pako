@@ -20,7 +20,7 @@ export const settings = {
   "Save changes?": "Enregistrer les modifications ?",
   "Some settings are changed but not saved yet.": "Des réglages ont été modifiés mais pas encore enregistrés.",
   "Keep editing": "Continuer à modifier",
-  Discard: "Abandonner",
+  Discard: "Ne pas enregistrer",
 
   // ---- Features & updates ----
   Installed: "Installé",
@@ -174,12 +174,12 @@ export const settings = {
   "When a download finishes": "Quand un téléchargement se termine",
   "New downloads": "Nouveaux téléchargements",
   "How a download tells you it's done. Each one can change it: the bell on its row, its details, or right-click.":
-    "Comment un téléchargement vous prévient qu’il est terminé. Chacun peut le changer : la cloche sur sa ligne, ses détails, ou un clic droit.",
+    "Comment un téléchargement vous prévient qu’il est terminé. Réglable aussi pour chaque téléchargement : la cloche sur sa ligne, ses détails, ou un clic droit.",
   "Important: a big pop-up in the middle of the screen that stays until you click it.":
     "Important : un grand pop-up au milieu de l’écran, qui reste jusqu’à ce que vous cliquiez dessus.",
   "Chime when a download finishes": "Son quand un téléchargement se termine",
   "A short, soft chime, with the pop-up.": "Un son court et doux, avec le pop-up.",
-  "Each kind of news": "Chaque type de nouvelle",
+  "Each kind of news": "Par type de notification",
   "What shows as a pop-up and in the bell": "Ce qui s’affiche en pop-up et dans la cloche",
   What: "Quoi",
   "Pop-up": "Pop-up",
@@ -197,11 +197,11 @@ export const settings = {
   "Play a sound when files are sent": "Jouer un son quand des fichiers sont envoyés",
   "A brighter sound when an upload finishes, or when a Direct or My devices send is delivered. Silent at the same times.":
     "Un son plus clair quand une mise en ligne se termine, ou quand un envoi Direct ou Mes appareils est livré. Muet aux mêmes moments.",
-  "Quiet times": "Moments calmes",
+  "Quiet times": "Moments de calme",
   "Do not disturb": "Ne pas déranger",
   "No pop-ups, except for downloads set to Important. The bell still collects.":
     "Aucun pop-up, sauf pour les téléchargements réglés sur Important. La cloche continue de tout garder.",
-  "Quiet times: follow Windows' Do not disturb": "Moments calmes : suivre Ne pas déranger de Windows",
+  "Quiet times: follow Windows' Do not disturb": "Moments de calme : suivre Ne pas déranger de Windows",
   "Follow Windows' Do not disturb": "Suivre Ne pas déranger de Windows",
   "No pop-ups during full-screen games and videos, presentations, or Windows' Do not disturb. The bell still collects.":
     "Aucun pop-up pendant les jeux et vidéos en plein écran, les présentations, ou Ne pas déranger de Windows. La cloche continue de tout garder.",
@@ -350,7 +350,7 @@ export const settings = {
   "Set up Pako": "Configurer Pako",
   "Skip for now": "Plus tard",
   "Pick what you'd like Pako to do. You can change all of this later in Settings.":
-    "Choisissez ce que Pako doit faire. Vous pourrez tout changer plus tard dans les Paramètres.",
+    "Choisissez ce que Pako fera pour vous. Vous pourrez tout changer plus tard dans les Paramètres.",
   "The sun or moon at the top of Pako switches it any time.": "Le soleil ou la lune en haut de Pako le change à tout moment.",
   "Downloads go to": "Les téléchargements vont dans",
   "Where should downloads go?": "Où enregistrer les téléchargements ?",
@@ -396,7 +396,7 @@ export const settings = {
   "Your downloads and lists stay as they are. Paused and waiting downloads simply wait until you agree, and nothing is lost.":
     "Vos téléchargements et vos listes restent tels quels. Les téléchargements en pause et en attente attendent simplement votre accord, et rien n’est perdu.",
   "Before you start, please read Pako's terms of use. Pako starts as soon as you agree.":
-    "Avant de commencer, merci de lire les conditions d’utilisation de Pako. Pako démarre dès que vous les acceptez.",
+    "Avant de commencer, prenez un moment pour lire les conditions d’utilisation de Pako. Pako démarre dès que vous les acceptez.",
   "Also on {link}, always in their newest version.": "Aussi sur {link}, toujours dans leur dernière version.",
   "Quit Pako": "Quitter Pako",
   "Agree and continue": "Accepter et continuer",

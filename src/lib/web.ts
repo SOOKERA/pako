@@ -3,20 +3,34 @@
 // Web pages opened in the user's browser (never inside Pako).
 import { inApp } from "./api";
 import { app } from "./state.svelte";
-import { t } from "./i18n.svelte";
+import { i18n, t } from "./i18n.svelte";
 
-/** Sookera's pages about Pako. */
+/** A Sookera page in the language shown: its French twin under /fr in French. */
+const inLang = (origin: string, path = "") => (i18n.lang === "fr" ? `${origin}/fr${path}` : `${origin}${path}`);
+
+/** Sookera's pages about Pako (in Pako's language: sookera.com/fr/terms… in French). */
 export const SITE = {
-  studio: "https://sookera.com",
-  privacy: "https://sookera.com/privacy",
-  /** The terms of use (TERMS.md, word for word). */
-  terms: "https://sookera.com/terms",
-  help: "https://pako.sookera.com/help",
+  get studio() {
+    return inLang("https://sookera.com");
+  },
+  get privacy() {
+    return inLang("https://sookera.com", "/privacy");
+  },
+  /** The terms of use (TERMS.md, word for word; TERMS.fr.md in French). */
+  get terms() {
+    return inLang("https://sookera.com", "/terms");
+  },
+  get help() {
+    return inLang("https://pako.sookera.com", "/help");
+  },
   /** The licence Pako is shared under (its additional terms are in NOTICE.md with the code). */
   licence: "https://www.gnu.org/licenses/gpl-3.0.html",
   /** Pako's source code (a copy of each release; contributions aren't taken). */
   source: "https://github.com/sookera/pako",
 };
+
+/** A page's address as the window writes it ("sookera.com/fr/terms"). */
+export const bare = (url: string) => url.replace(/^https:\/\//, "");
 
 /** Sookera's support address, as the terms of use write it (a mailto: link). */
 const SUPPORT_MAIL = "mailto:support@sookera.com";

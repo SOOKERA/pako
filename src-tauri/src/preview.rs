@@ -533,7 +533,7 @@ fn clean(s: &str) -> String {
 }
 
 fn cant(why: &str) -> String {
-    tr!("This video can't be previewed. {why}", "Cette vidéo ne peut pas avoir d’aperçu. {why}")
+    tr!("This video can't be previewed. {why}", "Pas d’aperçu possible pour cette vidéo. {why}")
 }
 
 /// Asks yt-dlp for a small stream of a video-site link (nothing is downloaded).

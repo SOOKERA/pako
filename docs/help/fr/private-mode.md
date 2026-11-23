@@ -10,7 +10,7 @@ Il est désactivé tant que vous ne l’activez pas. Sans lui, le téléchargeme
 2. Lisez ce qu’il fait, puis cliquez sur **Continuer**.
 3. Choisissez **Code PIN à 4 chiffres** ou **Mot de passe**, saisissez-le deux fois et cliquez sur **Activer le mode privé**.
    - Un code PIN ralentit quelqu’un devant ce PC : Pako attend plus longtemps après chaque essai raté. Quelqu’un qui obtient les fichiers de Pako et peut utiliser votre compte Windows pourrait essayer les dix mille codes PIN en quelques minutes. Un mot de passe est la vraie protection (au moins 10 caractères ; quelques mots à la suite, avec un chiffre ou un signe, c’est difficile à deviner).
-4. Pako propose un **code de récupération** : 8 groupes de 4 lettres et chiffres. Gardez-le avec **Copier**, **Enregistrer dans un fichier** ou **Imprimer**, puis saisissez son dernier groupe et cliquez sur **Je l’ai gardé**. Ou cliquez sur **Passer**.
+4. Pako propose un **code de récupération** : 8 groupes de 4 lettres et chiffres. Gardez-le avec **Copier**, **Enregistrer dans un fichier** ou **Imprimer**, puis saisissez son dernier groupe et cliquez sur **Je l’ai noté**. Ou cliquez sur **Passer**.
 
 Pako n’affiche le code de récupération qu’à ce moment-là et ne le garde jamais. Avec lui, vous pouvez ouvrir le mode privé si vous oubliez votre code PIN ou votre mot de passe, et en choisir un nouveau. Gardez-le loin de ce PC : toute personne qui a ce code et ce PC peut ouvrir vos fichiers privés.
 

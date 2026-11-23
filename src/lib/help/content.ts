@@ -9,6 +9,7 @@ import { sinceSeen } from "./versions";
 import licenceText from "../../../LICENSE?raw";
 import noticeText from "../../../NOTICE.md?raw";
 import termsText from "../../../TERMS.md?raw";
+import termsTextFr from "../../../TERMS.fr.md?raw";
 
 export type { Guide, Hit, Section, WhatsNew } from "./guides";
 
@@ -61,9 +62,19 @@ export const search = (query: string): Hit[] => searchGuides(guides(), query);
 /** The GNU GPL version 3, word for word (LICENSE), bundled like the guides. */
 export const licence: string = licenceText;
 
-/** TERMS.md, the terms of use (word for word sookera.com/terms), without its title: the terms
- *  step and the About page show their own. */
-export const terms: Block[] = parse(termsText).filter((b) => !(b.kind === "heading" && b.level === 1));
+/** The terms of use in the language shown, without their title (the terms step and the About
+ *  page show their own): TERMS.md (word for word sookera.com/terms), or TERMS.fr.md in French
+ *  (word for word sookera.com/fr/terms). The same version: accepting either is the same. */
+const termsMade = new Map<Lang, Block[]>();
+export function terms(): Block[] {
+  const lang = i18n.lang;
+  let blocks = termsMade.get(lang);
+  if (!blocks) {
+    blocks = parse(lang === "fr" ? termsTextFr : termsText).filter((b) => !(b.kind === "heading" && b.level === 1));
+    termsMade.set(lang, blocks);
+  }
+  return blocks;
+}
 
 /** NOTICE.md (copyright, no warranty, the additional terms), without its title: the About page
  *  shows its own. */

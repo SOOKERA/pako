@@ -23,6 +23,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fr as FR_WORDS } from "../src/lib/i18n/fr.ts";
+import { frType } from "../src/lib/i18n/core.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -33,9 +35,14 @@ const SUFFIX = THEME === "light" ? "-light" : "";
 const LANG = args.includes("--fr") ? "fr" : "en";
 const BASE = (process.env.PAKO_URL ?? "http://localhost:1420").replace(/\/$/, "");
 const OUT = join(root, "docs", "screenshots", ...(LANG === "fr" ? ["fr"] : []));
-/** The window's words the steps below click, in the language shown (src/lib/i18n/fr-*.ts). */
-const FR = { Upload: "Envoi", Clear: "Vider", "Copy link": "Copier le lien", "My devices": "Mes appareils", Downloads: "Téléchargements" };
-const L = (words) => (LANG === "fr" ? (FR[words] ?? words) : words);
+/** The window's words the steps below click, in the language shown: the window's own French
+ *  (src/lib/i18n/fr*.ts, with its typography), so a renamed label never breaks a picture. Words
+ *  that aren't the window's (the showcase's sample names) stay as they are. */
+const L = (words) => {
+  if (LANG !== "fr") return words;
+  const said = FR_WORDS[words];
+  return typeof said === "string" ? frType(said) : words;
+};
 /** Sample words the preview writes in English where the real Pako's Rust side gives them in the
  *  language shown (src-tauri/src/send.rs): swapped on the page before a French picture. */
 const FR_SAMPLE = {
@@ -112,7 +119,7 @@ async function sidebar(page, label) {
   await settle(page, 700);
 }
 async function clickRow(page, text) {
-  await page.getByText(text, { exact: true }).first().click();
+  await page.getByText(L(text), { exact: true }).first().click();
 }
 /** Home shows the list's first row in the details panel without ticking it. The focus leaves
  *  the clicked tab first, so no keyboard ring shows on it. */
@@ -216,7 +223,7 @@ const SHOTS = {
     ...main(),
     async run(page) {
       await sidebar(page, "Upload");
-      await page.locator("main, .content, body").getByText("Holiday clips", { exact: true }).first().scrollIntoViewIfNeeded();
+      await page.locator("main, .content, body").getByText(L("Holiday clips"), { exact: true }).first().scrollIntoViewIfNeeded();
       await clickRow(page, "Holiday clips");
       await park(page, 700, 880);
       await settle(page, 2000);
@@ -230,8 +237,8 @@ const SHOTS = {
       await sidebar(page, "Upload");
       await closePanel(page);
       // Three things picked, going to Google Drive, under one name.
-      await page.getByRole("radio", { name: "Google Drive", exact: true }).click();
-      await page.getByLabel("Name of this upload").fill("Wedding");
+      await page.getByRole("radio", { name: L("Google Drive"), exact: true }).click();
+      await page.getByLabel(L("Name of this upload")).fill("Wedding");
       await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
       await park(page, 2, SHARE_DROP.height - 1);
       await settle(page, 1200);
@@ -299,7 +306,7 @@ const SHOTS = {
       await sidebar(page, "Dashboard");
       await settle(page, 1200);
       // The lower half: speeds by route, your people, sources and records.
-      await page.getByText("Sending files", { exact: true }).first().evaluate((el) => {
+      await page.getByText(L("Sending files"), { exact: true }).first().evaluate((el) => {
         const card = el.closest("section") ?? el;
         let box = card.parentElement;
         while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
@@ -312,9 +319,9 @@ const SHOTS = {
   settings: {
     ...main(),
     async run(page) {
-      await page.locator(".sidebar, nav, aside").getByText("Settings", { exact: true }).first().click();
+      await page.locator(".sidebar, nav, aside").getByText(L("Settings"), { exact: true }).first().click();
       await settle(page, 600);
-      await page.getByRole("dialog").getByText("Downloads", { exact: true }).first().click();
+      await page.getByRole("dialog").getByText(L("Downloads"), { exact: true }).first().click();
       await park(page, 2, 700);
       await settle(page, 1200);
     },
@@ -322,12 +329,13 @@ const SHOTS = {
   updates: {
     ...main(),
     async run(page) {
-      await page.locator(".sidebar, nav, aside").getByText("Settings", { exact: true }).first().click();
+      await page.locator(".sidebar, nav, aside").getByText(L("Settings"), { exact: true }).first().click();
       await settle(page, 600);
-      await page.getByRole("dialog").getByText("Features & updates", { exact: true }).first().click();
+      await page.getByRole("dialog").getByRole("tab", { name: L("Features & updates") }).click();
       await settle(page, 900);
       // The video feature's tools, with their versions and official sources.
-      await page.getByRole("dialog").locator(".feat").nth(2).getByRole("button", { name: "Details" }).click();
+      // (Clicked as an event: in French the longer texts push it under the dialog's buttons.)
+      await page.getByRole("dialog").locator(".feat").nth(2).getByRole("button", { name: L("Details") }).dispatchEvent("click");
       await settle(page, 600);
       // Down to the end, so the tools' list shows in full.
       await page.getByRole("dialog").locator(".details").first().evaluate((el) => {
@@ -345,7 +353,7 @@ const SHOTS = {
       await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
       await page.keyboard.press("F1");
       await settle(page, 700);
-      await page.getByRole("dialog").getByRole("button", { name: "About Pako" }).click();
+      await page.getByRole("dialog").getByRole("button", { name: L("About Pako") }).click();
       await park(page, 2, 700);
       await settle(page, 1000);
     },
@@ -356,13 +364,13 @@ const SHOTS = {
       await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
       await page.keyboard.press("F1");
       await settle(page, 700);
-      await page.getByRole("dialog").getByRole("button", { name: "Report a problem", exact: true }).click();
+      await page.getByRole("dialog").getByRole("button", { name: L("Report a problem"), exact: true }).click();
       await settle(page, 700);
       await page.locator("#report-what").fill("A Google Drive folder stopped at 80% with \u201cServer error (502)\u201d. Retry worked the second time.");
       await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
       await park(page, 2, 700);
       await settle(page, 1000);
-      await page.getByRole("dialog", { name: "Report a problem" }).evaluate((el) => el.setAttribute("data-shot", ""));
+      await page.getByRole("dialog", { name: L("Report a problem") }).evaluate((el) => el.setAttribute("data-shot", ""));
     },
     // Only the Report a problem window, on a see-through background (Help under it is left out).
     transparent: true,
@@ -445,10 +453,10 @@ const SHOTS = {
     async run(page) {
       await sidebar(page, "Upload");
       await closePanel(page);
-      await page.getByLabel("Name of this upload").fill("Wedding");
-      await page.getByRole("switch", { name: "Protect with a password" }).click();
-      await page.getByLabel("Password for this upload").fill("wedding-2026");
-      await page.getByLabel("Type the password again").fill("wedding-2026");
+      await page.getByLabel(L("Name of this upload")).fill("Wedding");
+      await page.getByRole("switch", { name: L("Protect with a password") }).click();
+      await page.getByLabel(L("Password for this upload")).fill("wedding-2026");
+      await page.getByLabel(L("Type the password again")).fill("wedding-2026");
       await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
       await park(page, 2, SHARE_DROP.height - 1);
       await settle(page, 1200);
@@ -473,7 +481,7 @@ const SHOTS = {
     async run(page) {
       // A finished archive locked with a password: Extract… asks for it.
       await page.getByRole("row", { name: /^Course materials\.zip/ }).first().click({ button: "right" });
-      await page.getByRole("menuitem", { name: "Extract…" }).click();
+      await page.getByRole("menuitem", { name: L("Extract…") }).click();
       await settle(page, 900);
       await page.getByRole("dialog").locator('input[type="password"]').fill("course2026");
       await park(page, 2, 899);
@@ -515,7 +523,7 @@ const SHOTS = {
       // The file on three hosts in the details panel (Hosts), and its row's host list open.
       await clickRow(page, "Field recordings.zip");
       await settle(page, 700);
-      await page.getByRole("button", { name: /^Pick the host/ }).first().click();
+      await page.getByRole("button", { name: LANG === "fr" ? /^Choisir l’hébergeur/ : /^Pick the host/ }).first().click();
       await page.getByRole("menu").first().waitFor();
       await park(page, 700, 880);
       await settle(page, 1000);
@@ -532,8 +540,8 @@ const SHOTS = {
     // Its row ("from …") and the details panel down to Backups and Tried, without the sidebar.
     async clip(page) {
       // Ends halfway between Tried and the next line (Saved to).
-      const tried = await page.locator(".panel dt", { hasText: "Tried" }).first().boundingBox();
-      const next = await page.locator(".panel dt", { hasText: "Saved to" }).first().boundingBox();
+      const tried = await page.locator(".panel dt", { hasText: L("Tried") }).first().boundingBox();
+      const next = await page.locator(".panel dt", { hasText: L("Saved to") }).first().boundingBox();
       return { x: 220, y: 40, width: MAIN.width - 220, height: Math.round((tried.y + tried.height + next.y) / 2) - 40 };
     },
   },
@@ -547,7 +555,7 @@ const SHOTS = {
       await sidebar(page, "Links");
       await clickRow(page, "Sunrise over the lake 4K.mp4");
       await settle(page, 600);
-      await page.getByRole("button", { name: "Play a preview" }).click();
+      await page.getByRole("button", { name: L("Play a preview") }).click();
       const video = page.locator(".preview video");
       await video.waitFor();
       // A few seconds in, paused, so the player shows its time and controls.
@@ -597,9 +605,9 @@ const SHOTS = {
       await sidebar(page, "My devices");
       await clickRow(page, "Home PC");
       await settle(page, 600);
-      await page.locator(".tabs").getByText("Links", { exact: true }).first().click();
+      await page.locator(".tabs").getByText(L("Links"), { exact: true }).first().click();
       // A finished send followed live, and a playlist read here, its videos to pick.
-      await page.getByText(/^Send \d+ to Home PC$/).first().waitFor();
+      await page.getByText(LANG === "fr" ? /^Envoyer \d+ à / : /^Send \d+ to Home PC$/).first().waitFor();
       await park(page, 700, 880);
       await settle(page, 3000);
     },
@@ -658,7 +666,7 @@ const SHOTS = {
         { w: ASK.width, h: ASK.height, theme: THEME },
       );
       const ask = page.frameLocator("[data-ask]");
-      await ask.getByText("Conference talk slides.pdf").waitFor();
+      await ask.getByText(L("Conference talk slides.pdf")).waitFor();
       await page.frameLocator("[data-ask]").locator("body").evaluate(() => {
         const s = document.createElement("style");
         s.textContent = "*, *::before, *::after { transition-duration: 0s !important; caret-color: transparent !important; }";
@@ -696,7 +704,7 @@ const SHOTS = {
       // "sending from" menu open again: This PC, Home PC, Laptop, Office PC (offline).
       const pcButton = page.locator("button.fpc");
       await pcButton.click();
-      await page.locator(".frommenu .fitem", { hasText: "Home PC" }).click();
+      await page.locator(".frommenu .fitem", { hasText: L("Home PC") }).click();
       await settle(page, 900);
       await clickRow(page, "Rado");
       await settle(page, 900);
@@ -711,7 +719,7 @@ const SHOTS = {
     async run(page) {
       await sidebar(page, "Direct");
       await page.locator("button.fpc").click();
-      await page.locator(".frommenu .fitem", { hasText: "Home PC" }).click();
+      await page.locator(".frommenu .fitem", { hasText: L("Home PC") }).click();
       await settle(page, 900);
       await clickRow(page, "Rado");
       await park(page, 700, 880);
@@ -723,7 +731,7 @@ const SHOTS = {
     async run(page) {
       await sidebar(page, "Upload");
       await closePanel(page);
-      await page.getByRole("radio", { name: "ZIP in parts", exact: true }).click();
+      await page.getByRole("radio", { name: L("ZIP in parts"), exact: true }).click();
       await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
       await park(page, 700, 880);
       await settle(page);
@@ -732,9 +740,9 @@ const SHOTS = {
   "settings-tabs": {
     ...main(),
     async run(page) {
-      await page.locator(".sidebar, nav, aside").getByText("Settings", { exact: true }).first().click();
+      await page.locator(".sidebar, nav, aside").getByText(L("Settings"), { exact: true }).first().click();
       await settle(page, 600);
-      await page.getByRole("dialog").getByRole("tab", { name: "Downloads" }).click();
+      await page.getByRole("dialog").getByRole("tab", { name: L("Downloads") }).click();
       await settle(page, 600);
       const fold = page.getByRole("dialog").locator("[data-fold-toggle]:visible").first();
       await fold.click();
@@ -753,10 +761,10 @@ const SHOTS = {
   "settings-search": {
     ...main(),
     async run(page) {
-      await page.locator(".sidebar, nav, aside").getByText("Settings", { exact: true }).first().click();
+      await page.locator(".sidebar, nav, aside").getByText(L("Settings"), { exact: true }).first().click();
       await settle(page, 600);
       // "start" typed, its first find picked: Pako goes to that setting and lights it up.
-      await page.getByRole("dialog").getByLabel("Search settings").fill("start");
+      await page.getByRole("dialog").getByLabel(L("Search settings")).fill(LANG === "fr" ? "démarr" : "start");
       await page.getByRole("dialog").locator(".hits .hit").first().waitFor();
       await settle(page, 400);
       await page.getByRole("dialog").locator(".hits .hit").first().click();

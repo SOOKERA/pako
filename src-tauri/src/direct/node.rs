@@ -2802,7 +2802,7 @@ impl Node {
                 self.tell(
                     peer,
                     "direct-incoming",
-                    &crate::tr!("Files coming in", "Fichiers en arrivée"),
+                    &crate::tr!("Files coming in", "Des fichiers arrivent"),
                     &crate::tr!("{} is sending you {} ({}).", "{} vous envoie {} ({}).", crate::direct::words::who(&contact.name), name, shown_size(total)),
                     Go::item(page, peer),
                 );
@@ -3523,7 +3523,7 @@ impl Node {
                 &t.contact,
                 "direct-received",
                 &crate::tr!("Files received", "Fichiers reçus"),
-                &crate::tr!("{} from {} is saved.", "{} de {} est enregistré.", t.name, crate::direct::words::who(&contact_name)),
+                &crate::tr!("{} from {} is saved.", "Enregistré : {} (envoyé par {}).", t.name, crate::direct::words::who_inside(&contact_name)),
                 Go::item(page, t.contact.clone()),
             );
         }

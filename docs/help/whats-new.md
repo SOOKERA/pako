@@ -1,5 +1,13 @@
 # What's new
 
+## 1.4.1
+
+### Language
+
+- The terms of use are in French too: in French, Pako shows the French terms and its links open the French pages of sookera.com and pako.sookera.com (terms, privacy, help), Pako Setup's too.
+- The first terms screen of a portable Pako (or a silent install) has **English | Français**, so they can be read in French from the start.
+- Pako's French reads more naturally in many places: Pako Setup and its slides, the tour, Settings, notifications and the browser extension.
+
 ## 1.4.0
 
 ### Language

@@ -83,8 +83,8 @@ export const links = {
     "Ils sont déjà dans vos téléchargements ou dans le dossier. Les télécharger à nouveau garde les anciens fichiers et enregistre une deuxième copie sous un nouveau nom.",
   "and {n} more": { one: "et {n} autre", other: "et {n} autres" },
   "Download again": "Télécharger à nouveau",
-  "Skip it": "Le passer",
-  "Skip them": "Les passer",
+  "Skip it": "L’ignorer",
+  "Skip them": "Les ignorer",
 
   // ---- Details panel ----
   "Size: checking…": "Taille : vérification…",

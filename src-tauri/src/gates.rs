@@ -83,7 +83,7 @@ const FILE_EXTS: &[&str] = &[
 
 /// Shown on the Found row while the captcha waits for the user.
 fn waiting_for_you() -> String {
-    tr!("Waiting for you: solve the check in the Pako window", "En attente de vous : résolvez la vérification dans la fenêtre de Pako")
+    tr!("Waiting for you: solve the check in the Pako window", "À vous : résolvez la vérification dans la fenêtre de Pako")
 }
 
 pub fn init(app: &AppHandle) {
@@ -140,7 +140,7 @@ enum Msg {
 
 /// Shown on the Found row once the whole page is handed to the user.
 fn waiting_page() -> String {
-    tr!("Waiting for you: finish opening the link in the Pako window", "En attente de vous : finissez d’ouvrir le lien dans la fenêtre de Pako")
+    tr!("Waiting for you: finish opening the link in the Pako window", "À vous : finissez d’ouvrir le lien dans la fenêtre de Pako")
 }
 
 /// The gate being worked on (one at a time): its Found row, for "Show page".
@@ -399,7 +399,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
             &tr!("Pako needs you", "Pako a besoin de vous"),
             &tr!(
                 "{gate_host} only lets a person click through: finish it in the Pako window.",
-                "{gate_host} ne laisse passer qu’une personne : terminez dans la fenêtre de Pako."
+                "{gate_host} veut qu’une vraie personne clique : terminez dans la fenêtre de Pako."
             ),
             crate::notices::Go::item("found", id),
         );
@@ -481,7 +481,7 @@ async fn run(app: &AppHandle, engine: &Arc<Engine>, id: &str, link: &str) -> Res
                         id,
                         "needs-you",
                         &tr!("Pako needs you", "Pako a besoin de vous"),
-                        &tr!("{host} only lets a person click through: finish it in the Pako window.", "{host} ne laisse passer qu’une personne : terminez dans la fenêtre de Pako."),
+                        &tr!("{host} only lets a person click through: finish it in the Pako window.", "{host} veut qu’une vraie personne clique : terminez dans la fenêtre de Pako."),
                         crate::notices::Go::item("found", id),
                     );
                 }

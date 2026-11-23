@@ -34,7 +34,7 @@ export const devices = {
   "This PC's name (like Desk PC)": "Le nom de ce PC (comme PC bureau)",
   "This PC's name": "Nom de ce PC",
   "This is my device": "C’est mon appareil",
-  "Your PCs, together": "Vos PC, ensemble",
+  "Your PCs, together": "Tous vos PC, réunis",
   "Pair your own PCs once, like this one and your laptop. Then send files between them without anyone accepting, see the other PC's downloads live, and start downloads on it from here. Everything goes PC to PC, encrypted: on your home network it doesn't even use the internet.":
     "Associez une fois vos propres PC, comme celui-ci et votre portable. Ensuite, envoyez des fichiers entre eux sans que personne n’ait à accepter, voyez en direct les téléchargements de l’autre PC, et lancez-y des téléchargements d’ici. Tout passe de PC à PC, chiffré : sur votre réseau domestique, internet n’est même pas utilisé.",
   "This PC's Pako ID": "ID Pako de ce PC",
@@ -61,7 +61,7 @@ export const devices = {
   "Pair this device": "Associer cet appareil",
 
   // ---- a device (DeviceDetails) ----
-  "Wants to pair: confirm above": "Veut s’associer : confirmez au-dessus",
+  "Wants to pair: confirm above": "Veut s’associer : confirmez ci-dessus",
   "Connected · not confirmed on it yet": "Connecté · pas encore confirmé sur celui-ci",
   "Confirm on the other PC (it asks there)": "Confirmez sur l’autre PC (il le demande là-bas)",
   "Preview mode: nothing is sent.": "Mode aperçu : rien n’est envoyé.",

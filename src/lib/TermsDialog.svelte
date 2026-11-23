@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms. -->
 <script lang="ts">
-  // The terms of use (TERMS.md, word for word sookera.com/terms), before anything else: the first
+  // The terms of use (TERMS.md, word for word sookera.com/terms; TERMS.fr.md in French), before anything else: the first
   // step of a new Pako, and once for people who used Pako before it had terms. Only its own two
   // buttons answer it (no ×, Esc or click beside it). Nothing runs until Agree and continue
   // (src-tauri/src/consent.rs), then everything starts without a restart.
@@ -10,14 +10,29 @@
   import Modal from "./Modal.svelte";
   import Markdown from "./help/Markdown.svelte";
   import { terms } from "./help/content";
-  import { openLink, openWeb, SITE } from "./web";
-  import { around, t } from "./i18n.svelte";
+  import { bare, openLink, openWeb, SITE } from "./web";
+  import SegPick from "./SegPick.svelte";
+  import { around, i18n, t, LANGUAGES, type Lang } from "./i18n.svelte";
 
   /** Used Pako before it had terms (the first-start setup was done then). */
   const existing = !!app.settings?.setupDone;
 
   /** "Also on sookera.com/terms, …": the link sits in the middle of the sentence. */
   const web = $derived(around(t("Also on {link}, always in their newest version."), "{link}"));
+
+  // A new Pako asks the terms before its first-start setup, where a portable Pako's language is
+  // picked: the language is offered here too (shown and saved at once, like the setup's), so the
+  // terms can be read in French from the start. Pako Setup's pick is already shown.
+  function pickLanguage(l: Lang) {
+    i18n.set(l).catch((e) => app.toast(String(e), "error"));
+  }
+
+  // The other language's terms start at their top, not where the reader was in the first.
+  let box: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    void i18n.lang;
+    if (box) box.scrollTop = 0;
+  });
 
   let busy = $state(false);
   async function agree() {
@@ -40,14 +55,17 @@
     <p class="intro">{t("Pako now has terms of use. Please read them: Pako carries on as soon as you agree.")}</p>
     <p class="intro kept">{t("Your downloads and lists stay as they are. Paused and waiting downloads simply wait until you agree, and nothing is lost.")}</p>
   {:else}
-    <p class="intro">{t("Before you start, please read Pako's terms of use. Pako starts as soon as you agree.")}</p>
+    <div class="first">
+      <p class="intro">{t("Before you start, please read Pako's terms of use. Pako starts as soon as you agree.")}</p>
+      <SegPick label={t("Language")} options={LANGUAGES} value={i18n.lang} onpick={(l) => pickLanguage(l as Lang)} />
+    </div>
   {/if}
   <!-- Focusable so the keyboard can scroll it. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="terms" role="document" aria-label={t("Terms of use")} tabindex="0">
-    <Markdown blocks={terms} onlink={openLink} />
+  <div class="terms" role="document" aria-label={t("Terms of use")} tabindex="0" bind:this={box}>
+    <Markdown blocks={terms()} onlink={openLink} />
   </div>
-  <p class="web">{web[0]}<button class="lk" onclick={() => openWeb(SITE.terms)}>sookera.com/terms</button>{web[1]}</p>
+  <p class="web">{web[0]}<button class="lk" onclick={() => openWeb(SITE.terms)}>{bare(SITE.terms)}</button>{web[1]}</p>
 
   {#snippet actions()}
     <button class="btn ghost" onclick={() => api.quitNow()}>{t("Quit Pako")}</button>
@@ -56,6 +74,20 @@
 </Modal>
 
 <style>
+  /* A new Pako: the first sentence, and the language beside it. */
+  .first {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    margin: 0 0 12px;
+  }
+  .first .intro {
+    flex: 1;
+    margin: 0;
+  }
+  .first :global(> :last-child) {
+    flex: none;
+  }
   .intro {
     margin: 0 0 12px;
     font-size: 13px;

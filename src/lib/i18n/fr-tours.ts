@@ -24,7 +24,7 @@ export const tours = {
   "Your links": "Vos liens",
   "Add, Save to, Download": "Ajouter, Enregistrer dans, Télécharger",
   "Your contacts": "Vos contacts",
-  "Your history together": "Votre historique commun",
+  "Your history together": "Vos échanges",
   "Pair a PC": "Associer un PC",
   "Files, Links, Downloads, Settings": "Fichiers, Liens, Téléchargements, Paramètres",
   "Nothing yet": "Rien pour l’instant",

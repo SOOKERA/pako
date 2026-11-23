@@ -28,7 +28,7 @@ export const shell = {
   "Done · private": "Terminé · privé",
   "Waiting for your browser": "Attend votre navigateur",
   "Paused · via browser": "En pause · via navigateur",
-  "Gone from Gofile": "Plus sur Gofile",
+  "Gone from Gofile": "N’est plus sur Gofile",
   "Not downloaded yet": "Pas encore téléchargé",
   "Downloaded once": "Téléchargé une fois",
   "Downloaded {count} times": "Téléchargé {count} fois",
@@ -154,8 +154,8 @@ export const shell = {
   "Updated {tools}": "Mis à jour : {tools}",
   "Pako {version} is ready": "Pako {version} est prêt",
   "Pako {version} is available (Settings › Features & updates)": "Pako {version} est disponible (Paramètres › Fonctions et mises à jour)",
-  "{name}: link copied. Paste it to anyone.": "{name} : lien copié. Collez-le à qui vous voulez.",
-  "{n} links caught from the clipboard": { one: "{n} lien pris dans le presse-papiers", other: "{n} liens pris dans le presse-papiers" },
+  "{name}: link copied. Paste it to anyone.": "{name} : lien copié. Partagez-le avec qui vous voulez.",
+  "{n} links caught from the clipboard": { one: "{n} lien récupéré dans le presse-papiers", other: "{n} liens récupérés dans le presse-papiers" },
   "{n} more links were skipped (too many at once)": {
     one: "{n} autre lien a été ignoré (trop à la fois)",
     other: "{n} autres liens ont été ignorés (trop à la fois)",
@@ -261,8 +261,8 @@ export const shell = {
   "It uses three free tools, yt-dlp, Deno and ffmpeg (about 600 MB on disk), downloaded from their official sources. You can also turn this on later in Settings › Features & updates.":
     "Il utilise trois outils gratuits, yt-dlp, Deno et ffmpeg (environ 600 Mo sur le disque), téléchargés depuis leurs sources officielles. Vous pouvez aussi l’activer plus tard dans Paramètres › Fonctions et mises à jour.",
   "Install video tools": "Installer les outils vidéo",
-  "Take a quick tour?": "Faire une visite rapide ?",
-  "A spotlight shows what each page of Pako is for. It takes about a minute.": "Un projecteur montre à quoi sert chaque page de Pako. Cela prend environ une minute.",
+  "Take a quick tour?": "Envie d’une visite rapide ?",
+  "A spotlight shows what each page of Pako is for. It takes about a minute.": "Un coup de projecteur sur chaque page de Pako, pour voir à quoi elle sert. Cela prend environ une minute.",
   "Each page also has a Tutorial button that shows its details, and Help has them all.":
     "Chaque page a aussi un bouton Tutoriel qui en montre les détails, et l’Aide les réunit tous.",
   "Take the tour": "Faire la visite",
@@ -276,7 +276,7 @@ export const shell = {
   "Last 24 hours": "Dernières 24 heures",
   "Whole PC · download": "Tout le PC · réception",
   "Whole PC · upload": "Tout le PC · envoi",
-  "This fills in while Pako is open. Come back in a minute.": "Ceci se remplit tant que Pako est ouvert. Revenez dans une minute.",
+  "This fills in while Pako is open. Come back in a minute.": "Le graphique se remplit tant que Pako est ouvert. Revenez dans une minute.",
   "Speed over the last hour": "Vitesse sur la dernière heure",
   "Speed over the last 24 hours": "Vitesse sur les dernières 24 heures",
 

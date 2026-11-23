@@ -76,7 +76,7 @@ Activez **Protéger par un mot de passe** dans **Nouvelle mise en ligne** et sai
 
 ## Pendant la mise en ligne {#while-it-uploads}
 
-Les mises en ligne en cours s’affichent sous **Mise en ligne en cours**, avec leur avancement, la vitesse et le temps restant. **Annuler** en arrête une : ce qui était déjà en ligne est supprimé aussi. Après un **Réessayer**, **Annuler** garde ce qui était déjà en ligne, et la mise en ligne reste dans la liste comme **Pas tout mis en ligne**.
+Les mises en ligne en cours s’affichent sous **Mise en ligne en cours**, avec leur avancement, la vitesse et le temps restant. **Annuler** en arrête une : ce qui était déjà en ligne est supprimé aussi. Après un **Réessayer**, **Annuler** garde ce qui était déjà en ligne, et la mise en ligne reste dans la liste comme **En partie en ligne**.
 
 Si certains fichiers (ou certaines parties) ne sont pas passés, la mise en ligne le dit. **Réessayer** met en ligne seulement ceux qui manquent, dans le même dossier, donc le lien reste le même. **Copier le lien** fonctionne déjà pour les fichiers en ligne. Le **×** fait disparaître le message.
 
@@ -97,8 +97,8 @@ Les nombres sont vérifiés quand vous ouvrez **Envoi**, au plus toutes les quel
 Ce que vous pouvez voir sur une mise en ligne Gofile :
 
 - **Gofile pourrait bientôt le retirer** : une mise en ligne sans date de suppression que personne n’a téléchargée depuis un moment. Gofile peut la retirer après 10 jours sans téléchargement.
-- **Plus sur Gofile** : elle a été supprimée ou a expiré, et le lien ne fonctionne plus. **Retirer** l’enlève de la liste.
-- **Pas tout mis en ligne** : seuls certains fichiers sont en ligne. Le lien fonctionne pour eux. Tant que Pako réessaie encore, il indique **Mise en ligne**. Pour un ZIP en parties, il faut toutes les parties pour l’ouvrir.
+- **N’est plus sur Gofile** : elle a été supprimée ou a expiré, et le lien ne fonctionne plus. **Retirer** l’enlève de la liste.
+- **En partie en ligne** : seuls certains fichiers sont en ligne. Le lien fonctionne pour eux. Tant que Pako réessaie encore, il indique **Mise en ligne**. Pour un ZIP en parties, il faut toutes les parties pour l’ouvrir.
 
 **Supprimer les téléchargés** (à côté de **Mis en ligne**) supprime de Gofile tout ce qui a été téléchargé au moins une fois, après vous avoir demandé.
 
@@ -147,7 +147,7 @@ Si des mises en ligne de votre liste sont dans le Drive d’un autre compte Goog
 ## Bon à savoir {#good-to-know}
 
 - Avec la fenêtre de Pako ouverte, une mise en ligne terminée affiche un message en bas de la fenêtre. Sinon, c’est un pop-up (voir [Notifications](notifications.md)).
-- Si Pako se ferme pendant que plusieurs fichiers sont mis en ligne **Tels quels**, ce qui était déjà en ligne reste dans la liste comme **Pas tout mis en ligne**. Un ZIP en parties revient lui aussi sous **Mise en ligne en cours** et continue avec les parties restantes (sur Gofile, une fois sa première partie en ligne), ou attend **Réessayer** si **Reprendre les mises en ligne inachevées au démarrage de Pako** est désactivé. Un ZIP ou un fichier seul qui n’a pas fini n’est pas gardé.
+- Si Pako se ferme pendant que plusieurs fichiers sont mis en ligne **Tels quels**, ce qui était déjà en ligne reste dans la liste comme **En partie en ligne**. Un ZIP en parties revient lui aussi sous **Mise en ligne en cours** et continue avec les parties restantes (sur Gofile, une fois sa première partie en ligne), ou attend **Réessayer** si **Reprendre les mises en ligne inachevées au démarrage de Pako** est désactivé. Un ZIP ou un fichier seul qui n’a pas fini n’est pas gardé.
 - Votre liste de mises en ligne et vos notes restent sur votre PC.
 - Vous ne créez pas de compte Gofile, mais Gofile en crée un compte invité à votre première mise en ligne. Pako garde sa clé sur votre PC (chiffrée), pour lire les nombres de téléchargements et pour supprimer vos mises en ligne.
 - Pour Google Drive, Pako garde votre connexion sur votre PC (chiffrée) et lit l’adresse e-mail de votre compte, pour montrer quel compte est connecté.

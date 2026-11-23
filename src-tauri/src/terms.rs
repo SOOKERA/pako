@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Sookera. Pako by Sookera; see NOTICE.md for the additional terms.
 //! Pako's terms of use: TERMS.md at the project's root, word for word the page at
-//! sookera.com/terms. Replacing that file is all a new version takes: Pako Setup's "Terms of use"
-//! page (build.rs turns it into plain text for the installer), the first-start step and
-//! Help › About Pako all come from it, and its "Last updated" date is the version people accept.
+//! sookera.com/terms, and TERMS.fr.md, word for word sookera.com/fr/terms (both copied from the
+//! website by scripts/copy-terms.mjs). Replacing those files is all a new version takes: the
+//! first-start step and Help › About Pako show the one in Pako's language, build.rs turns
+//! TERMS.md into plain text for the installer, and the date both carry ("Last updated" /
+//! « Dernière mise à jour ») is the version people accept: one version for both languages.
 //!
 //! build.rs uses this file too (`#[path]`), so it stays plain Rust with no crate imports.
 // (The plain-text conversion is used by build.rs and the tests, not by Pako itself.)
@@ -12,25 +14,33 @@
 /// TERMS.md as it is.
 pub const TEXT: &str = include_str!("../../TERMS.md");
 
-/// The version of the terms this Pako carries ("2026-11-18"), saved in the settings when they're
+/// TERMS.fr.md as it is (the window shows it in French; Rust only checks it).
+pub const TEXT_FR: &str = include_str!("../../TERMS.fr.md");
+
+/// The version of the terms this Pako carries ("2026-11-23"), saved in the settings when they're
 /// accepted. `None` only if TERMS.md has no "Last updated <day> <month> <year>" line (build.rs
 /// refuses to build then).
 pub fn version() -> Option<String> {
     version_of(TEXT)
 }
 
-/// The date of a "Last updated 18 November 2026" line (a colon after "updated" is fine too), as
-/// "2026-11-18".
+/// The date of a "Last updated 18 November 2026" line, or of the French « Dernière mise à jour :
+/// 18 novembre 2026 » (a colon after either is fine), as "2026-11-18".
 pub fn version_of(md: &str) -> Option<String> {
     const MONTHS: [&str; 12] =
         ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    const MONTHS_FR: [&str; 12] =
+        ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
     md.lines().find_map(|line| {
         let rest = line.trim().trim_matches(|c| c == '*' || c == '_').trim();
-        let rest = rest.strip_prefix("Last updated")?.trim_start_matches(':').trim();
+        let rest = rest.strip_prefix("Last updated").or_else(|| rest.strip_prefix("Dernière mise à jour"))?;
+        // (trim also takes the French no-break spaces before the colon.)
+        let rest = rest.trim_start().trim_start_matches(':').trim();
         let mut words = rest.split_whitespace();
-        let day: u32 = words.next()?.parse().ok()?;
-        let name = words.next()?;
-        let month = MONTHS.iter().position(|m| m.eq_ignore_ascii_case(name))? + 1;
+        let day = words.next()?;
+        let day: u32 = day.strip_suffix("er").unwrap_or(day).parse().ok()?;
+        let name = words.next()?.to_lowercase();
+        let month = MONTHS.iter().chain(MONTHS_FR.iter()).position(|m| *m == name)? % 12 + 1;
         let year: u32 = words.next()?.trim_end_matches('.').parse().ok()?;
         ((1..=31).contains(&day) && year >= 2000).then(|| format!("{year:04}-{month:02}-{day:02}"))
     })
@@ -177,11 +187,31 @@ mod tests {
         assert!(!plain_text(TEXT).trim().is_empty());
     }
 
+    /// TERMS.fr.md comes with Pako too, word for word sookera.com/fr/terms: the same version
+    /// (date) as TERMS.md, the same sections, and nothing left of the website's own marks.
+    #[test]
+    fn french_terms_are_in_step() {
+        assert!(TEXT_FR.trim().len() > 200, "TERMS.fr.md is missing or empty");
+        assert!(TEXT_FR.contains("Conditions d’utilisation"));
+        assert_eq!(version_of(TEXT_FR), version(), "TERMS.fr.md must carry the same date as TERMS.md");
+        for (name, text) in [("TERMS.md", TEXT), ("TERMS.fr.md", TEXT_FR)] {
+            assert!(
+                !text.contains("{#") && !text.contains("<!--"),
+                "{name} still has the website's marks: copy it with scripts/copy-terms.mjs"
+            );
+        }
+        let heads = |s: &str| s.lines().filter(|l| l.starts_with('#')).count();
+        assert_eq!(heads(TEXT), heads(TEXT_FR), "the same sections in both");
+    }
+
     #[test]
     fn version_is_the_date() {
         assert_eq!(version_of("# Terms\n\nLast updated 18 November 2026\n").as_deref(), Some("2026-11-18"));
         assert_eq!(version_of("Last updated: 3 may 2027.").as_deref(), Some("2027-05-03"));
         assert_eq!(version_of("*Last updated 1 January 2030*").as_deref(), Some("2030-01-01"));
+        assert_eq!(version_of("Dernière mise à jour : 23 novembre 2026").as_deref(), Some("2026-11-23"));
+        assert_eq!(version_of("Dernière mise à jour\u{a0}: 1er août 2027").as_deref(), Some("2027-08-01"));
+        assert_eq!(version_of("*Dernière mise à jour : 3 Décembre 2030*").as_deref(), Some("2030-12-03"));
         assert_eq!(version_of("Last updated soon"), None);
         assert_eq!(version_of("No date here"), None);
     }

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Pako",
   "short_name": "Pako",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Send downloads, links and videos to Pako, your download manager.",
   "icons": {
     "16": "icons/icon16.png",

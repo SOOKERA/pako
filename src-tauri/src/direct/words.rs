@@ -288,6 +288,15 @@ pub fn who(name: &str) -> String {
     }
 }
 
+/// `who` inside a sentence (« envoyé par quelqu’un »): the French stand-in without its capital.
+pub fn who_inside(name: &str) -> String {
+    if name == super::node::PLACEHOLDER && crate::i18n::is_fr() {
+        "quelqu’un".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 fn who_in(c: &mut super::store::Contact) {
     c.name = who(&c.name);
     if let Some(n) = &mut c.their_name {

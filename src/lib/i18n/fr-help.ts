@@ -15,7 +15,7 @@ export const help = {
   'Nothing in the guides matches "{q}". Try fewer or other words.': "Rien dans les guides ne correspond à « {q} ». Essayez avec moins de mots, ou d’autres.",
   Tutorials: "Tutoriels",
   "A spotlight walks you through the window. The quick tour shows what each page is for; each page's own tutorial shows its details.":
-    "Un projecteur vous fait le tour de la fenêtre. La visite rapide montre à quoi sert chaque page ; le tutoriel de chaque page en montre les détails.",
+    "Un projecteur vous guide dans la fenêtre. La visite rapide montre à quoi sert chaque page ; le tutoriel de chaque page en montre les détails.",
   "Quick tour": "Visite rapide",
   Guides: "Guides",
   "The latest changes in Pako.": "Les derniers changements de Pako.",

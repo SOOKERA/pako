@@ -56,8 +56,8 @@ export const downloads = {
   "Notify when done: {level}": "Prévenir une fois terminé : {level}",
   "Notify when done: {level} (click to change)": "Prévenir une fois terminé : {level} (cliquez pour changer)",
   "Remove from the list (the file stays)": "Retirer de la liste (le fichier reste)",
-  "Want to keep these behind a PIN? Private mode, in Settings.": "Garder ces fichiers derrière un code PIN ? Mode privé, dans les Paramètres.",
-  "Want to keep these behind a PIN? {mode}, in Settings.": "Garder ces fichiers derrière un code PIN ? {mode}, dans les Paramètres.",
+  "Want to keep these behind a PIN? Private mode, in Settings.": "Envie de protéger ces fichiers par un code PIN ? Mode privé, dans les Paramètres.",
+  "Want to keep these behind a PIN? {mode}, in Settings.": "Envie de protéger ces fichiers par un code PIN ? {mode}, dans les Paramètres.",
   "Close this tip": "Fermer cette astuce",
 
   // ---- Details panel ----
@@ -141,7 +141,7 @@ export const downloads = {
   "Asking the site…": "Demande au site…",
   "Play a few seconds to check it's the right video": "Lisez quelques secondes pour vérifier que c’est la bonne vidéo",
   "Play a short check before downloading": "Lisez un court aperçu avant de télécharger",
-  "This video can't be previewed. The site didn't send it.": "Cette vidéo ne peut pas avoir d’aperçu. Le site ne l’a pas envoyée.",
+  "This video can't be previewed. The site didn't send it.": "Pas d’aperçu possible pour cette vidéo : le site ne l’a pas envoyée.",
   "About 20 seconds at 480p, fetched from the site when you press play.": "Environ 20 secondes en 480p, demandées au site quand vous appuyez sur lecture.",
   "Preview quality": "Qualité de l’aperçu",
   "Needs the video tools: Settings › Features & updates › Download videos from YouTube and other sites.":

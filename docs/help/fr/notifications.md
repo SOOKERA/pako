@@ -80,11 +80,11 @@ En haut, sous **Quand un téléchargement se termine**, deux choix :
 - **Nouveaux téléchargements** : **Désactivé**, **Pop-up** ou **Important**, le réglage de départ de chaque nouveau téléchargement. Chaque téléchargement peut quand même le changer. Si vous aviez désactivé le pop-up **Téléchargement terminé** dans un ancien Pako, cela démarre sur **Désactivé**.
 - **Son quand un téléchargement se termine** : **Pop-up et Important** (au départ), **Important seulement** ou **Jamais**.
 
-Sous **Chaque type de nouvelle**, chaque type de notification a deux interrupteurs : **Pop-up** et **Cloche**. **Téléchargement terminé** n’a que **Cloche** : son pop-up se choisit pour chaque téléchargement (il indique **Au cas par cas**). Ils sont groupés :
+Sous **Par type de notification**, chaque type a deux interrupteurs : **Pop-up** et **Cloche**. **Téléchargement terminé** n’a que **Cloche** : son pop-up se choisit pour chaque téléchargement (il indique **Au cas par cas**). Ils sont groupés :
 
 - **Téléchargements** : **Téléchargement terminé**, **Téléchargement arrêté**, **Envoyé par votre navigateur**, **Vidéo impossible à récupérer**.
-- **Envoi** : **Mise en ligne terminée**, **Mise en ligne impossible**, **Mise en ligne supprimée à sa date**.
-- **Direct** : **Quelqu’un veut se connecter**, **Fichiers en attente de votre réponse**, **Fichiers qui arrivent**, **Fichiers reçus**, **Fichiers livrés**. Ils couvrent aussi [Mes appareils](devices.md).
+- **Envoi** : **Mise en ligne terminée**, **Mise en ligne impossible**, **Mise en ligne supprimée à la date prévue**.
+- **Direct** : **Quelqu’un veut se connecter**, **Fichiers en attente de votre réponse**, **Des fichiers arrivent**, **Fichiers reçus**, **Fichiers livrés**. Ils couvrent aussi [Mes appareils](devices.md).
 - **Pako** : **Pako a besoin de vous**, **Veille et arrêt**, **Nouvelle version de Pako prête**, **Autres messages**.
 
 Chaque type s’affiche en pop-up au départ. Cliquez sur **Enregistrer** pour garder vos changements.
@@ -101,7 +101,7 @@ Les deux jouent aussi pendant que la petite fenêtre est ouverte. Quand le même
 
 ### Ne pas déranger {#do-not-disturb}
 
-Sous **Moments calmes** :
+Sous **Moments de calme** :
 
 - **Ne pas déranger** : ni pop-ups ni son, sauf ceux d’un téléchargement **Important** (voir plus haut). La cloche continue de recueillir (les types dont l’interrupteur **Cloche** est activé).
 - **Suivre Ne pas déranger de Windows** (activé au départ, sous **Avancé** en bas de l’onglet) : ni pop-ups ni sons pendant les jeux et vidéos en plein écran, les présentations, ou le Ne pas déranger de Windows lui-même. La cloche continue de recueillir. (**Important** ne s’affiche jamais par-dessus quelque chose en plein écran, quoi qu’en dise ce réglage : il attend.)
