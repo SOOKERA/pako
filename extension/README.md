@@ -8,8 +8,8 @@ PC through the browser's "native messaging": nothing listens on the network.
   **Up to 1080p / 720p / 480p** or **Audio only** and the video starts in Downloads straight
   away (Pako's video tools must be installed). Turn the button off in the toolbar popup.
 - **Videos on this page** (toolbar popup): the video a page plays (HLS, DASH or a plain video
-  file, also in embedded players), noticed from the browser's own requests; the toolbar badge shows
-  how many. **Download with Pako** sends one; **Record this video** is the last resort.
+  file, also in embedded players), noticed from the browser's own requests. The toolbar button shows no
+  number for them: its only mark is a red "!" when something went wrong. **Download with Pako** sends one; **Record this video** is the last resort.
 - **Right-click a link, image or video › Download with Pako**: it starts in Downloads.
 - **Right-click the page › Send all links on this page to Pako**: they go to Links, to pick from.
 - **Toolbar button › Send this page to Pako**: handy for YouTube (videos go to Links so you can

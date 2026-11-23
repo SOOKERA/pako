@@ -1,5 +1,15 @@
 # What's new
 
+## 1.4.2
+
+### Pako Setup
+
+- The switches in Pako Setup and the uninstaller slide between off and on (at once when Windows' animation effects are off).
+
+### Browser extension
+
+- The extension's toolbar button no longer shows how many videos it found on a page: its only mark is a red **!** when something went wrong, now on every tab.
+
 ## 1.4.1
 
 ### Language

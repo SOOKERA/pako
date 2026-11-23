@@ -7,7 +7,11 @@ import type { DirectFrom, DirectHistory, DirectState, Download, FoundItem, Part,
 import type { Notice, PopupCard } from "./notices";
 import { version as pakoVersion } from "../../package.json";
 import { bytes } from "./format";
-import { t } from "./i18n.svelte";
+import { i18n, t } from "./i18n.svelte";
+
+/** Direct's sample tags, named as a French user would name them. */
+const TAGS_FR: Record<string, string> = { Friends: "Amis", Family: "Famille", Work: "Travail" };
+const tag = (name: string) => (i18n.lang === "fr" ? (TAGS_FR[name] ?? name) : name);
 
 export const showcase = typeof location !== "undefined" && new URLSearchParams(location.search).has("showcase");
 /** A scene for one picture, from "?showcase=<scene>": "sets" (Links with split archives),
@@ -376,13 +380,13 @@ export function showcaseDirect(): DirectState {
     error: null,
     myId: "9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
     myName: "Sam",
-    tags: ["Friends", "Family", "Work"],
+    tags: [tag("Friends"), tag("Family"), tag("Work")],
     contacts: [
-      contact(ALEX, "Alex", { online: true, path: ALEX_PATH, autoAccept: true, favourite: true, tags: ["Friends", "Work"], added: t - 64 * DAY, code: "4821 0937 5512 0386" }),
+      contact(ALEX, "Alex", { online: true, path: ALEX_PATH, autoAccept: true, favourite: true, tags: [tag("Friends"), tag("Work")], added: t - 64 * DAY, code: "4821 0937 5512 0386" }),
       // Checked often for an hour, picked a quarter of an hour ago.
-      contact(JO, "Jo", { online: true, path: "relay", tags: ["Work"], added: t - 31 * DAY, code: "3301 8842 1176", check: "often", checkUntil: t + 45 * MIN, checkAs: "often" }),
-      contact(NINA, "Nina", { lastSeen: t - 8 * MIN, tags: ["Family"], added: t - 120 * DAY, code: "1170 6640 2093" }),
-      contact(LEO, "Leo", { lastSeen: t - 22 * HOUR, tags: ["Friends"], added: t - 26 * HOUR, code: "6658 2210 9034", muted: true }),
+      contact(JO, "Jo", { online: true, path: "relay", tags: [tag("Work")], added: t - 31 * DAY, code: "3301 8842 1176", check: "often", checkUntil: t + 45 * MIN, checkAs: "often" }),
+      contact(NINA, "Nina", { lastSeen: t - 8 * MIN, tags: [tag("Family")], added: t - 120 * DAY, code: "1170 6640 2093" }),
+      contact(LEO, "Leo", { lastSeen: t - 22 * HOUR, tags: [tag("Friends")], added: t - 26 * HOUR, code: "6658 2210 9034", muted: true }),
       contact(MAYA, "Maya", { lastSeen: t - 45 * DAY, lastActivity: t - 45 * DAY, added: t - 200 * DAY, code: "5402 7719 3368", unchecked: true }),
     ],
     requests: [],

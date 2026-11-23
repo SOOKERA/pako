@@ -366,7 +366,13 @@ const SHOTS = {
       await settle(page, 700);
       await page.getByRole("dialog").getByRole("button", { name: L("Report a problem"), exact: true }).click();
       await settle(page, 700);
-      await page.locator("#report-what").fill("A Google Drive folder stopped at 80% with \u201cServer error (502)\u201d. Retry worked the second time.");
+      await page
+        .locator("#report-what")
+        .fill(
+          LANG === "fr"
+            ? "Un dossier Google Drive s’est arrêté à 80\u00a0% avec «\u00a0Erreur du serveur (502)\u00a0». Réessayer a marché la deuxième fois."
+            : "A Google Drive folder stopped at 80% with \u201cServer error (502)\u201d. Retry worked the second time.",
+        );
       await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
       await park(page, 2, 700);
       await settle(page, 1000);
@@ -876,7 +882,7 @@ const CAUGHT = [
 /** The extension's own version: its popup checks the background script says the same one. */
 const EXT_VERSION = JSON.parse(readFileSync(join(root, "extension", "manifest.chromium.json"), "utf8")).version;
 const chromeStub = (videos) => `(() => {
-  const store = { takeOver: true, playerButton: true, lastError: "", lastDetail: "" };
+  const store = { takeOver: true, playerButton: true, lastError: "", lastDetail: "", pakoLang: ${JSON.stringify(LANG)} };
   const session = { lastError: "", lastDetail: "" };
   const caught = ${JSON.stringify(videos)};
   const version = ${JSON.stringify(EXT_VERSION)};
@@ -918,7 +924,7 @@ async function shootExtension(browser, name, edition, videos = false) {
           ? "border: 1px solid #dce1ea; box-shadow: 0 10px 30px rgba(20,26,46,.14), 0 2px 6px rgba(20,26,46,.08);"
           : "border: 1px solid #262a31; box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3);";
       await page.addStyleTag({ content: `html { background: transparent; padding: 16px; } body { border-radius: 10px; ${frame} }` });
-      await page.waitForFunction(() => document.getElementById("status")?.textContent === "Connected");
+      await page.waitForFunction((said) => document.getElementById("status")?.textContent === said, LANG === "fr" ? "Connecté" : "Connected");
       if (videos) {
         await page.locator("#videos-list li").first().waitFor();
         // Only the videos and Send this page: the settings lines below stay out of this picture.

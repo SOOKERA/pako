@@ -1,5 +1,15 @@
 # Nouveautés
 
+## 1.4.2
+
+### Pako Setup
+
+- Les interrupteurs de Pako Setup et du programme de désinstallation glissent entre désactivé et activé (aussitôt quand les effets d’animation de Windows sont désactivés).
+
+### Extension de navigateur
+
+- Le bouton de l’extension dans la barre d’outils n’affiche plus le nombre de vidéos trouvées sur une page : sa seule marque est un **!** rouge quand quelque chose s’est mal passé, désormais sur tous les onglets.
+
 ## 1.4.1
 
 ### Langue

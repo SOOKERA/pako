@@ -1,6 +1,6 @@
 [package]
 name = "pako"
-version = "1.4.1"
+version = "1.4.2"
 description = "Pako - a dependable download manager"
 authors = ["Sookera"]
 license = "GPL-3.0-only"

@@ -3,7 +3,7 @@
 #
 # The steps after a release is published on GitHub (all files uploaded), for Sookera's own setup:
 #   1. checks that the latest release is this version and carries help.zip;
-#   2. creates the report label v<version> in sookera/pako-reports (the report service only adds a
+#   2. creates the report label v<version> in sookera/app-reports (the report service only adds a
 #      version label that already exists);
 #   3. asks Cloudflare to rebuild pako.sookera.com (the deploy hook URL is in the gitignored
 #      signing/deploy-hook.txt), so the site shows this version and its guides;
@@ -36,12 +36,12 @@ try {
 }
 
 # 2. The report label.
-$labels = gh label list -R sookera/pako-reports --limit 200 --json name -q ".[].name"
-if ($LASTEXITCODE) { throw "Couldn't read the labels of sookera/pako-reports (is GH_TOKEN set?)." }
+$labels = gh label list -R sookera/app-reports --limit 200 --json name -q ".[].name"
+if ($LASTEXITCODE) { throw "Couldn't read the labels of sookera/app-reports (is GH_TOKEN set?)." }
 if ($labels -contains "v$version") {
     Write-Host "Report label v$version is already there."
 } else {
-    gh label create "v$version" -R sookera/pako-reports --description "Reports from Pako $version" --color "F96263"
+    gh label create "v$version" -R sookera/app-reports --description "Reports from version $version (with the app label: pako or dobo)" --color "F96263"
     if ($LASTEXITCODE) { throw "Couldn't create the report label v$version." }
     Write-Host "Report label v$version created."
 }

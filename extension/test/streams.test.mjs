@@ -67,7 +67,9 @@ test("Catches HLS, DASH and whole video files; leaves pieces, small files and ot
       ["file", "files.example.net", 0],
     ],
   );
-  assert.equal(ext.badges[TAB], "3");
+  // No number on the toolbar button, and finding videos isn't a problem: no "!" either.
+  assert.equal(ext.badges[TAB], undefined);
+  assert.equal(ext.storage.badge ?? "", "");
   // Nothing went to Pako by itself.
   assert.deepEqual(ext.sent, []);
 });
@@ -76,10 +78,10 @@ test("A new page in the tab, or the tab closing, clears its list", async () => {
   const ext = full();
   seen(ext, "https://cdn.example.net/v.m3u8", "xmlhttprequest");
   await settle(40);
-  assert.equal(ext.badges[TAB], "1");
+  assert.equal((await ask(ext, { type: "videos", tabId: TAB })).list.length, 1);
   ext.listeners.headers({ tabId: TAB, url: "https://watch.example.org/other", type: "main_frame" });
   await settle(40);
-  assert.equal(ext.badges[TAB], "");
+  assert.equal(ext.badges[TAB], undefined);
   assert.deepEqual((await ask(ext, { type: "videos", tabId: TAB })).list, []);
   seen(ext, "https://cdn.example.net/v.m3u8", "xmlhttprequest");
   await settle(40);

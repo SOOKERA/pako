@@ -37,7 +37,7 @@ const NOT_CONNECTED = "Pako isn't connected. Click the Pako button in the toolba
  *  browser can keep running the background script it took when the extension was added, after
  *  Pako wrote a newer one in the folder, even across restarts (seen in Vivaldi 8.3): it then
  *  reads the new manifest but runs the old script. Told apart by this, the extension reloads. */
-const SCRIPT_VERSION = "1.3.1";
+const SCRIPT_VERSION = "1.3.2";
 
 // The toolbar window and the pages ask through here. Registered first, at
 // once, so nothing else that runs at start-up (or fails there) can keep it from answering.
@@ -1240,15 +1240,11 @@ async function saveCaught(tabId, list) {
     if (list.length) await api.storage.session.set({ [caughtKey(tabId)]: list });
     else await api.storage.session.remove(caughtKey(tabId));
   } catch {
-    // the tab's list can't be kept: the toolbar button still says it
+    // the tab's list can't be kept (the popup then lists nothing for this tab)
   }
-  const n = visible(list).length;
-  try {
-    await api.action.setBadgeBackgroundColor({ tabId, color: "#F96263" });
-    await api.action.setBadgeText({ tabId, text: n ? String(n) : "" });
-  } catch {
-    // the tab closed meanwhile
-  }
+  // No number on the toolbar button for videos found (user, 2026-11-23): a mark there reads as
+  // "something's wrong", so the button only shows "!" when something went wrong. The video pill
+  // and the popup's list are how people download a page's video.
 }
 
 /** One tab's list changes one step at a time (requests come in together). */

@@ -15,7 +15,7 @@
   import { showcase, showcaseCards } from "#lib/showcase.ts";
   import Icon from "#lib/Icon.svelte";
   import { flipIf, flipOpts, reduced, toastIn } from "#lib/motion.ts";
-  import { t } from "#lib/i18n.svelte.ts";
+  import { i18n, t } from "#lib/i18n.svelte.ts";
 
   const SHOWN = 3;
   /** How long a card stays (ms), and at least this long again after the mouse leaves it. */
@@ -199,7 +199,11 @@
           { id: "d3", kind: "direct-sent", title: "Files delivered", body: "Rado has received Render final v3.mp4.", go: { page: "direct", id: "rado" }, stays: false },
         ]);
       if (new URLSearchParams(location.search).get("update") === "ready")
-        return add([{ id: "pu", kind: "update-ready", title: "Pako 1.1.1 is ready", body: "Restart Pako to start using it. Your downloads and lists stay.", go: { page: "update" }, stays: false }]);
+        return add([
+          i18n.lang === "fr"
+            ? { id: "pu", kind: "update-ready", title: "Pako 1.1.1 est prêt", body: "Redémarrez Pako pour commencer à l’utiliser. Vos téléchargements et vos listes restent.", go: { page: "update" }, stays: false }
+            : { id: "pu", kind: "update-ready", title: "Pako 1.1.1 is ready", body: "Restart Pako to start using it. Your downloads and lists stay.", go: { page: "update" }, stays: false },
+        ]);
       add([
         { id: "p1", kind: "browser", title: "Downloading in Pako", body: "Lofi rain cafe - 3 hours of calm music.mp4", go: { page: "downloads" }, stays: false },
         { id: "p2", kind: "download-done", title: "Download finished", body: "Project files (final).zip", go: { page: "downloads", id: "m1" }, stays: false },

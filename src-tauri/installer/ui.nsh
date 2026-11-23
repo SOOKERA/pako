@@ -37,6 +37,17 @@
 ReserveFile "${PAKO_ART}\*.jpg"
 ReserveFile "${PAKO_ART}\*.png"
 
+; The switches' steps between off and on (template 1.1.5: they slide), drawn by the art script.
+!if ! /FileExists "${PAKO_ART}\sw9-l.png"
+  !error "art\sw1-d.png ... sw9-l.png are missing: template 1.1.5's switches slide between off and on. Run scripts/installer-art.mjs again."
+!endif
+
+; [Pako] Pako's Setup always has the browser switch: the template's setting for it (app.nsh), so
+; the switch code taken from the template (1.1.5) reads the same.
+!ifndef PAKO_BROWSER_SWITCH
+  !define PAKO_BROWSER_SWITCH 1
+!endif
+
 ; [Pako] French needs the art script's French pictures too (a slide's `fr` in
 ; scripts/installer-art.mjs makes slideN-d-fr.jpg, the buttons' b-<name>-<state>-d-fr.png...).
 !if ! /FileExists "${PAKO_ART}\slide1-d-fr.jpg"
@@ -208,9 +219,45 @@ Var PakoUiChoice      ; read by PageLeaveReinstall instead of its old radio butt
 Var PakoDesktop
 Var PakoStart
 Var PakoBrowsers
-Var PakoSwDesk
+Var PakoSwDesk        ; the switches' pictures (the uninstaller's two use Desk and Start)
 Var PakoSwStart
 Var PakoSwBrow
+; The switches' slide (template 1.1.5, PakoSwTick). Each switch shows its own picture (PakoSwFace,
+; 24-bit: the control draws it as it is), into which the step to show is copied. The steps:
+; off (0), PakoSwB1..9 in between, on (10), drawn by the art script (sw1..sw9). Per switch (1 to 3):
+; P where it is now, G where it goes, A where it was when it set off (0 to 1000), T when (ms),
+; K the step shown.
+Var PakoSwB1
+Var PakoSwB2
+Var PakoSwB3
+Var PakoSwB4
+Var PakoSwB5
+Var PakoSwB6
+Var PakoSwB7
+Var PakoSwB8
+Var PakoSwB9
+Var PakoSwFace1
+Var PakoSwFace2
+Var PakoSwFace3
+Var PakoSwDcA
+Var PakoSwDcB
+Var PakoSwW
+Var PakoSwH
+Var PakoSwP1
+Var PakoSwP2
+Var PakoSwP3
+Var PakoSwG1
+Var PakoSwG2
+Var PakoSwG3
+Var PakoSwA1
+Var PakoSwA2
+Var PakoSwA3
+Var PakoSwT1
+Var PakoSwT2
+Var PakoSwT3
+Var PakoSwK1
+Var PakoSwK2
+Var PakoSwK3
 Var PakoPathCtl
 Var PakoNoteCtl
 Var PakoHeld          ; 1 = Install can't be clicked (the folder won't do)
@@ -1103,11 +1150,334 @@ Function ${UN}PakoHideNav
   Pop $2
 FunctionEnd
 
+; ---------- the switches slide between off and on (template 1.1.5) ----------
+; The knob moves and the colour eases, both ways, in 180 ms (eased out); a switch flipped again
+; on the way turns back from where it is. With Windows' "Animation effects" off it changes at
+; once. Each step is drawn into the switch's own picture and straight onto the screen (as the
+; slides are), never through the control's own painting: nothing flashes.
+
+; Once, when the look is known: the steps' pictures, each switch's own picture, two drawings.
+Function ${UN}PakoSwLoad
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  StrCpy $PakoA2 32
+  StrCpy $PakoA3 18
+  StrCpy $PakoA1 "on-$PakoLook.png"
+  Call ${UN}PakoImage
+  StrCpy $PakoBmpOn $PakoRet
+  StrCpy $PakoA1 "off-$PakoLook.png"
+  Call ${UN}PakoImage
+  StrCpy $PakoBmpOff $PakoRet
+  !insertmacro PakoSwRead "${UN}" 1
+  !insertmacro PakoSwRead "${UN}" 2
+  !insertmacro PakoSwRead "${UN}" 3
+  !insertmacro PakoSwRead "${UN}" 4
+  !insertmacro PakoSwRead "${UN}" 5
+  !insertmacro PakoSwRead "${UN}" 6
+  !insertmacro PakoSwRead "${UN}" 7
+  !insertmacro PakoSwRead "${UN}" 8
+  !insertmacro PakoSwRead "${UN}" 9
+  !insertmacro PakoScale $PakoSwW 32
+  !insertmacro PakoScale $PakoSwH 18
+  System::Call "user32::GetDC(p 0) p .r0"
+  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
+  StrCpy $PakoSwDcA $1
+  System::Call "gdi32::CreateCompatibleDC(p r0) p .r1"
+  StrCpy $PakoSwDcB $1
+  System::Call "user32::ReleaseDC(p 0, p r0)"
+  ; Each switch's own picture: 24-bit, the switch's size on screen (the picture's handle in $3,
+  ; its pixels' address in $4).
+  IntOp $1 0 - $PakoSwH
+  System::Call "*(i 40, i $PakoSwW, i r1, &i2 1, &i2 24, i 0, i 0, i 0, i 0, i 0, i 0, i 0) p .r2"
+  System::Call "gdi32::CreateDIBSection(p 0, p r2, i 0, *p .r4, p 0, i 0) p .r3"
+  StrCpy $PakoSwFace1 $3
+  System::Call "gdi32::CreateDIBSection(p 0, p r2, i 0, *p .r4, p 0, i 0) p .r3"
+  StrCpy $PakoSwFace2 $3
+  System::Call "gdi32::CreateDIBSection(p 0, p r2, i 0, *p .r4, p 0, i 0) p .r3"
+  StrCpy $PakoSwFace3 $3
+  System::Free $2
+  StrCpy $PakoSwDesk 0
+  StrCpy $PakoSwStart 0
+  StrCpy $PakoSwBrow 0
+  ; All off until a page says otherwise (PakoSwSet).
+  StrCpy $PakoA2 0
+  StrCpy $PakoA1 1
+  Call ${UN}PakoSwSet
+  StrCpy $PakoA1 2
+  Call ${UN}PakoSwSet
+  StrCpy $PakoA1 3
+  Call ${UN}PakoSwSet
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; $PakoA3 = a step (0 = off to 10 = on) -> $PakoRet = its picture.
+Function ${UN}PakoSwFrame
+  ${If} $PakoA3 <= 0
+    StrCpy $PakoRet $PakoBmpOff
+  ${ElseIf} $PakoA3 >= 10
+    StrCpy $PakoRet $PakoBmpOn
+  ${ElseIf} $PakoA3 = 1
+    StrCpy $PakoRet $PakoSwB1
+  ${ElseIf} $PakoA3 = 2
+    StrCpy $PakoRet $PakoSwB2
+  ${ElseIf} $PakoA3 = 3
+    StrCpy $PakoRet $PakoSwB3
+  ${ElseIf} $PakoA3 = 4
+    StrCpy $PakoRet $PakoSwB4
+  ${ElseIf} $PakoA3 = 5
+    StrCpy $PakoRet $PakoSwB5
+  ${ElseIf} $PakoA3 = 6
+    StrCpy $PakoRet $PakoSwB6
+  ${ElseIf} $PakoA3 = 7
+    StrCpy $PakoRet $PakoSwB7
+  ${ElseIf} $PakoA3 = 8
+    StrCpy $PakoRet $PakoSwB8
+  ${Else}
+    StrCpy $PakoRet $PakoSwB9
+  ${EndIf}
+  ; A step that couldn't be read: the nearer end.
+  ${If} $PakoRet = 0
+    ${If} $PakoA3 < 5
+      StrCpy $PakoRet $PakoBmpOff
+    ${Else}
+      StrCpy $PakoRet $PakoBmpOn
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+; $PakoA1 = a switch (1 to 3): it shows the step nearest to where it is ($PakoSwP), unless that step
+; shows already; $PakoA2 = 1: even then (a switch just made).
+Function ${UN}PakoSwDraw
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  ${If} $PakoA1 = 1
+    StrCpy $0 $PakoSwP1
+    StrCpy $1 $PakoSwK1
+    StrCpy $2 $PakoSwDesk
+    StrCpy $3 $PakoSwFace1
+  ${ElseIf} $PakoA1 = 2
+    StrCpy $0 $PakoSwP2
+    StrCpy $1 $PakoSwK2
+    StrCpy $2 $PakoSwStart
+    StrCpy $3 $PakoSwFace2
+  ${Else}
+    StrCpy $0 $PakoSwP3
+    StrCpy $1 $PakoSwK3
+    StrCpy $2 $PakoSwBrow
+    StrCpy $3 $PakoSwFace3
+  ${EndIf}
+  IntOp $0 $0 * 10
+  IntOp $0 $0 + 500
+  IntOp $0 $0 / 1000
+  ${If} "$0" != "$1"
+  ${OrIf} $PakoA2 = 1
+    ${If} $PakoA1 = 1
+      StrCpy $PakoSwK1 $0
+    ${ElseIf} $PakoA1 = 2
+      StrCpy $PakoSwK2 $0
+    ${Else}
+      StrCpy $PakoSwK3 $0
+    ${EndIf}
+    StrCpy $PakoA3 $0
+    Call ${UN}PakoSwFrame
+    StrCpy $1 1
+    ; A picture that couldn't be made: nothing is drawn (never a black switch).
+    ${If} $PakoRet = 0
+    ${OrIf} $3 = 0
+      StrCpy $1 0
+    ${EndIf}
+  ${Else}
+    StrCpy $1 0
+  ${EndIf}
+  ${If} $1 = 1
+    ; Into the switch's own picture, which is held only for the copy (a picture control can't
+    ; draw one that is held somewhere else)...
+    System::Call "gdi32::SelectObject(p $PakoSwDcA, p $PakoRet) p .r4"
+    System::Call "gdi32::SelectObject(p $PakoSwDcB, p r3) p .r5"
+    System::Call "gdi32::BitBlt(p $PakoSwDcB, i 0, i 0, i $PakoSwW, i $PakoSwH, p $PakoSwDcA, i 0, i 0, i 0x00CC0020)"
+    ; ...and straight onto the screen in one copy, when it shows: the control isn't asked to
+    ; paint it again (DCX_CACHE | DCX_CLIPSIBLINGS: the focus ring stays).
+    ${If} $2 != ""
+    ${AndIf} $2 <> 0
+      System::Call "user32::IsWindowVisible(p r2) i .r0"
+      ${If} $0 <> 0
+        System::Call "user32::GetDCEx(p r2, p 0, i 0x12) p .r0"
+        System::Call "gdi32::BitBlt(p r0, i 0, i 0, i $PakoSwW, i $PakoSwH, p $PakoSwDcB, i 0, i 0, i 0x00CC0020)"
+        System::Call "user32::ReleaseDC(p r2, p r0)"
+        System::Call "user32::ValidateRect(p r2, p 0)"
+      ${EndIf}
+    ${EndIf}
+    System::Call "gdi32::SelectObject(p $PakoSwDcA, p r4)"
+    System::Call "gdi32::SelectObject(p $PakoSwDcB, p r5)"
+  ${EndIf}
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; $PakoA1 = a switch (1 to 3), $PakoA2 = on (1) or off (0): it shows that at once (a new page).
+Function ${UN}PakoSwSet
+  Push $0
+  IntOp $0 $PakoA2 * 1000
+  ${If} $PakoA1 = 1
+    StrCpy $PakoSwP1 $0
+    StrCpy $PakoSwG1 $0
+    StrCpy $PakoSwA1 $0
+  ${ElseIf} $PakoA1 = 2
+    StrCpy $PakoSwP2 $0
+    StrCpy $PakoSwG2 $0
+    StrCpy $PakoSwA2 $0
+  ${Else}
+    StrCpy $PakoSwP3 $0
+    StrCpy $PakoSwG3 $0
+    StrCpy $PakoSwA3 $0
+  ${EndIf}
+  Push $PakoA2
+  StrCpy $PakoA2 1
+  Call ${UN}PakoSwDraw
+  Pop $PakoA2
+  Pop $0
+FunctionEnd
+
+; $PakoA1 = a switch (1 to 3), $PakoA2 = on (1) or off (0): it slides there from where it is (so
+; one flipped again on the way turns back), or is there at once with Windows' "Animation
+; effects" off.
+Function ${UN}PakoSwTo
+  Push $0
+  Push $1
+  IntOp $0 $PakoA2 * 1000
+  System::Call "kernel32::GetTickCount() i .r1"
+  ${If} $PakoA1 = 1
+    StrCpy $PakoSwG1 $0
+    StrCpy $PakoSwA1 $PakoSwP1
+    StrCpy $PakoSwT1 $1
+  ${ElseIf} $PakoA1 = 2
+    StrCpy $PakoSwG2 $0
+    StrCpy $PakoSwA2 $PakoSwP2
+    StrCpy $PakoSwT2 $1
+  ${Else}
+    StrCpy $PakoSwG3 $0
+    StrCpy $PakoSwA3 $PakoSwP3
+    StrCpy $PakoSwT3 $1
+  ${EndIf}
+  StrCpy $0 1
+  System::Call "user32::SystemParametersInfoW(i 0x1042, i 0, *i .r0, i 0)" ; SPI_GETCLIENTAREAANIMATION
+  ${If} $0 = 0
+    Call ${UN}PakoSwSet
+  ${Else}
+    ${NSD_CreateTimer} ${UN}PakoSwTick 10
+  ${EndIf}
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; One step of the switches on the move (as often as Windows' timer allows), timed by the clock:
+; a busy PC skips steps instead of slowing them down. Stops when all have arrived.
+Function ${UN}PakoSwTick
+  Push $PakoA1
+  Push $PakoA2
+  Push $PakoA3
+  Push $PakoRet
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  System::Call "kernel32::GetTickCount() i .r0"
+  !insertmacro PakoSwStep "${UN}" 1
+  !insertmacro PakoSwStep "${UN}" 2
+  !insertmacro PakoSwStep "${UN}" 3
+  ${If} $PakoSwP1 = $PakoSwG1
+  ${AndIf} $PakoSwP2 = $PakoSwG2
+  ${AndIf} $PakoSwP3 = $PakoSwG3
+    ${NSD_KillTimer} ${UN}PakoSwTick
+  ${EndIf}
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+  Pop $PakoRet
+  Pop $PakoA3
+  Pop $PakoA2
+  Pop $PakoA1
+FunctionEnd
+
+; The page with the switches is left: they stop where they're going, and their controls are gone.
+Function ${UN}PakoSwLeave
+  ${NSD_KillTimer} ${UN}PakoSwTick
+  StrCpy $PakoSwDesk 0
+  StrCpy $PakoSwStart 0
+  StrCpy $PakoSwBrow 0
+  StrCpy $PakoSwP1 $PakoSwG1
+  StrCpy $PakoSwP2 $PakoSwG2
+  StrCpy $PakoSwP3 $PakoSwG3
+FunctionEnd
+
 !macroend
 
 !macro PakoHideItem ID
   GetDlgItem $2 $HWNDPARENT ${ID}
   ShowWindow $2 ${SW_HIDE}
+!macroend
+
+; The switches' slide: a whole one takes this long (ms), part of one (turning back) its share.
+!define PAKO_SW_MS 180
+
+; One in-between step of the switches (art/sw<N>-<look>.png) -> $PakoSwB<N>.
+!macro PakoSwRead UN N
+  StrCpy $PakoA1 "sw${N}-$PakoLook.png"
+  Call ${UN}PakoImage
+  StrCpy $PakoSwB${N} $PakoRet
+!macroend
+
+; PakoSwTick for switch N ($0 = now, ms): where it is by now, eased out (cubic).
+!macro PakoSwStep UN N
+  ${If} $PakoSwP${N} <> $PakoSwG${N}
+    IntOp $1 $0 - $PakoSwT${N}
+    IntOp $2 $PakoSwG${N} - $PakoSwA${N}
+    ; The time for this way: its share of the whole slide's, at least 60 ms.
+    IntOp $3 $2 * ${PAKO_SW_MS}
+    ${IfThen} $3 < 0 ${|} IntOp $3 0 - $3 ${|}
+    IntOp $3 $3 / 1000
+    ${IfThen} $3 < 60 ${|} StrCpy $3 60 ${|}
+    ${If} $1 >= $3
+    ${OrIf} $1 < 0
+      StrCpy $PakoSwP${N} $PakoSwG${N}
+    ${Else}
+      ; A + (G - A) × (1 - (1 - t)³), t = $1 / $3, in thousandths.
+      IntOp $4 $1 * 1000
+      IntOp $4 $4 / $3
+      IntOp $4 1000 - $4
+      IntOp $5 $4 * $4
+      IntOp $5 $5 / 1000
+      IntOp $5 $5 * $4
+      IntOp $5 $5 / 1000
+      IntOp $5 1000 - $5
+      IntOp $5 $5 * $2
+      IntOp $5 $5 / 1000
+      IntOp $PakoSwP${N} $PakoSwA${N} + $5
+    ${EndIf}
+    StrCpy $PakoA1 ${N}
+    StrCpy $PakoA2 0
+    Call ${UN}PakoSwDraw
+  ${EndIf}
 !macroend
 
 ; One slide's picture: N (1..5), SFX ("" or "-fr") -> VAR.
@@ -1232,16 +1602,7 @@ Function PakoGuiInit
   StrCpy $PakoA3 44
   Call PakoImage
   StrCpy $PakoBmpLogo $PakoRet
-  StrCpy $PakoA1 "on-$PakoLook.png"
-  StrCpy $PakoA2 32
-  StrCpy $PakoA3 18
-  Call PakoImage
-  StrCpy $PakoBmpOn $PakoRet
-  StrCpy $PakoA1 "off-$PakoLook.png"
-  StrCpy $PakoA2 32
-  StrCpy $PakoA3 18
-  Call PakoImage
-  StrCpy $PakoBmpOff $PakoRet
+  Call PakoSwLoad
   StrCpy $PakoA1 "field-$PakoLook.png"
   StrCpy $PakoA2 282
   StrCpy $PakoA3 32
@@ -1775,9 +2136,13 @@ Function PakoTick
     Call PakoShowSlide
   ${EndIf}
   ; [Pako] The French slides are read one per tick, never while a slide moves (a picture takes a
-  ; few hundredths of a second), so the first switch to French is instant.
+  ; few hundredths of a second), so the first switch to French is instant. Nor while a switch
+  ; slides (template 1.1.5: it would stop for that moment).
   ${If} $PakoSFReady < 5
   ${AndIf} $PakoIntro <> 1
+  ${AndIf} $PakoSwP1 = $PakoSwG1
+  ${AndIf} $PakoSwP2 = $PakoSwG2
+  ${AndIf} $PakoSwP3 = $PakoSwG3
     IntOp $1 $0 - $PakoFadeT0
     ${If} $1 > 800
     ${OrIf} $1 < 0
@@ -1822,6 +2187,19 @@ Function PakoMainPage
   StrCpy $PakoB2Ctl 0
   Call PakoSlidePanel
   StrCpy $PakoCanMove 0
+  ; The switches show what is set, at once (PakoSwSet: the pictures they are made with).
+  Call PakoSwLeave
+  StrCpy $PakoA1 1
+  StrCpy $PakoA2 $PakoDesktop
+  Call PakoSwSet
+  StrCpy $PakoA1 2
+  StrCpy $PakoA2 $PakoStart
+  Call PakoSwSet
+  !if ${PAKO_BROWSER_SWITCH} == 1
+  StrCpy $PakoA1 3
+  StrCpy $PakoA2 $PakoBrowsers
+  Call PakoSwSet
+  !endif
   Call PakoMainBuild
   Call PakoCheckRunning
   ${NSD_CreateTimer} PakoTick 100
@@ -1861,7 +2239,7 @@ Function PakoMainBuild
   !insertmacro PakoT $PakoTx pakoDesktop
   !insertmacro PakoLabel $0 554 225 240 18 0x50000180 $PakoFBody TEXT BG $PakoTx
   ${NSD_OnClick} $0 PakoToggleDesk
-  !insertmacro PakoPicture $PakoSwDesk 804 225 32 18 $PakoBmpOff
+  !insertmacro PakoPicture $PakoSwDesk 804 225 32 18 $PakoSwFace1
   ${NSD_OnClick} $PakoSwDesk PakoToggleDesk
   !insertmacro PakoProxy $PakoPxDesk ${PAKO_CHECK} 804 225 32 18 $PakoTx
   ${NSD_OnClick} $PakoPxDesk PakoToggleDesk
@@ -1869,7 +2247,7 @@ Function PakoMainBuild
   !insertmacro PakoT $PakoTx pakoStartWithWindows
   !insertmacro PakoLabel $0 554 265 240 18 0x50000180 $PakoFBody TEXT BG $PakoTx
   ${NSD_OnClick} $0 PakoToggleStart
-  !insertmacro PakoPicture $PakoSwStart 804 265 32 18 $PakoBmpOff
+  !insertmacro PakoPicture $PakoSwStart 804 265 32 18 $PakoSwFace2
   ${NSD_OnClick} $PakoSwStart PakoToggleStart
   !insertmacro PakoProxy $PakoPxStart ${PAKO_CHECK} 804 265 32 18 $PakoTx
   ${NSD_OnClick} $PakoPxStart PakoToggleStart
@@ -1881,7 +2259,7 @@ Function PakoMainBuild
   !insertmacro PakoT $PakoTx pakoBrowsersSub
   !insertmacro PakoLabel $0 554 323 240 16 0x50000180 $PakoFTiny MUT BG $PakoTx
   ${NSD_OnClick} $0 PakoToggleBrowsers
-  !insertmacro PakoPicture $PakoSwBrow 804 313 32 18 $PakoBmpOff
+  !insertmacro PakoPicture $PakoSwBrow 804 313 32 18 $PakoSwFace3
   ${NSD_OnClick} $PakoSwBrow PakoToggleBrowsers
   !insertmacro PakoProxy $PakoPxBrow ${PAKO_CHECK} 804 313 32 18 $1
   ${NSD_OnClick} $PakoPxBrow PakoToggleBrowsers
@@ -2149,42 +2527,47 @@ Function PakoLangApply
   Pop $0
 FunctionEnd
 
+; The switches as they are now (a switch on its way goes on from there): each is drawn into its
+; new control (PakoMainBuild makes them again when the language changes).
 Function PakoShowSwitches
-  ${If} $PakoDesktop = 1
-    SendMessage $PakoSwDesk ${STM_SETIMAGE} 0 $PakoBmpOn
-  ${Else}
-    SendMessage $PakoSwDesk ${STM_SETIMAGE} 0 $PakoBmpOff
-  ${EndIf}
-  ${If} $PakoStart = 1
-    SendMessage $PakoSwStart ${STM_SETIMAGE} 0 $PakoBmpOn
-  ${Else}
-    SendMessage $PakoSwStart ${STM_SETIMAGE} 0 $PakoBmpOff
-  ${EndIf}
-  ${If} $PakoBrowsers = 1
-    SendMessage $PakoSwBrow ${STM_SETIMAGE} 0 $PakoBmpOn
-  ${Else}
-    SendMessage $PakoSwBrow ${STM_SETIMAGE} 0 $PakoBmpOff
-  ${EndIf}
+  StrCpy $PakoA2 1
+  StrCpy $PakoA1 1
+  Call PakoSwDraw
+  StrCpy $PakoA1 2
+  Call PakoSwDraw
+  StrCpy $PakoA1 3
+  Call PakoSwDraw
   ; Screen readers read each switch's on/off from its stand-in.
   SendMessage $PakoPxDesk ${BM_SETCHECK} $PakoDesktop 0
   SendMessage $PakoPxStart ${BM_SETCHECK} $PakoStart 0
   SendMessage $PakoPxBrow ${BM_SETCHECK} $PakoBrowsers 0
 FunctionEnd
 
+; A click (the switch, its words, or Space on its stand-in): the setting flips at once, the
+; switch slides there (PakoSwTo).
 Function PakoToggleDesk
   Pop $0
   IntOp $PakoDesktop 1 - $PakoDesktop
-  Call PakoShowSwitches
+  StrCpy $PakoA1 1
+  StrCpy $PakoA2 $PakoDesktop
+  Call PakoSwTo
+  SendMessage $PakoPxDesk ${BM_SETCHECK} $PakoDesktop 0
 FunctionEnd
 Function PakoToggleStart
   Pop $0
   IntOp $PakoStart 1 - $PakoStart
-  Call PakoShowSwitches
+  StrCpy $PakoA1 2
+  StrCpy $PakoA2 $PakoStart
+  Call PakoSwTo
+  SendMessage $PakoPxStart ${BM_SETCHECK} $PakoStart 0
 FunctionEnd
 Function PakoToggleBrowsers
   Pop $0
   IntOp $PakoBrowsers 1 - $PakoBrowsers
-  Call PakoShowSwitches
+  StrCpy $PakoA1 3
+  StrCpy $PakoA2 $PakoBrowsers
+  Call PakoSwTo
+  SendMessage $PakoPxBrow ${BM_SETCHECK} $PakoBrowsers 0
 FunctionEnd
 
 ; "By installing, you accept the terms of use." (the last words a link), centred, and under it
@@ -2459,6 +2842,7 @@ Function PakoMainLeave
   ${EndIf}
   ${NSD_KillTimer} PakoTick
   ${NSD_KillTimer} PakoFade
+  Call PakoSwLeave
   ; Installed before the first slide came in: the last page shows it at once.
   StrCpy $PakoIntro 0
   !insertmacro PakoRingNone
@@ -2639,6 +3023,7 @@ Function un.PakoGuiInit
   File "${PAKO_ART}\logo-*.png"
   File "${PAKO_ART}\on-*.png"
   File "${PAKO_ART}\off-*.png"
+  File "${PAKO_ART}\sw?-*.png"
   File "${PAKO_ART}\b-uninstall-*.png"
   File "${PAKO_ART}\b-cancel-*.png"
   File "${PAKO_ART}\b-close-*.png"
@@ -2654,16 +3039,7 @@ Function un.PakoGuiInit
   StrCpy $PakoA3 44
   Call un.PakoImage
   StrCpy $PakoBmpLogo $PakoRet
-  StrCpy $PakoA1 "on-$PakoLook.png"
-  StrCpy $PakoA2 32
-  StrCpy $PakoA3 18
-  Call un.PakoImage
-  StrCpy $PakoBmpOn $PakoRet
-  StrCpy $PakoA1 "off-$PakoLook.png"
-  StrCpy $PakoA2 32
-  StrCpy $PakoA3 18
-  Call un.PakoImage
-  StrCpy $PakoBmpOff $PakoRet
+  Call un.PakoSwLoad
 FunctionEnd
 
 Function un.PakoSetTitle
@@ -2691,6 +3067,13 @@ Function un.PakoUnPage
   StrCpy $PakoHeld 0
   StrCpy $DeleteAppDataCheckboxState 0
   StrCpy $PakoDeletePrivate 0
+  ; The switches start off, at once (PakoSwSet: the pictures the switches are made with).
+  Call un.PakoSwLeave
+  StrCpy $PakoA2 0
+  StrCpy $PakoA1 1
+  Call un.PakoSwSet
+  StrCpy $PakoA1 2
+  Call un.PakoSwSet
   !insertmacro PakoPicture $0 150 18 160 44 $PakoBmpLogo
   !insertmacro PakoT $PakoTx pakoVersion
   !insertmacro PakoLabel $0 24 64 412 16 0x50000081 $PakoFTiny MUT BG $PakoTx
@@ -2707,7 +3090,7 @@ Function un.PakoUnPage
   !insertmacro PakoT $PakoTx pakoUnDataSub
   !insertmacro PakoLabel $0 24 183 350 16 0x50000180 $PakoFTiny MUT BG $PakoTx
   ${NSD_OnClick} $0 un.PakoToggleData
-  !insertmacro PakoPicture $PakoSwDesk 404 172 32 18 $PakoBmpOff
+  !insertmacro PakoPicture $PakoSwDesk 404 172 32 18 $PakoSwFace1
   ${NSD_OnClick} $PakoSwDesk un.PakoToggleData
   !insertmacro PakoT $PakoTx deleteAppData
   !insertmacro PakoProxy $PakoPxDesk ${PAKO_CHECK} 404 172 32 18 $PakoTx
@@ -2718,7 +3101,7 @@ Function un.PakoUnPage
   !insertmacro PakoT $PakoTx pakoUnPrivateSub
   !insertmacro PakoLabel $0 24 227 350 16 0x50000180 $PakoFTiny MUT BG $PakoTx
   ${NSD_OnClick} $0 un.PakoTogglePrivate
-  !insertmacro PakoPicture $PakoSwStart 404 216 32 18 $PakoBmpOff
+  !insertmacro PakoPicture $PakoSwStart 404 216 32 18 $PakoSwFace2
   ${NSD_OnClick} $PakoSwStart un.PakoTogglePrivate
   !insertmacro PakoT $PakoTx pakoUnPrivate
   !insertmacro PakoProxy $PakoPxStart ${PAKO_CHECK} 404 216 32 18 $PakoTx
@@ -2748,22 +3131,18 @@ FunctionEnd
 Function un.PakoToggleData
   Pop $0
   IntOp $DeleteAppDataCheckboxState 1 - $DeleteAppDataCheckboxState
-  ${If} $DeleteAppDataCheckboxState = 1
-    SendMessage $PakoSwDesk ${STM_SETIMAGE} 0 $PakoBmpOn
-  ${Else}
-    SendMessage $PakoSwDesk ${STM_SETIMAGE} 0 $PakoBmpOff
-  ${EndIf}
+  StrCpy $PakoA1 1
+  StrCpy $PakoA2 $DeleteAppDataCheckboxState
+  Call un.PakoSwTo
   SendMessage $PakoPxDesk ${BM_SETCHECK} $DeleteAppDataCheckboxState 0
 FunctionEnd
 
 Function un.PakoTogglePrivate
   Pop $0
   IntOp $PakoDeletePrivate 1 - $PakoDeletePrivate
-  ${If} $PakoDeletePrivate = 1
-    SendMessage $PakoSwStart ${STM_SETIMAGE} 0 $PakoBmpOn
-  ${Else}
-    SendMessage $PakoSwStart ${STM_SETIMAGE} 0 $PakoBmpOff
-  ${EndIf}
+  StrCpy $PakoA1 2
+  StrCpy $PakoA2 $PakoDeletePrivate
+  Call un.PakoSwTo
   SendMessage $PakoPxStart ${BM_SETCHECK} $PakoDeletePrivate 0
 FunctionEnd
 
@@ -2778,6 +3157,7 @@ FunctionEnd
 
 Function un.PakoUnLeave
   ${NSD_KillTimer} un.PakoTick
+  Call un.PakoSwLeave
   StrCpy $PakoB1Ctl 0
   StrCpy $PakoB2Ctl 0
   !insertmacro PakoRingNone

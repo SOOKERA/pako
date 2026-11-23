@@ -14,7 +14,7 @@
   import type { PopupCard } from "#lib/notices.ts";
   import Icon from "#lib/Icon.svelte";
   import { pop, reduced, rowSlide } from "#lib/motion.ts";
-  import { t } from "#lib/i18n.svelte.ts";
+  import { i18n, t } from "#lib/i18n.svelte.ts";
 
   /** The see-through margin around the card (holds its shadow), as in the window's width. */
   const PAD = 16;
@@ -117,16 +117,19 @@
     if (!inApp) {
       // Design preview (/important in a browser): a sample card; "?private" Private mode's,
       // "?many" with others waiting behind it.
+      // (Its words as the real Pako's Rust side says them, in the language shown.)
       const q = new URLSearchParams(location.search);
+      const fr = i18n.lang === "fr";
+      const done = t("Download finished");
       if (q.has("private"))
-        return add([{ id: "i0", kind: "download-done", title: "A private download finished", body: "Open Private mode to see it.", go: { page: "downloads" }, stays: true }]);
+        return add([{ id: "i0", kind: "download-done", title: fr ? "Un téléchargement privé est terminé" : "A private download finished", body: fr ? "Ouvrez le mode privé pour le voir." : "Open Private mode to see it.", go: { page: "downloads" }, stays: true }]);
       if (q.has("group"))
-        return add([{ id: "g1", kind: "download-done", title: "3 downloads finished", body: "Contract.pdf, Invoice.pdf, Receipt.pdf", go: { page: "downloads", id: "m1" }, stays: true, many: 3 }]);
-      add([{ id: "i1", kind: "download-done", title: "Download finished", body: "Contract signed - final version.pdf", go: { page: "downloads", id: "m1" }, stays: true }]);
+        return add([{ id: "g1", kind: "download-done", title: fr ? "3 téléchargements terminés" : "3 downloads finished", body: "Contract.pdf, Invoice.pdf, Receipt.pdf", go: { page: "downloads", id: "m1" }, stays: true, many: 3 }]);
+      add([{ id: "i1", kind: "download-done", title: done, body: "Contract signed - final version.pdf", go: { page: "downloads", id: "m1" }, stays: true }]);
       if (q.has("many"))
         add([
-          { id: "i2", kind: "download-done", title: "Download finished", body: "Tax return 2026.pdf", go: { page: "downloads", id: "m2" }, stays: true },
-          { id: "i3", kind: "download-done", title: "Download finished", body: "Flight tickets.pdf", go: { page: "downloads", id: "m3" }, stays: true },
+          { id: "i2", kind: "download-done", title: done, body: "Tax return 2026.pdf", go: { page: "downloads", id: "m2" }, stays: true },
+          { id: "i3", kind: "download-done", title: done, body: "Flight tickets.pdf", go: { page: "downloads", id: "m3" }, stays: true },
         ]);
       return;
     }

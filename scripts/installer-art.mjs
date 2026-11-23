@@ -1,5 +1,5 @@
 // Pako Setup's pictures: the five feature slides on the left of the window, the logo, the
-// switches, the folder box and the buttons, each in a dark and a light version (Setup follows
+// switches (and the steps they slide through), the folder box and the buttons, each in a dark and a light version (Setup follows
 // Windows). Drawn once here with Playwright's Chromium at twice the size and saved in
 // src-tauri/installer/art/; Setup scales them to the screen (installer/ui.nsh: PakoImage).
 //
@@ -149,11 +149,18 @@ function logoHtml(k) {
     svg.w{width:89px}</style></head><body><div>${fix(svgs[0], 44)}${fix(svgs[1], 28).replace("<svg", '<svg class="w"')}</div></body></html>`;
 }
 
-const sw = (k, on) => {
+// A switch, p of the way from off (0) to on (1): the knob moves 14 px and the track eases from
+// its off colour to the accent. Setup shows off, the steps sw1..sw9 (p = 0.1 to 0.9) and on as the
+// switch slides (installer template 1.1.5, installer/ui.nsh: PakoSwTick). The steps move the knob
+// with a transform, which Chromium draws at its exact place (a fractional left would be rounded
+// to the pixel and step unevenly). Pako's knob stays white both ways.
+const SW_STEPS = 10;
+const sw = (k, p) => {
   const c = looks[k];
+  const track = p <= 0 ? c.off : p >= 1 ? ACCENT : `color-mix(in srgb, ${ACCENT} ${(p * 100).toFixed(1)}%, ${c.off})`;
   return `<!doctype html><html><head><style>html,body{margin:0;background:${c.bg}}
-    i{display:block;position:relative;width:32px;height:18px;border-radius:9px;background:${on ? ACCENT : c.off}}
-    i:after{content:"";position:absolute;top:2px;${on ? "right" : "left"}:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+    i{display:block;position:relative;width:32px;height:18px;border-radius:9px;background:${track}}
+    i:after{content:"";position:absolute;top:2px;left:${p >= 1 ? 16 : 2}px;${p > 0 && p < 1 ? `transform:translateX(${14 * p}px);` : ""}width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2)}
   </style></head><body><i></i></body></html>`;
 };
 
@@ -219,8 +226,9 @@ for (const k of ["d", "l"]) {
   for (let i = 0; i < slides.length; i++) await render(`slide${i + 1}-${k}`, slideHtml(i, k), 530, 540, "jpeg");
   for (let i = 0; i < slides.length; i++) await render(`slide${i + 1}-${k}-fr`, slideHtml(i, k, "fr"), 530, 540, "jpeg");
   await render(`logo-${k}`, logoHtml(k), 160, 44);
-  await render(`on-${k}`, sw(k, true), 32, 18);
-  await render(`off-${k}`, sw(k, false), 32, 18);
+  await render(`on-${k}`, sw(k, 1), 32, 18);
+  await render(`off-${k}`, sw(k, 0), 32, 18);
+  for (let n = 1; n < SW_STEPS; n++) await render(`sw${n}-${k}`, sw(k, n / SW_STEPS), 32, 18);
   await render(`field-${k}`, field(k), 282, 32);
   for (const [name, label, width, kind] of buttons) {
     for (const st of kind === "main" ? ["n", "h", "x"] : ["n", "h"]) {

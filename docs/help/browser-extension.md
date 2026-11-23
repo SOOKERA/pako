@@ -71,7 +71,7 @@ Pako's own window shows it too: in **Settings › Browser extension** (and in th
 
 Download and record only what you have the right to, and follow the rules of the sites you use.
 
-With the full extension, Pako notices the video playing on any page, also inside a player embedded from another site. The Pako button in the toolbar shows how many it found on that page. Click it: the small window lists them under **Videos on this page**, each with its kind (**HLS stream**, **DASH stream** or **Video file**), its server, and the best quality when the page says it (**up to 1080p**). Click **Download with Pako** next to one: Pako names the file after the page's title and downloads it like other videos (see [Videos](videos.md)).
+With the full extension, Pako notices the video playing on any page, also inside a player embedded from another site. Click the Pako button in the toolbar (it shows no number for them; its only mark is a red **!** when something went wrong): the small window lists them under **Videos on this page**, each with its kind (**HLS stream**, **DASH stream** or **Video file**), its server, and the best quality when the page says it (**up to 1080p**). Click **Download with Pako** next to one: Pako names the file after the page's title and downloads it like other videos (see [Videos](videos.md)).
 
 - The list is only for that tab, and is emptied when the tab goes to another page or closes.
 - If the video is protected, the small window says "This video is protected, so it can't be downloaded." and offers nothing.

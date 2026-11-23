@@ -58,7 +58,7 @@ Videos sent from your browser (the button or the right-click menu) use your brow
 With the full [browser extension](browser-extension.md#videos-on-this-page), you can download the video playing on almost any page, not only on the sites above:
 
 1. Play the video for a moment.
-2. Click the Pako button in the browser's toolbar (it shows how many videos it found on the page).
+2. Click the Pako button in the browser's toolbar.
 3. Under **Videos on this page**, click **Download with Pako** next to the video.
 
 Or point at the video itself: once Pako has found it, the same **Download** button appears at its top right, as on the sites above. Click it, then **Download this video** (when Pako found several videos on the page, it lists them as the small window does: pick one). Its menu also has **Record this video** (below), and it offers nothing for a protected video. The button appears only on pages where Pako found a video; **Download button on videos** in the extension's small window turns it off too.

@@ -58,7 +58,7 @@ Les vidéos envoyées depuis votre navigateur (le bouton ou le menu du clic droi
 Avec l’[extension de navigateur](browser-extension.md#videos-on-this-page) complète, vous pouvez télécharger la vidéo en lecture sur presque n’importe quelle page, pas seulement sur les sites ci-dessus :
 
 1. Lisez la vidéo un instant.
-2. Cliquez sur le bouton Pako dans la barre d’outils du navigateur (il indique combien de vidéos il a trouvées sur la page).
+2. Cliquez sur le bouton Pako dans la barre d’outils du navigateur.
 3. Sous **Vidéos de cette page**, cliquez sur **Télécharger avec Pako** à côté de la vidéo.
 
 Ou pointez sur la vidéo elle-même : une fois que Pako l’a trouvée, le même bouton **Télécharger** apparaît en haut à droite, comme sur les sites ci-dessus. Cliquez dessus, puis sur **Télécharger cette vidéo** (quand Pako a trouvé plusieurs vidéos sur la page, il les liste comme le fait la petite fenêtre : choisissez-en une). Son menu propose aussi **Enregistrer cette vidéo** (plus bas), et il ne propose rien pour une vidéo protégée. Le bouton n’apparaît que sur les pages où Pako a trouvé une vidéo ; **Bouton Télécharger sur les vidéos**, dans la petite fenêtre de l’extension, le désactive aussi.
